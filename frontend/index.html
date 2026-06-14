@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WB Partners — Отзывы и рейтинги</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --wb-purple:#7B2FBE;--wb-purple-dark:#5B1F9E;--wb-purple-light:#F3E8FF;
+  --wb-bg:#F8F7FA;--wb-surface:#FFFFFF;--wb-border:#E8E4F0;
+  --wb-text:#1A1A2E;--wb-muted:#6B6B8A;--wb-faint:#A0A0BB;
+  --green:#12B76A;--red:#F04438;--amber:#F79009;--blue:#2E90FA;
+  --r:8px;--rs:6px;
+}
+body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text);min-height:100vh}
+
+/* Top nav - WB style */
+.topbar{background:var(--wb-purple-dark);padding:0 24px;display:flex;align-items:center;height:48px;gap:0}
+.tb-logo{display:flex;align-items:center;gap:8px;margin-right:32px}
+.tb-logo img{height:20px}
+.tb-logo-text{color:#fff;font-size:13px;font-weight:600;letter-spacing:.5px}
+.tb-nav{display:flex;height:100%}
+.tb-nav-item{display:flex;align-items:center;padding:0 16px;color:rgba(255,255,255,.75);font-size:13px;cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap}
+.tb-nav-item:hover{color:#fff;background:rgba(255,255,255,.08)}
+.tb-nav-item.on{color:#fff;border-bottom-color:#fff;font-weight:500}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.tb-sync{display:flex;align-items:center;gap:6px;color:rgba(255,255,255,.7);font-size:12px}
+.tb-dot{width:6px;height:6px;border-radius:50%;background:#6CE9A6;flex-shrink:0}
+.tb-dot.loading{background:var(--amber);animation:pulse 1s infinite}
+.tb-dot.error{background:var(--red)}
+.tb-btn{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.2);color:#fff;padding:5px 14px;border-radius:var(--rs);font-size:12px;cursor:pointer;font-family:inherit;transition:all .15s}
+.tb-btn:hover{background:rgba(255,255,255,.25)}
+
+/* Sub nav */
+.subnav{background:var(--wb-surface);border-bottom:1px solid var(--wb-border);padding:0 24px;display:flex;align-items:center;gap:0;height:40px}
+.sn-item{display:flex;align-items:center;height:100%;padding:0 14px;font-size:13px;color:var(--wb-muted);cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap}
+.sn-item:hover{color:var(--wb-text)}
+.sn-item.on{color:var(--wb-purple);border-bottom-color:var(--wb-purple);font-weight:500}
+
+/* Pages */
+.page{display:none;padding:24px}.page.on{display:block}
+
+/* Summary cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:24px}
+.card{background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--r);padding:16px 18px}
+.card-l{font-size:11px;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.card-v{font-size:24px;font-weight:600;color:var(--wb-text)}
+.card-sub{font-size:12px;color:var(--wb-faint);margin-top:3px}
+
+/* Toolbar */
+.toolbar{display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.search{display:flex;align-items:center;gap:8px;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 12px;width:260px}
+.search input{border:none;outline:none;font-size:13px;font-family:inherit;color:var(--wb-text);width:100%;background:transparent}
+.search input::placeholder{color:var(--wb-faint)}
+.filter-btn{border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 12px;font-size:12px;background:var(--wb-surface);color:var(--wb-muted);cursor:pointer;font-family:inherit;white-space:nowrap;transition:all .15s}
+.filter-btn:hover,.filter-btn.on{border-color:var(--wb-purple);color:var(--wb-purple);background:var(--wb-purple-light)}
+.ml-auto{margin-left:auto}
+.action-btn{border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 14px;font-size:12px;background:var(--wb-surface);color:var(--wb-text);cursor:pointer;font-family:inherit}
+.action-btn.primary{background:var(--wb-purple);color:#fff;border-color:var(--wb-purple)}
+.action-btn.primary:hover{background:var(--wb-purple-dark)}
+
+/* Group block */
+.group{margin-bottom:12px;border-radius:var(--r);overflow:hidden;border:1px solid var(--wb-border);background:var(--wb-surface)}
+.gh{display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer;user-select:none;border-bottom:1px solid var(--wb-border)}
+.gh:hover{background:#FAFAFA}
+.gh-color{width:4px;height:32px;border-radius:2px;flex-shrink:0}
+.gh-name{font-weight:600;font-size:14px;flex:1}
+.gh-stats{display:flex;gap:16px;align-items:center}
+.gh-stat{font-size:12px;color:var(--wb-muted)}
+.gh-rating{font-size:18px;font-weight:700}
+.gh-badge{padding:2px 8px;border-radius:20px;font-size:11px;font-weight:500}
+.gh-arr{font-size:12px;color:var(--wb-faint);transition:transform .2s}
+.group.open .gh-arr{transform:rotate(180deg)}
+.gbody{display:none}
+.group.open .gbody{display:block}
+.tw{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:700px}
+thead th{padding:10px 12px;text-align:left;font-size:11px;color:var(--wb-muted);font-weight:500;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid var(--wb-border);white-space:nowrap;background:#FAFAFA}
+thead th.tr2{text-align:right}
+thead th.tc{text-align:center}
+tbody tr:hover td{background:#FAFAFA}
+td{padding:10px 12px;border-bottom:1px solid #F5F3FA;vertical-align:middle}
+td.tr2{text-align:right}
+td.tc{text-align:center}
+.art{font-weight:500;font-size:13px}
+.nmid{font-size:11px;color:var(--wb-faint);margin-top:2px}
+.rnum{font-size:16px;font-weight:700}
+.nodata td{opacity:.45}
+.total-row td{background:#F8F5FF!important;border-top:2px solid #D4AAFF!important}
+.total-row:hover td{background:#F3EEFF!important}
+.total-label{font-weight:700;color:var(--wb-purple);font-size:12px}
+
+/* Star bars */
+.sbar{display:flex;flex-direction:column;gap:2px;min-width:90px}
+.sbar-r{display:flex;align-items:center;gap:4px}
+.sbar-l{width:8px;font-size:9px;color:var(--wb-faint);text-align:right;flex-shrink:0}
+.sbar-t{flex:1;height:4px;background:#EDE9F6;border-radius:2px;overflow:hidden}
+.sbar-f{height:100%;border-radius:2px}
+.sbar-p{width:22px;font-size:9px;color:var(--wb-faint);text-align:right;flex-shrink:0}
+
+/* Old badge */
+.old-b{background:#FEF3C7;color:#92400E;padding:1px 7px;border-radius:20px;font-size:11px;font-weight:500}
+
+/* Groups manager */
+.gm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.gm-g{border:1px solid var(--wb-border);border-radius:var(--r);overflow:hidden;background:var(--wb-surface)}
+.gm-gh{display:flex;align-items:center;gap:8px;padding:10px 14px;font-weight:600;font-size:13px;color:#fff}
+.gm-gb{padding:10px;min-height:50px}
+.gm-a{display:flex;align-items:center;padding:6px 10px;border-radius:var(--rs);font-size:12px;cursor:grab;background:var(--wb-bg);margin-bottom:6px;border:1px solid var(--wb-border);user-select:none;transition:all .15s}
+.gm-a:hover{border-color:var(--wb-purple);background:var(--wb-purple-light)}
+.gm-a span{flex:1}
+.gm-del{color:var(--wb-faint);cursor:pointer;padding:0 4px;font-size:14px}
+.gm-del:hover{color:var(--red)}
+.gm-add{display:flex;gap:6px;margin-top:8px}
+.gm-add input{flex:1;border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;outline:none}
+.gm-add input:focus{border-color:var(--wb-purple)}
+.gm-add button{padding:6px 12px;font-size:12px;background:var(--wb-purple);color:#fff;border:none;border-radius:var(--rs);cursor:pointer;font-family:inherit}
+.saved-note{font-size:12px;color:var(--green);font-weight:500;display:none}
+
+/* Loading */
+.loading{display:flex;align-items:center;justify-content:center;padding:80px;gap:12px;color:var(--wb-muted);font-size:14px}
+.spinner{width:28px;height:28px;border:2px solid var(--wb-border);border-top-color:var(--wb-purple);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+.empty{text-align:center;padding:60px;color:var(--wb-muted)}
+.section-wrap{background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--r);padding:20px;margin-bottom:16px}
+.section-title{font-size:15px;font-weight:600;margin-bottom:4px}
+.section-sub{font-size:13px;color:var(--wb-muted);margin-bottom:16px}
+</style>
+</head>
+<body>
+
+<!-- Top navigation - WB Partners style -->
+<div class="topbar">
+  <div class="tb-logo">
+    <div style="background:#fff;border-radius:4px;padding:2px 6px;font-size:11px;font-weight:800;color:var(--wb-purple-dark)">wb</div>
+    <span class="tb-logo-text">partners</span>
+  </div>
+  <div class="tb-nav">
+    <div class="tb-nav-item">Рост продаж</div>
+    <div class="tb-nav-item on">Товары и цены</div>
+    <div class="tb-nav-item">Поставки и заказы</div>
+    <div class="tb-nav-item">Аналитика</div>
+    <div class="tb-nav-item">Продвижение</div>
+    <div class="tb-nav-item">Финансы</div>
+  </div>
+  <div class="tb-right">
+    <div class="tb-sync">
+      <div class="tb-dot" id="syncDot"></div>
+      <span id="syncText">Загрузка...</span>
+    </div>
+    <button class="tb-btn" onclick="triggerSync()">↻ Обновить</button>
+  </div>
+</div>
+
+<!-- Sub navigation -->
+<div class="subnav">
+  <div class="sn-item" onclick="showPage('ratings',this)">Товары</div>
+  <div class="sn-item on" onclick="showPage('ratings',this)">Отзывы и вопросы</div>
+  <div class="sn-item" onclick="showPage('groups',this)">Склейки</div>
+</div>
+
+<!-- Ratings page -->
+<div class="page on" id="page-ratings">
+  <div class="cards" id="cards"></div>
+  <div class="toolbar" id="toolbar" style="display:none">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="si" placeholder="Поиск по артикулу..." oninput="render()">
+    </div>
+    <span style="font-size:12px;color:var(--wb-muted)">Сортировка:</span>
+    <button class="filter-btn on" id="s_avg_rating" onclick="SS('avg_rating')">★ Рейтинг</button>
+    <button class="filter-btn" id="s_r1" onclick="SS('r1')">★1</button>
+    <button class="filter-btn" id="s_old_count" onclick="SS('old_count')">Старые</button>
+    <button class="filter-btn" id="s_total" onclick="SS('total')">Отзывов</button>
+    <button class="filter-btn" id="s_article" onclick="SS('article')">А–Я</button>
+    <div class="ml-auto" style="display:flex;gap:8px">
+      <button class="action-btn" onclick="EA(1)">▾ Раскрыть</button>
+      <button class="action-btn" onclick="EA(0)">▸ Свернуть</button>
+      <button class="action-btn" onclick="EX()">⬇ CSV</button>
+    </div>
+  </div>
+  <div id="root"><div class="loading"><div class="spinner"></div><span>Загружаем данные...</span></div></div>
+</div>
+
+<!-- Groups page -->
+<div class="page" id="page-groups">
+  <div class="section-wrap">
+    <div style="display:flex;align-items:center;margin-bottom:4px">
+      <div>
+        <div class="section-title">Управление склейками</div>
+        <div class="section-sub">Перетаскивай артикулы между группами. Нажми «Сохранить» чтобы применить.</div>
+      </div>
+      <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+        <span class="saved-note" id="savedNote">✓ Сохранено</span>
+        <button class="action-btn" onclick="addGroup()">+ Склейка</button>
+        <button class="action-btn primary" onclick="saveGroups()">Сохранить</button>
+      </div>
+    </div>
+    <div class="gm-grid" id="gmGrid"></div>
+  </div>
+</div>
+
+<script>
+const SUPABASE_URL = 'https://prrxznrpjtiycwepnqkk.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_nzqIET51w5bsScFlLkKnCg_HxtWOieY';
+const RAILWAY_URL = 'https://wb-dashboard-production-baf4.up.railway.app';
+
+var ALL = [], GROUPS = {}, SK = 'avg_rating', SD = -1, EXP = {};
+var dragArt = null, dragFrom = null;
+
+var GROUP_COLORS = ['#7B2FBE','#2E90FA','#12B76A','#F79009','#F04438','#6172F3','#EE46BC'];
+function gc(g) {
+  var keys = Object.keys(GROUPS);
+  var i = keys.indexOf(g);
+  return GROUP_COLORS[i % GROUP_COLORS.length] || '#6B6B8A';
+}
+
+function sbHeaders() {
+  return {
+    'apikey': SUPABASE_KEY,
+    'Authorization': 'Bearer ' + SUPABASE_KEY,
+    'Content-Type': 'application/json'
+  };
+}
+
+function fmt(n) { return Number(n||0).toLocaleString('ru-RU'); }
+function rc(v) {
+  if(!v&&v!==0) return '#A0A0BB';
+  v=+v;
+  if(v>=4.7) return '#12B76A';
+  if(v>=4.3) return '#65A30D';
+  if(v>=4.0) return '#F79009';
+  if(v>=3.0) return '#EA580C';
+  return '#F04438';
+}
+
+function showPage(id, btn) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
+  document.querySelectorAll('.sn-item').forEach(t => t.classList.remove('on'));
+  document.getElementById('page-' + id).classList.add('on');
+  if(btn) btn.classList.add('on');
+  if(id === 'groups') renderGroupManager();
+}
+
+async function loadData() {
+  try {
+    setStatus('loading', 'Загрузка...');
+
+    // Load groups from Supabase
+    const gr = await fetch(`${SUPABASE_URL}/rest/v1/groups_config?select=name,articles,sort_order&order=sort_order`, { headers: sbHeaders() });
+    if(gr.ok) {
+      const gdata = await gr.json();
+      GROUPS = {};
+      gdata.forEach(g => { GROUPS[g.name] = g.articles || []; });
+      Object.keys(GROUPS).forEach(g => { if(EXP[g]===undefined) EXP[g]=true; });
+    }
+
+    // Load aggregated feedbacks from Supabase
+    const fr = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_article_stats`, {
+      method: 'POST',
+      headers: sbHeaders(),
+      body: JSON.stringify({})
+    });
+
+    if(fr.ok) {
+      ALL = await fr.json();
+    } else {
+      // Fallback: aggregate manually
+      await loadFeedbacksManually();
+    }
+
+    if(EXP && Object.keys(EXP).length === 0) {
+      Object.keys(GROUPS).concat(['Без склейки']).forEach(g => { EXP[g] = true; });
+    }
+
+    renderCards();
+    document.getElementById('toolbar').style.display = 'flex';
+    render();
+
+    // Get last sync
+    const sr = await fetch(`${SUPABASE_URL}/rest/v1/settings?key=eq.last_sync&select=value`, { headers: sbHeaders() });
+    if(sr.ok) {
+      const sd = await sr.json();
+      setStatus('ok', sd[0] ? 'Обновлено: ' + sd[0].value : 'Данные загружены');
+    }
+
+  } catch(e) {
+    setStatus('error', 'Ошибка: ' + e.message);
+    console.error(e);
+  }
+}
+
+async function loadFeedbacksManually() {
+  const now = new Date();
+  const cutoff = new Date(now - 365*24*60*60*1000);
+  let offset = 0, all = [];
+
+  while(true) {
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/feedbacks?select=article,nm_id,stars,created_date,is_old&limit=1000&offset=${offset}`,
+      { headers: sbHeaders() }
+    );
+    if(!r.ok) break;
+    const batch = await r.json();
+    if(!batch.length) break;
+    all = all.concat(batch);
+    offset += batch.length;
+    if(batch.length < 1000) break;
+  }
+
+  // Aggregate
+  const byArt = {};
+  all.forEach(f => {
+    const art = f.article;
+    if(!art) return;
+    if(!byArt[art]) byArt[art] = {article:art, nm_id:f.nm_id, total:0, r5:0, r4:0, r3:0, r2:0, r1:0, old_count:0};
+    const a = byArt[art];
+    a.total++;
+    if(f.stars >= 1 && f.stars <= 5) a['r'+f.stars]++;
+    if(f.is_old) a.old_count++;
+  });
+
+  ALL = Object.values(byArt).map(a => {
+    a.avg_rating = a.total ? Math.round((a.r5*5+a.r4*4+a.r3*3+a.r2*2+a.r1)/a.total*100)/100 : null;
+    a.old_pct = a.total ? Math.round(a.old_count/a.total*1000)/10 : 0;
+    return a;
+  });
+}
+
+function setStatus(state, text) {
+  const dot = document.getElementById('syncDot');
+  dot.className = 'tb-dot' + (state==='loading'?' loading':state==='error'?' error':'');
+  document.getElementById('syncText').textContent = text;
+}
+
+async function triggerSync() {
+  setStatus('loading', 'Синхронизация...');
+  try {
+    await fetch(`${RAILWAY_URL}/api/sync`, { method: 'POST' });
+    setTimeout(loadData, 3000);
+  } catch(e) {
+    setStatus('error', 'Ошибка синхронизации');
+  }
+}
+
+function renderCards() {
+  const t1 = ALL.reduce((s,a) => s+(a.r1||0), 0);
+  const tO = ALL.reduce((s,a) => s+(a.old_count||0), 0);
+  const tRev = ALL.reduce((s,a) => s+(a.total||0), 0);
+  const tStars = ALL.reduce((s,a) => s+((a.r5||0)*5+(a.r4||0)*4+(a.r3||0)*3+(a.r2||0)*2+(a.r1||0)), 0);
+  const avg = tRev ? (tStars/tRev).toFixed(2) : '—';
+
+  document.getElementById('cards').innerHTML = [
+    ['Артикулов', fmt(ALL.length), '', ''],
+    ['Всего отзывов', fmt(tRev), '', ''],
+    ['Средний рейтинг', avg + ' ★', 'color:' + rc(+avg), ''],
+    ['★1 отзывов', fmt(t1), 'color:var(--red)', ''],
+    ['Устаревших', fmt(tO), 'color:var(--amber)', 'старше 1 года'],
+  ].map(([l,v,s,sub]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div>${sub?`<div class="card-sub">${sub}</div>`:''}</div>`).join('');
+}
+
+function starBars(a) {
+  if(!a.total) return '<span style="color:var(--wb-faint);font-size:11px">—</span>';
+  return '<div class="sbar">' + [[5,'#12B76A'],[4,'#65A30D'],[3,'#F79009'],[2,'#EA580C'],[1,'#F04438']].map(([s,c]) => {
+    const p = Math.round((a['r'+s]||0)/a.total*100);
+    return `<div class="sbar-r"><div class="sbar-l">${s}</div><div class="sbar-t"><div class="sbar-f" style="width:${p}%;background:${c}"></div></div><div class="sbar-p">${p}%</div></div>`;
+  }).join('') + '</div>';
+}
+
+function artRow(a, bg) {
+  const nd = !a.total;
+  const rat = a.avg_rating;
+  const oldBadge = a.old_count > 0
+    ? `<span class="old-b">⏱ ${fmt(a.old_count)} (${a.old_pct}%)</span>`
+    : '<span style="color:var(--wb-faint);font-size:11px">—</span>';
+  return `<tr class="${nd?'nodata':''}" style="background:${nd?'#FAFAFA':bg}">
+    <td><div class="art">${a.article}</div><div class="nmid">${a.nm_id||'—'}</div></td>
+    <td class="tc">${rat ? `<span class="rnum" style="color:${rc(rat)}">${parseFloat(rat).toFixed(2)}</span>` : '<span style="color:var(--wb-faint)">—</span>'}</td>
+    <td class="tr2" style="color:${(a.r5||0)>0?'#12B76A':'var(--wb-text)'}">${a.r5||'—'}</td>
+    <td class="tr2">${a.r4||'—'}</td>
+    <td class="tr2">${a.r3||'—'}</td>
+    <td class="tr2">${a.r2||'—'}</td>
+    <td class="tr2" style="color:${(a.r1||0)>0?'var(--red)':'var(--wb-text)'};font-weight:${(a.r1||0)>0?600:400}">${a.r1||'—'}</td>
+    <td class="tr2" style="color:var(--wb-muted)">${a.total||'—'}</td>
+    <td class="tc">${oldBadge}</td>
+    <td>${starBars(a)}</td>
+  </tr>`;
+}
+
+function thead() {
+  const a = k => SK===k?(SD===-1?' ↓':' ↑'):'';
+  return `<thead><tr>
+    <th onclick="SS('article')" style="cursor:pointer">Артикул${a('article')}</th>
+    <th class="tc" onclick="SS('avg_rating')" style="cursor:pointer">Рейтинг${a('avg_rating')}</th>
+    <th class="tr2" style="color:#12B76A">★5</th>
+    <th class="tr2">★4</th>
+    <th class="tr2">★3</th>
+    <th class="tr2">★2</th>
+    <th class="tr2" onclick="SS('r1')" style="color:var(--red);cursor:pointer">★1${a('r1')}</th>
+    <th class="tr2" onclick="SS('total')" style="cursor:pointer">Всего${a('total')}</th>
+    <th class="tc" onclick="SS('old_count')" style="cursor:pointer">Старые${a('old_count')}</th>
+    <th>Распределение</th>
+  </tr></thead>`;
+}
+
+function gblock(grp, arts) {
+  const color = gc(grp);
+  const wD = arts.filter(a => a.total > 0).length;
+  const tot = {r5:0,r4:0,r3:0,r2:0,r1:0,total:0,old_count:0};
+  arts.forEach(a => ['r5','r4','r3','r2','r1','total','old_count'].forEach(k => tot[k]+=(a[k]||0)));
+  const avg = tot.total ? Math.round((tot.r5*5+tot.r4*4+tot.r3*3+tot.r2*2+tot.r1)/tot.total*100)/100 : null;
+  const y1 = tot.r1;
+  const gi = Object.keys(GROUPS).concat(['Без склейки']).indexOf(grp);
+  const isOpen = EXP[grp];
+
+  const sorted = [...arts].sort((a,b) => {
+    if(SK==='article') return SD*String(a.article).localeCompare(String(b.article),'ru');
+    return SD*((+(a[SK]||0))-(+(b[SK]||0)));
+  });
+
+  const totRow = `<tr class="total-row">
+    <td><span class="total-label">∑ Итого по склейке</span></td>
+    <td class="tc">${avg ? `<span class="rnum" style="color:${rc(avg)}">${avg.toFixed(2)}</span>` : '—'}</td>
+    <td class="tr2" style="font-weight:600;color:#12B76A">${fmt(tot.r5)}</td>
+    <td class="tr2" style="font-weight:600">${fmt(tot.r4)}</td>
+    <td class="tr2" style="font-weight:600">${fmt(tot.r3)}</td>
+    <td class="tr2" style="font-weight:600">${fmt(tot.r2)}</td>
+    <td class="tr2" style="font-weight:600;color:${tot.r1>0?'var(--red)':'var(--wb-text)'}">${fmt(tot.r1)}</td>
+    <td class="tr2" style="font-weight:600;color:var(--wb-muted)">${fmt(tot.total)}</td>
+    <td class="tc">${tot.old_count>0?`<span class="old-b">${fmt(tot.old_count)}</span>`:'—'}</td>
+    <td></td>
+  </tr>`;
+
+  const badges = [
+    y1>0 ? `<span class="gh-badge" style="background:#FEE2E2;color:#B91C1C">★1: ${y1}</span>` : '',
+    tot.old_count>0 ? `<span class="gh-badge" style="background:#FEF3C7;color:#92400E">⏱ ${fmt(tot.old_count)}</span>` : ''
+  ].join(' ');
+
+  return `<div class="group${isOpen?' open':''}" id="g${gi}">
+    <div class="gh" onclick="TG(${gi})">
+      <div class="gh-color" style="background:${color}"></div>
+      <div class="gh-name">${grp}</div>
+      <div class="gh-stats">
+        <span class="gh-stat">${arts.length} арт. · ${wD} с отзывами</span>
+        ${badges}
+      </div>
+      ${avg ? `<span class="gh-rating" style="color:${rc(avg)}">${avg.toFixed(2)} ★</span>` : ''}
+      <span class="gh-arr">▾</span>
+    </div>
+    <div class="gbody"><div class="tw"><table>${thead()}<tbody>
+      ${sorted.map(a => artRow(a, '#FFFFFF')).join('')}
+      ${totRow}
+    </tbody></table></div></div>
+  </div>`;
+}
+
+function render() {
+  if(!ALL.length) {
+    document.getElementById('root').innerHTML = '<div class="empty">Нет данных. Нажми «Обновить» чтобы загрузить отзывы с WB.</div>';
+    return;
+  }
+  const q = (document.getElementById('si').value||'').toLowerCase();
+  let html = '';
+  const gnames = Object.keys(GROUPS).concat(['Без склейки']);
+  const ga = new Set(Object.values(GROUPS).flat());
+  const grouped = {};
+  gnames.forEach(g => { grouped[g] = []; });
+
+  Object.entries(GROUPS).forEach(([g, list]) => {
+    list.forEach(n => {
+      const found = ALL.find(a => a.article === n);
+      grouped[g].push(found || {article:n,nm_id:'',total:0,r5:0,r4:0,r3:0,r2:0,r1:0,old_count:0,old_pct:0,avg_rating:null});
+    });
+  });
+  ALL.forEach(a => { if(!ga.has(a.article)) grouped['Без склейки'].push(a); });
+
+  gnames.forEach(g => {
+    let arts = grouped[g] || [];
+    if(q) arts = arts.filter(a => a.article.toLowerCase().includes(q) || String(a.nm_id||'').includes(q));
+    if(q && !arts.length) return;
+    html += gblock(g, arts);
+  });
+
+  document.getElementById('root').innerHTML = html || '<div class="empty">Ничего не найдено</div>';
+}
+
+function TG(i) {
+  const g = Object.keys(GROUPS).concat(['Без склейки'])[i];
+  if(!g) return;
+  EXP[g] = !EXP[g];
+  const el = document.getElementById('g'+i);
+  if(el) el.classList.toggle('open', EXP[g]);
+}
+function EA(v) { Object.keys(GROUPS).concat(['Без склейки']).forEach(g => EXP[g]=!!v); render(); }
+function SS(k) {
+  if(SK===k) SD*=-1; else { SK=k; SD=-1; }
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('on'));
+  const el = document.getElementById('s_'+k); if(el) el.classList.add('on');
+  render();
+}
+function EX() {
+  const rows = [['Склейка','Артикул','nmId','★ Ср.','★5','★4','★3','★2','★1','Всего','Старых','% старых'].join(',')];
+  const ga = new Set(Object.values(GROUPS).flat());
+  Object.keys(GROUPS).concat(['Без склейки']).forEach(g => {
+    const arts = GROUPS[g] ? GROUPS[g].map(n => ALL.find(a=>a.article===n)||{article:n}) : ALL.filter(a=>!ga.has(a.article));
+    arts.forEach(a => rows.push([`"${g}"`,`"${a.article||''}"`,a.nm_id||'',a.avg_rating||'',a.r5||0,a.r4||0,a.r3||0,a.r2||0,a.r1||0,a.total||0,a.old_count||0,a.old_pct||0].join(',')));
+  });
+  const el = document.createElement('a');
+  el.href = URL.createObjectURL(new Blob(['\uFEFF'+rows.join('\n')],{type:'text/csv;charset=utf-8'}));
+  el.download = 'wb_ratings.csv'; el.click();
+}
+
+// Groups manager
+function renderGroupManager() {
+  const ga = new Set(Object.values(GROUPS).flat());
+  const ung = ALL.filter(a => !ga.has(a.article)).map(a => a.article);
+  const all = {...GROUPS, 'Без склейки': ung};
+  let html = '';
+  Object.entries(all).forEach(([g, arts]) => {
+    const color = gc(g);
+    const gid = 'gb_' + g.replace(/[^a-zа-я0-9]/gi,'_');
+    html += `<div class="gm-g" data-group="${g}" ondragover="gOver(event)" ondrop="gDrop(event,'${encodeURIComponent(g)}')">
+      <div class="gm-gh" style="background:${color}">${g}
+        ${g!=='Без склейки'?`<span style="margin-left:auto;cursor:pointer;opacity:.7;font-size:12px" onclick="rmGroup('${encodeURIComponent(g)}')">✕</span>`:''}
+      </div>
+      <div class="gm-gb" id="${gid}">
+        ${arts.map(art => `<div class="gm-a" draggable="true" ondragstart="gDS(event,'${encodeURIComponent(art)}','${encodeURIComponent(g)}')">
+          <span>${art}</span>
+          ${g!=='Без склейки'?`<span class="gm-del" onclick="rmArt('${encodeURIComponent(g)}','${encodeURIComponent(art)}')">✕</span>`:''}
+        </div>`).join('')}
+        ${g!=='Без склейки'?`<div class="gm-add"><input placeholder="Добавить артикул..." id="ai_${gid}"><button onclick="addArt('${encodeURIComponent(g)}','ai_${gid}')">+</button></div>`:''}
+      </div>
+    </div>`;
+  });
+  document.getElementById('gmGrid').innerHTML = html;
+}
+
+function gDS(e,art,from){dragArt=decodeURIComponent(art);dragFrom=decodeURIComponent(from);}
+function gOver(e){e.preventDefault();}
+function gDrop(e,toEnc){
+  e.preventDefault();
+  const to = decodeURIComponent(toEnc);
+  if(!dragArt||dragFrom===to) return;
+  if(dragFrom!=='Без склейки') GROUPS[dragFrom]=(GROUPS[dragFrom]||[]).filter(a=>a!==dragArt);
+  if(to!=='Без склейки'){if(!GROUPS[to])GROUPS[to]=[];if(!GROUPS[to].includes(dragArt))GROUPS[to].push(dragArt);}
+  dragArt=null;dragFrom=null;renderGroupManager();
+}
+function rmArt(gE,aE){const g=decodeURIComponent(gE),a=decodeURIComponent(aE);GROUPS[g]=(GROUPS[g]||[]).filter(x=>x!==a);renderGroupManager();}
+function addArt(gE,inputId){
+  const g=decodeURIComponent(gE);
+  const input=document.getElementById(inputId);
+  const art=(input.value||'').trim();
+  if(!art)return;if(!GROUPS[g])GROUPS[g]=[];if(!GROUPS[g].includes(art))GROUPS[g].push(art);
+  input.value='';renderGroupManager();
+}
+function addGroup(){const name=prompt('Название склейки:');if(!name?.trim())return;GROUPS[name.trim()]=[];renderGroupManager();}
+function rmGroup(gE){const g=decodeURIComponent(gE);if(!confirm(`Удалить "${g}"?`))return;delete GROUPS[g];renderGroupManager();}
+
+async function saveGroups() {
+  try {
+    // Delete all and re-insert
+    await fetch(`${SUPABASE_URL}/rest/v1/groups_config?id=gte.1`, {
+      method: 'DELETE', headers: sbHeaders()
+    });
+    const rows = Object.entries(GROUPS).map(([name,articles],i) => ({name,articles,sort_order:i+1}));
+    await fetch(`${SUPABASE_URL}/rest/v1/groups_config`, {
+      method: 'POST',
+      headers: {...sbHeaders(), 'Prefer': 'return=minimal'},
+      body: JSON.stringify(rows)
+    });
+    const n = document.getElementById('savedNote');
+    n.style.display='inline'; render();
+    setTimeout(()=>n.style.display='none', 2000);
+  } catch(e) { alert('Ошибка: '+e.message); }
+}
+
+loadData();
+</script>
+</body>
+</html>
