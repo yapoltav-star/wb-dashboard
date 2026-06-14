@@ -440,6 +440,29 @@ function gblock(grp, arts) {
     tot.old_count>0 ? `<span class="gh-badge" style="background:#FEF3C7;color:#92400E">⏱ ${fmt(tot.old_count)}</span>` : ''
   ].join(' ');
 
+  // Recommendations
+  let recHtml = '';
+  if(avg !== null && tot.total > 0) {
+    const S = tot.r5*5 + tot.r4*4 + tot.r3*3 + tot.r2*2 + tot.r1;
+    const N = tot.total;
+    if(avg >= 4.95) {
+      recHtml = '<div style="padding:8px 16px;background:#F0FDF4;border-bottom:1px solid #BBF7D0;font-size:12px;color:#065F46;font-weight:500">✓ Рейтинг отображается как <b>5.0 ★</b> — отлично!</div>';
+    } else {
+      const wbShow = avg >= 4.85 ? '4.9' : avg >= 4.75 ? '4.8' : avg >= 4.65 ? '4.7' : avg >= 4.55 ? '4.6' : avg >= 4.45 ? '4.5' : avg.toFixed(1);
+      // Needed for next 0.1 step
+      const nextT = avg >= 4.85 ? 4.95 : avg >= 4.75 ? 4.85 : avg >= 4.65 ? 4.75 : avg >= 4.55 ? 4.65 : 4.55;
+      const nextLabel = nextT >= 4.95 ? '5.0' : (Math.round(nextT*10)/10).toFixed(1);
+      const needNext = Math.ceil((nextT * N - S) / (5 - nextT));
+      const need5 = Math.ceil((4.95 * N - S) / 0.05);
+      recHtml = `<div style="display:flex;align-items:center;gap:12px;padding:8px 16px;background:#FFFBEB;border-bottom:1px solid #FDE68A;font-size:12px;flex-wrap:wrap">
+        <span style="color:#92400E">Клиент видит: <b>${wbShow} ★</b></span>
+        <span style="color:#6B7280">|</span>
+        <span style="color:#92400E">До <b>${nextLabel} ★</b>: нужно <b style="color:#D97706">+${needNext.toLocaleString('ru-RU')} отзывов ★5</b></span>
+        ${avg < 4.85 ? `<span style="color:#6B7280">|</span><span style="color:#991B1B">До <b>5.0 ★</b>: нужно <b>+${need5.toLocaleString('ru-RU')} отзывов ★5</b></span>` : ''}
+      </div>`;
+    }
+  }
+
   return `<div class="group${isOpen?' open':''}" id="g${gi}">
     <div class="gh" onclick="TG(${gi})">
       <div class="gh-color" style="background:${color}"></div>
@@ -451,6 +474,7 @@ function gblock(grp, arts) {
       ${avg ? `<span class="gh-rating" style="color:${rc(avg)}">${avg.toFixed(2)} ★</span>` : ''}
       <span class="gh-arr">▾</span>
     </div>
+    ${recHtml}
     <div class="gbody"><div class="tw"><table>${thead()}<tbody>
       ${sorted.map(a => artRow(a, '#FFFFFF')).join('')}
       ${totRow}
