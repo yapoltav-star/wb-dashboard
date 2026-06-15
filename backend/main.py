@@ -63,6 +63,15 @@ def fetch_archive_page(skip: int):
         return []
     return resp.json().get("data", {}).get("feedbacks", [])
 
+def is_supplemented(f: dict) -> bool:
+    """Returns True if this feedback was supplemented (updated) by another one.
+    WB marks supplemented feedbacks with 'isEdited' or they have a supplement link.
+    The original feedback (before supplement) should NOT count towards rating.
+    """
+    # WB API field: if feedback has been supplemented, it has 'editedAt' or similar
+    # The original review that was supplemented has a newer version
+    return bool(f.get("isEdited") or f.get("supplementedFeedbackId"))
+
 def process_feedback(f: dict) -> dict:
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=365)
@@ -81,6 +90,7 @@ def process_feedback(f: dict) -> dict:
         "created_date": date.isoformat(),
         "is_old": date < cutoff,
         "is_answered": bool(f.get("answer")),
+        "is_supplemented": is_supplemented(f),
         "text": (f.get("text") or "")[:500],
         "updated_at": now.isoformat()
     }
@@ -99,7 +109,8 @@ def sync_all():
             batch = fetch_feedbacks_page(is_answered, skip)
             if not batch:
                 break
-            processed = [process_feedback(f) for f in batch if f.get("id")]
+            # Filter out supplemented (original) feedbacks - they don't count for rating
+            processed = [process_feedback(f) for f in batch if f.get("id") and not is_supplemented(f)]
             total += upsert_feedbacks(processed)
             logger.info(f"  answered={is_answered} skip={skip} saved={len(processed)}")
             skip += len(batch)
