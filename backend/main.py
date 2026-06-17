@@ -19,6 +19,15 @@ WB_TOKEN = os.getenv("WB_TOKEN", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 WB_FEEDBACKS_URL = "https://feedbacks-api.wildberries.ru"
+WB_ANALYTICS_URL = "https://seller-analytics-api.wildberries.ru"
+
+# Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
+# а агрегаты — переносим их в отдельные поля stock_totals вместо списка складов.
+STOCK_SPECIAL_FIELDS = {
+    "В пути до получателей": "in_way_to_client",
+    "В пути возвраты на склад WB": "in_way_from_client",
+    "Всего находится на складах": "quantity_warehouses_full",
+}
 
 def sb_headers():
     return {
@@ -131,6 +140,109 @@ def sync_all():
         headers=sb_headers(), timeout=10
     )
     logger.info(f"Sync complete. Total: {total}")
+
+# ---------- Остатки на складах (WB Analytics: warehouse_remains report) ----------
+
+def create_stock_report():
+    resp = httpx.get(
+        f"{WB_ANALYTICS_URL}/api/v1/warehouse_remains",
+        headers=wb_headers(), timeout=30
+    )
+    if not resp.is_success:
+        logger.error(f"WB stock report create error {resp.status_code} {resp.text[:200]}")
+        return None
+    return resp.json().get("data", {}).get("taskId")
+
+def wait_stock_report(task_id: str, max_wait: int = 180) -> bool:
+    elapsed = 0
+    while elapsed < max_wait:
+        time.sleep(5)
+        elapsed += 5
+        resp = httpx.get(
+            f"{WB_ANALYTICS_URL}/api/v1/warehouse_remains/tasks/{task_id}/status",
+            headers=wb_headers(), timeout=15
+        )
+        if resp.is_success and resp.json().get("data", {}).get("status") == "done":
+            return True
+    return False
+
+def download_stock_report(task_id: str) -> list:
+    resp = httpx.get(
+        f"{WB_ANALYTICS_URL}/api/v1/warehouse_remains/tasks/{task_id}/download",
+        headers=wb_headers(), timeout=60
+    )
+    if not resp.is_success:
+        logger.error(f"WB stock report download error {resp.status_code} {resp.text[:200]}")
+        return []
+    return resp.json()
+
+def process_stock_items(items: list):
+    now = datetime.now(timezone.utc).isoformat()
+    totals, warehouses = [], []
+    for it in items:
+        nm_id = it.get("nmId")
+        if not nm_id:
+            continue
+        row = {
+            "nm_id": nm_id,
+            "vendor_code": it.get("vendorCode", ""),
+            "subject_name": it.get("subjectName", ""),
+            "brand": it.get("brand", ""),
+            "volume": it.get("volume"),
+            "in_way_to_client": 0,
+            "in_way_from_client": 0,
+            "quantity_warehouses_full": 0,
+            "updated_at": now,
+        }
+        for w in it.get("warehouses", []):
+            name, qty = w.get("warehouseName"), w.get("quantity", 0)
+            field = STOCK_SPECIAL_FIELDS.get(name)
+            if field:
+                row[field] = qty
+            else:
+                warehouses.append({"nm_id": nm_id, "warehouse_name": name, "quantity": qty, "updated_at": now})
+        totals.append(row)
+    return totals, warehouses
+
+def upsert_stock(totals: list, warehouses: list) -> int:
+    saved = 0
+    for i in range(0, len(totals), 200):
+        batch = totals[i:i + 200]
+        resp = httpx.post(f"{SUPABASE_URL}/rest/v1/stock_totals", json=batch, headers=sb_headers(), timeout=30)
+        if resp.is_success:
+            saved += len(batch)
+        else:
+            logger.error(f"stock_totals upsert error {resp.status_code} {resp.text[:200]}")
+    # Полная перезаливка детализации по складам — проще, чем строить составной upsert-ключ
+    httpx.delete(f"{SUPABASE_URL}/rest/v1/stock_warehouses?id=gte.0", headers=sb_headers(), timeout=15)
+    for i in range(0, len(warehouses), 500):
+        batch = warehouses[i:i + 500]
+        resp = httpx.post(f"{SUPABASE_URL}/rest/v1/stock_warehouses", json=batch, headers=sb_headers(), timeout=30)
+        if not resp.is_success:
+            logger.error(f"stock_warehouses insert error {resp.status_code} {resp.text[:200]}")
+    return saved
+
+def sync_stock():
+    if not WB_TOKEN:
+        logger.error("WB_TOKEN not set")
+        return
+    logger.info("Starting stock sync...")
+    task_id = create_stock_report()
+    if not task_id:
+        return
+    if not wait_stock_report(task_id):
+        logger.error("Stock report generation timed out")
+        return
+    items = download_stock_report(task_id)
+    totals, warehouses = process_stock_items(items)
+    saved = upsert_stock(totals, warehouses)
+    httpx.post(
+        f"{SUPABASE_URL}/rest/v1/settings",
+        json={"key": "last_stock_sync", "value": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
+              "updated_at": datetime.now(timezone.utc).isoformat()},
+        headers=sb_headers(), timeout=10
+    )
+    logger.info(f"Stock sync complete. Articles: {saved}, warehouse rows: {len(warehouses)}")
 
 @app.post("/api/upload-ratings")
 async def upload_ratings(file: UploadFile = File(...)):
@@ -274,6 +386,7 @@ async def upload_ratings(file: UploadFile = File(...)):
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
+scheduler.add_job(sync_stock, "interval", hours=3, id="sync_stock")
 scheduler.start()
 
 @app.get("/")
@@ -304,6 +417,12 @@ def trigger_sync():
     threading.Thread(target=sync_all, daemon=True).start()
     return {"status": "started"}
 
+@app.post("/api/sync-stock")
+def trigger_stock_sync():
+    import threading
+    threading.Thread(target=sync_stock, daemon=True).start()
+    return {"status": "started"}
+
 # ---------- Proxy endpoints: фронтенд обращается только к Railway, ----------
 # ---------- никогда напрямую к Supabase (для пользователей у которых ----------
 # ---------- Supabase плохо доступен напрямую). Railway сам ходит в Supabase. ----------
@@ -311,7 +430,7 @@ def trigger_sync():
 @app.get("/api/dashboard-data")
 def dashboard_data():
     """Отдаёт все данные нужные дашборду одним запросом: группы + рейтинги + отзывы(агрегат) + негатив за периоды + last sync"""
-    result = {"groups": [], "ratings": [], "feedback_stats": [], "negative_counts": {}, "settings": {}}
+    result = {"groups": [], "ratings": [], "feedback_stats": [], "negative_counts": {}, "settings": {}, "stock_totals": [], "stock_warehouses": []}
 
     try:
         gr = httpx.get(
@@ -366,6 +485,26 @@ def dashboard_data():
                 result["settings"][row["key"]] = row["value"]
     except Exception as e:
         logger.error(f"dashboard-data settings error: {e}")
+
+    try:
+        st = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals?select=*",
+            headers=sb_headers(), timeout=15
+        )
+        if st.is_success:
+            result["stock_totals"] = st.json()
+    except Exception as e:
+        logger.error(f"dashboard-data stock_totals error: {e}")
+
+    try:
+        sw = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_warehouses?select=*",
+            headers=sb_headers(), timeout=15
+        )
+        if sw.is_success:
+            result["stock_warehouses"] = sw.json()
+    except Exception as e:
+        logger.error(f"dashboard-data stock_warehouses error: {e}")
 
     return result
 
