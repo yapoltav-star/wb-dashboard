@@ -379,17 +379,19 @@ def article_feedbacks(article: str, days: int = 30, max_stars: int = 3, limit: i
     try:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         resp = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/feedbacks"
-            f"?article=eq.{article}"
-            f"&stars=lte.{max_stars}"
-            f"&created_date=gte.{cutoff}"
-            f"&select=id,stars,created_date,text,is_answered"
-            f"&order=created_date.desc"
-            f"&limit={limit}",
+            f"{SUPABASE_URL}/rest/v1/feedbacks",
+            params={
+                "article": f"eq.{article}",
+                "stars": f"lte.{max_stars}",
+                "created_date": f"gte.{cutoff}",
+                "select": "id,stars,created_date,text,is_answered",
+                "order": "created_date.desc",
+                "limit": str(limit),
+            },
             headers=sb_headers(), timeout=15
         )
         if not resp.is_success:
-            return {"error": f"Supabase error: {resp.status_code}"}
+            return {"error": f"Supabase error: {resp.status_code} {resp.text[:200]}"}
         return {"feedbacks": resp.json()}
     except Exception as e:
         logger.error(f"article-feedbacks error: {e}")
