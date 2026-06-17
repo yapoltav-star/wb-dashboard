@@ -310,8 +310,8 @@ def trigger_sync():
 
 @app.get("/api/dashboard-data")
 def dashboard_data():
-    """Отдаёт все данные нужные дашборду одним запросом: группы + рейтинги + отзывы(агрегат) + last sync"""
-    result = {"groups": [], "ratings": [], "feedback_stats": [], "settings": {}}
+    """Отдаёт все данные нужные дашборду одним запросом: группы + рейтинги + отзывы(агрегат) + негатив за периоды + last sync"""
+    result = {"groups": [], "ratings": [], "feedback_stats": [], "negative_counts": {}, "settings": {}}
 
     try:
         gr = httpx.get(
@@ -343,6 +343,19 @@ def dashboard_data():
     except Exception as e:
         logger.error(f"dashboard-data feedback_stats error: {e}")
 
+    # Негатив за 5/7/30 дней, для звёзд 1-2-3 (фронт сам выберет нужный порог звёзд и период)
+    for days in [5, 7, 30]:
+        try:
+            nr = httpx.post(
+                f"{SUPABASE_URL}/rest/v1/rpc/get_negative_counts",
+                json={"days_back": days, "max_stars": 3},
+                headers=sb_headers(), timeout=20
+            )
+            if nr.is_success:
+                result["negative_counts"][str(days)] = nr.json()
+        except Exception as e:
+            logger.error(f"dashboard-data negative_counts({days}) error: {e}")
+
     try:
         sr = httpx.get(
             f"{SUPABASE_URL}/rest/v1/settings?select=key,value",
@@ -355,6 +368,32 @@ def dashboard_data():
         logger.error(f"dashboard-data settings error: {e}")
 
     return result
+
+@app.get("/api/article-feedbacks")
+def article_feedbacks(article: str, days: int = 30, max_stars: int = 3, limit: int = 50):
+    """
+    Возвращает тексты отзывов по конкретному артикулу за последние N дней,
+    с оценкой <= max_stars, отсортированные по дате (новые сверху).
+    Используется при раскрытии артикула в таблице товаров.
+    """
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/feedbacks"
+            f"?article=eq.{article}"
+            f"&stars=lte.{max_stars}"
+            f"&created_date=gte.{cutoff}"
+            f"&select=id,stars,created_date,text,is_answered"
+            f"&order=created_date.desc"
+            f"&limit={limit}",
+            headers=sb_headers(), timeout=15
+        )
+        if not resp.is_success:
+            return {"error": f"Supabase error: {resp.status_code}"}
+        return {"feedbacks": resp.json()}
+    except Exception as e:
+        logger.error(f"article-feedbacks error: {e}")
+        return {"error": str(e)}
 
 @app.post("/api/save-groups")
 async def save_groups(request: dict):
