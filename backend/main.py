@@ -147,7 +147,7 @@ def sync_all():
 def create_stock_report():
     resp = httpx.get(
         f"{WB_ANALYTICS_URL}/api/v1/warehouse_remains",
-        headers=wb_headers(), timeout=30
+        headers=wb_headers(), params={"groupByNm": "true"}, timeout=30
     )
     if not resp.is_success:
         logger.error(f"WB stock report create error {resp.status_code} {resp.text[:200]}")
