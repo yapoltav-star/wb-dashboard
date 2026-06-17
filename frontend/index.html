@@ -236,6 +236,10 @@ td.tc{text-align:center}
         <button class="action-btn primary" onclick="saveGroups()">Сохранить</button>
       </div>
     </div>
+    <div class="search" style="width:260px;margin-bottom:14px">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="gmSearch" placeholder="Поиск по артикулу..." oninput="renderGroupManager()">
+    </div>
     <div class="gm-grid" id="gmGrid"></div>
   </div>
 </div>
@@ -613,27 +617,34 @@ function EX() {
 
 // Groups manager
 function renderGroupManager() {
+  const q = (document.getElementById('gmSearch')?.value || '').toLowerCase().trim();
   const ga = new Set(Object.values(GROUPS).flat());
   const ung = ALL.filter(a => !ga.has(a.article)).map(a => a.article);
   const all = {...GROUPS, 'Без склейки': ung};
   let html = '';
   Object.entries(all).forEach(([g, arts]) => {
+    let shown = arts;
+    if(q) shown = arts.filter(art => art.toLowerCase().includes(q));
+    if(q && !shown.length) return; // hide groups with no matches while searching
+
     const color = gc(g);
     const gid = 'gb_' + g.replace(/[^a-zа-я0-9]/gi,'_');
     html += `<div class="gm-g" data-group="${g}" ondragover="gOver(event)" ondrop="gDrop(event,'${encodeURIComponent(g)}')">
-      <div class="gm-gh" style="background:${color}">${g}
-        ${g!=='Без склейки'?`<span style="margin-left:auto;cursor:pointer;opacity:.7;font-size:12px" onclick="rmGroup('${encodeURIComponent(g)}')">✕</span>`:''}
+      <div class="gm-gh" style="background:${color}">
+        <span style="flex:1">${g}</span>
+        ${g!=='Без склейки'?`<span style="cursor:pointer;opacity:.85;font-size:12px;margin-right:8px" onclick="renameGroup('${encodeURIComponent(g)}')" title="Переименовать">✏️</span><span style="cursor:pointer;opacity:.7;font-size:12px" onclick="rmGroup('${encodeURIComponent(g)}')" title="Удалить">✕</span>`:''}
       </div>
       <div class="gm-gb" id="${gid}">
-        ${arts.map(art => `<div class="gm-a" draggable="true" ondragstart="gDS(event,'${encodeURIComponent(art)}','${encodeURIComponent(g)}')">
+        ${shown.map(art => `<div class="gm-a" draggable="true" ondragstart="gDS(event,'${encodeURIComponent(art)}','${encodeURIComponent(g)}')">
           <span>${art}</span>
           ${g!=='Без склейки'?`<span class="gm-del" onclick="rmArt('${encodeURIComponent(g)}','${encodeURIComponent(art)}')">✕</span>`:''}
         </div>`).join('')}
+        ${q && shown.length<arts.length?`<div style="font-size:11px;color:var(--wb-faint);margin-top:4px">показаны ${shown.length} из ${arts.length}</div>`:''}
         ${g!=='Без склейки'?`<div class="gm-add"><input placeholder="Добавить артикул..." id="ai_${gid}"><button onclick="addArt('${encodeURIComponent(g)}','ai_${gid}')">+</button></div>`:''}
       </div>
     </div>`;
   });
-  document.getElementById('gmGrid').innerHTML = html;
+  document.getElementById('gmGrid').innerHTML = html || '<div class="empty">Ничего не найдено</div>';
 }
 
 function gDS(e,art,from){dragArt=decodeURIComponent(art);dragFrom=decodeURIComponent(from);}
@@ -656,6 +667,25 @@ function addArt(gE,inputId){
 }
 function addGroup(){const name=prompt('Название склейки:');if(!name?.trim())return;GROUPS[name.trim()]=[];renderGroupManager();}
 function rmGroup(gE){const g=decodeURIComponent(gE);if(!confirm(`Удалить "${g}"?`))return;delete GROUPS[g];renderGroupManager();}
+function renameGroup(gE){
+  const g = decodeURIComponent(gE);
+  const newName = prompt('Новое название склейки:', g);
+  if(!newName || !newName.trim() || newName.trim()===g) return;
+  const trimmed = newName.trim();
+  if(GROUPS[trimmed] !== undefined){
+    alert('Склейка с таким названием уже существует');
+    return;
+  }
+  // Rebuild GROUPS preserving order, replacing the key
+  const next = {};
+  Object.entries(GROUPS).forEach(([name, arts]) => {
+    next[name === g ? trimmed : name] = arts;
+  });
+  GROUPS = next;
+  // Keep expand/collapse state consistent with renamed key
+  if(EXP[g] !== undefined){ EXP[trimmed] = EXP[g]; delete EXP[g]; }
+  renderGroupManager();
+}
 
 async function saveGroups() {
   try {
