@@ -1,11 +1,13 @@
 import httpx
 import os
+import io
 import time
 import logging
 from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+import pandas as pd
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -64,19 +66,13 @@ def fetch_archive_page(skip: int):
     return resp.json().get("data", {}).get("feedbacks", [])
 
 def is_supplemented(f: dict) -> bool:
-    """Returns True if this feedback was supplemented (updated) by another one.
-    WB marks supplemented feedbacks with 'isEdited' or they have a supplement link.
-    The original feedback (before supplement) should NOT count towards rating.
-    """
-    # WB API field: if feedback has been supplemented, it has 'editedAt' or similar
-    # The original review that was supplemented has a newer version
     return bool(f.get("isEdited") or f.get("supplementedFeedbackId"))
 
 def process_feedback(f: dict) -> dict:
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=365)
-    pd = f.get("productDetails", {})
-    article = pd.get("supplierArticle", "") or str(pd.get("nmId", ""))
+    pd_data = f.get("productDetails", {})
+    article = pd_data.get("supplierArticle", "") or str(pd_data.get("nmId", ""))
     date_str = f.get("createdDate") or f.get("updatedDate") or ""
     try:
         date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
@@ -85,12 +81,11 @@ def process_feedback(f: dict) -> dict:
     return {
         "id": f.get("id", ""),
         "article": article,
-        "nm_id": pd.get("nmId"),
+        "nm_id": pd_data.get("nmId"),
         "stars": f.get("productValuation", 0),
         "created_date": date.isoformat(),
         "is_old": date < cutoff,
         "is_answered": bool(f.get("answer")),
-        "is_supplemented": is_supplemented(f),
         "text": (f.get("text") or "")[:500],
         "updated_at": now.isoformat()
     }
@@ -102,14 +97,12 @@ def sync_all():
     logger.info("Starting sync...")
     total = 0
 
-    # Answered + unanswered
     for is_answered in [True, False]:
         skip = 0
         while skip <= 199990:
             batch = fetch_feedbacks_page(is_answered, skip)
             if not batch:
                 break
-            # Filter out supplemented (original) feedbacks - they don't count for rating
             processed = [process_feedback(f) for f in batch if f.get("id") and not is_supplemented(f)]
             total += upsert_feedbacks(processed)
             logger.info(f"  answered={is_answered} skip={skip} saved={len(processed)}")
@@ -118,7 +111,6 @@ def sync_all():
                 break
             time.sleep(0.3)
 
-    # Archive
     skip = 0
     while skip <= 199990:
         batch = fetch_archive_page(skip)
@@ -132,7 +124,6 @@ def sync_all():
             break
         time.sleep(0.3)
 
-    # Save last sync time
     now_str = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
     httpx.post(
         f"{SUPABASE_URL}/rest/v1/settings",
@@ -141,7 +132,159 @@ def sync_all():
     )
     logger.info(f"Sync complete. Total: {total}")
 
-# Scheduler - every 30 minutes
+@app.post("/api/upload-ratings")
+async def upload_ratings(file: UploadFile = File(...)):
+    """
+    Принимает xlsx файл "Оценка товара" из WB Partners и сохраняет в Supabase.
+    Лист "Товары" содержит правильные данные с учётом исключённых отзывов.
+    """
+    try:
+        contents = await file.read()
+        xl = pd.ExcelFile(io.BytesIO(contents))
+
+        # Ищем лист с данными по товарам
+        sheet_name = None
+        for s in xl.sheet_names:
+            if 'товар' in s.lower() or 'filter' in s.lower() or 'фильтр' in s.lower():
+                sheet_name = s
+                break
+        if not sheet_name:
+            # Попробуем лист "Фильтры" или последний лист
+            for s in xl.sheet_names:
+                if 'фильтр' in s.lower():
+                    sheet_name = s
+                    break
+        if not sheet_name:
+            sheet_name = xl.sheet_names[-1]
+
+        logger.info(f"Reading sheet: {sheet_name} from {xl.sheet_names}")
+
+        df = pd.read_excel(io.BytesIO(contents), sheet_name=sheet_name, header=None)
+
+        # Найдём строку с заголовками (ищем "Артикул продавца")
+        header_row = None
+        for i, row in df.iterrows():
+            vals = [str(v).strip() for v in row.values]
+            if any('артикул продавца' in v.lower() for v in vals):
+                header_row = i
+                break
+
+        if header_row is None:
+            # Попробуем лист "Товары" напрямую
+            df2 = pd.read_excel(io.BytesIO(contents), sheet_name='Товары', header=None)
+            for i, row in df2.iterrows():
+                vals = [str(v).strip() for v in row.values]
+                if any('артикул продавца' in v.lower() for v in vals):
+                    header_row = i
+                    df = df2
+                    break
+
+        if header_row is None:
+            return {"error": "Не найден заголовок 'Артикул продавца'. Проверь что загружаешь файл 'Оценка товара' из WB Partners → Аналитика."}
+
+        df.columns = df.iloc[header_row].str.strip()
+        df = df.iloc[header_row + 1:].reset_index(drop=True)
+        df = df.dropna(subset=[df.columns[0]])
+
+        # Маппинг колонок
+        col_map = {}
+        for c in df.columns:
+            cl = str(c).lower().strip()
+            if 'артикул продавца' in cl:
+                col_map['article'] = c
+            elif 'артикул wb' in cl:
+                col_map['nm_id'] = c
+            elif 'название' in cl:
+                col_map['name'] = c
+            elif 'рейтинг по отзывам' in cl and 'выше' not in cl:
+                col_map['wb_rating'] = c
+            elif 'все отзывы за период' in cl or 'всего' in cl:
+                col_map['reviews_total'] = c
+            elif 'оценки 5' in cl:
+                col_map['r5'] = c
+            elif 'оценки 4' in cl:
+                col_map['r4'] = c
+            elif 'оценки 3' in cl:
+                col_map['r3'] = c
+            elif 'оценки 2' in cl:
+                col_map['r2'] = c
+            elif 'оценки 1' in cl:
+                col_map['r1'] = c
+            elif 'исключен' in cl:
+                col_map['excluded'] = c
+
+        logger.info(f"Column mapping: {col_map}")
+
+        if 'article' not in col_map:
+            return {"error": f"Не найдена колонка 'Артикул продавца'. Найденные колонки: {list(df.columns)}"}
+
+        now = datetime.now(timezone.utc).isoformat()
+        rows = []
+        for _, row in df.iterrows():
+            article = str(row.get(col_map.get('article', ''), '') or '').strip()
+            if not article or article == 'nan':
+                continue
+
+            def safe_int(key):
+                try:
+                    v = row.get(col_map.get(key, ''))
+                    return int(float(v)) if v and str(v) != 'nan' else 0
+                except:
+                    return 0
+
+            def safe_float(key):
+                try:
+                    v = row.get(col_map.get(key, ''))
+                    return float(v) if v and str(v) != 'nan' else None
+                except:
+                    return None
+
+            rows.append({
+                "article": article,
+                "nm_id": safe_int('nm_id') or None,
+                "name": str(row.get(col_map.get('name', ''), '') or '').strip() or None,
+                "wb_rating": safe_float('wb_rating'),
+                "reviews_total": safe_int('reviews_total'),
+                "r5": safe_int('r5'),
+                "r4": safe_int('r4'),
+                "r3": safe_int('r3'),
+                "r2": safe_int('r2'),
+                "r1": safe_int('r1'),
+                "excluded": safe_int('excluded'),
+                "updated_at": now
+            })
+
+        if not rows:
+            return {"error": "Не найдено строк с данными"}
+
+        # Сохраняем в Supabase батчами по 100
+        saved = 0
+        for i in range(0, len(rows), 100):
+            batch = rows[i:i+100]
+            resp = httpx.post(
+                f"{SUPABASE_URL}/rest/v1/ratings_official",
+                json=batch,
+                headers=sb_headers(),
+                timeout=30
+            )
+            if resp.is_success:
+                saved += len(batch)
+            else:
+                logger.error(f"Supabase error: {resp.status_code} {resp.text[:300]}")
+
+        # Обновляем время загрузки
+        httpx.post(
+            f"{SUPABASE_URL}/rest/v1/settings",
+            json={"key": "last_ratings_upload", "value": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"), "updated_at": now},
+            headers=sb_headers(), timeout=10
+        )
+
+        return {"status": "ok", "saved": saved, "total_rows": len(rows)}
+
+    except Exception as e:
+        logger.error(f"Upload error: {e}")
+        return {"error": str(e)}
+
 scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
 scheduler.start()
