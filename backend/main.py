@@ -304,6 +304,85 @@ def trigger_sync():
     threading.Thread(target=sync_all, daemon=True).start()
     return {"status": "started"}
 
+# ---------- Proxy endpoints: фронтенд обращается только к Railway, ----------
+# ---------- никогда напрямую к Supabase (для пользователей у которых ----------
+# ---------- Supabase плохо доступен напрямую). Railway сам ходит в Supabase. ----------
+
+@app.get("/api/dashboard-data")
+def dashboard_data():
+    """Отдаёт все данные нужные дашборду одним запросом: группы + рейтинги + отзывы(агрегат) + last sync"""
+    result = {"groups": [], "ratings": [], "feedback_stats": [], "settings": {}}
+
+    try:
+        gr = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/groups_config?select=name,articles,sort_order&order=sort_order",
+            headers=sb_headers(), timeout=15
+        )
+        if gr.is_success:
+            result["groups"] = gr.json()
+    except Exception as e:
+        logger.error(f"dashboard-data groups error: {e}")
+
+    try:
+        rr = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?select=*",
+            headers=sb_headers(), timeout=15
+        )
+        if rr.is_success:
+            result["ratings"] = rr.json()
+    except Exception as e:
+        logger.error(f"dashboard-data ratings error: {e}")
+
+    try:
+        fr = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/get_article_stats",
+            json={}, headers=sb_headers(), timeout=20
+        )
+        if fr.is_success:
+            result["feedback_stats"] = fr.json()
+    except Exception as e:
+        logger.error(f"dashboard-data feedback_stats error: {e}")
+
+    try:
+        sr = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/settings?select=key,value",
+            headers=sb_headers(), timeout=10
+        )
+        if sr.is_success:
+            for row in sr.json():
+                result["settings"][row["key"]] = row["value"]
+    except Exception as e:
+        logger.error(f"dashboard-data settings error: {e}")
+
+    return result
+
+@app.post("/api/save-groups")
+async def save_groups(request: dict):
+    """
+    Сохраняет конфигурацию склеек. Ожидает {"groups": {"Название": ["арт1","арт2"], ...}}
+    """
+    groups = request.get("groups", {})
+    try:
+        del_resp = httpx.delete(
+            f"{SUPABASE_URL}/rest/v1/groups_config?id=gte.1",
+            headers=sb_headers(), timeout=15
+        )
+        rows = [{"name": name, "articles": articles, "sort_order": i + 1}
+                for i, (name, articles) in enumerate(groups.items())]
+        if rows:
+            ins_resp = httpx.post(
+                f"{SUPABASE_URL}/rest/v1/groups_config",
+                json=rows,
+                headers={**sb_headers(), "Prefer": "return=minimal"},
+                timeout=15
+            )
+            if not ins_resp.is_success:
+                return {"error": f"Insert failed: {ins_resp.status_code} {ins_resp.text[:200]}"}
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"save-groups error: {e}")
+        return {"error": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8080))
