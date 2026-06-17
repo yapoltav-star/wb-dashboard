@@ -1,6 +1,7 @@
 import httpx
 import os
 import io
+import json
 import time
 import logging
 from datetime import datetime, timedelta, timezone
@@ -182,6 +183,10 @@ def download_stock_report(task_id: str) -> list:
         logger.error(f"Unexpected stock report shape ({type(data).__name__}): {str(data)[:300]}")
         return []
     logger.info(f"Stock report download: {len(data)} items" + (f", raw snippet: {resp.text[:300]}" if not data else ""))
+    if data:
+        logger.info(f"Stock report sample item 0: {json.dumps(data[0], ensure_ascii=False)[:600]}")
+        if len(data) > 1:
+            logger.info(f"Stock report sample item 1: {json.dumps(data[1], ensure_ascii=False)[:600]}")
     return data
 
 def process_stock_items(items: list):
