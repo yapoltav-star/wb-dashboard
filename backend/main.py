@@ -344,7 +344,7 @@ def dashboard_data():
         logger.error(f"dashboard-data feedback_stats error: {e}")
 
     # Негатив за 5/7/30 дней, для звёзд 1-2-3 (фронт сам выберет нужный порог звёзд и период)
-    for days in [5, 7, 30]:
+    for days in [1, 2, 3, 4, 5, 7, 14, 30]:
         try:
             nr = httpx.post(
                 f"{SUPABASE_URL}/rest/v1/rpc/get_negative_counts",
