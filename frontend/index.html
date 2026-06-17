@@ -187,8 +187,8 @@ td.tc{text-align:center}
   </div>
   <div class="tb-nav">
     <div class="tb-nav-item">Рост продаж</div>
-    <div class="tb-nav-item on">Товары и цены</div>
-    <div class="tb-nav-item">Поставки и заказы</div>
+    <div class="tb-nav-item on" onclick="showSection('products',this)">Товары и цены</div>
+    <div class="tb-nav-item" onclick="showSection('supplies',this)">Поставки и заказы</div>
     <div class="tb-nav-item">Аналитика</div>
     <div class="tb-nav-item">Продвижение</div>
     <div class="tb-nav-item">Финансы</div>
@@ -203,10 +203,14 @@ td.tc{text-align:center}
   </div>
 </div>
 
-<div class="subnav">
+<div class="subnav" id="subnav-products">
   <div class="sn-item on" onclick="showPage('products',this)">Товары</div>
   <div class="sn-item" onclick="showPage('ratings',this)">Отзывы и вопросы</div>
   <div class="sn-item" onclick="showPage('groups',this)">Склейки</div>
+</div>
+<div class="subnav" id="subnav-supplies" style="display:none">
+  <div class="sn-item on" onclick="showPage('stock-totals',this)">Остатки по артикулам</div>
+  <div class="sn-item" onclick="showPage('stock-warehouses',this)">Остатки по складам</div>
 </div>
 
 <!-- Upload modal -->
@@ -307,12 +311,38 @@ td.tc{text-align:center}
   </div>
 </div>
 
+<div class="page" id="page-stock-totals">
+  <div class="toolbar" id="stToolbar">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="stSearch" placeholder="Поиск по артикулу..." oninput="renderStockTotals()">
+    </div>
+    <span id="stockSyncInfo" style="font-size:12px;color:var(--wb-muted)"></span>
+    <div class="ml-auto">
+      <button class="action-btn" id="stockSyncBtn" onclick="triggerStockSync()">↻ Обновить остатки</button>
+    </div>
+  </div>
+  <div class="cards" id="stockCards"></div>
+  <div id="stockRoot"><div class="loading"><div class="spinner"></div><span>Загружаем остатки...</span></div></div>
+</div>
+
+<div class="page" id="page-stock-warehouses">
+  <div class="toolbar">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="whSearch" placeholder="Поиск по артикулу или складу..." oninput="renderStockWarehouses()">
+    </div>
+  </div>
+  <div id="whRoot"><div class="loading"><div class="spinner"></div><span>Загружаем склады...</span></div></div>
+</div>
+
 <script>
 const RAILWAY_URL = 'https://wb-dashboard-production-baf4.up.railway.app';
 
 var ALL = [], RATINGS = {}, GROUPS = {}, SK = 'avg_rating', SD = -1, EXP = {};
 var HAS_OFFICIAL = false;
 var dragArt = null, dragFrom = null;
+var STOCK_TOTALS = [], STOCK_WH = [], STEXP = {};
 
 // Products page state
 var NEG_COUNTS = {};                 // {"5": [{article,negative_count}], "7": [...], "30": [...]}
@@ -343,6 +373,15 @@ function rc(v) {
   return '#F04438';
 }
 
+function showSection(sec, btn) {
+  document.querySelectorAll('.tb-nav-item').forEach(t => t.classList.remove('on'));
+  btn.classList.add('on');
+  document.getElementById('subnav-products').style.display = sec === 'products' ? 'flex' : 'none';
+  document.getElementById('subnav-supplies').style.display = sec === 'supplies' ? 'flex' : 'none';
+  if(sec === 'products') showPage('products', document.querySelector('#subnav-products .sn-item'));
+  else if(sec === 'supplies') showPage('stock-totals', document.querySelector('#subnav-supplies .sn-item'));
+}
+
 function showPage(id, btn) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
   document.querySelectorAll('.sn-item').forEach(t => t.classList.remove('on'));
@@ -350,6 +389,8 @@ function showPage(id, btn) {
   if(btn) btn.classList.add('on');
   if(id === 'groups') renderGroupManager();
   if(id === 'products') renderProducts();
+  if(id === 'stock-totals') renderStockTotals();
+  if(id === 'stock-warehouses') renderStockWarehouses();
 }
 
 async function loadData() {
@@ -410,6 +451,12 @@ async function loadData() {
     // Negative review counts by period (server-aggregated, for stars 1-3; we slice client-side by chosen star set)
     NEG_COUNTS = data.negative_counts || {};
 
+    // Stock (остатки)
+    STOCK_TOTALS = data.stock_totals || [];
+    STOCK_WH = data.stock_warehouses || [];
+    const stEl = document.getElementById('stockSyncInfo');
+    if(stEl) stEl.textContent = settingsStockText(data.settings || {});
+
     if(EXP && Object.keys(EXP).length === 0) {
       Object.keys(GROUPS).concat(['Без склейки']).forEach(g => { EXP[g] = true; });
     }
@@ -441,6 +488,10 @@ function setStatus(state, text) {
   document.getElementById('syncText').textContent = text;
 }
 
+function settingsStockText(settings) {
+  return settings.last_stock_sync ? 'Остатки обновлены: ' + settings.last_stock_sync : 'Остатки ещё не загружались';
+}
+
 async function triggerSync() {
   setStatus('loading', 'Синхронизация...');
   try {
@@ -448,6 +499,25 @@ async function triggerSync() {
     setTimeout(loadData, 3000);
   } catch(e) {
     setStatus('error', 'Ошибка синхронизации');
+  }
+}
+
+async function triggerStockSync() {
+  const btn = document.getElementById('stockSyncBtn');
+  const info = document.getElementById('stockSyncInfo');
+  if(btn) btn.disabled = true;
+  if(info) info.textContent = 'Запросили отчёт у WB, обычно готов за 1–2 минуты...';
+  try {
+    await fetch(`${RAILWAY_URL}/api/sync-stock`, { method: 'POST' });
+    setTimeout(async () => {
+      await loadData();
+      if(document.getElementById('page-stock-totals').classList.contains('on')) renderStockTotals();
+      if(document.getElementById('page-stock-warehouses').classList.contains('on')) renderStockWarehouses();
+      if(btn) btn.disabled = false;
+    }, 90000);
+  } catch(e) {
+    if(info) info.textContent = 'Ошибка запроса остатков';
+    if(btn) btn.disabled = false;
   }
 }
 
@@ -990,6 +1060,123 @@ function renderProducts() {
   Object.keys(prodOpen).forEach(article => {
     if(prodOpen[article] && byArticle[article]) loadArticleFeedbacks(article);
   });
+}
+
+// ---------- Остатки по артикулам (склейки) ----------
+function renderStockCards() {
+  const qty = STOCK_TOTALS.reduce((s,a) => s+(a.quantity_warehouses_full||0), 0);
+  const toClient = STOCK_TOTALS.reduce((s,a) => s+(a.in_way_to_client||0), 0);
+  const fromClient = STOCK_TOTALS.reduce((s,a) => s+(a.in_way_from_client||0), 0);
+  const zero = STOCK_TOTALS.filter(a => !(a.quantity_warehouses_full||0)).length;
+  document.getElementById('stockCards').innerHTML = [
+    ['Артикулов', fmt(STOCK_TOTALS.length)],
+    ['На складах, шт', fmt(qty)],
+    ['В пути к клиенту, шт', fmt(toClient)],
+    ['В пути назад на склад, шт', fmt(fromClient)],
+    ['Нулевой остаток', fmt(zero), zero>0?'color:var(--red)':''],
+  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+}
+
+function stockGroupBlock(grp, arts) {
+  const color = gc(grp);
+  const tot = {qty:0, toClient:0, fromClient:0};
+  arts.forEach(a => { tot.qty+=(a.quantity_warehouses_full||0); tot.toClient+=(a.in_way_to_client||0); tot.fromClient+=(a.in_way_from_client||0); });
+  const gid = 'st_' + grp.replace(/[^a-zа-я0-9]/gi,'_');
+  const isOpen = STEXP[grp] !== false;
+  const sorted = [...arts].sort((a,b) => (b.quantity_warehouses_full||0)-(a.quantity_warehouses_full||0));
+
+  const rows = sorted.map(a => `<tr style="${!a.quantity_warehouses_full?'opacity:.45':''}">
+    <td><div class="art">${a.vendor_code}</div><div class="nmid">${a.nm_id||'—'}</div></td>
+    <td style="color:var(--wb-faint);font-size:12px">${a.subject_name||'—'}</td>
+    <td class="tr2" style="font-weight:600;color:${a.quantity_warehouses_full?'var(--wb-text)':'var(--red)'}">${fmt(a.quantity_warehouses_full)}</td>
+    <td class="tr2">${fmt(a.in_way_to_client)}</td>
+    <td class="tr2">${fmt(a.in_way_from_client)}</td>
+    <td class="tr2" style="color:var(--wb-muted)">${a.volume!=null?Number(a.volume).toFixed(2):'—'}</td>
+  </tr>`).join('');
+
+  const totRow = `<tr class="total-row">
+    <td colspan="2"><span class="total-label">∑ Итого по склейке</span></td>
+    <td class="tr2" style="font-weight:600">${fmt(tot.qty)}</td>
+    <td class="tr2" style="font-weight:600">${fmt(tot.toClient)}</td>
+    <td class="tr2" style="font-weight:600">${fmt(tot.fromClient)}</td>
+    <td></td>
+  </tr>`;
+
+  return `<div class="group${isOpen?' open':''}" id="${gid}">
+    <div class="gh" onclick="TGS('${encodeURIComponent(grp)}')">
+      <div class="gh-color" style="background:${color}"></div>
+      <div class="gh-name">${grp}</div>
+      <div class="gh-stats"><span class="gh-stat">${arts.length} арт.</span></div>
+      <span class="gh-rating" style="font-size:15px">${fmt(tot.qty)} шт</span>
+      <span class="gh-arr">▾</span>
+    </div>
+    <div class="gbody"><div class="tw"><table>
+      <thead><tr><th>Артикул</th><th>Категория</th><th class="tr2">На складах</th><th class="tr2">В пути к клиенту</th><th class="tr2">Возврат в пути</th><th class="tr2">Объём, л</th></tr></thead>
+      <tbody>${rows}${totRow}</tbody>
+    </table></div></div>
+  </div>`;
+}
+
+function TGS(gE) {
+  const g = decodeURIComponent(gE);
+  STEXP[g] = STEXP[g] === false ? true : false;
+  renderStockTotals();
+}
+
+function renderStockTotals() {
+  if(!STOCK_TOTALS.length) {
+    document.getElementById('stockCards').innerHTML = '';
+    document.getElementById('stockRoot').innerHTML = '<div class="empty">Остатки ещё не загружены. Нажми «Обновить остатки» — отчёт у WB готовится 1–2 минуты.</div>';
+    return;
+  }
+  renderStockCards();
+  const q = (document.getElementById('stSearch').value||'').toLowerCase();
+  const gnames = Object.keys(GROUPS).concat(['Без склейки']);
+  const ga = new Set(Object.values(GROUPS).flat());
+  const grouped = {};
+  gnames.forEach(g => { grouped[g] = []; });
+  Object.entries(GROUPS).forEach(([g, list]) => {
+    list.forEach(n => {
+      const found = STOCK_TOTALS.find(a => a.vendor_code === n);
+      if(found) grouped[g].push(found);
+    });
+  });
+  STOCK_TOTALS.forEach(a => { if(!ga.has(a.vendor_code)) grouped['Без склейки'].push(a); });
+
+  let html = '';
+  gnames.forEach(g => {
+    let arts = grouped[g] || [];
+    if(q) arts = arts.filter(a => (a.vendor_code||'').toLowerCase().includes(q) || String(a.nm_id||'').includes(q));
+    if(q && !arts.length) return;
+    if(!arts.length && !q) return;
+    html += stockGroupBlock(g, arts);
+  });
+  document.getElementById('stockRoot').innerHTML = html || '<div class="empty">Ничего не найдено</div>';
+}
+
+// ---------- Остатки по складам (детализация) ----------
+function renderStockWarehouses() {
+  if(!STOCK_WH.length) {
+    document.getElementById('whRoot').innerHTML = '<div class="empty">Нет данных по складам. Обнови остатки на странице «Остатки по артикулам».</div>';
+    return;
+  }
+  const nmInfo = {};
+  STOCK_TOTALS.forEach(a => { nmInfo[a.nm_id] = a.vendor_code; });
+  const q = (document.getElementById('whSearch').value||'').toLowerCase();
+  let rows = STOCK_WH.map(w => ({...w, article: nmInfo[w.nm_id] || w.nm_id}));
+  if(q) rows = rows.filter(r => String(r.article).toLowerCase().includes(q) || String(r.warehouse_name).toLowerCase().includes(q));
+  rows.sort((a,b) => (b.quantity||0)-(a.quantity||0));
+
+  const html = `<div class="tw"><table>
+    <thead><tr><th>Артикул</th><th>nmId</th><th>Склад</th><th class="tr2">Количество</th></tr></thead>
+    <tbody>${rows.map(r => `<tr>
+      <td class="art">${r.article}</td>
+      <td style="color:var(--wb-faint);font-size:12px">${r.nm_id}</td>
+      <td>${r.warehouse_name}</td>
+      <td class="tr2" style="font-weight:600">${fmt(r.quantity)}</td>
+    </tr>`).join('')}</tbody>
+  </table></div>`;
+  document.getElementById('whRoot').innerHTML = rows.length ? html : '<div class="empty">Ничего не найдено</div>';
 }
 
 loadData();
