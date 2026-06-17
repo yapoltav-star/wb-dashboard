@@ -20,6 +20,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 WB_FEEDBACKS_URL = "https://feedbacks-api.wildberries.ru"
 WB_ANALYTICS_URL = "https://seller-analytics-api.wildberries.ru"
+WB_STATISTICS_URL = "https://statistics-api.wildberries.ru"
 
 # Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
 # а агрегаты — переносим их в отдельные поля stock_totals вместо списка складов.
@@ -162,7 +163,9 @@ def wait_stock_report(task_id: str, max_wait: int = 180) -> bool:
             f"{WB_ANALYTICS_URL}/api/v1/warehouse_remains/tasks/{task_id}/status",
             headers=wb_headers(), timeout=15
         )
-        if resp.is_success and resp.json().get("data", {}).get("status") == "done":
+        status = resp.json().get("data", {}).get("status") if resp.is_success else f"http_{resp.status_code}"
+        logger.info(f"Stock report status (t+{elapsed}s): {status}")
+        if status == "done":
             return True
     return False
 
@@ -174,7 +177,12 @@ def download_stock_report(task_id: str) -> list:
     if not resp.is_success:
         logger.error(f"WB stock report download error {resp.status_code} {resp.text[:200]}")
         return []
-    return resp.json()
+    data = resp.json()
+    if not isinstance(data, list):
+        logger.error(f"Unexpected stock report shape ({type(data).__name__}): {str(data)[:300]}")
+        return []
+    logger.info(f"Stock report download: {len(data)} items" + (f", raw snippet: {resp.text[:300]}" if not data else ""))
+    return data
 
 def process_stock_items(items: list):
     now = datetime.now(timezone.utc).isoformat()
@@ -233,7 +241,12 @@ def sync_stock():
     if not wait_stock_report(task_id):
         logger.error("Stock report generation timed out")
         return
+    time.sleep(5)  # небольшой буфер: статус иногда становится "done" чуть раньше, чем файл реально готов к скачиванию
     items = download_stock_report(task_id)
+    if not items:
+        logger.info("Stock report empty on first download, retrying once after 15s")
+        time.sleep(15)
+        items = download_stock_report(task_id)
     totals, warehouses = process_stock_items(items)
     saved = upsert_stock(totals, warehouses)
     httpx.post(
@@ -243,6 +256,143 @@ def sync_stock():
         headers=sb_headers(), timeout=10
     )
     logger.info(f"Stock sync complete. Articles: {saved}, warehouse rows: {len(warehouses)}")
+
+# ---------- Рекомендации по поставкам: заказы + продажи по складам (WB Statistics API) ----------
+# Заказано — /api/v1/supplier/orders, Выкупили — /api/v1/supplier/sales (только saleID, начинающиеся
+# на "S" — это продажи; "R" — возврат, "D" — доплата, их не считаем). Текущий остаток берём из уже
+# собранной stock_warehouses (результат sync_stock). Объединяем по nm_id + warehouseName.
+
+def fetch_supplier_feed(endpoint: str, date_from_iso: str, max_pages: int = 5) -> list:
+    all_rows = []
+    cursor = date_from_iso
+    for _ in range(max_pages):
+        resp = httpx.get(
+            f"{WB_STATISTICS_URL}{endpoint}",
+            headers=wb_headers(), params={"dateFrom": cursor}, timeout=60
+        )
+        if not resp.is_success:
+            logger.error(f"WB {endpoint} error {resp.status_code} {resp.text[:200]}")
+            break
+        batch = resp.json()
+        if not batch:
+            break
+        all_rows.extend(batch)
+        cursor = batch[-1].get("lastChangeDate", cursor)
+        if len(batch) < 50000:
+            break
+        time.sleep(61)  # лимит — 1 запрос в минуту на этот метод
+    return all_rows
+
+def get_setting_int(key: str, default: int) -> int:
+    try:
+        resp = httpx.get(f"{SUPABASE_URL}/rest/v1/settings?key=eq.{key}&select=value", headers=sb_headers(), timeout=10)
+        if resp.is_success and resp.json():
+            return int(resp.json()[0]["value"])
+    except Exception:
+        pass
+    return default
+
+def parse_wb_dt(s: str):
+    """WB отдаёт даты в orders/sales без таймзоны (например '2026-06-10T10:00:00').
+    Нормализуем всё к naive datetime, чтобы сравнения не падали на tz-aware/naive."""
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+def sync_supply():
+    if not WB_TOKEN:
+        logger.error("WB_TOKEN not set")
+        return
+    logger.info("Starting supply (orders/sales) sync...")
+    window_days = get_setting_int("sales_window_days", 14)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=window_days)
+    date_from = cutoff.strftime("%Y-%m-%dT00:00:00")
+
+    orders = fetch_supplier_feed("/api/v1/supplier/orders", date_from)
+    time.sleep(61)  # отдельный лимит 1 запрос/мин на каждый метод
+    sales = fetch_supplier_feed("/api/v1/supplier/sales", date_from)
+    logger.info(f"Supply sync: fetched {len(orders)} order rows, {len(sales)} sale rows")
+
+    agg = {}  # (nm_id, warehouseName) -> {"ordered":int,"buyout":int,"vendor_code":str}
+    for o in orders:
+        d = parse_wb_dt(o.get("date", ""))
+        if d is None or d < cutoff:
+            continue
+        key = (o.get("nmId"), o.get("warehouseName"))
+        a = agg.setdefault(key, {"ordered": 0, "buyout": 0, "vendor_code": ""})
+        a["ordered"] += 1
+        if o.get("supplierArticle"):
+            a["vendor_code"] = o["supplierArticle"]
+
+    for s in sales:
+        if not str(s.get("saleID", "")).startswith("S"):
+            continue  # пропускаем возвраты (R) и доплаты (D)
+        d = parse_wb_dt(s.get("date", ""))
+        if d is None or d < cutoff:
+            continue
+        key = (s.get("nmId"), s.get("warehouseName"))
+        a = agg.setdefault(key, {"ordered": 0, "buyout": 0, "vendor_code": ""})
+        a["buyout"] += 1
+        if s.get("supplierArticle"):
+            a["vendor_code"] = s["supplierArticle"]
+
+    try:
+        st = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code", headers=sb_headers(), timeout=15)
+        nm_to_vendor = {r["nm_id"]: r["vendor_code"] for r in st.json()} if st.is_success else {}
+    except Exception as e:
+        logger.error(f"sync_supply: stock_totals fetch error {e}")
+        nm_to_vendor = {}
+
+    try:
+        sw = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_warehouses?select=nm_id,warehouse_name,quantity", headers=sb_headers(), timeout=20)
+        stock_map = {(r["nm_id"], r["warehouse_name"]): r["quantity"] for r in sw.json()} if sw.is_success else {}
+    except Exception as e:
+        logger.error(f"sync_supply: stock_warehouses fetch error {e}")
+        stock_map = {}
+
+    keys = set(agg.keys()) | set(stock_map.keys())
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for nm_id, wh in keys:
+        if not nm_id or not wh:
+            continue
+        a = agg.get((nm_id, wh), {"ordered": 0, "buyout": 0, "vendor_code": ""})
+        rows.append({
+            "vendor_code": nm_to_vendor.get(nm_id) or a["vendor_code"] or str(nm_id),
+            "nm_id": nm_id,
+            "warehouse_name": wh,
+            "ordered_qty": a["ordered"],
+            "buyout_qty": a["buyout"],
+            "current_stock": stock_map.get((nm_id, wh), 0),
+            "period_days": window_days,
+            "period_start": None,
+            "period_end": None,
+            "updated_at": now,
+        })
+
+    httpx.delete(f"{SUPABASE_URL}/rest/v1/supply_report?id=gte.0", headers=sb_headers(), timeout=15)
+    saved = 0
+    for i in range(0, len(rows), 300):
+        batch = rows[i:i + 300]
+        resp = httpx.post(f"{SUPABASE_URL}/rest/v1/supply_report", json=batch, headers=sb_headers(), timeout=30)
+        if resp.is_success:
+            saved += len(batch)
+        else:
+            logger.error(f"supply_report insert error {resp.status_code} {resp.text[:300]}")
+
+    httpx.post(
+        f"{SUPABASE_URL}/rest/v1/settings",
+        json={"key": "last_supply_sync", "value": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
+              "updated_at": now},
+        headers=sb_headers(), timeout=10
+    )
+    logger.info(f"Supply sync complete. Rows saved: {saved}")
 
 @app.post("/api/upload-ratings")
 async def upload_ratings(file: UploadFile = File(...)):
@@ -387,6 +537,7 @@ async def upload_ratings(file: UploadFile = File(...)):
 scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
 scheduler.add_job(sync_stock, "interval", hours=3, id="sync_stock")
+scheduler.add_job(sync_supply, "interval", hours=4, id="sync_supply")
 scheduler.start()
 
 @app.get("/")
@@ -423,6 +574,31 @@ def trigger_stock_sync():
     threading.Thread(target=sync_stock, daemon=True).start()
     return {"status": "started"}
 
+@app.post("/api/sync-supply")
+def trigger_supply_sync():
+    import threading
+    threading.Thread(target=sync_supply, daemon=True).start()
+    return {"status": "started"}
+
+@app.post("/api/save-setting")
+async def save_setting(request: dict):
+    """Сохраняет произвольную настройку (например target_coverage_days) в таблицу settings."""
+    key = request.get("key")
+    value = request.get("value")
+    if not key:
+        return {"error": "key required"}
+    try:
+        resp = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/settings",
+            json={"key": key, "value": str(value), "updated_at": datetime.now(timezone.utc).isoformat()},
+            headers=sb_headers(), timeout=10
+        )
+        if not resp.is_success:
+            return {"error": f"Supabase error: {resp.status_code} {resp.text[:200]}"}
+        return {"status": "ok"}
+    except Exception as e:
+        return {"error": str(e)}
+
 # ---------- Proxy endpoints: фронтенд обращается только к Railway, ----------
 # ---------- никогда напрямую к Supabase (для пользователей у которых ----------
 # ---------- Supabase плохо доступен напрямую). Railway сам ходит в Supabase. ----------
@@ -430,7 +606,7 @@ def trigger_stock_sync():
 @app.get("/api/dashboard-data")
 def dashboard_data():
     """Отдаёт все данные нужные дашборду одним запросом: группы + рейтинги + отзывы(агрегат) + негатив за периоды + last sync"""
-    result = {"groups": [], "ratings": [], "feedback_stats": [], "negative_counts": {}, "settings": {}, "stock_totals": [], "stock_warehouses": []}
+    result = {"groups": [], "ratings": [], "feedback_stats": [], "negative_counts": {}, "settings": {}, "stock_totals": [], "stock_warehouses": [], "supply_report": []}
 
     try:
         gr = httpx.get(
@@ -505,6 +681,16 @@ def dashboard_data():
             result["stock_warehouses"] = sw.json()
     except Exception as e:
         logger.error(f"dashboard-data stock_warehouses error: {e}")
+
+    try:
+        spr = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/supply_report?select=*",
+            headers=sb_headers(), timeout=20
+        )
+        if spr.is_success:
+            result["supply_report"] = spr.json()
+    except Exception as e:
+        logger.error(f"dashboard-data supply_report error: {e}")
 
     return result
 
