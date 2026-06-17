@@ -1124,18 +1124,16 @@ function buildSupplyMatrix() {
   const byArticle = {};
   SUPPLY_REPORT.forEach(r => {
     const vc = r.vendor_code;
-    if(!byArticle[vc]) byArticle[vc] = { vendor_code: vc, nm_id: r.nm_id, barcode: r.barcode || '', byWh: {} };
+    if(!byArticle[vc]) byArticle[vc] = { vendor_code: vc, nm_id: r.nm_id, barcode: r.barcode || '', plannedQty: r.planned_supply_qty || 0, byWh: {} };
     if(r.nm_id && !byArticle[vc].nm_id) byArticle[vc].nm_id = r.nm_id;
     if(r.barcode && !byArticle[vc].barcode) byArticle[vc].barcode = r.barcode;
+    if(r.planned_supply_qty) byArticle[vc].plannedQty = r.planned_supply_qty;
     byArticle[vc].byWh[r.warehouse_name] = r;
   });
 
-  const totalsByVendor = {};
-  STOCK_TOTALS.forEach(t => { totalsByVendor[t.vendor_code] = t; });
-
   let articles = Object.keys(byArticle).map(vc => {
     const a = byArticle[vc];
-    let totalRecommend = 0;
+    let rawRecommend = 0;
     const cells = {};
     warehouses.forEach(w => {
       const r = a.byWh[w];
@@ -1145,15 +1143,13 @@ function buildSupplyMatrix() {
       const daysLeft = dailyRate > 0 ? (r.current_stock||0) / dailyRate : null;
       const recommend = dailyRate > 0 ? Math.max(0, Math.round(dailyRate * TARGET_DAYS - (r.current_stock||0))) : 0;
       cells[w] = {...r, dailyRate, daysLeft, recommend};
-      totalRecommend += recommend;
+      rawRecommend += recommend;
     });
-    const tot = totalsByVendor[vc] || {};
+    const plannedQty = a.plannedQty || 0;
+    const totalRecommend = Math.max(0, rawRecommend - plannedQty);
     return {
       vendor_code: vc, nm_id: a.nm_id, barcode: a.barcode, cells,
-      inWay: tot.in_way_to_client||0,
-      inWayBack: tot.in_way_from_client||0,
-      totalStock: tot.quantity_warehouses_full||0,
-      totalRecommend,
+      plannedQty, totalRecommend,
       isPinned: SUPPLY_PINNED.includes(vc)
     };
   });
@@ -1183,15 +1179,17 @@ function renderSupplyCards(matrix) {
 
 function toggleSupplyPin(vc, e) {
   if(e) e.stopPropagation();
+  vc = decodeURIComponent(vc);
   const i = SUPPLY_PINNED.indexOf(vc);
   if(i > -1) SUPPLY_PINNED.splice(i, 1); else SUPPLY_PINNED.push(vc);
   localStorage.setItem('wb_supply_pinned', JSON.stringify(SUPPLY_PINNED));
   renderSupplyRecs();
 }
 
-function whDS(e, name) { dragWh = name; e.dataTransfer.effectAllowed = 'move'; }
+function whDS(e, name) { dragWh = decodeURIComponent(name); e.dataTransfer.effectAllowed = 'move'; }
 function whDrop(e, targetName) {
   e.preventDefault();
+  targetName = decodeURIComponent(targetName);
   if(!dragWh || dragWh === targetName) return;
   let order = WH_ORDER.filter(w => w !== dragWh);
   const idx = order.indexOf(targetName);
@@ -1202,10 +1200,11 @@ function whDrop(e, targetName) {
   renderSupplyRecs();
 }
 
-function supDS(e, vc) { dragSupplyArt = vc; e.currentTarget.classList.add('dragging'); }
+function supDS(e, vc) { dragSupplyArt = decodeURIComponent(vc); e.currentTarget.classList.add('dragging'); }
 function supDE(e) { e.currentTarget.classList.remove('dragging'); }
 function supDrop(e, targetVc) {
   e.preventDefault();
+  targetVc = decodeURIComponent(targetVc);
   if(!dragSupplyArt || dragSupplyArt === targetVc) return;
   if(!SUPPLY_PINNED.includes(dragSupplyArt) || !SUPPLY_PINNED.includes(targetVc)) { dragSupplyArt = null; return; }
   let order = SUPPLY_PINNED.filter(a => a !== dragSupplyArt);
@@ -1254,9 +1253,7 @@ function renderSupplyMatrixTable(matrix) {
         <span class="prod-pin${a.isPinned?' on':''}" onclick="toggleSupplyPin('${safeVc}', event)" title="${a.isPinned?'Открепить':'Закрепить'}">📌</span>
         <div class="art" style="display:inline">${a.vendor_code}</div><div class="nmid">${a.nm_id||'—'}${SHOW_BARCODE && a.barcode ? ' · '+a.barcode : ''}</div>
       </td>
-      <td class="m-info">${fmt(a.inWay)}</td>
-      <td class="m-info">${fmt(a.inWayBack)}</td>
-      <td class="m-info">${fmt(a.totalStock)}</td>
+      <td class="m-info">${a.plannedQty>0?fmt(a.plannedQty):'—'}</td>
       <td class="m-info"><span class="${a.totalRecommend>0?'m-recommend':'m-recommend zero'}">${a.totalRecommend>0?'+'+fmt(a.totalRecommend):'—'}</span></td>
       ${cells}
     </tr>`;
@@ -1266,13 +1263,11 @@ function renderSupplyMatrixTable(matrix) {
     <thead>
       <tr>
         <th class="mcol-art" rowspan="2">Артикул продавца${SHOW_BARCODE ? ' / Баркод' : ''}</th>
-        <th colspan="4" class="m-info">Общая информация</th>
+        <th colspan="2" class="m-info">Общая информация</th>
         ${whHead1}
       </tr>
       <tr>
-        <th class="mhead m-info">В пути к клиенту</th>
-        <th class="mhead m-info">В пути назад</th>
-        <th class="mhead m-info">Всего на складах</th>
+        <th class="mhead m-info">Уже запланировано в поставке</th>
         <th class="mhead m-info">Поставить всего</th>
         ${whHead2}
       </tr>
