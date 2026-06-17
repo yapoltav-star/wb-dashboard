@@ -211,6 +211,7 @@ td.tc{text-align:center}
 <div class="subnav" id="subnav-supplies" style="display:none">
   <div class="sn-item on" onclick="showPage('stock-totals',this)">Остатки по артикулам</div>
   <div class="sn-item" onclick="showPage('stock-warehouses',this)">Остатки по складам</div>
+  <div class="sn-item" onclick="showPage('supply-recs',this)">Рекомендации по поставкам</div>
 </div>
 
 <!-- Upload modal -->
@@ -336,6 +337,27 @@ td.tc{text-align:center}
   <div id="whRoot"><div class="loading"><div class="spinner"></div><span>Загружаем склады...</span></div></div>
 </div>
 
+<div class="page" id="page-supply-recs">
+  <div class="toolbar">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="srSearch" placeholder="Поиск по артикулу или складу..." oninput="renderSupplyRecs()">
+    </div>
+    <span style="font-size:12px;color:var(--wb-muted)">Окно продаж:</span>
+    <input id="salesWindowInput" type="number" min="1" style="width:56px;border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 8px;font-size:12px;font-family:inherit" onchange="setSalesWindow(this.value)">
+    <span style="font-size:12px;color:var(--wb-muted)">дней</span>
+    <span style="font-size:12px;color:var(--wb-muted);margin-left:10px">Целевой запас:</span>
+    <input id="targetDaysInput" type="number" min="1" style="width:56px;border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 8px;font-size:12px;font-family:inherit" onchange="setTargetDays(this.value)">
+    <span style="font-size:12px;color:var(--wb-muted)">дней</span>
+    <span id="supplyUploadInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
+    <div class="ml-auto">
+      <button class="action-btn" id="supplySyncBtn" onclick="triggerSupplySync()">↻ Обновить</button>
+    </div>
+  </div>
+  <div class="cards" id="supplyCards"></div>
+  <div id="supplyRoot"><div class="loading"><div class="spinner"></div><span>Загружаем рекомендации...</span></div></div>
+</div>
+
 <script>
 const RAILWAY_URL = 'https://wb-dashboard-production-baf4.up.railway.app';
 
@@ -343,6 +365,7 @@ var ALL = [], RATINGS = {}, GROUPS = {}, SK = 'avg_rating', SD = -1, EXP = {};
 var HAS_OFFICIAL = false;
 var dragArt = null, dragFrom = null;
 var STOCK_TOTALS = [], STOCK_WH = [], STEXP = {};
+var SUPPLY_REPORT = [], TARGET_DAYS = 30, SREXP = {};
 
 // Products page state
 var NEG_COUNTS = {};                 // {"5": [{article,negative_count}], "7": [...], "30": [...]}
@@ -391,6 +414,7 @@ function showPage(id, btn) {
   if(id === 'products') renderProducts();
   if(id === 'stock-totals') renderStockTotals();
   if(id === 'stock-warehouses') renderStockWarehouses();
+  if(id === 'supply-recs') renderSupplyRecs();
 }
 
 async function loadData() {
@@ -457,6 +481,16 @@ async function loadData() {
     const stEl = document.getElementById('stockSyncInfo');
     if(stEl) stEl.textContent = settingsStockText(data.settings || {});
 
+    // Поставки — рекомендации
+    SUPPLY_REPORT = data.supply_report || [];
+    TARGET_DAYS = parseInt((data.settings || {}).target_coverage_days) || 30;
+    const tdEl = document.getElementById('targetDaysInput');
+    if(tdEl) tdEl.value = TARGET_DAYS;
+    const swEl = document.getElementById('salesWindowInput');
+    if(swEl) swEl.value = parseInt((data.settings || {}).sales_window_days) || 14;
+    const suEl = document.getElementById('supplyUploadInfo');
+    if(suEl) suEl.textContent = (data.settings || {}).last_supply_sync ? 'Обновлено: ' + data.settings.last_supply_sync : 'Данные ещё не загружены';
+
     if(EXP && Object.keys(EXP).length === 0) {
       Object.keys(GROUPS).concat(['Без склейки']).forEach(g => { EXP[g] = true; });
     }
@@ -519,6 +553,50 @@ async function triggerStockSync() {
     if(info) info.textContent = 'Ошибка запроса остатков';
     if(btn) btn.disabled = false;
   }
+}
+
+// Поставки: автообновление через WB API (заказы + продажи + остатки)
+async function triggerSupplySync() {
+  const btn = document.getElementById('supplySyncBtn');
+  const info = document.getElementById('supplyUploadInfo');
+  if(btn) btn.disabled = true;
+  if(info) info.textContent = 'Запросили данные у WB (заказы + продажи), обычно готово за 1–2 минуты...';
+  try {
+    await fetch(`${RAILWAY_URL}/api/sync-supply`, { method: 'POST' });
+    setTimeout(async () => {
+      await loadData();
+      if(document.getElementById('page-supply-recs').classList.contains('on')) renderSupplyRecs();
+      if(btn) btn.disabled = false;
+    }, 90000);
+  } catch(e) {
+    if(info) info.textContent = 'Ошибка запроса';
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function setSalesWindow(v) {
+  const days = Math.max(1, parseInt(v) || 14);
+  document.getElementById('salesWindowInput').value = days;
+  try {
+    await fetch(`${RAILWAY_URL}/api/save-setting`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key: 'sales_window_days', value: days})
+    });
+  } catch(e) {}
+  triggerSupplySync(); // окно изменилось — пересчёт нужен заново через WB, а не на лету
+}
+
+async function setTargetDays(v) {
+  const days = Math.max(1, parseInt(v) || 30);
+  TARGET_DAYS = days;
+  document.getElementById('targetDaysInput').value = days;
+  renderSupplyRecs();
+  try {
+    await fetch(`${RAILWAY_URL}/api/save-setting`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key: 'target_coverage_days', value: days})
+    });
+  } catch(e) {}
 }
 
 // Upload modal
@@ -1177,6 +1255,98 @@ function renderStockWarehouses() {
     </tr>`).join('')}</tbody>
   </table></div>`;
   document.getElementById('whRoot').innerHTML = rows.length ? html : '<div class="empty">Ничего не найдено</div>';
+}
+
+// ---------- Рекомендации по поставкам ----------
+function supplyCalc(r) {
+  const dailyRate = r.period_days ? (r.buyout_qty||0) / r.period_days : 0;
+  const daysLeft = dailyRate > 0 ? (r.current_stock||0) / dailyRate : null;
+  const recommend = dailyRate > 0 ? Math.max(0, Math.round(dailyRate * TARGET_DAYS - (r.current_stock||0))) : 0;
+  return {...r, dailyRate, daysLeft, recommend};
+}
+
+function renderSupplyCards(rows) {
+  const totalRecommend = rows.reduce((s,r) => s+r.recommend, 0);
+  const critical = rows.filter(r => r.daysLeft!=null && r.daysLeft < 7).length;
+  const noSales = rows.filter(r => r.dailyRate === 0).length;
+  document.getElementById('supplyCards').innerHTML = [
+    ['Строк (артикул × склад)', fmt(rows.length)],
+    ['Рекомендовано поставить, шт', fmt(totalRecommend), 'color:var(--wb-purple)'],
+    ['Критично (<7 дней запаса)', fmt(critical), critical>0?'color:var(--red)':''],
+    ['Без продаж за период', fmt(noSales), 'color:var(--wb-faint)'],
+  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+}
+
+function supplyGroupBlock(grp, rows) {
+  const color = gc(grp);
+  const totRecommend = rows.reduce((s,r) => s+r.recommend, 0);
+  const gid = 'sr_' + grp.replace(/[^a-zа-я0-9]/gi,'_');
+  const isOpen = SREXP[grp] !== false;
+  const sorted = [...rows].sort((a,b) => b.recommend - a.recommend);
+
+  const trs = sorted.map(r => `<tr style="${!r.recommend?'opacity:.5':''}">
+    <td><div class="art">${r.vendor_code}</div><div class="nmid">${r.nm_id||'—'}</div></td>
+    <td>${r.warehouse_name}</td>
+    <td class="tr2">${fmt(r.current_stock)}</td>
+    <td class="tr2">${fmt(r.buyout_qty)}</td>
+    <td class="tr2">${r.daysLeft!=null ? Math.round(r.daysLeft)+' дн.' : '—'}</td>
+    <td class="tr2" style="font-weight:700;color:${r.recommend>0?'var(--wb-purple)':'var(--wb-faint)'}">${r.recommend>0?'+'+fmt(r.recommend):'—'}</td>
+  </tr>`).join('');
+
+  const totRow = `<tr class="total-row">
+    <td colspan="5"><span class="total-label">∑ Итого по склейке — поставить</span></td>
+    <td class="tr2" style="font-weight:700;color:var(--wb-purple)">${totRecommend>0?'+'+fmt(totRecommend):'—'}</td>
+  </tr>`;
+
+  return `<div class="group${isOpen?' open':''}" id="${gid}">
+    <div class="gh" onclick="TSR('${encodeURIComponent(grp)}')">
+      <div class="gh-color" style="background:${color}"></div>
+      <div class="gh-name">${grp}</div>
+      <div class="gh-stats"><span class="gh-stat">${rows.length} строк</span></div>
+      <span class="gh-rating" style="font-size:15px;color:${totRecommend>0?'var(--wb-purple)':'var(--wb-text)'}">${totRecommend>0?'+'+fmt(totRecommend)+' шт':'ок'}</span>
+      <span class="gh-arr">▾</span>
+    </div>
+    <div class="gbody"><div class="tw"><table>
+      <thead><tr><th>Артикул</th><th>Склад</th><th class="tr2">Остаток</th><th class="tr2">Продано за период</th><th class="tr2">Запас, дн.</th><th class="tr2">Поставить</th></tr></thead>
+      <tbody>${trs}${totRow}</tbody>
+    </table></div></div>
+  </div>`;
+}
+
+function TSR(gE) {
+  const g = decodeURIComponent(gE);
+  SREXP[g] = SREXP[g] === false ? true : false;
+  renderSupplyRecs();
+}
+
+function renderSupplyRecs() {
+  if(!SUPPLY_REPORT.length) {
+    document.getElementById('supplyCards').innerHTML = '';
+    document.getElementById('supplyRoot').innerHTML = '<div class="empty">Данных пока нет. Нажми «Обновить» — соберём заказы, продажи и остатки с WB (1–2 минуты).</div>';
+    return;
+  }
+  const q = (document.getElementById('srSearch').value||'').toLowerCase();
+  let rows = SUPPLY_REPORT.map(supplyCalc);
+  if(q) rows = rows.filter(r => (r.vendor_code||'').toLowerCase().includes(q) || (r.warehouse_name||'').toLowerCase().includes(q));
+  renderSupplyCards(rows);
+
+  const gnames = Object.keys(GROUPS).concat(['Без склейки']);
+  const ga = new Set(Object.values(GROUPS).flat());
+  const grouped = {};
+  gnames.forEach(g => { grouped[g] = []; });
+  Object.entries(GROUPS).forEach(([g, list]) => {
+    const set = new Set(list);
+    rows.forEach(r => { if(set.has(r.vendor_code)) grouped[g].push(r); });
+  });
+  rows.forEach(r => { if(!ga.has(r.vendor_code)) grouped['Без склейки'].push(r); });
+
+  let html = '';
+  gnames.forEach(g => {
+    const arr = grouped[g] || [];
+    if(!arr.length) return;
+    html += supplyGroupBlock(g, arr);
+  });
+  document.getElementById('supplyRoot').innerHTML = html || '<div class="empty">Ничего не найдено</div>';
 }
 
 loadData();
