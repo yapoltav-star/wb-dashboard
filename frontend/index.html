@@ -241,8 +241,6 @@ td.tc{text-align:center}
 </div>
 
 <script>
-const SUPABASE_URL = 'https://prrxznrpjtiycwepnqkk.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_nzqIET51w5bsScFlLkKnCg_HxtWOieY';
 const RAILWAY_URL = 'https://wb-dashboard-production-baf4.up.railway.app';
 
 var ALL = [], RATINGS = {}, GROUPS = {}, SK = 'avg_rating', SD = -1, EXP = {};
@@ -254,14 +252,6 @@ function gc(g) {
   var keys = Object.keys(GROUPS);
   var i = keys.indexOf(g);
   return GROUP_COLORS[i % GROUP_COLORS.length] || '#6B6B8A';
-}
-
-function sbHeaders() {
-  return {
-    'apikey': SUPABASE_KEY,
-    'Authorization': 'Bearer ' + SUPABASE_KEY,
-    'Content-Type': 'application/json'
-  };
 }
 
 function fmt(n) { return Number(n||0).toLocaleString('ru-RU'); }
@@ -287,26 +277,22 @@ async function loadData() {
   try {
     setStatus('loading', 'Загрузка...');
 
-    // Load groups
-    const gr = await fetch(`${SUPABASE_URL}/rest/v1/groups_config?select=name,articles,sort_order&order=sort_order`, { headers: sbHeaders() });
-    if(gr.ok) {
-      const gdata = await gr.json();
-      GROUPS = {};
-      gdata.forEach(g => { GROUPS[g.name] = g.articles || []; });
-      Object.keys(GROUPS).forEach(g => { if(EXP[g]===undefined) EXP[g]=true; });
-    }
+    const resp = await fetch(`${RAILWAY_URL}/api/dashboard-data`);
+    if(!resp.ok) throw new Error('Сервер не отвечает (' + resp.status + ')');
+    const data = await resp.json();
 
-    // Load official ratings from uploaded xlsx
-    const rr = await fetch(`${SUPABASE_URL}/rest/v1/ratings_official?select=*`, { headers: sbHeaders() });
-    if(rr.ok) {
-      const rdata = await rr.json();
-      RATINGS = {};
-      rdata.forEach(r => { RATINGS[r.article] = r; });
-      HAS_OFFICIAL = rdata.length > 0;
-    }
+    // Groups
+    GROUPS = {};
+    (data.groups || []).forEach(g => { GROUPS[g.name] = g.articles || []; });
+    Object.keys(GROUPS).forEach(g => { if(EXP[g]===undefined) EXP[g]=true; });
 
-    // Load feedbacks (for articles not in official ratings)
-    await loadFeedbacksManually();
+    // Official ratings
+    RATINGS = {};
+    (data.ratings || []).forEach(r => { RATINGS[r.article] = r; });
+    HAS_OFFICIAL = (data.ratings || []).length > 0;
+
+    // Feedback stats (already aggregated server-side)
+    ALL = (data.feedback_stats || []).map(a => ({...a, is_official: false}));
 
     // Merge: prefer official ratings
     if(HAS_OFFICIAL) {
@@ -324,7 +310,6 @@ async function loadData() {
         }
         return a;
       });
-      // Add articles from official ratings not in feedbacks
       Object.values(RATINGS).forEach(off => {
         if(!ALL.find(a => a.article === off.article)) {
           ALL.push({
@@ -341,7 +326,6 @@ async function loadData() {
       });
     }
 
-    // Update banner
     document.getElementById('uploadBanner').classList.toggle('hidden', HAS_OFFICIAL);
 
     if(EXP && Object.keys(EXP).length === 0) {
@@ -352,57 +336,18 @@ async function loadData() {
     document.getElementById('toolbar').style.display = 'flex';
     render();
 
-    // Last sync
-    const sr = await fetch(`${SUPABASE_URL}/rest/v1/settings?select=key,value`, { headers: sbHeaders() });
-    if(sr.ok) {
-      const sd = await sr.json();
-      const sync = sd.find(s => s.key === 'last_sync');
-      const ratUpload = sd.find(s => s.key === 'last_ratings_upload');
-      let statusText = sync ? 'Отзывы: ' + sync.value : 'Данные загружены';
-      if(ratUpload) {
-        statusText += ' · Оценки: ' + ratUpload.value;
-        document.getElementById('uploadLast').textContent = 'Оценки загружены: ' + ratUpload.value;
-      }
-      setStatus('ok', statusText);
+    const settings = data.settings || {};
+    let statusText = settings.last_sync ? 'Отзывы: ' + settings.last_sync : 'Данные загружены';
+    if(settings.last_ratings_upload) {
+      statusText += ' · Оценки: ' + settings.last_ratings_upload;
+      document.getElementById('uploadLast').textContent = 'Оценки загружены: ' + settings.last_ratings_upload;
     }
+    setStatus('ok', statusText);
 
   } catch(e) {
     setStatus('error', 'Ошибка: ' + e.message);
     console.error(e);
   }
-}
-
-async function loadFeedbacksManually() {
-  let offset = 0, all = [];
-  while(true) {
-    const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/feedbacks?select=article,nm_id,stars,is_old&limit=1000&offset=${offset}`,
-      { headers: sbHeaders() }
-    );
-    if(!r.ok) break;
-    const batch = await r.json();
-    if(!batch.length) break;
-    all = all.concat(batch);
-    offset += batch.length;
-    if(batch.length < 1000) break;
-  }
-
-  const byArt = {};
-  all.forEach(f => {
-    const art = f.article;
-    if(!art) return;
-    if(!byArt[art]) byArt[art] = {article:art, nm_id:f.nm_id, total:0, r5:0, r4:0, r3:0, r2:0, r1:0, old_count:0, excluded:0, is_official:false};
-    const a = byArt[art];
-    a.total++;
-    if(f.stars >= 1 && f.stars <= 5) a['r'+f.stars]++;
-    if(f.is_old) a.old_count++;
-  });
-
-  ALL = Object.values(byArt).map(a => {
-    a.avg_rating = a.total ? Math.round((a.r5*5+a.r4*4+a.r3*3+a.r2*2+a.r1)/a.total*100)/100 : null;
-    a.old_pct = a.total ? Math.round(a.old_count/a.total*1000)/10 : 0;
-    return a;
-  });
 }
 
 function setStatus(state, text) {
@@ -714,15 +659,16 @@ function rmGroup(gE){const g=decodeURIComponent(gE);if(!confirm(`Удалить 
 
 async function saveGroups() {
   try {
-    await fetch(`${SUPABASE_URL}/rest/v1/groups_config?id=gte.1`, {
-      method: 'DELETE', headers: sbHeaders()
-    });
-    const rows = Object.entries(GROUPS).map(([name,articles],i) => ({name,articles,sort_order:i+1}));
-    await fetch(`${SUPABASE_URL}/rest/v1/groups_config`, {
+    const resp = await fetch(`${RAILWAY_URL}/api/save-groups`, {
       method: 'POST',
-      headers: {...sbHeaders(), 'Prefer': 'return=minimal'},
-      body: JSON.stringify(rows)
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({groups: GROUPS})
     });
+    const result = await resp.json();
+    if(result.error) {
+      alert('Ошибка: ' + result.error);
+      return;
+    }
     const n = document.getElementById('savedNote');
     n.style.display='inline'; render();
     setTimeout(()=>n.style.display='none', 2000);
