@@ -142,45 +142,29 @@ async def upload_ratings(file: UploadFile = File(...)):
         contents = await file.read()
         xl = pd.ExcelFile(io.BytesIO(contents))
 
-        # Ищем лист с данными по товарам
+        # Ищем лист с детальными данными по артикулам, перебирая ВСЕ листы
+        # и проверяя где встречается заголовок "Артикул продавца".
+        # WB называет этот лист по-разному в зависимости от настроек отчёта:
+        # "Товары", "Детализация по артикулам", и т.д.
         sheet_name = None
-        for s in xl.sheet_names:
-            if 'товар' in s.lower() or 'filter' in s.lower() or 'фильтр' in s.lower():
-                sheet_name = s
-                break
-        if not sheet_name:
-            # Попробуем лист "Фильтры" или последний лист
-            for s in xl.sheet_names:
-                if 'фильтр' in s.lower():
-                    sheet_name = s
-                    break
-        if not sheet_name:
-            sheet_name = xl.sheet_names[-1]
-
-        logger.info(f"Reading sheet: {sheet_name} from {xl.sheet_names}")
-
-        df = pd.read_excel(io.BytesIO(contents), sheet_name=sheet_name, header=None)
-
-        # Найдём строку с заголовками (ищем "Артикул продавца")
         header_row = None
-        for i, row in df.iterrows():
-            vals = [str(v).strip() for v in row.values]
-            if any('артикул продавца' in v.lower() for v in vals):
-                header_row = i
-                break
-
-        if header_row is None:
-            # Попробуем лист "Товары" напрямую
-            df2 = pd.read_excel(io.BytesIO(contents), sheet_name='Товары', header=None)
-            for i, row in df2.iterrows():
+        df = None
+        for s in xl.sheet_names:
+            tmp = pd.read_excel(io.BytesIO(contents), sheet_name=s, header=None)
+            for i, row in tmp.iterrows():
                 vals = [str(v).strip() for v in row.values]
                 if any('артикул продавца' in v.lower() for v in vals):
+                    sheet_name = s
                     header_row = i
-                    df = df2
+                    df = tmp
                     break
+            if sheet_name:
+                break
+
+        logger.info(f"Detected sheet: {sheet_name}, header_row: {header_row} (sheets in file: {xl.sheet_names})")
 
         if header_row is None:
-            return {"error": "Не найден заголовок 'Артикул продавца'. Проверь что загружаешь файл 'Оценка товара' из WB Partners → Аналитика."}
+            return {"error": f"Не найден заголовок 'Артикул продавца' ни на одном листе. Листы в файле: {xl.sheet_names}. Проверь что загружаешь файл 'Оценка товара' из WB Partners → Аналитика."}
 
         df.columns = df.iloc[header_row].str.strip()
         df = df.iloc[header_row + 1:].reset_index(drop=True)
@@ -232,6 +216,9 @@ async def upload_ratings(file: UploadFile = File(...)):
                 except:
                     return 0
 
+            def safe_int_abs(key):
+                return abs(safe_int(key))
+
             def safe_float(key):
                 try:
                     v = row.get(col_map.get(key, ''))
@@ -250,7 +237,7 @@ async def upload_ratings(file: UploadFile = File(...)):
                 "r3": safe_int('r3'),
                 "r2": safe_int('r2'),
                 "r1": safe_int('r1'),
-                "excluded": safe_int('excluded'),
+                "excluded": safe_int_abs('excluded'),
                 "updated_at": now
             })
 
