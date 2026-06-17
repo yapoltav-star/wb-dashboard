@@ -325,6 +325,7 @@ def sync_supply():
     logger.info(f"Supply sync: fetched {len(orders)} order rows, {len(sales)} sale rows")
 
     agg = {}  # (nm_id, warehouseName) -> {"ordered":int,"buyout":int,"vendor_code":str}
+    nm_to_barcode = {}
     for o in orders:
         d = parse_wb_dt(o.get("date", ""))
         if d is None or d < cutoff:
@@ -334,6 +335,8 @@ def sync_supply():
         a["ordered"] += 1
         if o.get("supplierArticle"):
             a["vendor_code"] = o["supplierArticle"]
+        if o.get("barcode") and o.get("nmId"):
+            nm_to_barcode[o["nmId"]] = o["barcode"]
 
     for s in sales:
         if not str(s.get("saleID", "")).startswith("S"):
@@ -346,6 +349,8 @@ def sync_supply():
         a["buyout"] += 1
         if s.get("supplierArticle"):
             a["vendor_code"] = s["supplierArticle"]
+        if s.get("barcode") and s.get("nmId"):
+            nm_to_barcode[s["nmId"]] = s["barcode"]
 
     try:
         st = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code", headers=sb_headers(), timeout=15)
@@ -371,6 +376,7 @@ def sync_supply():
         rows.append({
             "vendor_code": nm_to_vendor.get(nm_id) or a["vendor_code"] or str(nm_id),
             "nm_id": nm_id,
+            "barcode": nm_to_barcode.get(nm_id),
             "warehouse_name": wh,
             "ordered_qty": a["ordered"],
             "buyout_qty": a["buyout"],
@@ -583,6 +589,17 @@ def trigger_stock_sync():
 def trigger_supply_sync():
     import threading
     threading.Thread(target=sync_supply, daemon=True).start()
+    return {"status": "started"}
+
+def sync_stock_then_supply():
+    sync_stock()
+    sync_supply()
+
+@app.post("/api/sync-supply-full")
+def trigger_supply_full_sync():
+    """Обновляет остатки (для текущих остатков по складам), затем заказы/продажи (для рекомендаций) — одной кнопкой."""
+    import threading
+    threading.Thread(target=sync_stock_then_supply, daemon=True).start()
     return {"status": "started"}
 
 @app.post("/api/save-setting")
