@@ -94,6 +94,18 @@ td.tc{text-align:center}
 .nodata td{opacity:.45}
 .total-row td{background:#F8F5FF!important;border-top:2px solid #D4AAFF!important}
 .total-row:hover td{background:#F3EEFF!important}
+.matrix-wrap{overflow-x:auto;border:1px solid var(--wb-border);border-radius:var(--r);background:var(--wb-surface)}
+.matrix{border-collapse:separate;border-spacing:0;font-size:12px;min-width:100%}
+.matrix th,.matrix td{padding:8px 10px;border-bottom:1px solid #F5F3FA;border-right:1px solid #F5F3FA;text-align:right;white-space:nowrap}
+.matrix thead th{position:sticky;top:0;background:#FAFAFA;font-size:10px;color:var(--wb-muted);font-weight:600;text-transform:uppercase;letter-spacing:.3px;z-index:2}
+.matrix thead tr:first-child th{text-align:center;border-bottom:1px solid var(--wb-border)}
+.matrix .mcol-art{position:sticky;left:0;z-index:3;background:var(--wb-surface);text-align:left;box-shadow:2px 0 4px rgba(0,0,0,.05);min-width:150px}
+.matrix thead .mcol-art{background:#FAFAFA;z-index:4}
+.matrix .wh-even td,.matrix .wh-even.mhead{background:#FBFAFE}
+.matrix .m-recommend{font-weight:700;color:var(--wb-purple)}
+.matrix .m-recommend.zero{font-weight:400;color:var(--wb-faint)}
+.matrix .m-info{background:#F8F5FF}
+.matrix thead th.m-info{background:#F3EEFF}
 .total-label{font-weight:700;color:var(--wb-purple);font-size:12px}
 
 .sbar{display:flex;flex-direction:column;gap:2px;min-width:90px}
@@ -365,7 +377,7 @@ var ALL = [], RATINGS = {}, GROUPS = {}, SK = 'avg_rating', SD = -1, EXP = {};
 var HAS_OFFICIAL = false;
 var dragArt = null, dragFrom = null;
 var STOCK_TOTALS = [], STOCK_WH = [], STEXP = {};
-var SUPPLY_REPORT = [], TARGET_DAYS = 30, SREXP = {};
+var SUPPLY_REPORT = [], TARGET_DAYS = 30;
 
 // Products page state
 var NEG_COUNTS = {};                 // {"5": [{article,negative_count}], "7": [...], "30": [...]}
@@ -1258,95 +1270,124 @@ function renderStockWarehouses() {
 }
 
 // ---------- Рекомендации по поставкам ----------
-function supplyCalc(r) {
-  const dailyRate = r.period_days ? (r.buyout_qty||0) / r.period_days : 0;
-  const daysLeft = dailyRate > 0 ? (r.current_stock||0) / dailyRate : null;
-  const recommend = dailyRate > 0 ? Math.max(0, Math.round(dailyRate * TARGET_DAYS - (r.current_stock||0))) : 0;
-  return {...r, dailyRate, daysLeft, recommend};
+function buildSupplyMatrix() {
+  const q = (document.getElementById('srSearch').value||'').toLowerCase();
+
+  // Склады сортируем по суммарным заказам — самые активные склады идут первыми
+  const whTotals = {};
+  SUPPLY_REPORT.forEach(r => { whTotals[r.warehouse_name] = (whTotals[r.warehouse_name]||0) + (r.ordered_qty||0); });
+  const warehouses = Object.keys(whTotals).sort((a,b) => whTotals[b]-whTotals[a]);
+
+  const byArticle = {};
+  SUPPLY_REPORT.forEach(r => {
+    const vc = r.vendor_code;
+    if(!byArticle[vc]) byArticle[vc] = { vendor_code: vc, nm_id: r.nm_id, byWh: {} };
+    if(r.nm_id && !byArticle[vc].nm_id) byArticle[vc].nm_id = r.nm_id;
+    byArticle[vc].byWh[r.warehouse_name] = r;
+  });
+
+  const totalsByVendor = {};
+  STOCK_TOTALS.forEach(t => { totalsByVendor[t.vendor_code] = t; });
+
+  let articles = Object.keys(byArticle).map(vc => {
+    const a = byArticle[vc];
+    let totalRecommend = 0;
+    const cells = {};
+    warehouses.forEach(w => {
+      const r = a.byWh[w];
+      if(!r) { cells[w] = null; return; }
+      // Демонстрационная логика — как в твоей таблице: считаем по «Заказы», не по «Выкупили»
+      const dailyRate = r.period_days ? (r.ordered_qty||0) / r.period_days : 0;
+      const daysLeft = dailyRate > 0 ? (r.current_stock||0) / dailyRate : null;
+      const recommend = dailyRate > 0 ? Math.max(0, Math.round(dailyRate * TARGET_DAYS - (r.current_stock||0))) : 0;
+      cells[w] = {...r, dailyRate, daysLeft, recommend};
+      totalRecommend += recommend;
+    });
+    const tot = totalsByVendor[vc] || {};
+    return {
+      vendor_code: vc, nm_id: a.nm_id, cells,
+      inWay: tot.in_way_to_client||0,
+      inWayBack: tot.in_way_from_client||0,
+      totalStock: tot.quantity_warehouses_full||0,
+      totalRecommend
+    };
+  });
+
+  if(q) articles = articles.filter(a => (a.vendor_code||'').toLowerCase().includes(q) || String(a.nm_id||'').includes(q));
+  articles.sort((a,b) => b.totalRecommend - a.totalRecommend);
+
+  return { warehouses, articles };
 }
 
-function renderSupplyCards(rows) {
-  const totalRecommend = rows.reduce((s,r) => s+r.recommend, 0);
-  const critical = rows.filter(r => r.daysLeft!=null && r.daysLeft < 7).length;
-  const noSales = rows.filter(r => r.dailyRate === 0).length;
+function renderSupplyCards(matrix) {
+  const totalRecommend = matrix.articles.reduce((s,a) => s+a.totalRecommend, 0);
+  let critical = 0;
+  matrix.articles.forEach(a => Object.values(a.cells).forEach(c => { if(c && c.daysLeft!=null && c.daysLeft < 7) critical++; }));
   document.getElementById('supplyCards').innerHTML = [
-    ['Строк (артикул × склад)', fmt(rows.length)],
+    ['Артикулов', fmt(matrix.articles.length)],
+    ['Складов', fmt(matrix.warehouses.length)],
     ['Рекомендовано поставить, шт', fmt(totalRecommend), 'color:var(--wb-purple)'],
-    ['Критично (<7 дней запаса)', fmt(critical), critical>0?'color:var(--red)':''],
-    ['Без продаж за период', fmt(noSales), 'color:var(--wb-faint)'],
+    ['Критичных позиций (<7 дн.)', fmt(critical), critical>0?'color:var(--red)':''],
   ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
 }
 
-function supplyGroupBlock(grp, rows) {
-  const color = gc(grp);
-  const totRecommend = rows.reduce((s,r) => s+r.recommend, 0);
-  const gid = 'sr_' + grp.replace(/[^a-zа-я0-9]/gi,'_');
-  const isOpen = SREXP[grp] !== false;
-  const sorted = [...rows].sort((a,b) => b.recommend - a.recommend);
+function renderSupplyMatrixTable(matrix) {
+  const { warehouses, articles } = matrix;
+  if(!articles.length) return '<div class="empty">Ничего не найдено</div>';
 
-  const trs = sorted.map(r => `<tr style="${!r.recommend?'opacity:.5':''}">
-    <td><div class="art">${r.vendor_code}</div><div class="nmid">${r.nm_id||'—'}</div></td>
-    <td>${r.warehouse_name}</td>
-    <td class="tr2">${fmt(r.current_stock)}</td>
-    <td class="tr2">${fmt(r.buyout_qty)}</td>
-    <td class="tr2">${r.daysLeft!=null ? Math.round(r.daysLeft)+' дн.' : '—'}</td>
-    <td class="tr2" style="font-weight:700;color:${r.recommend>0?'var(--wb-purple)':'var(--wb-faint)'}">${r.recommend>0?'+'+fmt(r.recommend):'—'}</td>
-  </tr>`).join('');
+  const whHead1 = warehouses.map((w,i) => `<th colspan="4" class="${i%2?'wh-even':''}">${w}</th>`).join('');
+  const sub = (i) => `<th class="mhead${i%2?' wh-even':''}">Остаток</th><th class="mhead${i%2?' wh-even':''}">Заказы</th><th class="mhead${i%2?' wh-even':''}">Дн.</th><th class="mhead${i%2?' wh-even':''}">Поставить</th>`;
+  const whHead2 = warehouses.map((w,i) => sub(i)).join('');
 
-  const totRow = `<tr class="total-row">
-    <td colspan="5"><span class="total-label">∑ Итого по склейке — поставить</span></td>
-    <td class="tr2" style="font-weight:700;color:var(--wb-purple)">${totRecommend>0?'+'+fmt(totRecommend):'—'}</td>
-  </tr>`;
+  const bodyRows = articles.map(a => {
+    const cells = warehouses.map((w,i) => {
+      const c = a.cells[w];
+      const cls = i%2 ? 'wh-even' : '';
+      if(!c) return `<td class="${cls}">—</td><td class="${cls}">—</td><td class="${cls}">—</td><td class="${cls}">—</td>`;
+      const rc = c.recommend>0 ? `<span class="m-recommend">+${fmt(c.recommend)}</span>` : `<span class="m-recommend zero">—</span>`;
+      const dl = c.daysLeft!=null ? Math.round(c.daysLeft) : '—';
+      return `<td class="${cls}">${fmt(c.current_stock)}</td><td class="${cls}">${fmt(c.ordered_qty)}</td><td class="${cls}">${dl}</td><td class="${cls}">${rc}</td>`;
+    }).join('');
+    return `<tr>
+      <td class="mcol-art"><div class="art">${a.vendor_code}</div><div class="nmid">${a.nm_id||'—'}</div></td>
+      <td class="m-info">${fmt(a.inWay)}</td>
+      <td class="m-info">${fmt(a.inWayBack)}</td>
+      <td class="m-info">${fmt(a.totalStock)}</td>
+      <td class="m-info"><span class="${a.totalRecommend>0?'m-recommend':'m-recommend zero'}">${a.totalRecommend>0?'+'+fmt(a.totalRecommend):'—'}</span></td>
+      ${cells}
+    </tr>`;
+  }).join('');
 
-  return `<div class="group${isOpen?' open':''}" id="${gid}">
-    <div class="gh" onclick="TSR('${encodeURIComponent(grp)}')">
-      <div class="gh-color" style="background:${color}"></div>
-      <div class="gh-name">${grp}</div>
-      <div class="gh-stats"><span class="gh-stat">${rows.length} строк</span></div>
-      <span class="gh-rating" style="font-size:15px;color:${totRecommend>0?'var(--wb-purple)':'var(--wb-text)'}">${totRecommend>0?'+'+fmt(totRecommend)+' шт':'ок'}</span>
-      <span class="gh-arr">▾</span>
-    </div>
-    <div class="gbody"><div class="tw"><table>
-      <thead><tr><th>Артикул</th><th>Склад</th><th class="tr2">Остаток</th><th class="tr2">Продано за период</th><th class="tr2">Запас, дн.</th><th class="tr2">Поставить</th></tr></thead>
-      <tbody>${trs}${totRow}</tbody>
-    </table></div></div>
-  </div>`;
-}
-
-function TSR(gE) {
-  const g = decodeURIComponent(gE);
-  SREXP[g] = SREXP[g] === false ? true : false;
-  renderSupplyRecs();
+  return `<div class="matrix-wrap"><table class="matrix">
+    <thead>
+      <tr>
+        <th class="mcol-art" rowspan="2">Артикул продавца</th>
+        <th colspan="4" class="m-info">Общая информация</th>
+        ${whHead1}
+      </tr>
+      <tr>
+        <th class="mhead m-info">В пути к клиенту</th>
+        <th class="mhead m-info">В пути назад</th>
+        <th class="mhead m-info">Всего на складах</th>
+        <th class="mhead m-info">Поставить всего</th>
+        ${whHead2}
+      </tr>
+    </thead>
+    <tbody>${bodyRows}</tbody>
+  </table></div>`;
 }
 
 function renderSupplyRecs() {
   if(!SUPPLY_REPORT.length) {
     document.getElementById('supplyCards').innerHTML = '';
-    document.getElementById('supplyRoot').innerHTML = '<div class="empty">Данных пока нет. Нажми «Обновить» — соберём заказы, продажи и остатки с WB (1–2 минуты).</div>';
+    document.getElementById('supplyRoot').innerHTML = '<div class="empty">Данных пока нет. Нажми «Обновить» — соберём заказы и остатки с WB (1–2 минуты).</div>';
     return;
   }
-  const q = (document.getElementById('srSearch').value||'').toLowerCase();
-  let rows = SUPPLY_REPORT.map(supplyCalc);
-  if(q) rows = rows.filter(r => (r.vendor_code||'').toLowerCase().includes(q) || (r.warehouse_name||'').toLowerCase().includes(q));
-  renderSupplyCards(rows);
-
-  const gnames = Object.keys(GROUPS).concat(['Без склейки']);
-  const ga = new Set(Object.values(GROUPS).flat());
-  const grouped = {};
-  gnames.forEach(g => { grouped[g] = []; });
-  Object.entries(GROUPS).forEach(([g, list]) => {
-    const set = new Set(list);
-    rows.forEach(r => { if(set.has(r.vendor_code)) grouped[g].push(r); });
-  });
-  rows.forEach(r => { if(!ga.has(r.vendor_code)) grouped['Без склейки'].push(r); });
-
-  let html = '';
-  gnames.forEach(g => {
-    const arr = grouped[g] || [];
-    if(!arr.length) return;
-    html += supplyGroupBlock(g, arr);
-  });
-  document.getElementById('supplyRoot').innerHTML = html || '<div class="empty">Ничего не найдено</div>';
+  const matrix = buildSupplyMatrix();
+  renderSupplyCards(matrix);
+  let note = '';
+  if(!STOCK_TOTALS.length) note = '<div class="empty" style="margin-bottom:10px">Колонки «В пути», «Всего на складах» пока пустые — сначала синхронизируй остатки на странице «Остатки по артикулам».</div>';
+  document.getElementById('supplyRoot').innerHTML = note + renderSupplyMatrixTable(matrix);
 }
 
 loadData();
