@@ -22,6 +22,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 WB_FEEDBACKS_URL = "https://feedbacks-api.wildberries.ru"
 WB_ANALYTICS_URL = "https://seller-analytics-api.wildberries.ru"
 WB_STATISTICS_URL = "https://statistics-api.wildberries.ru"
+WB_SUPPLIES_URL = "https://supplies-api.wildberries.ru"
 
 # Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
 # а агрегаты — переносим их в отдельные поля stock_totals вместо списка складов.
@@ -310,6 +311,71 @@ def parse_wb_dt(s: str):
     except (ValueError, TypeError):
         return None
 
+def fetch_planned_supplies_qty() -> dict:
+    """Возвращает {nmId: суммарное количество} по поставкам (FBW), у которых дата
+    поставки (supplyDate) попадает в ближайшие 7 дней, и которые ещё не приняты складом
+    (factDate пусто) — то есть реально едут/запланированы, а не черновик и не уже приехали."""
+    try:
+        resp = httpx.post(
+            f"{WB_SUPPLIES_URL}/api/v1/supplies",
+            headers=wb_headers(), params={"limit": 1000, "offset": 0},
+            json={}, timeout=30
+        )
+        if not resp.is_success:
+            logger.error(f"WB supplies list error {resp.status_code} {resp.text[:300]}")
+            return {}
+        supplies = resp.json()
+        if not isinstance(supplies, list):
+            logger.error(f"WB supplies list unexpected shape: {str(supplies)[:300]}")
+            return {}
+    except Exception as e:
+        logger.error(f"WB supplies list exception: {e}")
+        return {}
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    horizon = now + timedelta(days=7)
+    qualifying = []
+    for s in supplies:
+        if s.get("factDate"):
+            continue
+        sd = s.get("supplyDate")
+        if not sd:
+            continue
+        try:
+            d = datetime.fromisoformat(str(sd).replace("Z", "+00:00")).replace(tzinfo=None)
+        except (ValueError, TypeError):
+            continue
+        if now <= d <= horizon:
+            sid, is_preorder = s.get("supplyID"), False
+            if not sid:
+                sid, is_preorder = s.get("preorderID"), True
+            if sid:
+                qualifying.append((sid, is_preorder))
+
+    logger.info(f"Planned FBW supplies in next 7 days: {len(qualifying)}")
+    planned = {}
+    for sid, is_preorder in qualifying:
+        try:
+            params = {"limit": 1000, "offset": 0}
+            if is_preorder:
+                params["isPreorderID"] = "true"
+            gresp = httpx.get(
+                f"{WB_SUPPLIES_URL}/api/v1/supplies/{sid}/goods",
+                headers=wb_headers(), params=params, timeout=20
+            )
+            if not gresp.is_success:
+                logger.error(f"WB supply goods error supply={sid} {gresp.status_code} {gresp.text[:200]}")
+                continue
+            for item in gresp.json():
+                nm = item.get("nmID") or item.get("nmId")
+                qty = item.get("quantity", 0) or 0
+                if nm:
+                    planned[nm] = planned.get(nm, 0) + qty
+        except Exception as e:
+            logger.error(f"WB supply goods exception supply={sid}: {e}")
+        time.sleep(0.1)
+    return planned
+
 def sync_supply():
     if not WB_TOKEN:
         logger.error("WB_TOKEN not set")
@@ -366,6 +432,8 @@ def sync_supply():
         logger.error(f"sync_supply: stock_warehouses fetch error {e}")
         stock_map = {}
 
+    planned_map = fetch_planned_supplies_qty()
+
     keys = set(agg.keys()) | set(stock_map.keys())
     now = datetime.now(timezone.utc).isoformat()
     rows = []
@@ -377,6 +445,7 @@ def sync_supply():
             "vendor_code": nm_to_vendor.get(nm_id) or a["vendor_code"] or str(nm_id),
             "nm_id": nm_id,
             "barcode": nm_to_barcode.get(nm_id),
+            "planned_supply_qty": planned_map.get(nm_id, 0),
             "warehouse_name": wh,
             "ordered_qty": a["ordered"],
             "buyout_qty": a["buyout"],
