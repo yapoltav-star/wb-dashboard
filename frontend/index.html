@@ -263,9 +263,16 @@ td.tc{text-align:center}
       <input id="prodSearch" placeholder="Поиск по артикулу..." oninput="renderProducts()">
     </div>
     <span style="font-size:12px;color:var(--wb-muted)">Негатив за:</span>
-    <button class="filter-btn on" id="pd_5" onclick="setNegPeriod(5)">5 дн.</button>
-    <button class="filter-btn" id="pd_7" onclick="setNegPeriod(7)">7 дн.</button>
-    <button class="filter-btn" id="pd_30" onclick="setNegPeriod(30)">30 дн.</button>
+    <select id="negPeriodSelect" onchange="setNegPeriod(+this.value)" style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;color:var(--wb-text);background:var(--wb-surface);cursor:pointer">
+      <option value="1">1 день</option>
+      <option value="2">2 дня</option>
+      <option value="3">3 дня</option>
+      <option value="4">4 дня</option>
+      <option value="5" selected>5 дней</option>
+      <option value="7">7 дней</option>
+      <option value="14">14 дней</option>
+      <option value="30">30 дней</option>
+    </select>
     <span style="font-size:12px;color:var(--wb-muted);margin-left:8px">Считать негативом:</span>
     <button class="filter-btn on" id="ns_1" onclick="toggleNegStar(1)">★1</button>
     <button class="filter-btn on" id="ns_2" onclick="toggleNegStar(2)">★2</button>
@@ -274,9 +281,10 @@ td.tc{text-align:center}
       <button class="action-btn" id="manualSortBtn" onclick="toggleManualSort()">↕ Ручная сортировка</button>
     </div>
   </div>
-  <div class="section-sub" id="manualSortHint" style="display:none;margin-bottom:10px">Перетаскивай строки чтобы изменить порядок. Закреплённые (📌) артикулы всегда сверху, максимум 10 шт.</div>
+  <div class="section-sub" id="manualSortHint" style="display:none;margin-bottom:10px">Перетаскивай строки чтобы изменить порядок. Закреплённые (📌) артикулы можно перетаскивать отдельно внутри своего блока — он всегда сверху.</div>
   <div id="prodRoot"></div>
 </div>
+
 
 <div class="page" id="page-groups">
   <div class="section-wrap">
@@ -782,7 +790,8 @@ async function saveGroups() {
 
 function setNegPeriod(days) {
   NEG_PERIOD = days;
-  ['5','7','30'].forEach(d => document.getElementById('pd_'+d)?.classList.toggle('on', +d === days));
+  const sel = document.getElementById('negPeriodSelect');
+  if(sel) sel.value = String(days);
   renderProducts();
 }
 
@@ -818,10 +827,6 @@ function pinArticle(article, ev) {
   if(i >= 0) {
     PINNED.splice(i, 1);
   } else {
-    if(PINNED.length >= 10) {
-      alert('Можно закрепить максимум 10 артикулов. Сначала открепи один из текущих.');
-      return;
-    }
     PINNED.push(article);
   }
   localStorage.setItem('wb_pinned_articles', JSON.stringify(PINNED));
@@ -834,12 +839,29 @@ function prodDOver(e) { e.preventDefault(); }
 function prodDrop(e, targetArticle) {
   e.preventDefault();
   if(!dragProdArt || dragProdArt === targetArticle) return;
-  let order = getProductOrder();
-  order = order.filter(a => a !== dragProdArt);
-  const idx = order.indexOf(targetArticle);
-  order.splice(idx === -1 ? order.length : idx, 0, dragProdArt);
-  PRODUCT_ORDER = order;
-  localStorage.setItem('wb_product_order', JSON.stringify(PRODUCT_ORDER));
+
+  const dragIsPinned = PINNED.includes(dragProdArt);
+  const targetIsPinned = PINNED.includes(targetArticle);
+
+  if(dragIsPinned && targetIsPinned) {
+    // Reorder within the pinned block
+    let list = PINNED.filter(a => a !== dragProdArt);
+    const idx = list.indexOf(targetArticle);
+    list.splice(idx === -1 ? list.length : idx, 0, dragProdArt);
+    PINNED = list;
+    localStorage.setItem('wb_pinned_articles', JSON.stringify(PINNED));
+  } else if(!dragIsPinned && !targetIsPinned) {
+    // Reorder within the regular (unpinned) list
+    let order = getProductOrder();
+    order = order.filter(a => a !== dragProdArt);
+    const idx = order.indexOf(targetArticle);
+    order.splice(idx === -1 ? order.length : idx, 0, dragProdArt);
+    PRODUCT_ORDER = order;
+    localStorage.setItem('wb_product_order', JSON.stringify(PRODUCT_ORDER));
+  }
+  // Dragging across pinned/unpinned boundary does nothing here —
+  // use the 📌 button to pin/unpin, drag only reorders within each group.
+
   dragProdArt = null;
   renderProducts();
 }
@@ -909,7 +931,7 @@ function renderProductsCards() {
     ['Артикулов всего', fmt(ALL.length), '', ''],
     [`Негатив за ${NEG_PERIOD} дн.`, fmt(totalNeg), 'color:var(--red)', `по ${NEG_STARS.slice().sort().map(s=>'★'+s).join(' ')}`],
     ['Артикулов с негативом', fmt(withNeg), 'color:var(--amber)', ''],
-    ['Закреплено', fmt(PINNED.length) + ' / 10', '', ''],
+    ['Закреплено', fmt(PINNED.length), '', ''],
   ].map(([l,v,s,sub]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div>${sub?`<div class="card-sub">${sub}</div>`:''}</div>`).join('');
 }
 
@@ -939,11 +961,12 @@ function renderProducts() {
       ? `<span style="color:${rc(a.avg_rating)}">${parseFloat(a.avg_rating).toFixed(2)}</span>${a.is_official?'<span class="official-tag">WB</span>':''}`
       : '<span style="color:var(--wb-faint)">—</span>';
     const safeArt = article.replace(/'/g,"\\'");
-    return `<div class="prod-row${isPinned?' pinned':''}${isOpen?' open':''}" draggable="${MANUAL_SORT}"
+    const canDrag = isPinned || MANUAL_SORT; // pinned rows are always draggable to let reordering favorites without entering manual-sort mode
+    return `<div class="prod-row${isPinned?' pinned':''}${isOpen?' open':''}${canDrag?' draggable-row':''}" draggable="${canDrag}"
         ondragstart="prodDS(event,'${encodeURIComponent(article)}')" ondragend="prodDE(event)"
         ondragover="prodDOver(event)" ondrop="prodDrop(event,'${safeArt}')">
       <div class="prod-main" onclick="toggleProdRow('${safeArt}')">
-        <span class="prod-handle">⠿</span>
+        <span class="prod-handle"${canDrag?' style="display:inline-block"':''}>⠿</span>
         <span class="prod-pin${isPinned?' on':''}" onclick="pinArticle('${safeArt}', event)" title="${isPinned?'Открепить':'Закрепить'}">📌</span>
         <div class="prod-art">${article}<div class="prod-nmid">${a.nm_id||'—'}</div></div>
         <div class="prod-rating">${ratingHtml}</div>
