@@ -126,6 +126,38 @@ td.tc{text-align:center}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 
 .empty{text-align:center;padding:60px;color:var(--wb-muted)}
+
+/* Products page */
+.prod-table{width:100%;border-collapse:collapse;font-size:13px}
+.prod-row{background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--r);margin-bottom:8px;overflow:hidden;transition:box-shadow .15s}
+.prod-row.pinned{border-color:#F59E0B;background:#FFFBEB}
+.prod-row.dragging{opacity:.4}
+.prod-main{display:flex;align-items:center;gap:14px;padding:12px 16px;cursor:pointer}
+.prod-main:hover{background:#FAFAFA}
+.prod-row.pinned .prod-main:hover{background:#FEF3C7}
+.prod-handle{cursor:grab;color:var(--wb-faint);font-size:14px;display:none;user-select:none}
+.manual-sort-on .prod-handle{display:inline-block}
+.prod-pin{cursor:pointer;font-size:15px;opacity:.35;transition:opacity .15s}
+.prod-pin:hover{opacity:1}
+.prod-pin.on{opacity:1}
+.prod-art{font-weight:500;flex:0 0 220px}
+.prod-nmid{font-size:11px;color:var(--wb-faint)}
+.prod-rating{flex:0 0 90px;text-align:center;font-weight:700;font-size:16px}
+.prod-neg{flex:0 0 160px;text-align:center}
+.prod-neg-count{font-weight:700;font-size:15px}
+.prod-neg-count.zero{color:var(--wb-faint);font-weight:400}
+.prod-arr{margin-left:auto;color:var(--wb-faint);font-size:12px;transition:transform .2s}
+.prod-row.open .prod-arr{transform:rotate(180deg)}
+.prod-detail{display:none;border-top:1px solid var(--wb-border);padding:12px 16px;background:#FAFAFA}
+.prod-row.open .prod-detail{display:block}
+.fb-item{padding:10px 12px;background:#fff;border:1px solid var(--wb-border);border-radius:var(--rs);margin-bottom:8px}
+.fb-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.fb-stars{color:var(--red);font-weight:600;font-size:12px}
+.fb-date{font-size:11px;color:var(--wb-faint)}
+.fb-text{font-size:13px;color:var(--wb-text);line-height:1.4}
+.fb-empty{font-size:12px;color:var(--wb-muted);padding:8px}
+.fb-loading{font-size:12px;color:var(--wb-muted);padding:8px}
+
 .section-wrap{background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--r);padding:20px;margin-bottom:16px}
 .section-title{font-size:15px;font-weight:600;margin-bottom:4px}
 .section-sub{font-size:13px;color:var(--wb-muted);margin-bottom:16px}
@@ -172,8 +204,8 @@ td.tc{text-align:center}
 </div>
 
 <div class="subnav">
-  <div class="sn-item" onclick="showPage('ratings',this)">Товары</div>
-  <div class="sn-item on" onclick="showPage('ratings',this)">Отзывы и вопросы</div>
+  <div class="sn-item on" onclick="showPage('products',this)">Товары</div>
+  <div class="sn-item" onclick="showPage('ratings',this)">Отзывы и вопросы</div>
   <div class="sn-item" onclick="showPage('groups',this)">Склейки</div>
 </div>
 
@@ -196,7 +228,7 @@ td.tc{text-align:center}
   </div>
 </div>
 
-<div class="page on" id="page-ratings">
+<div class="page" id="page-ratings">
   <div class="upload-banner" id="uploadBanner">
     <span>⚠️ <b>Рейтинги из файла WB не загружены.</b> Данные рассчитаны приблизительно из истории отзывов.</span>
     <button class="upload-btn-inner" onclick="openUploadModal()">Загрузить файл оценок</button>
@@ -221,6 +253,29 @@ td.tc{text-align:center}
     </div>
   </div>
   <div id="root"><div class="loading"><div class="spinner"></div><span>Загружаем данные...</span></div></div>
+</div>
+
+<div class="page on" id="page-products">
+  <div class="cards" id="prodCards"></div>
+  <div class="toolbar" id="prodToolbar" style="display:none">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="prodSearch" placeholder="Поиск по артикулу..." oninput="renderProducts()">
+    </div>
+    <span style="font-size:12px;color:var(--wb-muted)">Негатив за:</span>
+    <button class="filter-btn on" id="pd_5" onclick="setNegPeriod(5)">5 дн.</button>
+    <button class="filter-btn" id="pd_7" onclick="setNegPeriod(7)">7 дн.</button>
+    <button class="filter-btn" id="pd_30" onclick="setNegPeriod(30)">30 дн.</button>
+    <span style="font-size:12px;color:var(--wb-muted);margin-left:8px">Считать негативом:</span>
+    <button class="filter-btn on" id="ns_1" onclick="toggleNegStar(1)">★1</button>
+    <button class="filter-btn on" id="ns_2" onclick="toggleNegStar(2)">★2</button>
+    <button class="filter-btn" id="ns_3" onclick="toggleNegStar(3)">★3</button>
+    <div class="ml-auto" style="display:flex;gap:8px">
+      <button class="action-btn" id="manualSortBtn" onclick="toggleManualSort()">↕ Ручная сортировка</button>
+    </div>
+  </div>
+  <div class="section-sub" id="manualSortHint" style="display:none;margin-bottom:10px">Перетаскивай строки чтобы изменить порядок. Закреплённые (📌) артикулы всегда сверху, максимум 10 шт.</div>
+  <div id="prodRoot"></div>
 </div>
 
 <div class="page" id="page-groups">
@@ -251,6 +306,17 @@ var ALL = [], RATINGS = {}, GROUPS = {}, SK = 'avg_rating', SD = -1, EXP = {};
 var HAS_OFFICIAL = false;
 var dragArt = null, dragFrom = null;
 
+// Products page state
+var NEG_COUNTS = {};                 // {"5": [{article,negative_count}], "7": [...], "30": [...]}
+var NEG_PERIOD = 5;                  // 5 / 7 / 30 days
+var NEG_STARS = [1, 2];              // which star ratings count as "negative" (configurable)
+var MANUAL_SORT = false;             // manual drag-sort mode toggle
+var PRODUCT_ORDER = JSON.parse(localStorage.getItem('wb_product_order') || 'null') || [];
+var PINNED = JSON.parse(localStorage.getItem('wb_pinned_articles') || 'null') || [];
+var prodOpen = {};                   // expanded state per article
+var prodFeedbackCache = {};          // cache of fetched negative feedback texts per article+period+stars
+var dragProdArt = null;
+
 var GROUP_COLORS = ['#7B2FBE','#2E90FA','#12B76A','#F79009','#F04438','#6172F3','#EE46BC'];
 function gc(g) {
   var keys = Object.keys(GROUPS);
@@ -275,6 +341,7 @@ function showPage(id, btn) {
   document.getElementById('page-' + id).classList.add('on');
   if(btn) btn.classList.add('on');
   if(id === 'groups') renderGroupManager();
+  if(id === 'products') renderProducts();
 }
 
 async function loadData() {
@@ -332,6 +399,9 @@ async function loadData() {
 
     document.getElementById('uploadBanner').classList.toggle('hidden', HAS_OFFICIAL);
 
+    // Negative review counts by period (server-aggregated, for stars 1-3; we slice client-side by chosen star set)
+    NEG_COUNTS = data.negative_counts || {};
+
     if(EXP && Object.keys(EXP).length === 0) {
       Object.keys(GROUPS).concat(['Без склейки']).forEach(g => { EXP[g] = true; });
     }
@@ -339,6 +409,9 @@ async function loadData() {
     renderCards();
     document.getElementById('toolbar').style.display = 'flex';
     render();
+
+    document.getElementById('prodToolbar').style.display = 'flex';
+    renderProducts();
 
     const settings = data.settings || {};
     let statusText = settings.last_sync ? 'Отзывы: ' + settings.last_sync : 'Данные загружены';
@@ -703,6 +776,197 @@ async function saveGroups() {
     n.style.display='inline'; render();
     setTimeout(()=>n.style.display='none', 2000);
   } catch(e) { alert('Ошибка: '+e.message); }
+}
+
+// ===================== Products page =====================
+
+function setNegPeriod(days) {
+  NEG_PERIOD = days;
+  ['5','7','30'].forEach(d => document.getElementById('pd_'+d)?.classList.toggle('on', +d === days));
+  renderProducts();
+}
+
+function toggleNegStar(star) {
+  const i = NEG_STARS.indexOf(star);
+  if(i >= 0) {
+    if(NEG_STARS.length === 1) return; // keep at least one star selected
+    NEG_STARS.splice(i, 1);
+  } else {
+    NEG_STARS.push(star);
+  }
+  document.getElementById('ns_'+star)?.classList.toggle('on', NEG_STARS.includes(star));
+  renderProducts();
+}
+
+function toggleManualSort() {
+  MANUAL_SORT = !MANUAL_SORT;
+  document.getElementById('manualSortBtn').classList.toggle('on', MANUAL_SORT);
+  document.getElementById('manualSortHint').style.display = MANUAL_SORT ? 'block' : 'none';
+  document.getElementById('prodRoot').classList.toggle('manual-sort-on', MANUAL_SORT);
+  renderProducts();
+}
+
+function negCountFor(article) {
+  const list = NEG_COUNTS[String(NEG_PERIOD)] || [];
+  const entry = list.find(x => x.article === article);
+  return entry ? entry.negative_count : 0;
+}
+
+function pinArticle(article, ev) {
+  ev.stopPropagation();
+  const i = PINNED.indexOf(article);
+  if(i >= 0) {
+    PINNED.splice(i, 1);
+  } else {
+    if(PINNED.length >= 10) {
+      alert('Можно закрепить максимум 10 артикулов. Сначала открепи один из текущих.');
+      return;
+    }
+    PINNED.push(article);
+  }
+  localStorage.setItem('wb_pinned_articles', JSON.stringify(PINNED));
+  renderProducts();
+}
+
+function prodDS(e, article) { dragProdArt = decodeURIComponent(article); e.currentTarget.classList.add('dragging'); }
+function prodDE(e) { e.currentTarget.classList.remove('dragging'); }
+function prodDOver(e) { e.preventDefault(); }
+function prodDrop(e, targetArticle) {
+  e.preventDefault();
+  if(!dragProdArt || dragProdArt === targetArticle) return;
+  let order = getProductOrder();
+  order = order.filter(a => a !== dragProdArt);
+  const idx = order.indexOf(targetArticle);
+  order.splice(idx === -1 ? order.length : idx, 0, dragProdArt);
+  PRODUCT_ORDER = order;
+  localStorage.setItem('wb_product_order', JSON.stringify(PRODUCT_ORDER));
+  dragProdArt = null;
+  renderProducts();
+}
+
+function getProductOrder() {
+  const known = new Set(PRODUCT_ORDER);
+  const extra = ALL.map(a => a.article).filter(a => !known.has(a));
+  return PRODUCT_ORDER.concat(extra);
+}
+
+function toggleProdRow(article) {
+  prodOpen[article] = !prodOpen[article];
+  renderProducts();
+  if(prodOpen[article]) loadArticleFeedbacks(article);
+}
+
+async function loadArticleFeedbacks(article) {
+  const cacheKey = `${article}|${NEG_PERIOD}|${NEG_STARS.slice().sort().join(',')}`;
+  const maxStars = Math.max(...NEG_STARS);
+  const detailEl = document.getElementById('fbdetail_' + cssSafe(article));
+  if(!detailEl) return;
+
+  if(prodFeedbackCache[cacheKey]) {
+    detailEl.innerHTML = renderFeedbackList(prodFeedbackCache[cacheKey]);
+    return;
+  }
+
+  detailEl.innerHTML = '<div class="fb-loading">Загружаем отзывы...</div>';
+  try {
+    const resp = await fetch(`${RAILWAY_URL}/api/article-feedbacks?article=${encodeURIComponent(article)}&days=${NEG_PERIOD}&max_stars=${maxStars}&limit=50`);
+    const data = await resp.json();
+    if(data.error) {
+      detailEl.innerHTML = `<div class="fb-empty">Ошибка загрузки: ${data.error}</div>`;
+      return;
+    }
+    const filtered = (data.feedbacks || []).filter(f => NEG_STARS.includes(f.stars));
+    prodFeedbackCache[cacheKey] = filtered;
+    detailEl.innerHTML = renderFeedbackList(filtered);
+  } catch(e) {
+    detailEl.innerHTML = `<div class="fb-empty">Ошибка: ${e.message}</div>`;
+  }
+}
+
+function renderFeedbackList(feedbacks) {
+  if(!feedbacks.length) return '<div class="fb-empty">Нет негативных отзывов за выбранный период с выбранными оценками.</div>';
+  return feedbacks.map(f => {
+    const d = f.created_date ? new Date(f.created_date).toLocaleDateString('ru-RU') : '';
+    const txt = (f.text || '').trim() || '<span style="color:var(--wb-faint)">(без текста)</span>';
+    return `<div class="fb-item">
+      <div class="fb-head"><span class="fb-stars">${'★'.repeat(f.stars)}</span><span class="fb-date">${d}</span></div>
+      <div class="fb-text">${escapeHtml(txt)}</div>
+    </div>`;
+  }).join('');
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+function cssSafe(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
+
+function renderProductsCards() {
+  const withNeg = ALL.filter(a => negCountFor(a.article) > 0).length;
+  const totalNeg = ALL.reduce((s,a) => s + negCountFor(a.article), 0);
+  document.getElementById('prodCards').innerHTML = [
+    ['Артикулов всего', fmt(ALL.length), '', ''],
+    [`Негатив за ${NEG_PERIOD} дн.`, fmt(totalNeg), 'color:var(--red)', `по ${NEG_STARS.slice().sort().map(s=>'★'+s).join(' ')}`],
+    ['Артикулов с негативом', fmt(withNeg), 'color:var(--amber)', ''],
+    ['Закреплено', fmt(PINNED.length) + ' / 10', '', ''],
+  ].map(([l,v,s,sub]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div>${sub?`<div class="card-sub">${sub}</div>`:''}</div>`).join('');
+}
+
+function renderProducts() {
+  renderProductsCards();
+  if(!ALL.length) {
+    document.getElementById('prodRoot').innerHTML = '<div class="empty">Нет данных.</div>';
+    return;
+  }
+  const q = (document.getElementById('prodSearch')?.value || '').toLowerCase();
+  const byArticle = {};
+  ALL.forEach(a => { byArticle[a.article] = a; });
+
+  let order = getProductOrder().filter(art => byArticle[art]);
+  if(q) order = order.filter(art => art.toLowerCase().includes(q) || String(byArticle[art].nm_id||'').includes(q));
+
+  const pinnedSet = new Set(PINNED);
+  const pinnedList = PINNED.filter(art => byArticle[art] && order.includes(art));
+  const restList = order.filter(art => !pinnedSet.has(art));
+
+  function row(article) {
+    const a = byArticle[article];
+    const isPinned = pinnedSet.has(article);
+    const isOpen = !!prodOpen[article];
+    const neg = negCountFor(article);
+    const ratingHtml = a.avg_rating
+      ? `<span style="color:${rc(a.avg_rating)}">${parseFloat(a.avg_rating).toFixed(2)}</span>${a.is_official?'<span class="official-tag">WB</span>':''}`
+      : '<span style="color:var(--wb-faint)">—</span>';
+    const safeArt = article.replace(/'/g,"\\'");
+    return `<div class="prod-row${isPinned?' pinned':''}${isOpen?' open':''}" draggable="${MANUAL_SORT}"
+        ondragstart="prodDS(event,'${encodeURIComponent(article)}')" ondragend="prodDE(event)"
+        ondragover="prodDOver(event)" ondrop="prodDrop(event,'${safeArt}')">
+      <div class="prod-main" onclick="toggleProdRow('${safeArt}')">
+        <span class="prod-handle">⠿</span>
+        <span class="prod-pin${isPinned?' on':''}" onclick="pinArticle('${safeArt}', event)" title="${isPinned?'Открепить':'Закрепить'}">📌</span>
+        <div class="prod-art">${article}<div class="prod-nmid">${a.nm_id||'—'}</div></div>
+        <div class="prod-rating">${ratingHtml}</div>
+        <div class="prod-neg"><span class="prod-neg-count${neg===0?' zero':''}">${neg}</span> <span style="font-size:11px;color:var(--wb-faint)">за ${NEG_PERIOD} дн.</span></div>
+        <span class="prod-arr">▾</span>
+      </div>
+      <div class="prod-detail" id="fbdetail_${cssSafe(article)}">${isOpen ? '<div class="fb-loading">Загружаем отзывы...</div>' : ''}</div>
+    </div>`;
+  }
+
+  let html = '';
+  if(pinnedList.length) {
+    html += '<div style="font-size:11px;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">📌 Закреплённые</div>';
+    html += pinnedList.map(row).join('');
+    html += '<div style="height:8px"></div>';
+  }
+  html += restList.map(row).join('');
+
+  document.getElementById('prodRoot').innerHTML = html || '<div class="empty">Ничего не найдено</div>';
+
+  Object.keys(prodOpen).forEach(article => {
+    if(prodOpen[article] && byArticle[article]) loadArticleFeedbacks(article);
+  });
 }
 
 loadData();
