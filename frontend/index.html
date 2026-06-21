@@ -470,11 +470,17 @@ async function loadData() {
       ALL = ALL.map(a => {
         const off = RATINGS[a.article];
         if(off) {
+          // reviews_total=0 означает рейтинг взят с API (нет разбивки по звёздам) — оставляем разбивку из feedback_stats
+          const hasBreakdown = (off.reviews_total || 0) > 0;
           return {
             ...a,
             avg_rating: off.wb_rating,
-            r5: off.r5, r4: off.r4, r3: off.r3, r2: off.r2, r1: off.r1,
-            total: off.reviews_total,
+            r5: hasBreakdown ? off.r5 : a.r5,
+            r4: hasBreakdown ? off.r4 : a.r4,
+            r3: hasBreakdown ? off.r3 : a.r3,
+            r2: hasBreakdown ? off.r2 : a.r2,
+            r1: hasBreakdown ? off.r1 : a.r1,
+            total: hasBreakdown ? off.reviews_total : a.total,
             excluded: off.excluded || 0,
             is_official: true
           };
@@ -487,8 +493,8 @@ async function loadData() {
             article: off.article,
             nm_id: off.nm_id,
             avg_rating: off.wb_rating,
-            r5: off.r5, r4: off.r4, r3: off.r3, r2: off.r2, r1: off.r1,
-            total: off.reviews_total,
+            r5: off.r5 || 0, r4: off.r4 || 0, r3: off.r3 || 0, r2: off.r2 || 0, r1: off.r1 || 0,
+            total: off.reviews_total || 0,
             excluded: off.excluded || 0,
             old_count: 0, old_pct: 0,
             is_official: true
