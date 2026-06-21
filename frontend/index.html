@@ -217,6 +217,7 @@ td.tc{text-align:center}
       <span id="syncText">Загрузка...</span>
     </div>
     <button class="tb-btn upload" onclick="openUploadModal()">📊 Загрузить оценки</button>
+    <button class="tb-btn upload" onclick="openFeedbacksUploadModal()">💬 Загрузить старые отзывы</button>
     <button class="tb-btn" id="syncRatingsBtn" onclick="triggerRatingsSync()" title="Добрать рейтинги с WB API для артикулов которых нет в файле">↻ Рейтинги</button>
     <button class="tb-btn" onclick="triggerSync()">↻ Обновить</button>
   </div>
@@ -243,6 +244,24 @@ td.tc{text-align:center}
     <div class="upload-progress" id="uploadProgress">⏳ Загружаем и обрабатываем файл...</div>
     <div class="modal-btns">
       <button class="action-btn" onclick="closeUploadModal()">Отмена</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="feedbacksUploadModal">
+  <div class="modal">
+    <h3>💬 Загрузить отзывы из файла</h3>
+    <p>Скачай файл в WB Partners: <b>Товары и цены → Отзывы и вопросы → Скачать отзывы</b><br>
+    Используй для загрузки старых отзывов (старше года) которые WB API уже не отдаёт.</p>
+    <div class="drop-zone" id="fbDropZone" onclick="document.getElementById('fbFileInput').click()"
+      ondragover="fbDzOver(event)" ondragleave="fbDzLeave(event)" ondrop="fbDzDrop(event)">
+      <input type="file" id="fbFileInput" accept=".xlsx" onchange="handleFeedbacksFile(this.files[0])">
+      <div class="drop-icon">📁</div>
+      <div class="drop-text">Перетащи файл сюда или <b>выбери файл</b><br><span style="font-size:11px">Только .xlsx файлы</span></div>
+    </div>
+    <div class="upload-progress" id="fbUploadProgress">⏳ Загружаем отзывы...</div>
+    <div class="modal-btns">
+      <button class="action-btn" onclick="closeFeedbacksUploadModal()">Отмена</button>
     </div>
   </div>
 </div>
@@ -676,6 +695,42 @@ async function handleFile(file) {
         closeUploadModal();
         loadData();
       }, 1500);
+    }
+  } catch(e) {
+    prog.textContent = '❌ Ошибка: ' + e.message;
+  }
+}
+
+// ---------- Загрузка отзывов из xlsx ----------
+function openFeedbacksUploadModal() { document.getElementById('feedbacksUploadModal').classList.add('on'); }
+function closeFeedbacksUploadModal() {
+  document.getElementById('feedbacksUploadModal').classList.remove('on');
+  document.getElementById('fbUploadProgress').style.display = 'none';
+}
+function fbDzOver(e) { e.preventDefault(); document.getElementById('fbDropZone').classList.add('drag'); }
+function fbDzLeave(e) { document.getElementById('fbDropZone').classList.remove('drag'); }
+function fbDzDrop(e) {
+  e.preventDefault();
+  document.getElementById('fbDropZone').classList.remove('drag');
+  const file = e.dataTransfer.files[0];
+  if(file) handleFeedbacksFile(file);
+}
+
+async function handleFeedbacksFile(file) {
+  if(!file || !file.name.endsWith('.xlsx')) { alert('Нужен файл .xlsx'); return; }
+  const prog = document.getElementById('fbUploadProgress');
+  prog.style.display = 'block';
+  prog.textContent = '⏳ Загружаем отзывы...';
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    const resp = await fetch(`${RAILWAY_URL}/api/upload-feedbacks`, { method: 'POST', body: formData });
+    const result = await resp.json();
+    if(result.error) {
+      prog.textContent = '❌ Ошибка: ' + result.error;
+    } else {
+      prog.textContent = `✅ Загружено ${result.saved} отзывов (из них старых: ${result.old_reviews})`;
+      setTimeout(() => { closeFeedbacksUploadModal(); loadData(); }, 2000);
     }
   } catch(e) {
     prog.textContent = '❌ Ошибка: ' + e.message;
