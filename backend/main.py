@@ -23,6 +23,7 @@ WB_FEEDBACKS_URL = "https://feedbacks-api.wildberries.ru"
 WB_ANALYTICS_URL = "https://seller-analytics-api.wildberries.ru"
 WB_STATISTICS_URL = "https://statistics-api.wildberries.ru"
 WB_SUPPLIES_URL = "https://supplies-api.wildberries.ru"
+WB_PROMOTION_URL = "https://advert-api.wildberries.ru"
 
 # Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
 # а агрегаты — переносим их в отдельные поля stock_totals вместо списка складов.
@@ -143,6 +144,101 @@ def sync_all():
         headers=sb_headers(), timeout=10
     )
     logger.info(f"Sync complete. Total: {total}")
+    sync_ratings_official()
+
+def sync_ratings_official():
+    """Тянет официальный feedbackRating по каждому артикулу из WB Analytics API
+    и сохраняет в ratings_official — это то число, что видит покупатель на WB,
+    уже с учётом всех весов и старых отзывов. Заменяет ручную загрузку xlsx."""
+    if not WB_TOKEN:
+        return
+    logger.info("Syncing official ratings from WB Analytics...")
+
+    WB_ANALYTICS_BASE = "https://seller-analytics-api.wildberries.ru"
+    end_date = datetime.now(timezone.utc).date().isoformat()
+    # Берём период 30 дней — feedbackRating не зависит от периода, он всегда текущий
+    begin_date = (datetime.now(timezone.utc).date() - timedelta(days=30)).isoformat()
+
+    rows = []
+    offset = 0
+    limit = 1000
+    while True:
+        try:
+            resp = httpx.post(
+                f"{WB_ANALYTICS_BASE}/api/analytics/v3/sales-funnel/products",
+                headers=wb_headers(),
+                json={
+                    "selectedPeriod": {"start": begin_date, "end": end_date},
+                    "nmIds": [],
+                    "limit": limit,
+                    "offset": offset
+                },
+                timeout=30
+            )
+            if not resp.is_success:
+                logger.error(f"WB ratings sync error {resp.status_code} {resp.text[:300]}")
+                break
+            data = resp.json()
+            products = (data.get("data") or {}).get("products") or []
+            if not products:
+                break
+            for p in products:
+                prod = p.get("product") or {}
+                nm_id = prod.get("nmId")
+                vendor_code = prod.get("vendorCode") or str(nm_id)
+                feedback_rating = prod.get("feedbackRating")
+                if nm_id and feedback_rating is not None:
+                    rows.append({
+                        "article": vendor_code,
+                        "nm_id": nm_id,
+                        "wb_rating": float(feedback_rating),
+                        "reviews_total": 0,  # feedbackRating не даёт разбивку по звёздам
+                        "r5": 0, "r4": 0, "r3": 0, "r2": 0, "r1": 0,
+                        "excluded": 0,
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    })
+            offset += len(products)
+            if len(products) < limit:
+                break
+            time.sleep(21)  # лимит 3 запроса / 20 сек
+        except Exception as e:
+            logger.error(f"sync_ratings_official exception: {e}")
+            break
+
+    if not rows:
+        logger.info("sync_ratings_official: no data returned")
+        return
+
+    # Полная замена: удаляем всё, вставляем заново
+    try:
+        httpx.delete(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?wb_rating=gte.0",
+            headers={**sb_headers(), "Prefer": "return=minimal"},
+            timeout=15
+        )
+    except Exception:
+        pass
+
+    saved = 0
+    for i in range(0, len(rows), 100):
+        batch = rows[i:i+100]
+        resp = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/ratings_official",
+            json=batch, headers=sb_headers(), timeout=30
+        )
+        if resp.is_success:
+            saved += len(batch)
+        else:
+            logger.error(f"ratings_official insert error {resp.status_code} {resp.text[:200]}")
+
+    httpx.post(
+        f"{SUPABASE_URL}/rest/v1/settings",
+        json={"key": "last_ratings_upload",
+              "value": f"API {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')}",
+              "updated_at": datetime.now(timezone.utc).isoformat()},
+        headers=sb_headers(), timeout=10
+    )
+    logger.info(f"sync_ratings_official: saved {saved} articles")
 
 # ---------- Остатки на складах (WB Analytics: warehouse_remains report) ----------
 
@@ -474,6 +570,128 @@ def sync_supply():
     )
     logger.info(f"Supply sync complete. Rows saved: {saved}")
 
+# ---------- Продвижение (реклама) ----------
+
+def fetch_active_ad_ids() -> list:
+    """Возвращает ID кампаний в статусах, для которых доступна статистика: 7 — завершена, 9 — активна, 11 — на паузе."""
+    try:
+        resp = httpx.get(f"{WB_PROMOTION_URL}/adv/v1/promotion/count", headers=wb_headers(), timeout=20)
+        if not resp.is_success:
+            logger.error(f"WB promotion/count error {resp.status_code} {resp.text[:300]}")
+            return []
+        data = resp.json()
+    except Exception as e:
+        logger.error(f"WB promotion/count exception: {e}")
+        return []
+
+    ids = []
+    for group in data.get("adverts", []):
+        if group.get("status") in (7, 9, 11):
+            for item in group.get("advert_list", []):
+                if item.get("advertId"):
+                    ids.append(item["advertId"])
+    return ids
+
+def fetch_ad_stats_for_ids(ids: list, begin_date: str, end_date: str) -> dict:
+    """Тянет /adv/v3/fullstats по списку кампаний (максимум 50 за раз) и агрегирует
+    показы/клики/расход/заказы/добавления в корзину по nmId."""
+    agg = {}  # nm_id -> {"views":int,"clicks":int,"atbs":int,"orders":int,"spend":float}
+    for i in range(0, len(ids), 50):
+        batch = ids[i:i + 50]
+        try:
+            resp = httpx.get(
+                f"{WB_PROMOTION_URL}/adv/v3/fullstats",
+                headers=wb_headers(),
+                params={"ids": ",".join(str(x) for x in batch), "beginDate": begin_date, "endDate": end_date},
+                timeout=30
+            )
+            if not resp.is_success:
+                logger.error(f"WB fullstats error {resp.status_code} {resp.text[:300]}")
+                continue
+            campaigns = resp.json()
+        except Exception as e:
+            logger.error(f"WB fullstats exception: {e}")
+            continue
+
+        for camp in campaigns or []:
+            for day in camp.get("days", []):
+                for app in day.get("apps", []):
+                    for nm in app.get("nms", []):
+                        nm_id = nm.get("nmId")
+                        if not nm_id:
+                            continue
+                        a = agg.setdefault(nm_id, {"views": 0, "clicks": 0, "atbs": 0, "orders": 0, "spend": 0.0})
+                        a["views"] += nm.get("views", 0) or 0
+                        a["clicks"] += nm.get("clicks", 0) or 0
+                        a["atbs"] += nm.get("atbs", 0) or 0
+                        a["orders"] += nm.get("orders", 0) or 0
+                        a["spend"] += nm.get("sum", 0) or 0
+
+        if i + 50 < len(ids):
+            time.sleep(7)  # лимит 3 запроса / 20 сек
+    return agg
+
+def sync_ads():
+    if not WB_TOKEN:
+        logger.error("WB_TOKEN not set")
+        return
+    logger.info("Starting ads (promotion) sync...")
+    window_days = get_setting_int("ads_window_days", 30)
+    window_days = min(window_days, 31)  # ограничение самого метода WB
+    end_date = datetime.now(timezone.utc).date()
+    begin_date = end_date - timedelta(days=window_days - 1)
+
+    ids = fetch_active_ad_ids()
+    logger.info(f"Ads sync: {len(ids)} campaigns in stats-eligible statuses")
+    if not ids:
+        httpx.delete(f"{SUPABASE_URL}/rest/v1/ad_stats?id=gte.0", headers=sb_headers(), timeout=15)
+        return
+
+    agg = fetch_ad_stats_for_ids(ids, begin_date.isoformat(), end_date.isoformat())
+
+    try:
+        st = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code", headers=sb_headers(), timeout=15)
+        nm_to_vendor = {r["nm_id"]: r["vendor_code"] for r in st.json()} if st.is_success else {}
+    except Exception as e:
+        logger.error(f"sync_ads: stock_totals fetch error {e}")
+        nm_to_vendor = {}
+
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for nm_id, a in agg.items():
+        ctr = round(a["clicks"] / a["views"] * 100, 2) if a["views"] else 0
+        cpc = round(a["spend"] / a["clicks"], 2) if a["clicks"] else 0
+        rows.append({
+            "vendor_code": nm_to_vendor.get(nm_id) or str(nm_id),
+            "nm_id": nm_id,
+            "views": a["views"],
+            "clicks": a["clicks"],
+            "atbs": a["atbs"],
+            "orders": a["orders"],
+            "spend": round(a["spend"], 2),
+            "ctr": ctr,
+            "cpc": cpc,
+            "period_days": window_days,
+            "updated_at": now,
+        })
+
+    httpx.delete(f"{SUPABASE_URL}/rest/v1/ad_stats?id=gte.0", headers=sb_headers(), timeout=15)
+    saved = 0
+    for i in range(0, len(rows), 300):
+        batch = rows[i:i + 300]
+        resp = httpx.post(f"{SUPABASE_URL}/rest/v1/ad_stats", json=batch, headers=sb_headers(), timeout=30)
+        if resp.is_success:
+            saved += len(batch)
+        else:
+            logger.error(f"ad_stats insert error {resp.status_code} {resp.text[:300]}")
+
+    httpx.post(
+        f"{SUPABASE_URL}/rest/v1/settings",
+        json={"key": "last_ads_sync", "value": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"), "updated_at": now},
+        headers=sb_headers(), timeout=10
+    )
+    logger.info(f"Ads sync complete. Articles with ad stats: {saved}")
+
 @app.post("/api/upload-ratings")
 async def upload_ratings(file: UploadFile = File(...)):
     """
@@ -618,6 +836,7 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
 scheduler.add_job(sync_stock, "interval", hours=3, id="sync_stock")
 scheduler.add_job(sync_supply, "interval", hours=4, id="sync_supply")
+scheduler.add_job(sync_ads, "interval", hours=4, id="sync_ads")
 scheduler.start()
 
 @app.get("/")
@@ -671,6 +890,12 @@ def trigger_supply_full_sync():
     threading.Thread(target=sync_stock_then_supply, daemon=True).start()
     return {"status": "started"}
 
+@app.post("/api/sync-ads")
+def trigger_ads_sync():
+    import threading
+    threading.Thread(target=sync_ads, daemon=True).start()
+    return {"status": "started"}
+
 @app.post("/api/save-setting")
 async def save_setting(request: dict):
     """Сохраняет произвольную настройку (например target_coverage_days) в таблицу settings."""
@@ -697,7 +922,7 @@ async def save_setting(request: dict):
 @app.get("/api/dashboard-data")
 def dashboard_data():
     """Отдаёт все данные нужные дашборду одним запросом: группы + рейтинги + отзывы(агрегат) + негатив за периоды + last sync"""
-    result = {"groups": [], "ratings": [], "feedback_stats": [], "negative_counts": {}, "settings": {}, "stock_totals": [], "stock_warehouses": [], "supply_report": []}
+    result = {"groups": [], "ratings": [], "feedback_stats": [], "negative_counts": {}, "settings": {}, "stock_totals": [], "stock_warehouses": [], "supply_report": [], "ad_stats": []}
 
     try:
         gr = httpx.get(
@@ -782,6 +1007,16 @@ def dashboard_data():
             result["supply_report"] = spr.json()
     except Exception as e:
         logger.error(f"dashboard-data supply_report error: {e}")
+
+    try:
+        ads = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/ad_stats?select=*",
+            headers=sb_headers(), timeout=20
+        )
+        if ads.is_success:
+            result["ad_stats"] = ads.json()
+    except Exception as e:
+        logger.error(f"dashboard-data ad_stats error: {e}")
 
     return result
 
