@@ -81,11 +81,17 @@ def fetch_archive_page(skip: int):
 def is_supplemented(f: dict) -> bool:
     return bool(f.get("isEdited") or f.get("supplementedFeedbackId"))
 
-def process_feedback(f: dict) -> dict:
+def process_feedback(f: dict, nm_to_vendor: dict = None) -> dict:
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=365)
     pd_data = f.get("productDetails", {})
-    article = pd_data.get("supplierArticle", "") or str(pd_data.get("nmId", ""))
+    nm_id = pd_data.get("nmId")
+    supplier_article = pd_data.get("supplierArticle", "")
+    # Если WB не вернул supplierArticle — берём из нашей карты nm_id→vendor_code
+    # чтобы не хранить отзыв как "208715116" вместо "000Braslet1"
+    if not supplier_article and nm_id and nm_to_vendor:
+        supplier_article = nm_to_vendor.get(nm_id, "")
+    article = supplier_article or str(nm_id or "")
     date_str = f.get("createdDate") or f.get("updatedDate") or ""
     try:
         date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
@@ -94,7 +100,7 @@ def process_feedback(f: dict) -> dict:
     return {
         "id": f.get("id", ""),
         "article": article,
-        "nm_id": pd_data.get("nmId"),
+        "nm_id": nm_id,
         "stars": f.get("productValuation", 0),
         "created_date": date.isoformat(),
         "is_old": date < cutoff,
@@ -110,13 +116,27 @@ def sync_all():
     logger.info("Starting sync...")
     total = 0
 
+    # Строим карту nmId → vendor_code из stock_totals чтобы исправить артикулы
+    # у которых WB не вернул supplierArticle (тогда они попадают как "208715116" вместо "000Braslet1")
+    nm_to_vendor = {}
+    try:
+        st = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code",
+            headers=sb_headers(), timeout=15
+        )
+        if st.is_success:
+            nm_to_vendor = {r["nm_id"]: r["vendor_code"] for r in st.json() if r.get("nm_id") and r.get("vendor_code")}
+            logger.info(f"sync_all: nm_to_vendor map built: {len(nm_to_vendor)} entries")
+    except Exception as e:
+        logger.error(f"sync_all: failed to build nm_to_vendor: {e}")
+
     for is_answered in [True, False]:
         skip = 0
         while skip <= 199990:
             batch = fetch_feedbacks_page(is_answered, skip)
             if not batch:
                 break
-            processed = [process_feedback(f) for f in batch if f.get("id") and not is_supplemented(f)]
+            processed = [process_feedback(f, nm_to_vendor) for f in batch if f.get("id") and not is_supplemented(f)]
             total += upsert_feedbacks(processed)
             logger.info(f"  answered={is_answered} skip={skip} saved={len(processed)}")
             skip += len(batch)
@@ -129,7 +149,7 @@ def sync_all():
         batch = fetch_archive_page(skip)
         if not batch:
             break
-        processed = [process_feedback(f) for f in batch if f.get("id")]
+        processed = [process_feedback(f, nm_to_vendor) for f in batch if f.get("id")]
         total += upsert_feedbacks(processed)
         logger.info(f"  archive skip={skip} saved={len(processed)}")
         skip += len(batch)
@@ -822,6 +842,122 @@ async def upload_ratings(file: UploadFile = File(...)):
 
     except Exception as e:
         logger.error(f"Upload error: {e}")
+        return {"error": str(e)}
+
+@app.post("/api/upload-feedbacks")
+async def upload_feedbacks(file: UploadFile = File(...)):
+    """Принимает xlsx с отзывами (выгрузка из WB Partners) и загружает их в feedbacks.
+    Используется для старых отзывов которые WB API больше не отдаёт (старше года).
+    Формат: ID отзыва / Дата / Артикул продавца / Артикул WB / Количество звезд / Текст отзыва / Ответ"""
+    try:
+        contents = await file.read()
+        xl = pd.ExcelFile(io.BytesIO(contents))
+        df = pd.read_excel(io.BytesIO(contents), sheet_name=xl.sheet_names[0])
+
+        # Нормализуем названия колонок
+        df.columns = [str(c).strip() for c in df.columns]
+
+        col_map = {}
+        for i, c in enumerate(df.columns):
+            cl = c.lower()
+            if 'id отзыва' in cl or (cl == 'id' and 'отзыв' in cl): col_map['id'] = c
+            elif 'дата' in cl: col_map['date'] = c
+            elif 'артикул продавца' in cl: col_map['vendor_code'] = c
+            elif 'артикул wb' in cl or 'артикул вб' in cl: col_map['nm_id'] = c
+            elif 'звезд' in cl or 'оценк' in cl: col_map['stars'] = c
+            elif 'текст отзыва' in cl: col_map['text'] = c
+            elif 'достоинств' in cl: col_map['pros'] = c
+            elif 'ответ' in cl and 'id' not in cl: col_map['answer'] = c
+
+        required = ['id', 'stars']
+        missing = [k for k in required if k not in col_map]
+        if missing:
+            return {"error": f"Не найдены колонки: {missing}. Загрузи файл «Отзывы» из WB Partners."}
+
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=365)
+        rows = []
+        for _, row in df.iterrows():
+            fb_id = str(row[col_map['id']]).strip() if 'id' in col_map else None
+            if not fb_id or fb_id == 'nan':
+                continue
+
+            # Дата
+            date_val = row.get(col_map.get('date', '')) if col_map.get('date') else None
+            try:
+                if hasattr(date_val, 'isoformat'):
+                    date = date_val.replace(tzinfo=None) if hasattr(date_val, 'tzinfo') else date_val
+                else:
+                    date = datetime.fromisoformat(str(date_val))
+            except Exception:
+                date = now.replace(tzinfo=None)
+
+            # Текст
+            text_parts = []
+            if col_map.get('text') and str(row.get(col_map['text'], '')).strip() not in ('', 'nan'):
+                text_parts.append(str(row[col_map['text']]).strip())
+            if col_map.get('pros') and str(row.get(col_map['pros'], '')).strip() not in ('', 'nan'):
+                text_parts.append(str(row[col_map['pros']]).strip())
+            text = ' '.join(text_parts)[:500]
+
+            vendor_code = str(row.get(col_map.get('vendor_code', ''), '')).strip() if col_map.get('vendor_code') else ''
+            if vendor_code == 'nan': vendor_code = ''
+            nm_id_raw = row.get(col_map.get('nm_id', '')) if col_map.get('nm_id') else None
+            try:
+                nm_id = int(float(nm_id_raw)) if nm_id_raw and str(nm_id_raw) != 'nan' else None
+            except (ValueError, TypeError):
+                nm_id = None
+
+            article = vendor_code or (str(nm_id) if nm_id else fb_id)
+
+            stars_raw = row.get(col_map.get('stars', ''), 0)
+            try:
+                stars = int(float(stars_raw))
+            except (ValueError, TypeError):
+                stars = 0
+
+            has_answer = bool(col_map.get('answer') and str(row.get(col_map['answer'], '')).strip() not in ('', 'nan'))
+
+            # Делаем дату aware для сравнения
+            date_aware = date if hasattr(date, 'tzinfo') and date.tzinfo else date.replace(tzinfo=None)
+            cutoff_naive = cutoff.replace(tzinfo=None)
+            is_old = date_aware < cutoff_naive
+
+            rows.append({
+                "id": fb_id,
+                "article": article,
+                "nm_id": nm_id,
+                "stars": stars,
+                "created_date": date.isoformat() if hasattr(date, 'isoformat') else str(date),
+                "is_old": is_old,
+                "is_answered": has_answer,
+                "text": text,
+                "updated_at": now.isoformat()
+            })
+
+        if not rows:
+            return {"error": "Не найдено строк с данными"}
+
+        # Upsert батчами (on conflict по id — обновляем существующие)
+        headers_upsert = {**sb_headers(), "Prefer": "resolution=merge-duplicates"}
+        saved = 0
+        for i in range(0, len(rows), 500):
+            batch = rows[i:i+500]
+            resp = httpx.post(
+                f"{SUPABASE_URL}/rest/v1/feedbacks",
+                json=batch, headers=headers_upsert, timeout=30
+            )
+            if resp.is_success:
+                saved += len(batch)
+            else:
+                logger.error(f"upload-feedbacks insert error {resp.status_code} {resp.text[:300]}")
+
+        old_count = sum(1 for r in rows if r['is_old'])
+        logger.info(f"upload-feedbacks: inserted {saved} rows ({old_count} old reviews)")
+        return {"status": "ok", "saved": saved, "total": len(rows), "old_reviews": old_count}
+
+    except Exception as e:
+        logger.error(f"upload-feedbacks error: {e}")
         return {"error": str(e)}
 
 scheduler = BackgroundScheduler()
