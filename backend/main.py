@@ -147,98 +147,85 @@ def sync_all():
     sync_ratings_official()
 
 def sync_ratings_official():
-    """Тянет официальный feedbackRating по каждому артикулу из WB Analytics API
-    и сохраняет в ratings_official — это то число, что видит покупатель на WB,
-    уже с учётом всех весов и старых отзывов. Заменяет ручную загрузку xlsx."""
+    """Добирает рейтинг с WB API только для тех артикулов которых НЕТ в ratings_official.
+    Приоритет: xlsx (загружен вручную) > WB API (заглушка для артикулов со старыми отзывами)."""
     if not WB_TOKEN:
         return
-    logger.info("Syncing official ratings from WB Analytics...")
+    logger.info("sync_ratings_official: checking for missing articles...")
 
+    # Шаг 1 — какие nm_id уже есть (загружены через xlsx)
+    try:
+        ex = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?select=nm_id",
+            headers=sb_headers(), timeout=15
+        )
+        existing_nm_ids = {r["nm_id"] for r in (ex.json() if ex.is_success else [])}
+    except Exception as e:
+        logger.error(f"sync_ratings_official: cant fetch existing: {e}")
+        return
+
+    logger.info(f"sync_ratings_official: {len(existing_nm_ids)} articles from xlsx, fetching the rest from WB API...")
+
+    # Шаг 2 — тянем все артикулы с WB Analytics
     WB_ANALYTICS_BASE = "https://seller-analytics-api.wildberries.ru"
     end_date = datetime.now(timezone.utc).date().isoformat()
-    # Берём период 30 дней — feedbackRating не зависит от периода, он всегда текущий
     begin_date = (datetime.now(timezone.utc).date() - timedelta(days=30)).isoformat()
 
-    rows = []
+    all_from_api = []
     offset = 0
-    limit = 1000
     while True:
         try:
             resp = httpx.post(
                 f"{WB_ANALYTICS_BASE}/api/analytics/v3/sales-funnel/products",
                 headers=wb_headers(),
-                json={
-                    "selectedPeriod": {"start": begin_date, "end": end_date},
-                    "nmIds": [],
-                    "limit": limit,
-                    "offset": offset
-                },
+                json={"selectedPeriod": {"start": begin_date, "end": end_date},
+                      "nmIds": [], "limit": 1000, "offset": offset},
                 timeout=30
             )
             if not resp.is_success:
-                logger.error(f"WB ratings sync error {resp.status_code} {resp.text[:300]}")
+                logger.error(f"WB ratings API error {resp.status_code} {resp.text[:200]}")
                 break
-            data = resp.json()
-            products = (data.get("data") or {}).get("products") or []
+            products = (resp.json().get("data") or {}).get("products") or []
             if not products:
                 break
             for p in products:
                 prod = p.get("product") or {}
                 nm_id = prod.get("nmId")
                 vendor_code = prod.get("vendorCode") or str(nm_id)
-                feedback_rating = prod.get("feedbackRating")
-                if nm_id and feedback_rating is not None:
-                    rows.append({
-                        "article": vendor_code,
-                        "nm_id": nm_id,
-                        "wb_rating": float(feedback_rating),
-                        "reviews_total": 0,  # feedbackRating не даёт разбивку по звёздам
-                        "r5": 0, "r4": 0, "r3": 0, "r2": 0, "r1": 0,
-                        "excluded": 0,
-                        "updated_at": datetime.now(timezone.utc).isoformat()
-                    })
+                # productRating — десятичный (4.84), feedbackRating — целое (4)
+                rating = prod.get("productRating") or prod.get("feedbackRating")
+                if nm_id and rating is not None:
+                    all_from_api.append({"nm_id": nm_id, "article": vendor_code, "rating": float(rating)})
             offset += len(products)
-            if len(products) < limit:
+            if len(products) < 1000:
                 break
-            time.sleep(21)  # лимит 3 запроса / 20 сек
+            time.sleep(21)
         except Exception as e:
-            logger.error(f"sync_ratings_official exception: {e}")
+            logger.error(f"sync_ratings_official fetch: {e}")
             break
 
-    if not rows:
-        logger.info("sync_ratings_official: no data returned")
+    # Шаг 3 — вставляем только отсутствующие (не перезаписываем xlsx)
+    now = datetime.now(timezone.utc).isoformat()
+    to_insert = [
+        {"article": r["article"], "nm_id": r["nm_id"], "wb_rating": r["rating"],
+         "reviews_total": 0, "r5": 0, "r4": 0, "r3": 0, "r2": 0, "r1": 0,
+         "excluded": 0, "updated_at": now}
+        for r in all_from_api if r["nm_id"] not in existing_nm_ids
+    ]
+
+    logger.info(f"sync_ratings_official: {len(all_from_api)} from API, {len(to_insert)} new to insert")
+    if not to_insert:
         return
 
-    # Полная замена: удаляем всё, вставляем заново
-    try:
-        httpx.delete(
-            f"{SUPABASE_URL}/rest/v1/ratings_official?wb_rating=gte.0",
-            headers={**sb_headers(), "Prefer": "return=minimal"},
-            timeout=15
-        )
-    except Exception:
-        pass
-
     saved = 0
-    for i in range(0, len(rows), 100):
-        batch = rows[i:i+100]
-        resp = httpx.post(
-            f"{SUPABASE_URL}/rest/v1/ratings_official",
-            json=batch, headers=sb_headers(), timeout=30
-        )
+    for i in range(0, len(to_insert), 100):
+        resp = httpx.post(f"{SUPABASE_URL}/rest/v1/ratings_official",
+                          json=to_insert[i:i+100], headers=sb_headers(), timeout=30)
         if resp.is_success:
-            saved += len(batch)
+            saved += len(to_insert[i:i+100])
         else:
             logger.error(f"ratings_official insert error {resp.status_code} {resp.text[:200]}")
-
-    httpx.post(
-        f"{SUPABASE_URL}/rest/v1/settings",
-        json={"key": "last_ratings_upload",
-              "value": f"API {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')}",
-              "updated_at": datetime.now(timezone.utc).isoformat()},
-        headers=sb_headers(), timeout=10
-    )
-    logger.info(f"sync_ratings_official: saved {saved} articles")
+    logger.info(f"sync_ratings_official: inserted {saved} articles from API fallback")
 
 # ---------- Остатки на складах (WB Analytics: warehouse_remains report) ----------
 
@@ -804,7 +791,12 @@ async def upload_ratings(file: UploadFile = File(...)):
         if not rows:
             return {"error": "Не найдено строк с данными"}
 
-        # Сохраняем в Supabase батчами по 100
+        # Полная замена: удаляем старые (включая API-заглушки), вставляем свежие из xlsx
+        httpx.delete(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?wb_rating=gte.0",
+            headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=15
+        )
+
         saved = 0
         for i in range(0, len(rows), 100):
             batch = rows[i:i+100]
@@ -865,6 +857,12 @@ def status():
 def trigger_sync():
     import threading
     threading.Thread(target=sync_all, daemon=True).start()
+    return {"status": "started"}
+
+@app.post("/api/sync-ratings")
+def trigger_ratings_sync():
+    import threading
+    threading.Thread(target=sync_ratings_official, daemon=True).start()
     return {"status": "started"}
 
 @app.post("/api/sync-stock")
