@@ -938,23 +938,29 @@ async def upload_feedbacks(file: UploadFile = File(...)):
         if not rows:
             return {"error": "Не найдено строк с данными"}
 
-        # Upsert батчами (on conflict по id — обновляем существующие)
+        # Upsert по колонке id — обновляем если уже есть, вставляем если нет
         headers_upsert = {**sb_headers(), "Prefer": "resolution=merge-duplicates"}
         saved = 0
+        errors = []
         for i in range(0, len(rows), 500):
             batch = rows[i:i+500]
             resp = httpx.post(
-                f"{SUPABASE_URL}/rest/v1/feedbacks",
+                f"{SUPABASE_URL}/rest/v1/feedbacks?on_conflict=id",
                 json=batch, headers=headers_upsert, timeout=30
             )
             if resp.is_success:
                 saved += len(batch)
             else:
-                logger.error(f"upload-feedbacks insert error {resp.status_code} {resp.text[:300]}")
+                err = f"batch {i}: {resp.status_code} {resp.text[:300]}"
+                logger.error(f"upload-feedbacks insert error {err}")
+                errors.append(err)
 
         old_count = sum(1 for r in rows if r['is_old'])
-        logger.info(f"upload-feedbacks: inserted {saved} rows ({old_count} old reviews)")
-        return {"status": "ok", "saved": saved, "total": len(rows), "old_reviews": old_count}
+        logger.info(f"upload-feedbacks: inserted {saved}/{len(rows)} rows ({old_count} old reviews)")
+        result = {"status": "ok", "saved": saved, "total": len(rows), "old_reviews": old_count}
+        if errors:
+            result["errors"] = errors
+        return result
 
     except Exception as e:
         logger.error(f"upload-feedbacks error: {e}")
