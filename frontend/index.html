@@ -208,7 +208,7 @@ td.tc{text-align:center}
     <div class="tb-nav-item on" onclick="showSection('products',this)">Товары и цены</div>
     <div class="tb-nav-item" onclick="showSection('supplies',this)">Поставки и заказы</div>
     <div class="tb-nav-item">Аналитика</div>
-    <div class="tb-nav-item">Продвижение</div>
+    <div class="tb-nav-item" onclick="showSection('ads',this)">Продвижение</div>
     <div class="tb-nav-item">Финансы</div>
   </div>
   <div class="tb-right">
@@ -217,6 +217,7 @@ td.tc{text-align:center}
       <span id="syncText">Загрузка...</span>
     </div>
     <button class="tb-btn upload" onclick="openUploadModal()">📊 Загрузить оценки</button>
+    <button class="tb-btn" id="syncRatingsBtn" onclick="triggerRatingsSync()" title="Добрать рейтинги с WB API для артикулов которых нет в файле">↻ Рейтинги</button>
     <button class="tb-btn" onclick="triggerSync()">↻ Обновить</button>
   </div>
 </div>
@@ -347,6 +348,24 @@ td.tc{text-align:center}
   <div id="supplyRoot"><div class="loading"><div class="spinner"></div><span>Загружаем рекомендации...</span></div></div>
 </div>
 
+<div class="page" id="page-ads">
+  <div class="toolbar">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="adsSearch" placeholder="Поиск по артикулу..." oninput="renderAds()">
+    </div>
+    <span style="font-size:12px;color:var(--wb-muted)">Период:</span>
+    <input id="adsWindowInput" type="number" min="1" max="31" style="width:56px;border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 8px;font-size:12px;font-family:inherit" onchange="setAdsWindow(this.value)">
+    <span style="font-size:12px;color:var(--wb-muted)">дней (макс. 31)</span>
+    <span id="adsSyncInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
+    <div class="ml-auto">
+      <button class="action-btn" id="adsSyncBtn" onclick="triggerAdsSync()">↻ Обновить</button>
+    </div>
+  </div>
+  <div class="cards" id="adsCards"></div>
+  <div id="adsRoot"><div class="loading"><div class="spinner"></div><span>Загружаем статистику рекламы...</span></div></div>
+</div>
+
 <script>
 const RAILWAY_URL = 'https://wb-dashboard-production-baf4.up.railway.app';
 
@@ -355,6 +374,7 @@ var HAS_OFFICIAL = false;
 var dragArt = null, dragFrom = null;
 var STOCK_TOTALS = [];
 var SUPPLY_REPORT = [], TARGET_DAYS = 30;
+var AD_STATS = [], ADEXP = {};
 
 // Products page state
 var NEG_COUNTS = {};                 // {"5": [{article,negative_count}], "7": [...], "30": [...]}
@@ -391,6 +411,7 @@ function showSection(sec, btn) {
   document.getElementById('subnav-products').style.display = sec === 'products' ? 'flex' : 'none';
   if(sec === 'products') showPage('products', document.querySelector('#subnav-products .sn-item'));
   else if(sec === 'supplies') showPage('supply-recs', null);
+  else if(sec === 'ads') showPage('ads', null);
 }
 
 function showPage(id, btn) {
@@ -401,6 +422,7 @@ function showPage(id, btn) {
   if(id === 'groups') renderGroupManager();
   if(id === 'products') renderProducts();
   if(id === 'supply-recs') renderSupplyRecs();
+  if(id === 'ads') renderAds();
 }
 
 async function loadData() {
@@ -474,6 +496,13 @@ async function loadData() {
     const suEl = document.getElementById('supplyUploadInfo');
     if(suEl) suEl.textContent = (data.settings || {}).last_supply_sync ? 'Обновлено: ' + data.settings.last_supply_sync : 'Данные ещё не загружены';
 
+    // Продвижение — статистика рекламы
+    AD_STATS = data.ad_stats || [];
+    const awEl = document.getElementById('adsWindowInput');
+    if(awEl) awEl.value = parseInt((data.settings || {}).ads_window_days) || 30;
+    const asEl = document.getElementById('adsSyncInfo');
+    if(asEl) asEl.textContent = (data.settings || {}).last_ads_sync ? 'Обновлено: ' + data.settings.last_ads_sync : 'Данные ещё не загружены';
+
     if(EXP && Object.keys(EXP).length === 0) {
       Object.keys(GROUPS).concat(['Без склейки']).forEach(g => { EXP[g] = true; });
     }
@@ -515,6 +544,21 @@ async function triggerSync() {
   }
 }
 
+async function triggerRatingsSync() {
+  const btn = document.getElementById('syncRatingsBtn');
+  if(btn) { btn.disabled = true; btn.textContent = '⏳ Рейтинги...'; }
+  try {
+    await fetch(`${RAILWAY_URL}/api/sync-ratings`, { method: 'POST' });
+    // Рейтинги с API приходят быстро (~5-10 сек)
+    setTimeout(async () => {
+      await loadData();
+      if(btn) { btn.disabled = false; btn.textContent = '↻ Рейтинги'; }
+    }, 15000);
+  } catch(e) {
+    if(btn) { btn.disabled = false; btn.textContent = '↻ Рейтинги'; }
+  }
+}
+
 // Поставки: одна кнопка обновляет и остатки, и заказы/продажи (бэкенд делает это последовательно)
 async function triggerSupplySync() {
   const btn = document.getElementById('supplySyncBtn');
@@ -544,6 +588,36 @@ async function setSalesWindow(v) {
     });
   } catch(e) {}
   triggerSupplySync(); // окно изменилось — пересчёт нужен заново через WB, а не на лету
+}
+
+async function triggerAdsSync() {
+  const btn = document.getElementById('adsSyncBtn');
+  const info = document.getElementById('adsSyncInfo');
+  if(btn) btn.disabled = true;
+  if(info) info.textContent = 'Запросили статистику у WB...';
+  try {
+    await fetch(`${RAILWAY_URL}/api/sync-ads`, { method: 'POST' });
+    setTimeout(async () => {
+      await loadData();
+      if(document.getElementById('page-ads').classList.contains('on')) renderAds();
+      if(btn) btn.disabled = false;
+    }, 30000);
+  } catch(e) {
+    if(info) info.textContent = 'Ошибка запроса';
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function setAdsWindow(v) {
+  const days = Math.min(31, Math.max(1, parseInt(v) || 30));
+  document.getElementById('adsWindowInput').value = days;
+  try {
+    await fetch(`${RAILWAY_URL}/api/save-setting`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key: 'ads_window_days', value: days})
+    });
+  } catch(e) {}
+  triggerAdsSync(); // период изменился — нужен новый запрос к WB
 }
 
 async function setTargetDays(v) {
@@ -1288,6 +1362,98 @@ function renderSupplyRecs() {
   let note = '';
   if(!STOCK_TOTALS.length) note = '<div class="empty" style="margin-bottom:10px">Колонки «В пути», «Всего на складах» пока пустые — это подтянется после первой полной синхронизации.</div>';
   document.getElementById('supplyRoot').innerHTML = note + renderSupplyMatrixTable(matrix);
+}
+
+// ---------- Продвижение (реклама) ----------
+function adsGroupBlock(grp, arts) {
+  const color = gc(grp);
+  const tot = {views:0, clicks:0, atbs:0, orders:0, spend:0};
+  arts.forEach(a => { tot.views+=a.views; tot.clicks+=a.clicks; tot.atbs+=a.atbs; tot.orders+=a.orders; tot.spend+=a.spend; });
+  const totCtr = tot.views ? (tot.clicks/tot.views*100).toFixed(2) : '0.00';
+  const totCpc = tot.clicks ? (tot.spend/tot.clicks).toFixed(2) : '0.00';
+  const gid = 'ad_' + grp.replace(/[^a-zа-я0-9]/gi,'_');
+  const isOpen = ADEXP[grp] !== false;
+  const sorted = [...arts].sort((a,b) => b.spend - a.spend);
+
+  const rows = sorted.map(a => `<tr style="${!a.spend?'opacity:.5':''}">
+    <td><div class="art">${a.vendor_code}</div><div class="nmid">${a.nm_id||'—'}</div></td>
+    <td class="tr2">${fmt(a.views)}</td>
+    <td class="tr2">${fmt(a.clicks)}</td>
+    <td class="tr2">${a.ctr}%</td>
+    <td class="tr2" style="font-weight:600;color:var(--wb-purple)">${fmt(a.spend)} ₽</td>
+    <td class="tr2">${fmt(a.orders)}</td>
+    <td class="tr2">${a.cpc} ₽</td>
+  </tr>`).join('');
+
+  const totRow = `<tr class="total-row">
+    <td><span class="total-label">∑ Итого по склейке</span></td>
+    <td class="tr2" style="font-weight:600">${fmt(tot.views)}</td>
+    <td class="tr2" style="font-weight:600">${fmt(tot.clicks)}</td>
+    <td class="tr2" style="font-weight:600">${totCtr}%</td>
+    <td class="tr2" style="font-weight:600;color:var(--wb-purple)">${fmt(Math.round(tot.spend))} ₽</td>
+    <td class="tr2" style="font-weight:600">${fmt(tot.orders)}</td>
+    <td class="tr2" style="font-weight:600">${totCpc} ₽</td>
+  </tr>`;
+
+  return `<div class="group${isOpen?' open':''}" id="${gid}">
+    <div class="gh" onclick="TAD('${encodeURIComponent(grp)}')">
+      <div class="gh-color" style="background:${color}"></div>
+      <div class="gh-name">${grp}</div>
+      <div class="gh-stats"><span class="gh-stat">${arts.length} арт.</span></div>
+      <span class="gh-rating" style="font-size:15px;color:var(--wb-purple)">${fmt(Math.round(tot.spend))} ₽</span>
+      <span class="gh-arr">▾</span>
+    </div>
+    <div class="gbody"><div class="tw"><table>
+      <thead><tr><th>Артикул</th><th class="tr2">Показы</th><th class="tr2">Клики</th><th class="tr2">CTR</th><th class="tr2">Расход</th><th class="tr2">Заказы</th><th class="tr2">CPC</th></tr></thead>
+      <tbody>${rows}${totRow}</tbody>
+    </table></div></div>
+  </div>`;
+}
+
+function TAD(gE) {
+  const g = decodeURIComponent(gE);
+  ADEXP[g] = ADEXP[g] === false ? true : false;
+  renderAds();
+}
+
+function renderAds() {
+  if(!AD_STATS.length) {
+    document.getElementById('adsCards').innerHTML = '';
+    document.getElementById('adsRoot').innerHTML = '<div class="empty">Данных пока нет. Нажми «Обновить» — соберём статистику рекламы с WB.</div>';
+    return;
+  }
+  const q = (document.getElementById('adsSearch').value||'').toLowerCase();
+  let rows = AD_STATS;
+  if(q) rows = rows.filter(r => (r.vendor_code||'').toLowerCase().includes(q) || String(r.nm_id||'').includes(q));
+
+  const totViews = rows.reduce((s,r)=>s+(r.views||0),0);
+  const totClicks = rows.reduce((s,r)=>s+(r.clicks||0),0);
+  const totSpend = rows.reduce((s,r)=>s+(r.spend||0),0);
+  const totOrders = rows.reduce((s,r)=>s+(r.orders||0),0);
+  document.getElementById('adsCards').innerHTML = [
+    ['Показы', fmt(totViews)],
+    ['Клики', fmt(totClicks)],
+    ['Расход, ₽', fmt(Math.round(totSpend)), 'color:var(--wb-purple)'],
+    ['Заказы из рекламы', fmt(totOrders)],
+  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+
+  const gnames = Object.keys(GROUPS).concat(['Без склейки']);
+  const ga = new Set(Object.values(GROUPS).flat());
+  const grouped = {};
+  gnames.forEach(g => { grouped[g] = []; });
+  Object.entries(GROUPS).forEach(([g, list]) => {
+    const set = new Set(list);
+    rows.forEach(r => { if(set.has(r.vendor_code)) grouped[g].push(r); });
+  });
+  rows.forEach(r => { if(!ga.has(r.vendor_code)) grouped['Без склейки'].push(r); });
+
+  let html = '';
+  gnames.forEach(g => {
+    const arts = grouped[g] || [];
+    if(!arts.length) return;
+    html += adsGroupBlock(g, arts);
+  });
+  document.getElementById('adsRoot').innerHTML = html || '<div class="empty">Ничего не найдено</div>';
 }
 
 loadData();
