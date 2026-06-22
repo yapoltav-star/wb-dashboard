@@ -8,14 +8,14 @@
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --wb-purple:#7B2FBE;--wb-purple-dark:#5B1F9E;--wb-purple-light:#F3E8FF;
-  --wb-bg:#F8F7FA;--wb-surface:#FFFFFF;--wb-border:#E8E4F0;
-  --wb-text:#1A1A2E;--wb-muted:#6B6B8A;--wb-faint:#A0A0BB;
+  --wb-purple:#D4622A;--wb-purple-dark:#4A4540;--wb-purple-light:#FFF0E8;
+  --wb-bg:#F5F3F0;--wb-surface:#FFFFFF;--wb-border:#E2DDD8;
+  --wb-text:#1A1816;--wb-muted:#6B6560;--wb-faint:#A09890;
   --green:#12B76A;--red:#F04438;--amber:#F79009;--blue:#2E90FA;
   --r:8px;--rs:6px;
 }
 body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text);min-height:100vh}
-.topbar{background:var(--wb-purple-dark);padding:0 24px;display:flex;align-items:center;height:48px;gap:0}
+.topbar{background:#4A4540;padding:0 24px;display:flex;align-items:center;height:52px;gap:0;border-bottom:3px solid #D4622A}
 .tb-logo{display:flex;align-items:center;gap:8px;margin-right:32px}
 .tb-logo-text{color:#fff;font-size:13px;font-weight:600;letter-spacing:.5px}
 .tb-nav{display:flex;height:100%}
@@ -93,10 +93,11 @@ td.tc{text-align:center}
 .official-tag{font-size:9px;background:#DCFCE7;color:#166534;padding:1px 4px;border-radius:3px;margin-left:4px;vertical-align:middle;font-weight:500}
 .nodata td{opacity:.45}
 .total-row td{background:#F8F5FF!important;border-top:2px solid #D4AAFF!important}
-.total-row:hover td{background:#F3EEFF!important}
+.total-row:hover td{background:#FFF0E8!important}
 .matrix-wrap{overflow-x:auto;border:1px solid var(--wb-border);border-radius:var(--r);background:var(--wb-surface)}
 .matrix{border-collapse:separate;border-spacing:0;font-size:12px;min-width:100%}
 .matrix th,.matrix td{padding:8px 10px;border-bottom:1px solid #F5F3FA;border-right:1px solid #F5F3FA;text-align:right;white-space:nowrap}
+.matrix .wh-start td,.matrix thead .wh-start{border-left:2px solid #D4A898}
 .matrix thead th{position:sticky;top:0;background:#FAFAFA;font-size:10px;color:var(--wb-muted);font-weight:600;text-transform:uppercase;letter-spacing:.3px;z-index:2}
 .matrix thead tr:first-child th{text-align:center;border-bottom:1px solid var(--wb-border)}
 .matrix .mcol-art{position:sticky;left:0;z-index:3;background:var(--wb-surface);text-align:left;box-shadow:2px 0 4px rgba(0,0,0,.05);min-width:150px}
@@ -105,7 +106,7 @@ td.tc{text-align:center}
 .matrix .m-recommend{font-weight:700;color:var(--wb-purple)}
 .matrix .m-recommend.zero{font-weight:400;color:var(--wb-faint)}
 .matrix .m-info{background:#F8F5FF}
-.matrix thead th.m-info{background:#F3EEFF}
+.matrix thead th.m-info{background:#FFF0E8}
 .matrix tbody tr.pinned td{background:#FFFBEB}
 .matrix tbody tr.pinned td.mcol-art{background:#FFFBEB}
 .matrix tbody tr.dragging{opacity:.4}
@@ -206,8 +207,7 @@ td.tc{text-align:center}
 
 <div class="topbar">
   <div class="tb-logo">
-    <div style="background:#fff;border-radius:4px;padding:2px 6px;font-size:11px;font-weight:800;color:var(--wb-purple-dark)">wb</div>
-    <span class="tb-logo-text">partners</span>
+    <img src="data:image/png;base64,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" alt="PVS" style="height:36px;width:auto;display:block">
   </div>
   <div class="tb-nav">
     <div class="tb-nav-item">Рост продаж</div>
@@ -392,7 +392,7 @@ var prodOpen = {};                   // expanded state per article
 var prodFeedbackCache = {};          // cache of fetched negative feedback texts per article+period+stars
 var dragProdArt = null;
 
-var GROUP_COLORS = ['#7B2FBE','#2E90FA','#12B76A','#F79009','#F04438','#6172F3','#EE46BC'];
+var GROUP_COLORS = ['#D4622A','#2E90FA','#12B76A','#F79009','#F04438','#6172F3','#EE46BC'];
 function gc(g) {
   var keys = Object.keys(GROUPS);
   var i = keys.indexOf(g);
@@ -743,7 +743,7 @@ function artRow(a, bg) {
 
   // Ручная оценка — показываем инпуты
   if(a.is_manual && a._editing) {
-    return `<tr style="background:#F3EEFF">
+    return `<tr style="background:#FFF0E8">
       <td><div class="art">${a.article}</div><div class="nmid">${a.nm_id||'—'}</div></td>
       <td class="tc" id="rat_${sa}"><span style="color:${rc(rat)}">${parseFloat(rat).toFixed(2)} <span style="font-size:10px;color:var(--wb-muted)">✏️</span></span></td>
       <td class="tr2"><input class="manual-input" id="r5_${sa}" type="number" min="0" placeholder="★5" value="${a.r5||0}"></td>
@@ -777,14 +777,14 @@ function artRow(a, bg) {
   const exclBadge = (a.excluded||0) > 0
     ? `<span class="excl-badge">↩ ${fmt(a.excluded)}</span>`
     : '<span style="color:var(--wb-faint);font-size:11px">—</span>';
-  const manualTag = a.is_manual
-    ? `<button class="edit-rating-btn" onclick="editManualRating('${sa}')" title="Изменить ручную оценку">✏️</button>`
+  const editBtn = a.is_official
+    ? `<button class="edit-rating-btn" onclick="editManualRating('${sa}')" title="Изменить оценку вручную">✏️</button>`
     : '';
   const ratingCell = rat
-    ? `<span class="rnum${a.is_official?'-official':''}" style="color:${rc(rat)}">${parseFloat(rat).toFixed(2)}${a.is_official?'<span class="official-tag">WB</span>':''}</span>${manualTag}`
+    ? `<span class="rnum${a.is_official?'-official':''}" style="color:${rc(rat)}">${parseFloat(rat).toFixed(2)}${a.is_official?'<span class="official-tag">WB</span>':''}</span>${editBtn}`
     : '<span style="color:var(--wb-faint)">—</span>';
 
-  const rowBg = a.is_manual ? '#F5F0FF' : bg;
+  const rowBg = a.is_manual ? '#FFF3EC' : bg;
 
   return `<tr style="background:${rowBg}">
     <td><div class="art">${a.article}</div><div class="nmid">${a.nm_id||'—'}</div></td>
@@ -1372,7 +1372,7 @@ function renderSupplyMatrixTable(matrix) {
 
   const whHead1 = warehouses.map((w,i) => `<th colspan="4" class="${i%2?'wh-even':''}" draggable="true" title="Перетащи чтобы поменять порядок складов"
       ondragstart="whDS(event,'${encodeURIComponent(w)}')" ondragover="event.preventDefault()" ondrop="whDrop(event,'${encodeURIComponent(w)}')">⠿ ${w}</th>`).join('');
-  const sub = (i) => `<th class="mhead${i%2?' wh-even':''}">Остаток</th><th class="mhead${i%2?' wh-even':''}">Заказы</th><th class="mhead${i%2?' wh-even':''}">Дн.</th><th class="mhead${i%2?' wh-even':''}">Поставить</th>`;
+  const sub = (i) => `<th class="mhead wh-start${i%2?' wh-even':''}">Остаток</th><th class="mhead${i%2?' wh-even':''}">Заказы</th><th class="mhead${i%2?' wh-even':''}">Дн.</th><th class="mhead${i%2?' wh-even':''}">Поставить</th>`;
   const whHead2 = warehouses.map((w,i) => sub(i)).join('');
 
   const bodyRows = articles.map(a => {
@@ -1380,14 +1380,14 @@ function renderSupplyMatrixTable(matrix) {
     const cells = warehouses.map((w,i) => {
       const c = a.cells[w];
       const cls = i%2 ? 'wh-even' : '';
-      if(!c) return `<td class="${cls}">—</td><td class="${cls}">—</td><td class="${cls}">—</td><td class="${cls}">—</td>`;
-      const rc = c.recommend>0 ? `<span class="m-recommend">+${fmt(c.recommend)}</span>` : `<span class="m-recommend zero">—</span>`;
-      let dlCls = cls, dl = '—';
+      if(!c) return `<td class="wh-start${i%2?' wh-even':''}">—</td><td class="${i%2?'wh-even':''}">—</td><td class="${i%2?'wh-even':''}">—</td><td class="${i%2?'wh-even':''}">—</td>`;
+      const rc2 = c.recommend>0 ? `<span class="m-recommend">+${fmt(c.recommend)}</span>` : `<span class="m-recommend zero">—</span>`;
+      let dlCls = (i%2?'wh-even':''), dl = '—';
       if(c.daysLeft != null) {
         dl = Math.round(c.daysLeft);
         dlCls += (c.daysLeft < TARGET_DAYS) ? ' m-urgent' : ' m-ok';
       }
-      return `<td class="${cls}">${fmt(c.current_stock)}</td><td class="${cls}">${fmt(c.ordered_qty)}</td><td class="${dlCls}">${dl}</td><td class="${cls}">${rc}</td>`;
+      return `<td class="wh-start${i%2?' wh-even':''}">${fmt(c.current_stock)}</td><td class="${i%2?'wh-even':''}">${fmt(c.ordered_qty)}</td><td class="${dlCls}">${dl}</td><td class="${i%2?'wh-even':''}">${rc2}</td>`;
     }).join('');
     return `<tr class="${a.isPinned?'pinned':''}" draggable="${a.isPinned}"
         ondragstart="supDS(event,'${safeVc}')" ondragend="supDE(event)"
