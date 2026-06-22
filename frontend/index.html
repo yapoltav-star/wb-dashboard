@@ -112,6 +112,10 @@ td.tc{text-align:center}
 .matrix .m-urgent{background:#FDECEC!important;color:#B42318;font-weight:600}
 .matrix .m-ok{background:#E7F7EE!important;color:#0E7C44}
 .matrix .prod-pin{margin-right:4px;vertical-align:middle}
+.manual-input{width:44px;border:1px solid var(--wb-border);border-radius:4px;padding:3px 6px;font-size:12px;font-family:inherit;text-align:center;background:#FFFBEB;color:var(--wb-text)}
+.manual-input:focus{outline:none;border-color:var(--wb-purple);background:#fff}
+.save-rating-btn{font-size:11px;padding:3px 8px;background:var(--wb-purple);color:#fff;border:none;border-radius:4px;cursor:pointer;margin-left:4px;font-family:inherit}
+.save-rating-btn:hover{background:var(--wb-purple-dark)}
 .total-label{font-weight:700;color:var(--wb-purple);font-size:12px}
 
 .sbar{display:flex;flex-direction:column;gap:2px;min-width:90px}
@@ -543,6 +547,38 @@ async function triggerSync() {
   }
 }
 
+async function saveManualRating(safeArticle, nmId) {
+  const article = decodeURIComponent(safeArticle);
+  const get = id => parseInt(document.getElementById(id + safeArticle)?.value) || 0;
+  const r5=get('r5_'), r4=get('r4_'), r3=get('r3_'), r2=get('r2_'), r1=get('r1_');
+  if(!r5 && !r4 && !r3 && !r2 && !r1) { alert('Введи хотя бы одно значение'); return; }
+
+  const btn = document.querySelector(`button[onclick="saveManualRating('${safeArticle}','${nmId}')"]`);
+  if(btn) { btn.disabled = true; btn.textContent = '⏳'; }
+
+  try {
+    const resp = await fetch(`${RAILWAY_URL}/api/save-manual-rating`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({article, nm_id: nmId ? parseInt(nmId) : null, r5, r4, r3, r2, r1})
+    });
+    const result = await resp.json();
+    if(result.error) {
+      alert('Ошибка: ' + result.error);
+      if(btn) { btn.disabled = false; btn.textContent = 'Сохранить'; }
+    } else {
+      // Обновляем ячейку рейтинга сразу не перезагружая всё
+      const ratEl = document.getElementById('rat_' + safeArticle);
+      if(ratEl) ratEl.innerHTML = `<span class="rnum" style="color:${rc(result.wb_rating)}">${result.wb_rating.toFixed(2)}</span>`;
+      if(btn) { btn.disabled = false; btn.textContent = '✅'; }
+      // Перезагружаем данные чтобы пересчиталась склейка
+      setTimeout(loadData, 1000);
+    }
+  } catch(e) {
+    alert('Ошибка: ' + e.message);
+    if(btn) { btn.disabled = false; btn.textContent = 'Сохранить'; }
+  }
+}
+
 // Поставки: одна кнопка обновляет и остатки, и заказы/продажи (бэкенд делает это последовательно)
 async function triggerSupplySync() {
   const btn = document.getElementById('supplySyncBtn');
@@ -701,7 +737,25 @@ function artRow(a, bg) {
     ? `<span class="rnum${a.is_official?'-official':''}" style="color:${rc(rat)}">${parseFloat(rat).toFixed(2)}${a.is_official?'<span class="official-tag">WB</span>':''}</span>`
     : '<span style="color:var(--wb-faint)">—</span>';
 
-  return `<tr class="${nd?'nodata':''}" style="background:${nd?'#FAFAFA':bg}">
+  if(nd) {
+    // Пустой артикул — показываем инпуты для ручного ввода звёзд
+    const sa = encodeURIComponent(a.article);
+    const nm = a.nm_id || '';
+    return `<tr class="nodata" style="background:#FFFBEB">
+      <td><div class="art">${a.article}</div><div class="nmid">${a.nm_id||'—'}</div></td>
+      <td class="tc" id="rat_${sa}"><span style="color:var(--wb-faint)">—</span></td>
+      <td class="tr2"><input class="manual-input" id="r5_${sa}" type="number" min="0" placeholder="★5" title="Количество оценок 5★"></td>
+      <td class="tr2"><input class="manual-input" id="r4_${sa}" type="number" min="0" placeholder="★4" title="Количество оценок 4★"></td>
+      <td class="tr2"><input class="manual-input" id="r3_${sa}" type="number" min="0" placeholder="★3" title="Количество оценок 3★"></td>
+      <td class="tr2"><input class="manual-input" id="r2_${sa}" type="number" min="0" placeholder="★2" title="Количество оценок 2★"></td>
+      <td class="tr2"><input class="manual-input" id="r1_${sa}" type="number" min="0" placeholder="★1" title="Количество оценок 1★"></td>
+      <td class="tr2" style="color:var(--wb-muted)">—</td>
+      <td class="tc"><button class="save-rating-btn" onclick="saveManualRating('${sa}','${nm}')">Сохранить</button></td>
+      <td></td>
+    </tr>`;
+  }
+
+  return `<tr style="background:${bg}">
     <td><div class="art">${a.article}</div><div class="nmid">${a.nm_id||'—'}</div></td>
     <td class="tc">${ratingCell}</td>
     <td class="tr2" style="color:${(a.r5||0)>0?'#12B76A':'var(--wb-text)'}">${a.r5||'—'}</td>
