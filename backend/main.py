@@ -815,7 +815,7 @@ async def save_manual_rating(request: dict):
         "article": article, "nm_id": nm_id,
         "wb_rating": wb_rating, "reviews_total": total,
         "r5": r5, "r4": r4, "r3": r3, "r2": r2, "r1": r1,
-        "excluded": 0,
+        "excluded": 0, "source": "manual",
         "updated_at": datetime.now(timezone.utc).isoformat()
     }
     try:
