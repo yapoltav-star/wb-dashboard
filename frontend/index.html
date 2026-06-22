@@ -116,6 +116,8 @@ td.tc{text-align:center}
 .manual-input:focus{outline:none;border-color:var(--wb-purple);background:#fff}
 .save-rating-btn{font-size:11px;padding:3px 8px;background:var(--wb-purple);color:#fff;border:none;border-radius:4px;cursor:pointer;margin-left:4px;font-family:inherit}
 .save-rating-btn:hover{background:var(--wb-purple-dark)}
+.edit-rating-btn{font-size:11px;padding:2px 7px;background:transparent;color:var(--wb-purple);border:1px solid var(--wb-purple);border-radius:4px;cursor:pointer;margin-left:6px;font-family:inherit;opacity:.7}
+.edit-rating-btn:hover{opacity:1}
 .total-label{font-weight:700;color:var(--wb-purple);font-size:12px}
 
 .sbar{display:flex;flex-direction:column;gap:2px;min-width:90px}
@@ -460,7 +462,8 @@ async function loadData() {
             r5: off.r5, r4: off.r4, r3: off.r3, r2: off.r2, r1: off.r1,
             total: off.reviews_total,
             excluded: off.excluded || 0,
-            is_official: true
+            is_official: true,
+            is_manual: off.source === 'manual'
           };
         }
         return a;
@@ -475,7 +478,8 @@ async function loadData() {
             total: off.reviews_total,
             excluded: off.excluded || 0,
             old_count: 0, old_pct: 0,
-            is_official: true
+            is_official: true,
+            is_manual: off.source === 'manual'
           });
         }
       });
@@ -547,6 +551,12 @@ async function triggerSync() {
   }
 }
 
+function editManualRating(safeArticle) {
+  const article = decodeURIComponent(safeArticle);
+  const a = ALL.find(x => x.article === article);
+  if(a) { a._editing = true; renderProducts(); }
+}
+
 async function saveManualRating(safeArticle, nmId) {
   const article = decodeURIComponent(safeArticle);
   const get = id => parseInt(document.getElementById(id + safeArticle)?.value) || 0;
@@ -566,12 +576,10 @@ async function saveManualRating(safeArticle, nmId) {
       alert('Ошибка: ' + result.error);
       if(btn) { btn.disabled = false; btn.textContent = 'Сохранить'; }
     } else {
-      // Обновляем ячейку рейтинга сразу не перезагружая всё
-      const ratEl = document.getElementById('rat_' + safeArticle);
-      if(ratEl) ratEl.innerHTML = `<span class="rnum" style="color:${rc(result.wb_rating)}">${result.wb_rating.toFixed(2)}</span>`;
-      if(btn) { btn.disabled = false; btn.textContent = '✅'; }
-      // Перезагружаем данные чтобы пересчиталась склейка
-      setTimeout(loadData, 1000);
+      // Снимаем флаг редактирования и обновляем данные
+      const a = ALL.find(x => x.article === article);
+      if(a) { a._editing = false; }
+      setTimeout(loadData, 500);
     }
   } catch(e) {
     alert('Ошибка: ' + e.message);
@@ -728,34 +736,57 @@ function starBars(a) {
 }
 
 function artRow(a, bg) {
-  const nd = !a.total;
+  const nd = !a.total && !a.is_manual;
   const rat = a.avg_rating;
-  const exclBadge = (a.excluded||0) > 0
-    ? `<span class="excl-badge">↩ ${fmt(a.excluded)}</span>`
-    : '<span style="color:var(--wb-faint);font-size:11px">—</span>';
-  const ratingCell = rat
-    ? `<span class="rnum${a.is_official?'-official':''}" style="color:${rc(rat)}">${parseFloat(rat).toFixed(2)}${a.is_official?'<span class="official-tag">WB</span>':''}</span>`
-    : '<span style="color:var(--wb-faint)">—</span>';
+  const sa = encodeURIComponent(a.article);
+  const nm = a.nm_id || '';
 
+  // Ручная оценка — показываем инпуты
+  if(a.is_manual && a._editing) {
+    return `<tr style="background:#F3EEFF">
+      <td><div class="art">${a.article}</div><div class="nmid">${a.nm_id||'—'}</div></td>
+      <td class="tc" id="rat_${sa}"><span style="color:${rc(rat)}">${parseFloat(rat).toFixed(2)} <span style="font-size:10px;color:var(--wb-muted)">✏️</span></span></td>
+      <td class="tr2"><input class="manual-input" id="r5_${sa}" type="number" min="0" placeholder="★5" value="${a.r5||0}"></td>
+      <td class="tr2"><input class="manual-input" id="r4_${sa}" type="number" min="0" placeholder="★4" value="${a.r4||0}"></td>
+      <td class="tr2"><input class="manual-input" id="r3_${sa}" type="number" min="0" placeholder="★3" value="${a.r3||0}"></td>
+      <td class="tr2"><input class="manual-input" id="r2_${sa}" type="number" min="0" placeholder="★2" value="${a.r2||0}"></td>
+      <td class="tr2"><input class="manual-input" id="r1_${sa}" type="number" min="0" placeholder="★1" value="${a.r1||0}"></td>
+      <td class="tr2" style="color:var(--wb-muted)">${a.total||'—'}</td>
+      <td class="tc"><button class="save-rating-btn" onclick="saveManualRating('${sa}','${nm}')">Сохранить</button></td>
+      <td></td>
+    </tr>`;
+  }
+
+  // Пустой артикул — показываем инпуты для первичного ввода
   if(nd) {
-    // Пустой артикул — показываем инпуты для ручного ввода звёзд
-    const sa = encodeURIComponent(a.article);
-    const nm = a.nm_id || '';
-    return `<tr class="nodata" style="background:#FFFBEB">
+    return `<tr style="background:#FFFBEB">
       <td><div class="art">${a.article}</div><div class="nmid">${a.nm_id||'—'}</div></td>
       <td class="tc" id="rat_${sa}"><span style="color:var(--wb-faint)">—</span></td>
-      <td class="tr2"><input class="manual-input" id="r5_${sa}" type="number" min="0" placeholder="★5" title="Количество оценок 5★"></td>
-      <td class="tr2"><input class="manual-input" id="r4_${sa}" type="number" min="0" placeholder="★4" title="Количество оценок 4★"></td>
-      <td class="tr2"><input class="manual-input" id="r3_${sa}" type="number" min="0" placeholder="★3" title="Количество оценок 3★"></td>
-      <td class="tr2"><input class="manual-input" id="r2_${sa}" type="number" min="0" placeholder="★2" title="Количество оценок 2★"></td>
-      <td class="tr2"><input class="manual-input" id="r1_${sa}" type="number" min="0" placeholder="★1" title="Количество оценок 1★"></td>
+      <td class="tr2"><input class="manual-input" id="r5_${sa}" type="number" min="0" placeholder="★5"></td>
+      <td class="tr2"><input class="manual-input" id="r4_${sa}" type="number" min="0" placeholder="★4"></td>
+      <td class="tr2"><input class="manual-input" id="r3_${sa}" type="number" min="0" placeholder="★3"></td>
+      <td class="tr2"><input class="manual-input" id="r2_${sa}" type="number" min="0" placeholder="★2"></td>
+      <td class="tr2"><input class="manual-input" id="r1_${sa}" type="number" min="0" placeholder="★1"></td>
       <td class="tr2" style="color:var(--wb-muted)">—</td>
       <td class="tc"><button class="save-rating-btn" onclick="saveManualRating('${sa}','${nm}')">Сохранить</button></td>
       <td></td>
     </tr>`;
   }
 
-  return `<tr style="background:${bg}">
+  // Обычный артикул
+  const exclBadge = (a.excluded||0) > 0
+    ? `<span class="excl-badge">↩ ${fmt(a.excluded)}</span>`
+    : '<span style="color:var(--wb-faint);font-size:11px">—</span>';
+  const manualTag = a.is_manual
+    ? `<button class="edit-rating-btn" onclick="editManualRating('${sa}')" title="Изменить ручную оценку">✏️</button>`
+    : '';
+  const ratingCell = rat
+    ? `<span class="rnum${a.is_official?'-official':''}" style="color:${rc(rat)}">${parseFloat(rat).toFixed(2)}${a.is_official?'<span class="official-tag">WB</span>':''}</span>${manualTag}`
+    : '<span style="color:var(--wb-faint)">—</span>';
+
+  const rowBg = a.is_manual ? '#F5F0FF' : bg;
+
+  return `<tr style="background:${rowBg}">
     <td><div class="art">${a.article}</div><div class="nmid">${a.nm_id||'—'}</div></td>
     <td class="tc">${ratingCell}</td>
     <td class="tr2" style="color:${(a.r5||0)>0?'#12B76A':'var(--wb-text)'}">${a.r5||'—'}</td>
