@@ -797,6 +797,43 @@ def trigger_sync():
     threading.Thread(target=sync_all, daemon=True).start()
     return {"status": "started"}
 
+@app.post("/api/save-manual-rating")
+async def save_manual_rating(request: dict):
+    """Сохраняет ручной рейтинг (разбивку по звёздам) для артикула без данных."""
+    article = request.get("article")
+    nm_id = request.get("nm_id")
+    r5 = int(request.get("r5") or 0)
+    r4 = int(request.get("r4") or 0)
+    r3 = int(request.get("r3") or 0)
+    r2 = int(request.get("r2") or 0)
+    r1 = int(request.get("r1") or 0)
+    if not article:
+        return {"error": "article required"}
+    total = r5 + r4 + r3 + r2 + r1
+    wb_rating = round((r5*5 + r4*4 + r3*3 + r2*2 + r1*1) / total, 2) if total else 0
+    row = {
+        "article": article, "nm_id": nm_id,
+        "wb_rating": wb_rating, "reviews_total": total,
+        "r5": r5, "r4": r4, "r3": r3, "r2": r2, "r1": r1,
+        "excluded": 0,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    try:
+        # Удаляем старую запись если есть, вставляем новую
+        httpx.delete(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?article=eq.{article}",
+            headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=10
+        )
+        resp = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/ratings_official",
+            json=[row], headers=sb_headers(), timeout=15
+        )
+        if not resp.is_success:
+            return {"error": f"DB error: {resp.status_code} {resp.text[:200]}"}
+        return {"status": "ok", "wb_rating": wb_rating, "total": total}
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.post("/api/sync-stock")
 def trigger_stock_sync():
     import threading
