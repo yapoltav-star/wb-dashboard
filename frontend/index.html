@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>WB Partners — Отзывы и рейтинги</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -98,6 +99,8 @@ td.tc{text-align:center}
 .matrix{border-collapse:separate;border-spacing:0;font-size:12px;min-width:100%}
 .matrix th,.matrix td{padding:8px 10px;border-bottom:1px solid #F5F3FA;border-right:1px solid #F5F3FA;text-align:right;white-space:nowrap}
 .matrix .wh-start td,.matrix thead .wh-start{border-left:2px solid #D4A898}
+.wh-dl-btn{font-size:10px;padding:2px 6px;background:transparent;color:var(--wb-purple);border:1px solid var(--wb-purple);border-radius:3px;cursor:pointer;margin-left:6px;opacity:.7;font-family:inherit;vertical-align:middle}
+.wh-dl-btn:hover{opacity:1;background:var(--wb-purple-light)}
 .matrix thead th{position:sticky;top:0;background:#FAFAFA;font-size:10px;color:var(--wb-muted);font-weight:600;text-transform:uppercase;letter-spacing:.3px;z-index:2}
 .matrix thead tr:first-child th{text-align:center;border-bottom:1px solid var(--wb-border)}
 .matrix .mcol-art{position:sticky;left:0;z-index:3;background:var(--wb-surface);text-align:left;box-shadow:2px 0 4px rgba(0,0,0,.05);min-width:150px}
@@ -1371,7 +1374,7 @@ function renderSupplyMatrixTable(matrix) {
   if(!articles.length) return '<div class="empty">Ничего не найдено</div>';
 
   const whHead1 = warehouses.map((w,i) => `<th colspan="4" class="${i%2?'wh-even':''}" draggable="true" title="Перетащи чтобы поменять порядок складов"
-      ondragstart="whDS(event,'${encodeURIComponent(w)}')" ondragover="event.preventDefault()" ondrop="whDrop(event,'${encodeURIComponent(w)}')">⠿ ${w}</th>`).join('');
+      ondragstart="whDS(event,'${encodeURIComponent(w)}')" ondragover="event.preventDefault()" ondrop="whDrop(event,'${encodeURIComponent(w)}')">⠿ ${w} <button class="wh-dl-btn" onclick="downloadWarehouseXlsx(event,'${encodeURIComponent(w)}')" title="Скачать Excel для склада ${w}">⬇ xlsx</button></th>`).join('');
   const sub = (i) => `<th class="mhead wh-start${i%2?' wh-even':''}">Остаток</th><th class="mhead${i%2?' wh-even':''}">Заказы</th><th class="mhead${i%2?' wh-even':''}">Дн.</th><th class="mhead${i%2?' wh-even':''}">Поставить</th>`;
   const whHead2 = warehouses.map((w,i) => sub(i)).join('');
 
@@ -1523,6 +1526,37 @@ function renderAds() {
     html += adsGroupBlock(g, arts);
   });
   document.getElementById('adsRoot').innerHTML = html || '<div class="empty">Ничего не найдено</div>';
+}
+
+function downloadWarehouseXlsx(e, encodedWh) {
+  e.stopPropagation();
+  const wh = decodeURIComponent(encodedWh);
+  const matrix = buildSupplyMatrix();
+
+  const rows = [];
+  matrix.articles.forEach(a => {
+    const c = a.cells[wh];
+    if(!c) return;
+    const recommend = c.recommend || 0;
+    if(recommend <= 0) return;
+    rows.push({
+      'Артикул продавца': a.vendor_code,
+      'Баркод': a.barcode || '',
+      'Поставить, шт': recommend
+    });
+  });
+
+  if(!rows.length) {
+    alert(`По складу "${wh}" нет артикулов к поставке`);
+    return;
+  }
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [{wch:30},{wch:20},{wch:14}];
+  const wb2 = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb2, ws, wh.slice(0,31));
+  const date = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb2, `поставка_${wh}_${date}.xlsx`);
 }
 
 loadData();
