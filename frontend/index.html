@@ -824,11 +824,22 @@ function gblock(grp, arts) {
   const wD = arts.filter(a => a.total > 0).length;
   const tot = {r5:0,r4:0,r3:0,r2:0,r1:0,total:0,excluded:0};
   arts.forEach(a => ['r5','r4','r3','r2','r1','total','excluded'].forEach(k => tot[k]+=(a[k]||0)));
-  // Используем сумму звёзд как знаменатель — это гарантирует avg ≤ 5.0
-  // (tot.total может быть < суммы звёзд если reviews_total=0 в xlsx при наличии разбивки)
-  const starSum = tot.r5+tot.r4+tot.r3+tot.r2+tot.r1;
-  const avgDenom = starSum || tot.total;
-  const avg = avgDenom ? Math.round((tot.r5*5+tot.r4*4+tot.r3*3+tot.r2*2+tot.r1)/avgDenom*100)/100 : null;
+
+  // Считаем рейтинг группы:
+  // - карточки С разбивкой по звёздам → используем реальные счётчики
+  // - карточки БЕЗ разбивки но С wb_rating → считаем как 1 отзыв с этим рейтингом
+  let weightedSum = 0, weightedTotal = 0;
+  arts.forEach(a => {
+    const starSum = (a.r5||0)+(a.r4||0)+(a.r3||0)+(a.r2||0)+(a.r1||0);
+    if(starSum > 0) {
+      weightedSum += (a.r5||0)*5+(a.r4||0)*4+(a.r3||0)*3+(a.r2||0)*2+(a.r1||0);
+      weightedTotal += starSum;
+    } else if(a.avg_rating) {
+      weightedSum += parseFloat(a.avg_rating);
+      weightedTotal += 1;
+    }
+  });
+  const avg = weightedTotal ? Math.round(weightedSum/weightedTotal*100)/100 : null;
   const y1 = tot.r1;
   const gi = Object.keys(GROUPS).concat(['Без склейки']).indexOf(grp);
   const isOpen = EXP[grp];
@@ -858,9 +869,9 @@ function gblock(grp, arts) {
   ].join(' ');
 
   let recHtml = '';
-  if(avg !== null && avgDenom > 0) {
-    const S = tot.r5*5 + tot.r4*4 + tot.r3*3 + tot.r2*2 + tot.r1;
-    const N = avgDenom;
+  if(avg !== null && weightedTotal > 0) {
+    const S = weightedSum;
+    const N = weightedTotal;
     if(avg >= 4.95) {
       recHtml = '<div style="padding:8px 16px;background:#F0FDF4;border-bottom:1px solid #BBF7D0;font-size:12px;color:#065F46;font-weight:500">✓ Рейтинг отображается как <b>5.0 ★</b> — отлично!</div>';
     } else {
