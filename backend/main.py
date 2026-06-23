@@ -164,6 +164,97 @@ def sync_all():
         headers=sb_headers(), timeout=10
     )
     logger.info(f"Sync complete. Total: {total}")
+    sync_ratings_official()
+
+def sync_ratings_official():
+    """Тянет официальный feedbackRating каждого артикула с WB API и обновляет ratings_official.
+    Не трогает строки с source='manual' (ручные оценки).
+    Использует GET /api/v1/feedbacks/products/rating из feedbacks-api."""
+    if not WB_TOKEN:
+        return
+    logger.info("sync_ratings_official: fetching from WB feedbacks API...")
+
+    # Тянем рейтинги всех карточек
+    try:
+        resp = httpx.get(
+            f"{WB_FEEDBACKS_URL}/api/v1/feedbacks/products/rating",
+            headers=wb_headers(), timeout=30
+        )
+        if not resp.is_success:
+            logger.error(f"sync_ratings_official: WB error {resp.status_code} {resp.text[:300]}")
+            return
+        data = resp.json()
+        products = data.get("data", {}).get("feedbackRatings") or data.get("data") or []
+        if not products:
+            logger.info("sync_ratings_official: no products returned from WB")
+            return
+    except Exception as e:
+        logger.error(f"sync_ratings_official: exception {e}")
+        return
+
+    logger.info(f"sync_ratings_official: got {len(products)} products from WB")
+
+    # Строим маппинг nmId → vendor_code из stock_totals
+    try:
+        st = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code", headers=sb_headers(), timeout=15)
+        nm_to_vendor = {r["nm_id"]: r["vendor_code"] for r in st.json()} if st.is_success else {}
+    except Exception:
+        nm_to_vendor = {}
+
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for p in products:
+        nm_id = p.get("nmId") or p.get("nmID")
+        feedback_rating = p.get("feedbackRating")
+        if not nm_id or feedback_rating is None:
+            continue
+        vendor_code = nm_to_vendor.get(nm_id) or str(nm_id)
+        try:
+            wb_rating = float(feedback_rating)
+        except (ValueError, TypeError):
+            continue
+        rows.append({
+            "article": vendor_code,
+            "nm_id": nm_id,
+            "wb_rating": wb_rating,
+            "reviews_total": 0,
+            "r5": 0, "r4": 0, "r3": 0, "r2": 0, "r1": 0,
+            "excluded": 0,
+            "source": "api",
+            "updated_at": now
+        })
+
+    if not rows:
+        logger.info("sync_ratings_official: nothing to save")
+        return
+
+    # Удаляем только api-строки (не трогаем xlsx и manual)
+    httpx.delete(
+        f"{SUPABASE_URL}/rest/v1/ratings_official?source=eq.api",
+        headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=15
+    )
+
+    # Не вставляем строки для артикулов уже покрытых xlsx или manual
+    try:
+        covered = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?source=in.(xlsx,manual)&select=nm_id",
+            headers=sb_headers(), timeout=15
+        )
+        covered_nm_ids = {r["nm_id"] for r in (covered.json() if covered.is_success else [])}
+    except Exception:
+        covered_nm_ids = set()
+
+    to_insert = [r for r in rows if r["nm_id"] not in covered_nm_ids]
+    logger.info(f"sync_ratings_official: inserting {len(to_insert)} API ratings (xlsx/manual covers {len(covered_nm_ids)})")
+
+    saved = 0
+    for i in range(0, len(to_insert), 100):
+        resp = httpx.post(f"{SUPABASE_URL}/rest/v1/ratings_official", json=to_insert[i:i+100], headers=sb_headers(), timeout=30)
+        if resp.is_success:
+            saved += len(to_insert[i:i+100])
+        else:
+            logger.error(f"sync_ratings_official insert error: {resp.status_code} {resp.text[:200]}")
+    logger.info(f"sync_ratings_official: saved {saved} API ratings")
 
 # ---------- Остатки на складах (WB Analytics: warehouse_remains report) ----------
 
@@ -807,11 +898,28 @@ async def upload_ratings(file: UploadFile = File(...)):
         if not rows:
             return {"error": "Не найдено строк с данными"}
 
-        # Полная замена: удаляем ВСЕ строки (включая NULL wb_rating), вставляем свежие из xlsx
+        # Добавляем source='xlsx' каждой строке
+        for r in rows:
+            r["source"] = "xlsx"
+
+        # Удаляем только НЕ-ручные строки (manual сохраняем)
         httpx.delete(
-            f"{SUPABASE_URL}/rest/v1/ratings_official?id=gte.0",
+            f"{SUPABASE_URL}/rest/v1/ratings_official?source=neq.manual",
             headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=15
         )
+        # Также удаляем строки без source (старые данные)
+        httpx.delete(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?source=is.null",
+            headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=15
+        )
+
+        # Получаем какие артикулы уже заняты ручными записями — их пропускаем
+        manual_resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?source=eq.manual&select=article",
+            headers=sb_headers(), timeout=10
+        )
+        manual_articles = {r["article"] for r in (manual_resp.json() if manual_resp.is_success else [])}
+        rows = [r for r in rows if r["article"] not in manual_articles]
 
         saved = 0
         for i in range(0, len(rows), 100):
