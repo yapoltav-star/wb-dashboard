@@ -824,7 +824,11 @@ function gblock(grp, arts) {
   const wD = arts.filter(a => a.total > 0).length;
   const tot = {r5:0,r4:0,r3:0,r2:0,r1:0,total:0,excluded:0};
   arts.forEach(a => ['r5','r4','r3','r2','r1','total','excluded'].forEach(k => tot[k]+=(a[k]||0)));
-  const avg = tot.total ? Math.round((tot.r5*5+tot.r4*4+tot.r3*3+tot.r2*2+tot.r1)/tot.total*100)/100 : null;
+  // Используем сумму звёзд как знаменатель — это гарантирует avg ≤ 5.0
+  // (tot.total может быть < суммы звёзд если reviews_total=0 в xlsx при наличии разбивки)
+  const starSum = tot.r5+tot.r4+tot.r3+tot.r2+tot.r1;
+  const avgDenom = starSum || tot.total;
+  const avg = avgDenom ? Math.round((tot.r5*5+tot.r4*4+tot.r3*3+tot.r2*2+tot.r1)/avgDenom*100)/100 : null;
   const y1 = tot.r1;
   const gi = Object.keys(GROUPS).concat(['Без склейки']).indexOf(grp);
   const isOpen = EXP[grp];
@@ -854,9 +858,9 @@ function gblock(grp, arts) {
   ].join(' ');
 
   let recHtml = '';
-  if(avg !== null && tot.total > 0) {
+  if(avg !== null && avgDenom > 0) {
     const S = tot.r5*5 + tot.r4*4 + tot.r3*3 + tot.r2*2 + tot.r1;
-    const N = tot.total;
+    const N = avgDenom;
     if(avg >= 4.95) {
       recHtml = '<div style="padding:8px 16px;background:#F0FDF4;border-bottom:1px solid #BBF7D0;font-size:12px;color:#065F46;font-weight:500">✓ Рейтинг отображается как <b>5.0 ★</b> — отлично!</div>';
     } else {
@@ -1439,93 +1443,135 @@ function renderSupplyRecs() {
 // ---------- Продвижение (реклама) ----------
 function adsGroupBlock(grp, arts) {
   const color = gc(grp);
-  const tot = {views:0, clicks:0, atbs:0, orders:0, spend:0};
-  arts.forEach(a => { tot.views+=a.views; tot.clicks+=a.clicks; tot.atbs+=a.atbs; tot.orders+=a.orders; tot.spend+=a.spend; });
-  const totCtr = tot.views ? (tot.clicks/tot.views*100).toFixed(2) : '0.00';
-  const totCpc = tot.clicks ? (tot.spend/tot.clicks).toFixed(2) : '0.00';
+  const tot = {views:0,clicks:0,atbs:0,orders:0,spend:0,revenue:0};
+  arts.forEach(a => {
+    tot.views+=a.views; tot.clicks+=a.clicks; tot.atbs+=a.atbs;
+    tot.orders+=a.orders; tot.spend+=a.spend; tot.revenue+=a.revenue;
+  });
+  const totCtr = tot.views   ? (tot.clicks/tot.views*100).toFixed(2)  : '—';
+  const totCpc = tot.clicks  ? (tot.spend/tot.clicks).toFixed(2)      : '—';
+  const totCr  = tot.clicks  ? (tot.orders/tot.clicks*100).toFixed(2) : '—';
+  const totDrr = tot.revenue ? (tot.spend/tot.revenue*100).toFixed(1) : '—';
   const gid = 'ad_' + grp.replace(/[^a-zа-я0-9]/gi,'_');
   const isOpen = ADEXP[grp] !== false;
-  const sorted = [...arts].sort((a,b) => b.spend - a.spend);
 
-  const rows = sorted.map(a => `<tr style="${!a.spend?'opacity:.5':''}">
-    <td><div class="art">${a.vendor_code}</div><div class="nmid">${a.nm_id||'—'}</div></td>
-    <td class="tr2">${fmt(a.views)}</td>
-    <td class="tr2">${fmt(a.clicks)}</td>
-    <td class="tr2">${a.ctr}%</td>
-    <td class="tr2" style="font-weight:600;color:var(--wb-purple)">${fmt(a.spend)} ₽</td>
-    <td class="tr2">${fmt(a.orders)}</td>
-    <td class="tr2">${a.cpc} ₽</td>
-  </tr>`).join('');
+  const artRows = arts.sort((a,b)=>b.spend-a.spend).map(a => {
+    const sa = encodeURIComponent(a.vendor_code);
+    const isArtOpen = ADEXP['art_'+a.vendor_code] === true;
+    const camps = [...(a.campaigns||[])].sort((x,y)=>y.spend-x.spend);
+    const campRows = camps.map(c => `<tr style="background:#FAFAF8">
+      <td style="padding-left:36px;font-size:12px;color:var(--wb-muted)">${c.campaign_name||'—'}</td>
+      <td style="font-size:11px;color:var(--wb-faint)">${c.campaign_type||'—'}</td>
+      <td class="tr2">${fmt(c.views)}</td><td class="tr2">${fmt(c.clicks)}</td>
+      <td class="tr2">${c.ctr||0}%</td><td class="tr2">${c.cpc||0} \u20bd</td>
+      <td class="tr2">${fmt(c.atbs)}</td>
+      <td class="tr2">${c.cv_atb||0}%</td><td class="tr2">${c.cv_ord||0}%</td><td class="tr2">${c.cr||0}%</td>
+      <td class="tr2">${fmt(c.orders)}</td>
+      <td class="tr2" style="color:var(--wb-purple)">${fmt(Math.round(c.spend||0))} \u20bd</td>
+      <td class="tr2">${c.drr?c.drr+"%":"\u2014"}</td>
+    </tr>`).join('');
+    const artCtr = a.views?  (a.clicks/a.views*100).toFixed(2)   : '\u2014';
+    const artCpc = a.clicks? (a.spend/a.clicks).toFixed(2)       : '\u2014';
+    const artCr  = a.clicks? (a.orders/a.clicks*100).toFixed(2)  : '\u2014';
+    const artCvAtb = a.clicks?(a.atbs/a.clicks*100).toFixed(2)   : '\u2014';
+    const artCvOrd = a.atbs? (a.orders/a.atbs*100).toFixed(2)    : '\u2014';
+    const artDrr   = a.revenue?(a.spend/a.revenue*100).toFixed(1): '\u2014';
+    return `<tr style="cursor:pointer;background:#FFFDF9" onclick="TAD('art_${sa}')">
+      <td style="padding-left:16px"><b>${a.vendor_code}</b>
+        <span style="font-size:11px;color:var(--wb-muted);margin-left:6px">${a.nm_id||''}</span>
+        <span style="font-size:11px;color:var(--wb-purple);margin-left:8px">${camps.length} камп.</span>
+        <span style="float:right;color:var(--wb-faint);font-size:11px">${isArtOpen?'\u25b4':'\u25be'}</span>
+      </td>
+      <td></td>
+      <td class="tr2">${fmt(a.views)}</td><td class="tr2">${fmt(a.clicks)}</td>
+      <td class="tr2">${artCtr}%</td><td class="tr2">${artCpc} \u20bd</td>
+      <td class="tr2">${fmt(a.atbs)}</td>
+      <td class="tr2">${artCvAtb}%</td><td class="tr2">${artCvOrd}%</td><td class="tr2">${artCr}%</td>
+      <td class="tr2">${fmt(a.orders)}</td>
+      <td class="tr2" style="font-weight:600;color:var(--wb-purple)">${fmt(Math.round(a.spend))} \u20bd</td>
+      <td class="tr2">${artDrr}%</td>
+    </tr>${isArtOpen?campRows:''}`;
+  }).join('');
 
   const totRow = `<tr class="total-row">
-    <td><span class="total-label">∑ Итого по склейке</span></td>
-    <td class="tr2" style="font-weight:600">${fmt(tot.views)}</td>
-    <td class="tr2" style="font-weight:600">${fmt(tot.clicks)}</td>
-    <td class="tr2" style="font-weight:600">${totCtr}%</td>
-    <td class="tr2" style="font-weight:600;color:var(--wb-purple)">${fmt(Math.round(tot.spend))} ₽</td>
-    <td class="tr2" style="font-weight:600">${fmt(tot.orders)}</td>
-    <td class="tr2" style="font-weight:600">${totCpc} ₽</td>
+    <td colspan="2"><span class="total-label">\u2211 \u0418\u0442\u043e\u0433\u043e \u043f\u043e \u0441\u043a\u043b\u0435\u0439\u043a\u0435</span></td>
+    <td class="tr2">${fmt(tot.views)}</td><td class="tr2">${fmt(tot.clicks)}</td>
+    <td class="tr2">${totCtr}%</td><td class="tr2">${totCpc} \u20bd</td>
+    <td class="tr2">${fmt(tot.atbs)}</td>
+    <td class="tr2">\u2014</td><td class="tr2">\u2014</td><td class="tr2">${totCr}%</td>
+    <td class="tr2">${fmt(tot.orders)}</td>
+    <td class="tr2" style="font-weight:700;color:var(--wb-purple)">${fmt(Math.round(tot.spend))} \u20bd</td>
+    <td class="tr2">${totDrr}%</td>
   </tr>`;
 
   return `<div class="group${isOpen?' open':''}" id="${gid}">
     <div class="gh" onclick="TAD('${encodeURIComponent(grp)}')">
       <div class="gh-color" style="background:${color}"></div>
       <div class="gh-name">${grp}</div>
-      <div class="gh-stats"><span class="gh-stat">${arts.length} арт.</span></div>
-      <span class="gh-rating" style="font-size:15px;color:var(--wb-purple)">${fmt(Math.round(tot.spend))} ₽</span>
-      <span class="gh-arr">▾</span>
+      <div class="gh-stats"><span class="gh-stat">${arts.length} \u0430\u0440\u0442.</span></div>
+      <span class="gh-rating" style="font-size:15px;color:var(--wb-purple)">${fmt(Math.round(tot.spend))} \u20bd</span>
+      <span class="gh-arr">\u25be</span>
     </div>
     <div class="gbody"><div class="tw"><table>
-      <thead><tr><th>Артикул</th><th class="tr2">Показы</th><th class="tr2">Клики</th><th class="tr2">CTR</th><th class="tr2">Расход</th><th class="tr2">Заказы</th><th class="tr2">CPC</th></tr></thead>
-      <tbody>${rows}${totRow}</tbody>
+      <thead><tr>
+        <th>\u0410\u0440\u0442\u0438\u043a\u0443\u043b \u043f\u0440\u043e\u0434\u0430\u0432\u0446\u0430</th><th>\u0422\u0438\u043f</th>
+        <th class="tr2">\u041f\u043e\u043a\u0430\u0437\u044b</th><th class="tr2">\u041a\u043b\u0438\u043a\u0438</th>
+        <th class="tr2">CTR</th><th class="tr2">CPC</th>
+        <th class="tr2">\u0412 \u043a\u043e\u0440\u0437\u0438\u043d\u0443</th>
+        <th class="tr2">CR\u2192\u043a\u043e\u0440\u0437.</th>
+        <th class="tr2">CR \u043a\u043e\u0440\u0437.\u2192\u0437\u0430\u043a.</th>
+        <th class="tr2">CR</th>
+        <th class="tr2">\u0417\u0430\u043a\u0430\u0437\u044b</th>
+        <th class="tr2">\u0420\u0430\u0441\u0445\u043e\u0434</th>
+        <th class="tr2">\u0414\u0420\u0420</th>
+      </tr></thead>
+      <tbody>${artRows}${totRow}</tbody>
     </table></div></div>
   </div>`;
 }
 
 function TAD(gE) {
   const g = decodeURIComponent(gE);
-  ADEXP[g] = ADEXP[g] === false ? true : false;
+  ADEXP[g] = ADEXP[g] === true ? false : true;
   renderAds();
 }
 
 function renderAds() {
   if(!AD_STATS.length) {
     document.getElementById('adsCards').innerHTML = '';
-    document.getElementById('adsRoot').innerHTML = '<div class="empty">Данных пока нет. Нажми «Обновить» — соберём статистику рекламы с WB.</div>';
+    document.getElementById('adsRoot').innerHTML = '<div class="empty">\u0414\u0430\u043d\u043d\u044b\u0445 \u043f\u043e\u043a\u0430 \u043d\u0435\u0442. \u041d\u0430\u0436\u043c\u0438 \u00ab\u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c\u00bb.</div>';
     return;
   }
   const q = (document.getElementById('adsSearch').value||'').toLowerCase();
-  let rows = AD_STATS;
-  if(q) rows = rows.filter(r => (r.vendor_code||'').toLowerCase().includes(q) || String(r.nm_id||'').includes(q));
-
-  const totViews = rows.reduce((s,r)=>s+(r.views||0),0);
-  const totClicks = rows.reduce((s,r)=>s+(r.clicks||0),0);
-  const totSpend = rows.reduce((s,r)=>s+(r.spend||0),0);
-  const totOrders = rows.reduce((s,r)=>s+(r.orders||0),0);
+  const byArt = {};
+  AD_STATS.forEach(r => {
+    const vc = r.vendor_code;
+    if(q && !vc.toLowerCase().includes(q) && !String(r.nm_id||'').includes(q)) return;
+    if(!byArt[vc]) byArt[vc] = {vendor_code:vc,nm_id:r.nm_id,views:0,clicks:0,atbs:0,orders:0,spend:0,revenue:0,campaigns:[]};
+    const a = byArt[vc];
+    a.views+=r.views||0; a.clicks+=r.clicks||0; a.atbs+=r.atbs||0;
+    a.orders+=r.orders||0; a.spend+=r.spend||0; a.revenue+=r.revenue||0;
+    a.campaigns.push(r);
+  });
+  const arts = Object.values(byArt);
+  const totViews=arts.reduce((s,a)=>s+a.views,0), totClicks=arts.reduce((s,a)=>s+a.clicks,0);
+  const totSpend=arts.reduce((s,a)=>s+a.spend,0), totOrders=arts.reduce((s,a)=>s+a.orders,0);
   document.getElementById('adsCards').innerHTML = [
-    ['Показы', fmt(totViews)],
-    ['Клики', fmt(totClicks)],
-    ['Расход, ₽', fmt(Math.round(totSpend)), 'color:var(--wb-purple)'],
-    ['Заказы из рекламы', fmt(totOrders)],
-  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+    ['\u041f\u043e\u043a\u0430\u0437\u044b', fmt(totViews)],
+    ['\u041a\u043b\u0438\u043a\u0438', fmt(totClicks)],
+    ['\u0420\u0430\u0441\u0445\u043e\u0434, \u20bd', fmt(Math.round(totSpend)), 'color:var(--wb-purple)'],
+    ['\u0417\u0430\u043a\u0430\u0437\u044b \u0438\u0437 \u0440\u0435\u043a\u043b\u0430\u043c\u044b', fmt(totOrders)],
+  ].map(([l,v,s])=>`<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
 
-  const gnames = Object.keys(GROUPS).concat(['Без склейки']);
-  const ga = new Set(Object.values(GROUPS).flat());
-  const grouped = {};
-  gnames.forEach(g => { grouped[g] = []; });
-  Object.entries(GROUPS).forEach(([g, list]) => {
-    const set = new Set(list);
-    rows.forEach(r => { if(set.has(r.vendor_code)) grouped[g].push(r); });
-  });
-  rows.forEach(r => { if(!ga.has(r.vendor_code)) grouped['Без склейки'].push(r); });
-
-  let html = '';
-  gnames.forEach(g => {
-    const arts = grouped[g] || [];
-    if(!arts.length) return;
-    html += adsGroupBlock(g, arts);
-  });
-  document.getElementById('adsRoot').innerHTML = html || '<div class="empty">Ничего не найдено</div>';
+  const gnames=Object.keys(GROUPS).concat(['\u0411\u0435\u0437 \u0441\u043a\u043b\u0435\u0439\u043a\u0438']);
+  const ga=new Set(Object.values(GROUPS).flat());
+  const grouped={};
+  gnames.forEach(g=>{grouped[g]=[];});
+  Object.entries(GROUPS).forEach(([g,list])=>{const set=new Set(list);arts.forEach(a=>{if(set.has(a.vendor_code))grouped[g].push(a);});});
+  arts.forEach(a=>{if(!ga.has(a.vendor_code))grouped['\u0411\u0435\u0437 \u0441\u043a\u043b\u0435\u0439\u043a\u0438'].push(a);});
+  let html='';
+  gnames.forEach(g=>{const arr=grouped[g]||[];if(!arr.length)return;html+=adsGroupBlock(g,arr);});
+  document.getElementById('adsRoot').innerHTML=html||'<div class="empty">\u041d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e</div>';
 }
 
 function downloadWarehouseXlsx(e, encodedWh) {
