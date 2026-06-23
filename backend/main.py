@@ -781,15 +781,23 @@ async def upload_ratings(file: UploadFile = File(...)):
             r2v = safe_int('r2') or 0
             r1v = safe_int('r1') or 0
             reviews_total = safe_int('reviews_total') or 0
+            star_sum = r5v+r4v+r3v+r2v+r1v
+
             # Если reviews_total не заполнен но звёзды есть — считаем из них
-            if not reviews_total and (r5v+r4v+r3v+r2v+r1v) > 0:
-                reviews_total = r5v+r4v+r3v+r2v+r1v
+            if not reviews_total and star_sum > 0:
+                reviews_total = star_sum
+
+            # wb_rating берём из колонки "Рейтинг по отзывам"
+            # Если там '-' или пусто — считаем из звёзд сами
+            wb_rating = safe_float('wb_rating')
+            if wb_rating is None and star_sum > 0:
+                wb_rating = round((r5v*5+r4v*4+r3v*3+r2v*2+r1v) / star_sum, 2)
 
             rows.append({
                 "article": article,
                 "nm_id": safe_int('nm_id') or None,
                 "name": str(row.get(col_map.get('name', ''), '') or '').strip() or None,
-                "wb_rating": safe_float('wb_rating'),
+                "wb_rating": wb_rating,
                 "reviews_total": reviews_total,
                 "r5": r5v, "r4": r4v, "r3": r3v, "r2": r2v, "r1": r1v,
                 "excluded": safe_int_abs('excluded'),
