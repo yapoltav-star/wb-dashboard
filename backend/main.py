@@ -172,43 +172,47 @@ def sync_ratings_official():
     Использует GET /api/v1/feedbacks/products/rating из feedbacks-api."""
     if not WB_TOKEN:
         return
-    logger.info("sync_ratings_official: fetching from WB feedbacks API...")
+    logger.info("sync_ratings_official: fetching from WB Analytics (search-report/product)...")
 
-    # Тянем рейтинги всех карточек
+    # POST /api/v2/nm-report/detail — возвращает feedbackRating по каждому nmId (требует Jam)
+    WB_ANALYTICS_BASE = "https://seller-analytics-api.wildberries.ru"
+    end_date = datetime.now(timezone.utc).date().isoformat()
+    begin_date = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
+
     try:
-        resp = httpx.get(
-            f"{WB_FEEDBACKS_URL}/api/v1/feedbacks/products/rating",
-            headers=wb_headers(), timeout=30
+        resp = httpx.post(
+            f"{WB_ANALYTICS_BASE}/api/v2/nm-report/detail",
+            headers=wb_headers(),
+            json={
+                "period": {"begin": begin_date, "end": end_date},
+                "orderBy": {"field": "openCardCount", "mode": "desc"},
+                "page": 1
+            },
+            timeout=30
         )
         if not resp.is_success:
-            logger.error(f"sync_ratings_official: WB error {resp.status_code} {resp.text[:300]}")
+            logger.error(f"sync_ratings_official: WB error {resp.status_code} {resp.text[:500]}")
             return
         data = resp.json()
-        products = data.get("data", {}).get("feedbackRatings") or data.get("data") or []
-        if not products:
-            logger.info("sync_ratings_official: no products returned from WB")
+        logger.info(f"sync_ratings_official: keys={list(data.keys()) if isinstance(data,dict) else type(data).__name__}, snippet={str(data)[:400]}")
+        cards = data.get("data", {}).get("cards") or []
+        if not cards:
+            logger.info("sync_ratings_official: no cards in response")
             return
     except Exception as e:
         logger.error(f"sync_ratings_official: exception {e}")
         return
 
-    logger.info(f"sync_ratings_official: got {len(products)} products from WB")
-
-    # Строим маппинг nmId → vendor_code из stock_totals
-    try:
-        st = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code", headers=sb_headers(), timeout=15)
-        nm_to_vendor = {r["nm_id"]: r["vendor_code"] for r in st.json()} if st.is_success else {}
-    except Exception:
-        nm_to_vendor = {}
+    logger.info(f"sync_ratings_official: got {len(cards)} cards from WB")
 
     now = datetime.now(timezone.utc).isoformat()
     rows = []
-    for p in products:
-        nm_id = p.get("nmId") or p.get("nmID")
-        feedback_rating = p.get("feedbackRating")
+    for c in cards:
+        nm_id = c.get("nmID")
+        vendor_code = c.get("vendorCode") or str(nm_id)
+        feedback_rating = c.get("feedbackRating")
         if not nm_id or feedback_rating is None:
             continue
-        vendor_code = nm_to_vendor.get(nm_id) or str(nm_id)
         try:
             wb_rating = float(feedback_rating)
         except (ValueError, TypeError):
