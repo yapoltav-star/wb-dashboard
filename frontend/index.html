@@ -116,6 +116,24 @@ td.tc{text-align:center}
 .matrix .m-urgent{background:#FDECEC!important;color:#B42318;font-weight:600}
 .matrix .m-ok{background:#E7F7EE!important;color:#0E7C44}
 .matrix .prod-pin{margin-right:4px;vertical-align:middle}
+.comp-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.comp-tbl th,.comp-tbl td{padding:8px 12px;border-bottom:1px solid var(--wb-border);text-align:center;white-space:nowrap}
+.comp-tbl th{background:#FAFAF9;font-size:10px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;position:sticky;top:0;z-index:2}
+.comp-tbl .metric-col{text-align:left;color:var(--wb-muted);font-weight:500;min-width:160px;position:sticky;left:0;background:var(--wb-surface);z-index:1}
+.comp-tbl thead .metric-col{z-index:3;background:#FAFAF9}
+.comp-tbl tr:hover td{background:#FAFAF9}
+.comp-tbl .own-col{background:var(--wb-purple-light)!important}
+.comp-tbl .rank-1{background:#FFF3CD;color:#856404;font-weight:700;border-radius:3px;padding:1px 5px}
+.comp-tbl .rank-2{background:#E8E8E8;color:#555;font-weight:700;border-radius:3px;padding:1px 5px}
+.comp-tbl .rank-3{background:#F2E4D5;color:#7D4E1F;font-weight:700;border-radius:3px;padding:1px 5px}
+.comp-tbl .section-hdr td{background:#F5F3F0;font-size:10px;font-weight:700;text-transform:uppercase;color:var(--wb-faint);padding:6px 12px;letter-spacing:.5px}
+.comp-sq-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.comp-sq-tbl th,.comp-sq-tbl td{padding:8px 12px;border-bottom:1px solid var(--wb-border)}
+.comp-sq-tbl th{background:#FAFAF9;font-size:10px;font-weight:600;color:var(--wb-muted);text-transform:uppercase}
+.comp-sq-tbl .own-sq{background:var(--wb-purple-light)}
+.comp-tabs{display:flex;border-bottom:1px solid var(--wb-border);background:var(--wb-surface)}
+.comp-tab{padding:10px 18px;font-size:12px;color:var(--wb-muted);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.comp-tab.on{color:var(--wb-purple);border-bottom-color:var(--wb-purple);font-weight:600}
 .manual-input{width:44px;border:1px solid var(--wb-border);border-radius:4px;padding:3px 6px;font-size:12px;font-family:inherit;text-align:center;background:#FFFBEB;color:var(--wb-text)}
 .manual-input:focus{outline:none;border-color:var(--wb-purple);background:#fff}
 .save-rating-btn{font-size:11px;padding:3px 8px;background:var(--wb-purple);color:#fff;border:none;border-radius:4px;cursor:pointer;margin-left:4px;font-family:inherit}
@@ -216,7 +234,7 @@ td.tc{text-align:center}
     <div class="tb-nav-item">Рост продаж</div>
     <div class="tb-nav-item on" onclick="showSection('products',this)">Товары и цены</div>
     <div class="tb-nav-item" onclick="showSection('supplies',this)">Поставки и заказы</div>
-    <div class="tb-nav-item">Аналитика</div>
+    <div class="tb-nav-item" onclick="showSection('analytics',this)">Аналитика</div>
     <div class="tb-nav-item" onclick="showSection('ads',this)">Продвижение</div>
     <div class="tb-nav-item">Финансы</div>
   </div>
@@ -225,7 +243,6 @@ td.tc{text-align:center}
       <div class="tb-dot" id="syncDot"></div>
       <span id="syncText">Загрузка...</span>
     </div>
-    <button class="tb-btn upload" onclick="openUploadModal()">📊 Загрузить оценки</button>
     <button class="tb-btn" onclick="triggerSync()">↻ Обновить</button>
   </div>
 </div>
@@ -374,6 +391,23 @@ td.tc{text-align:center}
   <div id="adsRoot"><div class="loading"><div class="spinner"></div><span>Загружаем статистику рекламы...</span></div></div>
 </div>
 
+<!-- КОНКУРЕНТЫ -->
+<div class="page" id="page-competitors">
+  <div class="toolbar">
+    <span style="font-size:13px;font-weight:600;color:var(--wb-text)">Сравнение карточек</span>
+    <span id="compPeriodInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center">
+      <select id="compSessionSel" style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:5px 10px;font-size:12px;font-family:inherit;background:var(--wb-surface)" onchange="loadCompetitorSession(this.value)">
+        <option value="">— выбери период —</option>
+      </select>
+      <button class="action-btn upload" onclick="document.getElementById('compFileInput').click()">📊 Загрузить отчёт</button>
+      <input type="file" id="compFileInput" accept=".xlsx" style="display:none" onchange="uploadCompetitorReport(this.files[0])">
+    </div>
+  </div>
+  <div id="compUploadStatus" style="display:none;padding:10px 20px;font-size:13px;color:var(--wb-muted)"></div>
+  <div id="compRoot"><div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners (Аналитика → Сравнение карточек → Скачать)</div></div>
+</div>
+
 <script>
 const RAILWAY_URL = 'https://wb-dashboard-production-baf4.up.railway.app';
 
@@ -420,6 +454,7 @@ function showSection(sec, btn) {
   if(sec === 'products') showPage('products', document.querySelector('#subnav-products .sn-item'));
   else if(sec === 'supplies') showPage('supply-recs', null);
   else if(sec === 'ads') showPage('ads', null);
+  else if(sec === 'analytics') showPage('competitors', null);
 }
 
 function showPage(id, btn) {
@@ -431,6 +466,7 @@ function showPage(id, btn) {
   if(id === 'products') renderProducts();
   if(id === 'supply-recs') renderSupplyRecs();
   if(id === 'ads') renderAds();
+  if(id === 'competitors') renderCompetitors();
 }
 
 async function loadData() {
@@ -1614,6 +1650,197 @@ function downloadWarehouseXlsx(e, encodedWh) {
   XLSX.utils.book_append_sheet(wb2, ws, wh.slice(0,31));
   const date = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb2, `поставка_${wh}_${date}.xlsx`);
+}
+
+// ─────────── Конкуренты ───────────
+const COMP_COLORS = ['#D4622A','#2E90FA','#12B76A','#9747FF','#F79009','#EE46BC','#06AED4'];
+let COMP_DATA = null;
+let COMP_TAB = 'metrics';
+
+async function renderCompetitors() {
+  // Загружаем список сессий
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/competitor-sessions`);
+    const sessions = await r.json();
+    const sel = document.getElementById('compSessionSel');
+    sel.innerHTML = '<option value="">— выбери период —</option>' +
+      sessions.map(s => `<option value="${s.id}">${s.period_begin} — ${s.period_end}</option>`).join('');
+    if(sessions.length && !COMP_DATA) {
+      sel.value = sessions[0].id;
+      await loadCompetitorSession(sessions[0].id);
+    } else if(COMP_DATA) {
+      renderCompetitorView();
+    }
+  } catch(e) {
+    document.getElementById('compRoot').innerHTML = '<div class="empty">Ошибка загрузки данных</div>';
+  }
+}
+
+async function loadCompetitorSession(sessionId) {
+  if(!sessionId) return;
+  document.getElementById('compRoot').innerHTML = '<div class="loading"><div class="spinner"></div><span>Загружаем данные...</span></div>';
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/competitor-data/${sessionId}`);
+    COMP_DATA = await r.json();
+    renderCompetitorView();
+  } catch(e) {
+    document.getElementById('compRoot').innerHTML = '<div class="empty">Ошибка загрузки</div>';
+  }
+}
+
+function renderCompetitorView() {
+  if(!COMP_DATA || !COMP_DATA.metrics || !COMP_DATA.metrics.length) {
+    document.getElementById('compRoot').innerHTML = '<div class="empty">Нет данных по выбранной сессии</div>';
+    return;
+  }
+  const metrics = COMP_DATA.metrics;
+  const articles = metrics.map(m => m.nm_id);
+  const ownNm = (metrics.find(m => m.is_own) || metrics[0]).nm_id;
+
+  // Info
+  const sel = document.getElementById('compSessionSel');
+  const opt = sel.options[sel.selectedIndex];
+  document.getElementById('compPeriodInfo').textContent = opt ? opt.text : '';
+
+  document.getElementById('compRoot').innerHTML = `
+    <div class="comp-tabs">
+      <div class="comp-tab${COMP_TAB==='metrics'?' on':''}" onclick="switchCompTab('metrics')">Показатели</div>
+      <div class="comp-tab${COMP_TAB==='search'?' on':''}" onclick="switchCompTab('search')">Поисковые запросы</div>
+    </div>
+    <div id="compTabMetrics" style="${COMP_TAB==='metrics'?'':'display:none'}">
+      <div style="overflow-x:auto">${buildCompMetricsTable(metrics, ownNm)}</div>
+    </div>
+    <div id="compTabSearch" style="${COMP_TAB==='search'?'':'display:none'}">
+      <div style="overflow-x:auto">${buildCompSearchTable(COMP_DATA.search_queries, articles, ownNm)}</div>
+    </div>`;
+}
+
+function switchCompTab(tab) {
+  COMP_TAB = tab;
+  document.querySelectorAll('.comp-tab').forEach(t => t.classList.toggle('on', t.textContent === (tab==='metrics'?'Показатели':'Поисковые запросы')));
+  document.getElementById('compTabMetrics').style.display = tab==='metrics' ? '' : 'none';
+  document.getElementById('compTabSearch').style.display = tab==='search' ? '' : 'none';
+}
+
+function buildCompMetricsTable(metrics, ownNm) {
+  const arts = metrics.map((m,i) => ({...m, color: COMP_COLORS[i % COMP_COLORS.length]}));
+
+  const thCells = arts.map(m => `<th class="${m.nm_id===ownNm?'own-col':''}">
+    <div style="color:${m.color};font-weight:700">${m.nm_id}</div>
+    <div style="font-size:10px;font-weight:400;color:var(--wb-muted);max-width:110px;white-space:normal">${(m.brand||'').slice(0,20)}</div>
+  </th>`).join('');
+
+  const SECTIONS = {
+    'Карточка': [
+      ['Название','name',false],
+      ['Рейтинг по отзывам','feedback_rating',false],
+      ['Кол-во отзывов','reviews_count',false],
+      ['Цена со скидкой, ₽','price',false],
+      ['Медианная цена, ₽','median_price',false],
+      ['Время доставки','delivery_time',false],
+      ['Позиция в поиске','avg_position',true], // lower = better
+    ],
+    'Воронка продаж': [
+      ['Показы','views',false],
+      ['Переходы в карточку','card_opens',false],
+      ['CTR, %','ctr',false],
+      ['Корзина, шт','cart_adds',false],
+      ['Конверсия в корзину','cart_conv',false],
+      ['Заказы, шт','orders',false],
+      ['Конверсия в заказ','order_conv',false],
+      ['Выкупы, шт','buyouts',false],
+      ['% выкупа','buyout_pct',false],
+      ['Отмены, шт','cancels',true],
+    ]
+  };
+
+  let rows = `<table class="comp-tbl"><thead><tr><th class="metric-col">Показатель</th>${thCells}</tr></thead><tbody>`;
+  for(const [section, fields] of Object.entries(SECTIONS)) {
+    rows += `<tr class="section-hdr"><td colspan="${arts.length+1}">${section}</td></tr>`;
+    for(const [label, field, lowerBetter] of fields) {
+      const vals = arts.map(m => {
+        const v = m[field];
+        return v !== null && v !== undefined ? parseFloat(v) : null;
+      });
+      const validVals = vals.filter(v => v !== null);
+      const sorted = [...validVals].sort((a,b) => lowerBetter ? a-b : b-a);
+      rows += `<tr><td class="metric-col">${label}</td>`;
+      arts.forEach((m,i) => {
+        const raw = m[field];
+        const num = raw !== null && raw !== undefined ? parseFloat(raw) : null;
+        let rankCls = '';
+        if(num !== null && validVals.length > 1) {
+          const rank = sorted.indexOf(num);
+          if(rank === 0) rankCls = 'rank-1';
+          else if(rank === 1) rankCls = 'rank-2';
+          else if(rank === 2) rankCls = 'rank-3';
+        }
+        const display = raw === null || raw === undefined ? '—' : (field==='delivery_time' ? raw : (Number.isInteger(num) ? fmt(num) : num));
+        rows += `<td class="${m.nm_id===ownNm?'own-col':''}"><span class="${rankCls}">${display}</span></td>`;
+      });
+      rows += '</tr>';
+    }
+  }
+  rows += '</tbody></table>';
+  return rows;
+}
+
+function buildCompSearchTable(queries, articles, ownNm) {
+  if(!queries || !queries.length) return '<div class="empty" style="padding:20px">Нет данных по поисковым запросам</div>';
+  const arts = articles.map((a,i) => ({nm_id: a, color: COMP_COLORS[i % COMP_COLORS.length]}));
+
+  const header = `<table class="comp-sq-tbl"><thead><tr>
+    <th style="min-width:200px;text-align:left">Запрос</th>
+    <th>Запросов</th>
+    <th>Изменение</th>
+    ${arts.map(a => `<th class="${a.nm_id===ownNm?'own-sq':''}" style="text-align:center">
+      <span style="color:${a.color}">${a.nm_id}</span><br>
+      <span style="font-size:9px;font-weight:400">конв. корзина</span>
+    </th>`).join('')}
+  </tr></thead><tbody>`;
+
+  const body = queries.map(q => {
+    const delta = (q.query_count||0) - (q.query_count_prev||0);
+    const deltaEl = delta >= 0 ? `<span style="color:var(--green)">▲ ${fmt(Math.abs(delta))}</span>` : `<span style="color:var(--red)">▼ ${fmt(Math.abs(delta))}</span>`;
+    const conv = q.cart_conv_by_nm || {};
+    return `<tr>
+      <td style="font-weight:500">${q.query}</td>
+      <td style="text-align:right;font-weight:600">${fmt(q.query_count)}</td>
+      <td style="text-align:center">${deltaEl}</td>
+      ${arts.map(a => {
+        const v = conv[String(a.nm_id)];
+        return `<td class="${a.nm_id===ownNm?'own-sq':''}" style="text-align:center">${v !== undefined ? v+'%' : '—'}</td>`;
+      }).join('')}
+    </tr>`;
+  }).join('');
+
+  return header + body + '</tbody></table>';
+}
+
+async function uploadCompetitorReport(file) {
+  if(!file) return;
+  const status = document.getElementById('compUploadStatus');
+  status.style.display = 'block';
+  status.textContent = '⏳ Загружаем и обрабатываем файл...';
+  const formData = new FormData();
+  formData.append('file', file);
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/upload-competitor-report`, {method:'POST', body: formData});
+    const result = await r.json();
+    if(result.error) {
+      status.textContent = '❌ Ошибка: ' + result.error;
+    } else {
+      status.textContent = `✅ Загружено: ${result.period}, ${result.articles} артикулов, ${result.search_queries} запросов`;
+      COMP_DATA = null;
+      await renderCompetitors();
+      const sel = document.getElementById('compSessionSel');
+      sel.value = result.session_id;
+      await loadCompetitorSession(result.session_id);
+    }
+  } catch(e) {
+    status.textContent = '❌ Ошибка: ' + e.message;
+  }
+  document.getElementById('compFileInput').value = '';
 }
 
 loadData();
