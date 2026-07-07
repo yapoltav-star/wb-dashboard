@@ -1713,10 +1713,31 @@ async function renderCompetitors() {
 function buildPeriodButtons() {
   const el = document.getElementById('compPeriodBtns');
   el.innerHTML = COMP_SESSIONS.map(s => `
-    <button class="comp-period-btn${s.id===COMP_SESSION_ID?' on':''}" onclick="selectPeriod(${s.id})">
-      ${s.period_begin} — ${s.period_end}
-    </button>`).join('');
+    <div style="display:flex;align-items:center;gap:2px">
+      <button class="comp-period-btn${s.id===COMP_SESSION_ID?' on':''}" onclick="selectPeriod(${s.id})">
+        ${s.period_begin} — ${s.period_end}
+      </button>
+      <button onclick="deleteCompSession(${s.id})" title="Удалить" style="border:none;background:none;cursor:pointer;color:var(--wb-faint);font-size:15px;padding:2px 5px;line-height:1" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--wb-faint)'">✕</button>
+    </div>`).join('');
   document.getElementById('compFilters').style.display = '';
+}
+
+async function deleteCompSession(sessionId) {
+  if(!confirm('Удалить этот период?')) return;
+  try {
+    await fetch(`${RAILWAY_URL}/api/competitor-session/${sessionId}`, { method: 'DELETE' });
+    COMP_SESSIONS = COMP_SESSIONS.filter(s => s.id !== sessionId);
+    if(COMP_SESSION_ID === sessionId) {
+      COMP_SESSION_ID = COMP_SESSIONS[0]?.id || null;
+      COMP_DATA = null;
+      COMP_SELECTED_NMS = new Set();
+    }
+    buildPeriodButtons();
+    if(COMP_SESSION_ID) await loadCompetitorSession(COMP_SESSION_ID);
+    else document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners</div>';
+  } catch(e) {
+    alert('Ошибка удаления');
+  }
 }
 
 async function selectPeriod(sessionId) {
@@ -1740,7 +1761,8 @@ async function loadCompetitorSession(sessionId) {
     if(DAILY_STATS.length) buildDynChart();
     renderCompetitorView();
   } catch(e) {
-    document.getElementById('compRoot').innerHTML = '<div class="empty">Ошибка загрузки</div>';
+    document.getElementById('compRoot').innerHTML = `<div class="empty">Ошибка загрузки: ${e.message}</div>`;
+    console.error('loadCompetitorSession error:', e);
   }
 }
 
@@ -1752,9 +1774,10 @@ function buildArtChecks() {
     const on = COMP_SELECTED_NMS.has(m.nm_id);
     return `<div class="comp-art-check${on?' on':''}${m.is_own?' own':''}" onclick="toggleArtCheck(${m.nm_id})">
       <div class="comp-art-dot" style="background:${color}"></div>
-      <span style="font-weight:600">${m.nm_id}</span>
-      <span style="color:var(--wb-muted)">${(m.brand||'').slice(0,15)}</span>
-      ${m.is_own ? '<span style="color:var(--wb-purple);font-size:10px">мой</span>' : ''}
+      <div>
+        <div style="font-weight:600;font-size:12px">${m.brand || m.nm_id}</div>
+        <div style="font-size:10px;color:var(--wb-muted)">${m.nm_id}${m.is_own?' · мой':''}</div>
+      </div>
     </div>`;
   }).join('');
 }
@@ -1917,7 +1940,7 @@ function renderCompetitorView() {
       <div style="overflow-x:auto">${buildCompMetricsTable(metrics, ownNm)}</div>
     </div>
     <div id="compTabSearch" style="${COMP_TAB==='search'?'':'display:none'}">
-      <div style="overflow-x:auto">${buildCompSearchTable(COMP_DATA.search_queries, articles, ownNm)}</div>
+      <div style="overflow-x:auto">${buildCompSearchTable(COMP_DATA.search_queries, metrics.map(m=>m.nm_id), ownNm)}</div>
     </div>`;
 }
 
@@ -1932,8 +1955,9 @@ function buildCompMetricsTable(metrics, ownNm) {
   const arts = metrics.map((m,i) => ({...m, color: COMP_COLORS[i % COMP_COLORS.length]}));
 
   const thCells = arts.map(m => `<th class="${m.nm_id===ownNm?'own-col':''}">
-    <div style="color:${m.color};font-weight:700">${m.nm_id}</div>
-    <div style="font-size:10px;font-weight:400;color:var(--wb-muted);max-width:110px;white-space:normal">${(m.brand||'').slice(0,20)}</div>
+    <div style="color:${m.color};font-weight:600;font-size:12px;white-space:normal;max-width:120px">${m.brand || m.nm_id}</div>
+    <div style="font-size:10px;font-weight:400;color:var(--wb-muted);max-width:120px;white-space:normal;line-height:1.3;margin-top:2px">${(m.name||'').slice(0,30)}</div>
+    <div style="font-size:10px;color:var(--wb-faint);margin-top:2px">${m.nm_id}${m.is_own?'&nbsp;<b style="color:var(--wb-purple)">мой</b>':''}</div>
   </th>`).join('');
 
   const SECTIONS = {
