@@ -1908,11 +1908,6 @@ function renderCompetitorView() {
   }
   const ownNm = (metrics.find(m => m.is_own) || metrics[0]).nm_id;
 
-  // Info
-  const sel = document.getElementById('compSessionSel');
-  const opt = sel.options[sel.selectedIndex];
-  document.getElementById('compPeriodInfo').textContent = opt ? opt.text : '';
-
   document.getElementById('compRoot').innerHTML = `
     <div class="comp-tabs">
       <div class="comp-tab${COMP_TAB==='metrics'?' on':''}" onclick="switchCompTab('metrics')">Показатели</div>
