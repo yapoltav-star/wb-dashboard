@@ -1832,8 +1832,11 @@ async function uploadCompetitorReport(file) {
     } else {
       status.textContent = `✅ Загружено: ${result.period}, ${result.articles} артикулов, ${result.search_queries} запросов`;
       COMP_DATA = null;
-      await renderCompetitors();
+      // Обновляем список сессий и сразу загружаем новую
+      const sessions = await (await fetch(`${RAILWAY_URL}/api/competitor-sessions`)).json();
       const sel = document.getElementById('compSessionSel');
+      sel.innerHTML = '<option value="">— выбери период —</option>' +
+        sessions.map(s => `<option value="${s.id}">${s.period_begin} — ${s.period_end}</option>`).join('');
       sel.value = result.session_id;
       await loadCompetitorSession(result.session_id);
     }
