@@ -117,6 +117,12 @@ td.tc{text-align:center}
 .matrix .m-ok{background:#E7F7EE!important;color:#0E7C44}
 .matrix .prod-pin{margin-right:4px;vertical-align:middle}
 .comp-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.comp-period-btn{padding:5px 12px;border-radius:20px;border:1px solid var(--wb-border);font-size:12px;color:var(--wb-muted);cursor:pointer;background:var(--wb-bg);font-family:inherit;white-space:nowrap}
+.comp-period-btn.on{background:var(--wb-purple);color:#fff;border-color:var(--wb-purple)}
+.comp-art-check{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:6px;border:1px solid var(--wb-border);cursor:pointer;font-size:12px;background:var(--wb-bg);user-select:none}
+.comp-art-check.on{background:var(--wb-purple-light);border-color:var(--wb-purple)}
+.comp-art-check.own{border-color:var(--wb-purple);font-weight:600}
+.comp-art-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .comp-tbl th,.comp-tbl td{padding:8px 12px;border-bottom:1px solid var(--wb-border);text-align:center;white-space:nowrap}
 .comp-tbl th{background:#FAFAF9;font-size:10px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;position:sticky;top:0;z-index:2}
 .comp-tbl .metric-col{text-align:left;color:var(--wb-muted);font-weight:500;min-width:160px;position:sticky;left:0;background:var(--wb-surface);z-index:1}
@@ -395,17 +401,30 @@ td.tc{text-align:center}
 <div class="page" id="page-competitors">
   <div class="toolbar">
     <span style="font-size:13px;font-weight:600;color:var(--wb-text)">Сравнение карточек</span>
-    <span id="compPeriodInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
     <div class="ml-auto" style="display:flex;gap:8px;align-items:center">
-      <select id="compSessionSel" style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:5px 10px;font-size:12px;font-family:inherit;background:var(--wb-surface)" onchange="loadCompetitorSession(this.value)">
-        <option value="">— выбери период —</option>
-      </select>
       <button class="action-btn upload" onclick="document.getElementById('compFileInput').click()">📊 Загрузить отчёт</button>
       <input type="file" id="compFileInput" accept=".xlsx" style="display:none" onchange="uploadCompetitorReport(this.files[0])">
     </div>
   </div>
-  <div id="compUploadStatus" style="display:none;padding:10px 20px;font-size:13px;color:var(--wb-muted)"></div>
-  <div id="compRoot"><div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners (Аналитика → Сравнение карточек → Скачать)</div></div>
+  <div id="compUploadStatus" style="display:none;padding:8px 20px;font-size:13px;color:var(--wb-muted);border-bottom:1px solid var(--wb-border)"></div>
+
+  <!-- Фильтры: период + артикулы -->
+  <div id="compFilters" style="display:none;padding:12px 20px;border-bottom:1px solid var(--wb-border);background:var(--wb-surface)">
+    <div style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap">
+      <!-- Период -->
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Период</div>
+        <div id="compPeriodBtns" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+      </div>
+      <!-- Артикулы -->
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Артикулы</div>
+        <div id="compArtChecks" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="compRoot"><div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners<br><span style="font-size:12px;color:var(--wb-faint)">Аналитика → Сравнение карточек → Скачать</span></div></div>
 </div>
 
 <script>
@@ -1656,24 +1675,44 @@ function downloadWarehouseXlsx(e, encodedWh) {
 const COMP_COLORS = ['#D4622A','#2E90FA','#12B76A','#9747FF','#F79009','#EE46BC','#06AED4'];
 let COMP_DATA = null;
 let COMP_TAB = 'metrics';
+let COMP_SESSIONS = [];
+let COMP_SESSION_ID = null;
+let COMP_SELECTED_NMS = new Set(); // выбранные артикулы
 
 async function renderCompetitors() {
-  // Загружаем список сессий
   try {
     const r = await fetch(`${RAILWAY_URL}/api/competitor-sessions`);
-    const sessions = await r.json();
-    const sel = document.getElementById('compSessionSel');
-    sel.innerHTML = '<option value="">— выбери период —</option>' +
-      sessions.map(s => `<option value="${s.id}">${s.period_begin} — ${s.period_end}</option>`).join('');
-    if(sessions.length && !COMP_DATA) {
-      sel.value = sessions[0].id;
-      await loadCompetitorSession(sessions[0].id);
-    } else if(COMP_DATA) {
+    COMP_SESSIONS = await r.json();
+    if(!COMP_SESSIONS.length) {
+      document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners<br><span style="font-size:12px;color:var(--wb-faint)">Аналитика → Сравнение карточек → Скачать</span></div>';
+      return;
+    }
+    buildPeriodButtons();
+    if(!COMP_SESSION_ID) {
+      COMP_SESSION_ID = COMP_SESSIONS[0].id;
+      await loadCompetitorSession(COMP_SESSION_ID);
+    } else {
       renderCompetitorView();
     }
   } catch(e) {
     document.getElementById('compRoot').innerHTML = '<div class="empty">Ошибка загрузки данных</div>';
   }
+}
+
+function buildPeriodButtons() {
+  const el = document.getElementById('compPeriodBtns');
+  el.innerHTML = COMP_SESSIONS.map(s => `
+    <button class="comp-period-btn${s.id===COMP_SESSION_ID?' on':''}" onclick="selectPeriod(${s.id})">
+      ${s.period_begin} — ${s.period_end}
+    </button>`).join('');
+  document.getElementById('compFilters').style.display = '';
+}
+
+async function selectPeriod(sessionId) {
+  COMP_SESSION_ID = sessionId;
+  COMP_SELECTED_NMS = new Set(); // сбрасываем выбор артикулов при смене периода
+  buildPeriodButtons();
+  await loadCompetitorSession(sessionId);
 }
 
 async function loadCompetitorSession(sessionId) {
@@ -1682,10 +1721,41 @@ async function loadCompetitorSession(sessionId) {
   try {
     const r = await fetch(`${RAILWAY_URL}/api/competitor-data/${sessionId}`);
     COMP_DATA = await r.json();
+    // По умолчанию выбираем все артикулы
+    if(!COMP_SELECTED_NMS.size && COMP_DATA.metrics) {
+      COMP_DATA.metrics.forEach(m => COMP_SELECTED_NMS.add(m.nm_id));
+    }
+    buildArtChecks();
     renderCompetitorView();
   } catch(e) {
     document.getElementById('compRoot').innerHTML = '<div class="empty">Ошибка загрузки</div>';
   }
+}
+
+function buildArtChecks() {
+  if(!COMP_DATA || !COMP_DATA.metrics) return;
+  const el = document.getElementById('compArtChecks');
+  el.innerHTML = COMP_DATA.metrics.map((m, i) => {
+    const color = COMP_COLORS[i % COMP_COLORS.length];
+    const on = COMP_SELECTED_NMS.has(m.nm_id);
+    return `<div class="comp-art-check${on?' on':''}${m.is_own?' own':''}" onclick="toggleArtCheck(${m.nm_id})">
+      <div class="comp-art-dot" style="background:${color}"></div>
+      <span style="font-weight:600">${m.nm_id}</span>
+      <span style="color:var(--wb-muted)">${(m.brand||'').slice(0,15)}</span>
+      ${m.is_own ? '<span style="color:var(--wb-purple);font-size:10px">мой</span>' : ''}
+    </div>`;
+  }).join('');
+}
+
+function toggleArtCheck(nmId) {
+  if(COMP_SELECTED_NMS.has(nmId)) {
+    if(COMP_SELECTED_NMS.size <= 1) return; // минимум 1
+    COMP_SELECTED_NMS.delete(nmId);
+  } else {
+    COMP_SELECTED_NMS.add(nmId);
+  }
+  buildArtChecks();
+  renderCompetitorView();
 }
 
 function renderCompetitorView() {
@@ -1693,8 +1763,12 @@ function renderCompetitorView() {
     document.getElementById('compRoot').innerHTML = '<div class="empty">Нет данных по выбранной сессии</div>';
     return;
   }
-  const metrics = COMP_DATA.metrics;
-  const articles = metrics.map(m => m.nm_id);
+  // Фильтруем по выбранным артикулам
+  const metrics = COMP_DATA.metrics.filter(m => COMP_SELECTED_NMS.has(m.nm_id));
+  if(!metrics.length) {
+    document.getElementById('compRoot').innerHTML = '<div class="empty">Выбери хотя бы один артикул</div>';
+    return;
+  }
   const ownNm = (metrics.find(m => m.is_own) || metrics[0]).nm_id;
 
   // Info
@@ -1832,12 +1906,10 @@ async function uploadCompetitorReport(file) {
     } else {
       status.textContent = `✅ Загружено: ${result.period}, ${result.articles} артикулов, ${result.search_queries} запросов`;
       COMP_DATA = null;
-      // Обновляем список сессий и сразу загружаем новую
-      const sessions = await (await fetch(`${RAILWAY_URL}/api/competitor-sessions`)).json();
-      const sel = document.getElementById('compSessionSel');
-      sel.innerHTML = '<option value="">— выбери период —</option>' +
-        sessions.map(s => `<option value="${s.id}">${s.period_begin} — ${s.period_end}</option>`).join('');
-      sel.value = result.session_id;
+      COMP_SESSION_ID = result.session_id;
+      COMP_SELECTED_NMS = new Set();
+      COMP_SESSIONS = await (await fetch(`${RAILWAY_URL}/api/competitor-sessions`)).json();
+      buildPeriodButtons();
       await loadCompetitorSession(result.session_id);
     }
   } catch(e) {
