@@ -956,15 +956,16 @@ async def upload_ratings(file: UploadFile = File(...)):
 async def upload_competitor_report(file: UploadFile = File(...)):
     """Принимает xlsx «Сравнение карточек» из WB Partners и сохраняет в Supabase."""
     try:
+        import re as _re
         contents = await file.read()
         xl = pd.ExcelFile(io.BytesIO(contents))
 
-        # ── Общая информация (период, артикулы) ──
+        # ── Общая информация ──
         df_info = pd.read_excel(io.BytesIO(contents), sheet_name='Общая информация', header=None)
         info = {}
         for _, row in df_info.iterrows():
             k = str(row.iloc[0]).strip()
-            v = str(row.iloc[1]).strip() if len(row) > 1 else ''
+            v = str(row.iloc[1]).strip() if len(row) > 1 and str(row.iloc[1]) != 'nan' else ''
             info[k] = v
 
         def parse_date(s):
@@ -975,15 +976,12 @@ async def upload_competitor_report(file: UploadFile = File(...)):
                     pass
             return None
 
-        period_str = info.get('Выбранный период', '')
-        prev_str = info.get('Предыдущий период', '')
         def extract_dates(s):
-            import re
-            dates = re.findall(r'\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}', s)
+            dates = _re.findall(r'\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}', s)
             return [parse_date(d) for d in dates[:2]]
 
-        p_dates = extract_dates(period_str)
-        pr_dates = extract_dates(prev_str)
+        p_dates = extract_dates(info.get('Выбранный период', ''))
+        pr_dates = extract_dates(info.get('Предыдущий период', ''))
 
         session_row = {
             "period_begin": p_dates[0] if len(p_dates) > 0 else None,
@@ -992,14 +990,72 @@ async def upload_competitor_report(file: UploadFile = File(...)):
             "prev_end": pr_dates[1] if len(pr_dates) > 1 else None,
         }
 
-        # Определяем "свои" артикулы (пронумерованные в info)
-        own_nms = set()
-        for k, v in info.items():
-            if 'Выбранная номенклатура' in k:
-                try:
-                    own_nms.add(int(float(v)))
-                except Exception:
-                    pass
+        # ── Показатели — определяем артикулы и метрики ──
+        df = pd.read_excel(io.BytesIO(contents), sheet_name='Показатели', header=None)
+        headers = [str(v) for v in df.iloc[1].values]
+
+        # Колонки с артикулами (не "Разница", не "предыдущий")
+        art_cols = []
+        for j, h in enumerate(headers):
+            if 'Артикул WB' in h and 'предыдущий' not in h.lower() and 'Разница' not in h:
+                nm_match = _re.search(r'(\d{7,10})', h)
+                if nm_match:
+                    art_cols.append((j, int(nm_match.group(1))))
+
+        # Первый артикул = твой (он всегда идёт первым в сравнении)
+        own_nm = art_cols[0][1] if art_cols else None
+        logger.info(f"upload-competitor: articles={[nm for _,nm in art_cols]}, own={own_nm}")
+
+        def cell(row_idx, col_idx):
+            v = df.iloc[row_idx, col_idx]
+            s = str(v).strip()
+            return s if s not in ('nan', 'None', 'NaT', '-') else None
+
+        def to_num(row_idx, col_idx):
+            v = cell(row_idx, col_idx)
+            if not v: return None
+            try:
+                return float(v.replace('\xa0', '').replace(' ', '').replace(',', '.').replace('%',''))
+            except Exception:
+                return None
+
+        def find_row(label):
+            for i in range(2, len(df)):
+                if str(df.iloc[i, 0]).strip() == label:
+                    return i
+            return None
+
+        # Ищем все возможные варианты названий метрик
+        METRIC_LABELS = {
+            'name': ['Название'],
+            'brand': ['Бренд'],
+            'card_rating': ['Рейтинг карточки'],
+            'feedback_rating': ['Рейтинг по отзывам'],
+            'reviews_count': ['Количество отзывов'],
+            'price': ['Минимальная цена со скидкой (по размерам), ₽', 'Цена с учётом скидок, ₽', 'Минимальная цена'],
+            'median_price': ['Медианная цена покупателя, ₽', 'Медианная цена покупателя'],
+            'delivery_time': ['Среднее время доставки'],
+            'avg_position': ['Средняя позиция', 'Средняя позиция в поиске'],
+            'views': ['Показы'],
+            'card_opens': ['Переход в карточку, шт', 'Переходы в карточку, шт'],
+            'ctr': ['CTR'],
+            'cart_adds': ['Добавления в корзину, шт'],
+            'cart_conv': ['Конверсия в корзину, %'],
+            'orders': ['Заказы, шт'],
+            'order_conv': ['Конверсия в заказ, %'],
+            'buyouts': ['Выкупы, шт'],
+            'buyout_pct': ['Процент выкупа'],
+            'cancels': ['Отмены, шт'],
+        }
+        str_fields = {'brand', 'name', 'delivery_time'}
+
+        row_idx = {}
+        for field, labels in METRIC_LABELS.items():
+            for label in labels:
+                ri = find_row(label)
+                if ri is not None:
+                    row_idx[field] = ri
+                    break
 
         # ── Создаём сессию ──
         sess_resp = httpx.post(
@@ -1008,121 +1064,83 @@ async def upload_competitor_report(file: UploadFile = File(...)):
             headers={**sb_headers(), "Prefer": "return=representation"},
             timeout=15
         )
+        logger.info(f"Session create: status={sess_resp.status_code} body={sess_resp.text[:300]}")
         if not sess_resp.is_success:
-            return {"error": f"Session create error: {sess_resp.status_code} {sess_resp.text[:200]}"}
-        session_id = sess_resp.json()[0]["id"]
+            return {"error": f"Ошибка создания сессии ({sess_resp.status_code}): {sess_resp.text[:300]}. Выполни competitor_tables.sql в Supabase SQL Editor."}
+        try:
+            session_id = sess_resp.json()[0]["id"]
+        except Exception as e:
+            return {"error": f"Не удалось получить session_id: {e}. Ответ: {sess_resp.text[:200]}"}
 
-        # ── Показатели ──
-        df = pd.read_excel(io.BytesIO(contents), sheet_name='Показатели', header=None)
-        headers = [str(v) for v in df.iloc[1].values]
-
-        # Колонки текущего периода (не "Разница", не "предыдущий")
-        art_cols = []
-        for j, h in enumerate(headers):
-            if 'Артикул WB' in h and 'предыдущий' not in h and 'Разница' not in h:
-                try:
-                    nm = int(h.replace('Артикул WB', '').strip())
-                    art_cols.append((j, nm))
-                except Exception:
-                    pass
-
-        def cell(row_idx, col_idx):
-            v = df.iloc[row_idx, col_idx]
-            return str(v).strip() if str(v) not in ('nan', 'None', 'NaT') else None
-
-        def num(row_idx, col_idx):
-            v = cell(row_idx, col_idx)
-            if not v or v == '-': return None
-            try:
-                return float(v.replace(' ', '').replace(',', '.'))
-            except Exception:
-                return None
-
-        # Строки по ключевым метрикам
-        def find_row(label):
-            for i in range(2, len(df)):
-                if str(df.iloc[i, 0]).strip() == label:
-                    return i
-            return None
-
-        metric_map = {
-            'brand': 'Бренд', 'name': 'Название',
-            'card_rating': 'Рейтинг карточки', 'feedback_rating': 'Рейтинг по отзывам',
-            'reviews_count': 'Количество отзывов',
-            'price': 'Минимальная цена со скидкой (по размерам), ₽',
-            'median_price': 'Медианная цена покупателя, ₽',
-            'delivery_time': 'Среднее время доставки',
-            'avg_position': 'Средняя позиция',
-            'views': 'Показы', 'card_opens': 'Переход в карточку, шт',
-            'ctr': 'CTR', 'cart_adds': 'Добавления в корзину, шт',
-            'cart_conv': 'Конверсия в корзину, %',
-            'orders': 'Заказы, шт', 'order_conv': 'Конверсия в заказ, %',
-            'buyouts': 'Выкупы, шт', 'buyout_pct': 'Процент выкупа',
-            'cancels': 'Отмены, шт',
-        }
-        row_idx = {field: find_row(label) for field, label in metric_map.items()}
-        str_fields = {'brand', 'name', 'delivery_time'}
-
+        # ── Метрики по артикулам ──
         now = datetime.now(timezone.utc).isoformat()
         metrics_rows = []
         for j, nm_id in art_cols:
-            r = {"session_id": session_id, "nm_id": nm_id, "is_own": nm_id in own_nms, "updated_at": now}
-            for field, _ in metric_map.items():
-                ri = row_idx[field]
+            r = {"session_id": session_id, "nm_id": nm_id, "is_own": nm_id == own_nm, "updated_at": now}
+            for field in METRIC_LABELS:
+                ri = row_idx.get(field)
                 if ri is None:
                     r[field] = None
                 elif field in str_fields:
                     r[field] = cell(ri, j)
                 else:
-                    r[field] = num(ri, j)
+                    r[field] = to_num(ri, j)
             metrics_rows.append(r)
 
         if metrics_rows:
-            httpx.post(f"{SUPABASE_URL}/rest/v1/competitor_metrics",
-                       json=metrics_rows, headers=sb_headers(), timeout=20)
+            mr = httpx.post(f"{SUPABASE_URL}/rest/v1/competitor_metrics",
+                            json=metrics_rows, headers=sb_headers(), timeout=20)
+            if not mr.is_success:
+                logger.error(f"metrics insert error: {mr.status_code} {mr.text[:200]}")
 
-        # ── Поисковые запросы ──
-        sq_sheet = 'Поисковые запросы по всем ар...'
-        if sq_sheet in xl.sheet_names:
+        # ── Поисковые запросы (общий лист) ──
+        sq_rows = []
+        sq_sheet = next((s for s in xl.sheet_names if 'Поисковые запросы по всем' in s), None)
+        if sq_sheet:
             df_sq = pd.read_excel(io.BytesIO(contents), sheet_name=sq_sheet, header=None)
             sq_headers = [str(v) for v in df_sq.iloc[1].values]
-            import re
             art_sq_cols = {}
-            for j, h in enumerate(sq_headers[3:], 3):
-                m = re.search(r'(\d{7,10})', h)
-                if m:
-                    art_sq_cols[j] = m.group(1)
+            for j, h in enumerate(sq_headers):
+                nm_m = _re.search(r'(\d{7,10})', h)
+                if nm_m and j >= 3:
+                    art_sq_cols[j] = nm_m.group(1)
 
-            sq_rows = []
             for i in range(2, len(df_sq)):
                 q = str(df_sq.iloc[i, 0])
                 if q in ('nan', 'None'): continue
                 conv = {}
                 for j, nm in art_sq_cols.items():
-                    v = df_sq.iloc[i, j]
                     try:
-                        conv[nm] = int(float(v))
+                        conv[nm] = int(float(str(df_sq.iloc[i, j])))
                     except Exception:
                         pass
+                try:
+                    qc = int(float(str(df_sq.iloc[i, 1])))
+                except Exception:
+                    qc = None
+                try:
+                    qp = int(float(str(df_sq.iloc[i, 2])))
+                except Exception:
+                    qp = None
                 sq_rows.append({
-                    "session_id": session_id,
-                    "query": q,
-                    "query_count": int(float(str(df_sq.iloc[i, 1]))) if str(df_sq.iloc[i, 1]) not in ('nan','None') else None,
-                    "query_count_prev": int(float(str(df_sq.iloc[i, 2]))) if str(df_sq.iloc[i, 2]) not in ('nan','None') else None,
+                    "session_id": session_id, "query": q,
+                    "query_count": qc, "query_count_prev": qp,
                     "cart_conv_by_nm": conv
                 })
 
-            if sq_rows:
-                for i in range(0, len(sq_rows), 100):
-                    httpx.post(f"{SUPABASE_URL}/rest/v1/competitor_search_queries",
-                               json=sq_rows[i:i+100], headers=sb_headers(), timeout=20)
+        if sq_rows:
+            for i in range(0, len(sq_rows), 100):
+                httpx.post(f"{SUPABASE_URL}/rest/v1/competitor_search_queries",
+                           json=sq_rows[i:i+100], headers=sb_headers(), timeout=20)
 
+        period = f"{session_row.get('period_begin','?')} — {session_row.get('period_end','?')}"
+        logger.info(f"upload-competitor: done. session={session_id}, metrics={len(metrics_rows)}, sq={len(sq_rows)}")
         return {
             "status": "ok",
             "session_id": session_id,
-            "period": f"{session_row['period_begin']} — {session_row['period_end']}",
+            "period": period,
             "articles": len(metrics_rows),
-            "search_queries": len(sq_rows) if 'sq_rows' in dir() else 0
+            "search_queries": len(sq_rows)
         }
 
     except Exception as e:
