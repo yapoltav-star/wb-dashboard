@@ -994,6 +994,18 @@ async def upload_competitor_report(file: UploadFile = File(...)):
         import traceback; logger.error(traceback.format_exc())
         return {"error": str(e)}
 
+@app.delete("/api/competitor-session/{session_id}")
+def delete_competitor_session(session_id: int):
+    """Удаляет сессию и все связанные метрики (каскадно через ON DELETE CASCADE)."""
+    try:
+        resp = httpx.delete(
+            f"{SUPABASE_URL}/rest/v1/competitor_sessions?id=eq.{session_id}",
+            headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=15
+        )
+        return {"status": "ok"} if resp.is_success else {"error": resp.text[:200]}
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.get("/api/competitor-sessions")
 def get_competitor_sessions():
     """Список загруженных сессий сравнения."""
