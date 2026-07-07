@@ -1674,6 +1674,9 @@ function downloadWarehouseXlsx(e, encodedWh) {
 // ─────────── Конкуренты ───────────
 const COMP_COLORS = ['#D4622A','#2E90FA','#12B76A','#9747FF','#F79009','#EE46BC','#06AED4'];
 let COMP_DATA = null;
+let DAILY_STATS = [];
+let DYN_CHART = null;
+let DYN_METRIC = 'open_card';
 let COMP_TAB = 'metrics';
 let COMP_SESSIONS = [];
 let COMP_SESSION_ID = null;
@@ -1681,14 +1684,22 @@ let COMP_SELECTED_NMS = new Set(); // выбранные артикулы
 
 async function renderCompetitors() {
   try {
-    const r = await fetch(`${RAILWAY_URL}/api/competitor-sessions`);
-    COMP_SESSIONS = await r.json();
-    if(!COMP_SESSIONS.length) {
+    const [sessR, dailyR] = await Promise.all([
+      fetch(`${RAILWAY_URL}/api/competitor-sessions`),
+      fetch(`${RAILWAY_URL}/api/article-daily-stats?days=30`)
+    ]);
+    COMP_SESSIONS = await sessR.json();
+    DAILY_STATS = await dailyR.json();
+    if(Array.isArray(DAILY_STATS)) {
+      // индексируем по nm_id+dt для быстрого доступа
+    }
+    if(!COMP_SESSIONS.length && !DAILY_STATS.length) {
       document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners<br><span style="font-size:12px;color:var(--wb-faint)">Аналитика → Сравнение карточек → Скачать</span></div>';
       return;
     }
     buildPeriodButtons();
-    if(!COMP_SESSION_ID) {
+    if(DAILY_STATS.length) buildDynChart();
+    if(!COMP_SESSION_ID && COMP_SESSIONS.length) {
       COMP_SESSION_ID = COMP_SESSIONS[0].id;
       await loadCompetitorSession(COMP_SESSION_ID);
     } else {
@@ -1726,6 +1737,7 @@ async function loadCompetitorSession(sessionId) {
       COMP_DATA.metrics.forEach(m => COMP_SELECTED_NMS.add(m.nm_id));
     }
     buildArtChecks();
+    if(DAILY_STATS.length) buildDynChart();
     renderCompetitorView();
   } catch(e) {
     document.getElementById('compRoot').innerHTML = '<div class="empty">Ошибка загрузки</div>';
@@ -1756,6 +1768,131 @@ function toggleArtCheck(nmId) {
   }
   buildArtChecks();
   renderCompetitorView();
+}
+
+const DYN_METRICS = [
+  {key:'open_card',   label:'Переходы в карточку'},
+  {key:'add_to_cart', label:'Добавления в корзину'},
+  {key:'orders',      label:'Заказы'},
+  {key:'ctr',         label:'CTR, %'},
+  {key:'cart_conv',   label:'Конверсия в корзину'},
+  {key:'order_conv',  label:'Конверсия в заказ'},
+  {key:'buyouts',     label:'Выкупы'},
+];
+const DYN_COLORS = ['#D4622A','#2a78d6','#1baf7a','#4a3aa7','#eda100','#e34948','#ee46bc'];
+const DYN_DASHES = [[],[5,3],[3,3],[8,4],[],[5,3],[3,3]];
+
+function buildDynChart() {
+  const root = document.getElementById('compRoot');
+  if(!root) return;
+
+  // Уникальные даты и артикулы из DAILY_STATS
+  const datesSet = new Set(DAILY_STATS.map(r => r.dt));
+  const dates = [...datesSet].sort();
+  const nmsSet = new Set(DAILY_STATS.map(r => r.nm_id));
+  const nms = [...nmsSet];
+
+  // Строим DOM для графика если ещё нет
+  let dynEl = document.getElementById('dynChartWrap');
+  if(!dynEl) {
+    const wrap = document.createElement('div');
+    wrap.className = 'card';
+    wrap.innerHTML = `
+      <div style="padding:14px 16px 0;font-size:14px;font-weight:500">Динамика показателей</div>
+      <div style="padding:4px 16px 10px;font-size:12px;color:var(--wb-muted)">Мои артикулы — по дням</div>
+      <div id="dynMetricTabs" style="display:flex;border-bottom:1px solid var(--wb-border);padding:0 16px;overflow-x:auto"></div>
+      <div id="dynLegend" style="display:flex;gap:12px;padding:10px 16px;flex-wrap:wrap"></div>
+      <div style="padding:12px 16px;height:240px;position:relative">
+        <canvas id="dynCanvas" role="img" aria-label="Динамика показателей по дням"></canvas>
+      </div>
+      <div style="padding:8px 16px;border-top:1px solid var(--wb-border);display:flex;gap:8px;align-items:center">
+        <span style="font-size:11px;color:var(--wb-muted)">Обновить данные:</span>
+        <button class="action-btn" onclick="triggerDailySync(30)" style="font-size:11px;padding:3px 10px">30 дней</button>
+        <button class="action-btn" onclick="triggerDailySync(90)" style="font-size:11px;padding:3px 10px">90 дней (Jam)</button>
+        <span id="dailySyncStatus" style="font-size:11px;color:var(--wb-muted)"></span>
+      </div>`;
+    root.prepend(wrap);
+    wrap.id = 'dynChartWrap';
+  }
+
+  // Табы метрик
+  const tabsEl = document.getElementById('dynMetricTabs');
+  tabsEl.innerHTML = DYN_METRICS.map(m =>
+    `<div class="comp-tab${m.key===DYN_METRIC?' on':''}" onclick="switchDynMetric('${m.key}')" style="white-space:nowrap">${m.label}</div>`
+  ).join('');
+
+  // Легенда
+  const legEl = document.getElementById('dynLegend');
+  legEl.innerHTML = nms.map((nm,i) =>
+    `<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--wb-muted)">
+      <div style="width:10px;height:10px;border-radius:50%;background:${DYN_COLORS[i%DYN_COLORS.length]}"></div>
+      ${nm}
+    </div>`
+  ).join('');
+
+  // Данные для графика
+  const datasets = nms.map((nm,i) => ({
+    label: String(nm),
+    data: dates.map(dt => {
+      const r = DAILY_STATS.find(x => x.nm_id === nm && x.dt === dt);
+      return r ? (r[DYN_METRIC] || 0) : 0;
+    }),
+    borderColor: DYN_COLORS[i % DYN_COLORS.length],
+    backgroundColor: 'transparent',
+    borderWidth: i===0 ? 2.5 : 1.5,
+    borderDash: DYN_DASHES[i % DYN_DASHES.length],
+    tension: 0.4,
+    pointRadius: 0,
+    pointHoverRadius: 4
+  }));
+
+  const labels = dates.map(d => d.slice(5).replace('-','.'));
+
+  if(DYN_CHART) { DYN_CHART.destroy(); DYN_CHART = null; }
+  const ctx = document.getElementById('dynCanvas').getContext('2d');
+  DYN_CHART = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#fff', borderColor: '#E2DDD8', borderWidth: 1,
+          titleColor: '#1A1816', bodyColor: '#6B6560', padding: 10,
+          callbacks: {
+            label: item => ` ${item.dataset.label}: ${item.parsed.y.toLocaleString('ru')}`
+          }
+        }
+      },
+      scales: {
+        x: { grid: { color: '#F0EDE8' }, ticks: { color: '#A09890', font: { size: 10 }, maxTicksLimit: 14 }, border: { display: false } },
+        y: { grid: { color: '#F0EDE8' }, ticks: { color: '#A09890', font: { size: 10 } }, border: { display: false } }
+      }
+    }
+  });
+}
+
+function switchDynMetric(key) {
+  DYN_METRIC = key;
+  buildDynChart();
+}
+
+async function triggerDailySync(days) {
+  const st = document.getElementById('dailySyncStatus');
+  if(st) st.textContent = '⏳ Запрашиваем данные у WB...';
+  try {
+    await fetch(`${RAILWAY_URL}/api/sync-daily-stats?days=${days}`, { method: 'POST' });
+    setTimeout(async () => {
+      const r = await fetch(`${RAILWAY_URL}/api/article-daily-stats?days=${days}`);
+      DAILY_STATS = await r.json();
+      buildDynChart();
+      if(st) st.textContent = `✅ Обновлено`;
+    }, 15000);
+  } catch(e) {
+    if(st) st.textContent = '❌ Ошибка';
+  }
 }
 
 function renderCompetitorView() {
