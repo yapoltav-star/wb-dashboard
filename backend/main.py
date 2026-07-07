@@ -164,101 +164,14 @@ def sync_all():
         headers=sb_headers(), timeout=10
     )
     logger.info(f"Sync complete. Total: {total}")
-    sync_ratings_official()
+    # sync_ratings_official временно отключён — ищем правильный эндпоинт WB API для feedbackRating
+    # Рейтинги загружаются вручную через xlsx ("Оценка товара")
 
 def sync_ratings_official():
-    """Тянет официальный feedbackRating каждого артикула с WB API и обновляет ratings_official.
-    Не трогает строки с source='manual' (ручные оценки).
-    Использует GET /api/v1/feedbacks/products/rating из feedbacks-api."""
-    if not WB_TOKEN:
-        return
-    logger.info("sync_ratings_official: fetching from WB Analytics (search-report/product)...")
-
-    # POST /api/v2/nm-report/detail — возвращает feedbackRating по каждому nmId (требует Jam)
-    WB_ANALYTICS_BASE = "https://seller-analytics-api.wildberries.ru"
-    end_date = datetime.now(timezone.utc).date().isoformat()
-    begin_date = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
-
-    try:
-        resp = httpx.post(
-            f"{WB_ANALYTICS_BASE}/api/v2/nm-report/detail",
-            headers=wb_headers(),
-            json={
-                "period": {"begin": begin_date, "end": end_date},
-                "orderBy": {"field": "openCardCount", "mode": "desc"},
-                "page": 1
-            },
-            timeout=30
-        )
-        if not resp.is_success:
-            logger.error(f"sync_ratings_official: WB error {resp.status_code} {resp.text[:500]}")
-            return
-        data = resp.json()
-        logger.info(f"sync_ratings_official: keys={list(data.keys()) if isinstance(data,dict) else type(data).__name__}, snippet={str(data)[:400]}")
-        cards = data.get("data", {}).get("cards") or []
-        if not cards:
-            logger.info("sync_ratings_official: no cards in response")
-            return
-    except Exception as e:
-        logger.error(f"sync_ratings_official: exception {e}")
-        return
-
-    logger.info(f"sync_ratings_official: got {len(cards)} cards from WB")
-
-    now = datetime.now(timezone.utc).isoformat()
-    rows = []
-    for c in cards:
-        nm_id = c.get("nmID")
-        vendor_code = c.get("vendorCode") or str(nm_id)
-        feedback_rating = c.get("feedbackRating")
-        if not nm_id or feedback_rating is None:
-            continue
-        try:
-            wb_rating = float(feedback_rating)
-        except (ValueError, TypeError):
-            continue
-        rows.append({
-            "article": vendor_code,
-            "nm_id": nm_id,
-            "wb_rating": wb_rating,
-            "reviews_total": 0,
-            "r5": 0, "r4": 0, "r3": 0, "r2": 0, "r1": 0,
-            "excluded": 0,
-            "source": "api",
-            "updated_at": now
-        })
-
-    if not rows:
-        logger.info("sync_ratings_official: nothing to save")
-        return
-
-    # Удаляем только api-строки (не трогаем xlsx и manual)
-    httpx.delete(
-        f"{SUPABASE_URL}/rest/v1/ratings_official?source=eq.api",
-        headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=15
-    )
-
-    # Не вставляем строки для артикулов уже покрытых xlsx или manual
-    try:
-        covered = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/ratings_official?source=in.(xlsx,manual)&select=nm_id",
-            headers=sb_headers(), timeout=15
-        )
-        covered_nm_ids = {r["nm_id"] for r in (covered.json() if covered.is_success else [])}
-    except Exception:
-        covered_nm_ids = set()
-
-    to_insert = [r for r in rows if r["nm_id"] not in covered_nm_ids]
-    logger.info(f"sync_ratings_official: inserting {len(to_insert)} API ratings (xlsx/manual covers {len(covered_nm_ids)})")
-
-    saved = 0
-    for i in range(0, len(to_insert), 100):
-        resp = httpx.post(f"{SUPABASE_URL}/rest/v1/ratings_official", json=to_insert[i:i+100], headers=sb_headers(), timeout=30)
-        if resp.is_success:
-            saved += len(to_insert[i:i+100])
-        else:
-            logger.error(f"sync_ratings_official insert error: {resp.status_code} {resp.text[:200]}")
-    logger.info(f"sync_ratings_official: saved {saved} API ratings")
+    """Временно отключена — эндпоинт WB для feedbackRating не найден.
+    Рейтинги берутся из xlsx файла оценок через /api/upload-ratings."""
+    logger.info("sync_ratings_official: skipped (endpoint not configured)")
+    return
 
 # ---------- Остатки на складах (WB Analytics: warehouse_remains report) ----------
 
@@ -1048,6 +961,7 @@ async def upload_competitor_report(file: UploadFile = File(...)):
             'cancels': ['Отмены, шт'],
         }
         str_fields = {'brand', 'name', 'delivery_time'}
+        int_fields = {'reviews_count', 'views', 'card_opens', 'cart_adds', 'orders', 'buyouts', 'cancels'}
 
         row_idx = {}
         for field, labels in METRIC_LABELS.items():
@@ -1084,7 +998,9 @@ async def upload_competitor_report(file: UploadFile = File(...)):
                 elif field in str_fields:
                     r[field] = cell(ri, j)
                 else:
-                    r[field] = to_num(ri, j)
+                    v = to_num(ri, j)
+                    # INTEGER поля не принимают float (179.0 → 179)
+                    r[field] = int(v) if (v is not None and field in int_fields) else v
             metrics_rows.append(r)
 
         if metrics_rows:
@@ -1181,11 +1097,127 @@ def get_competitor_data(session_id: int):
     except Exception as e:
         return {"error": str(e)}
 
+def sync_article_daily_stats(days: int = 30):
+    """Тянет дневную статистику по своим артикулам с WB Analytics API.
+    Без Jam — максимум 7 дней. С Jam — до 365 дней.
+    Поля: openCardCount, addToCartCount, ordersCount, buyoutsCount и т.д."""
+    if not WB_TOKEN:
+        return
+    logger.info(f"sync_article_daily_stats: fetching last {days} days...")
+
+    end_dt = datetime.now(timezone.utc).date()
+    begin_dt = end_dt - timedelta(days=days)
+
+    # Используем nm-report/detail/history — статистика по дням для nmId
+    try:
+        resp = httpx.post(
+            f"{WB_ANALYTICS_URL}/api/v2/nm-report/detail/history",
+            headers=wb_headers(),
+            json={
+                "nmIDs": [],
+                "period": {
+                    "begin": begin_dt.isoformat(),
+                    "end": end_dt.isoformat()
+                },
+                "aggregationLevel": "day"
+            },
+            timeout=60
+        )
+        if not resp.is_success:
+            logger.error(f"sync_daily: WB error {resp.status_code} {resp.text[:300]}")
+            return
+        data = resp.json()
+        logger.info(f"sync_daily: response snippet: {str(data)[:400]}")
+        cards = data.get("data", []) or data if isinstance(data, list) else []
+        if not cards:
+            logger.info("sync_daily: no data returned")
+            return
+    except Exception as e:
+        logger.error(f"sync_daily: exception {e}")
+        return
+
+    # Строим nm_id→vendor_code из stock_totals
+    try:
+        st = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code", headers=sb_headers(), timeout=15)
+        nm_to_vc = {r["nm_id"]: r["vendor_code"] for r in st.json()} if st.is_success else {}
+    except Exception:
+        nm_to_vc = {}
+
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for card in cards:
+        nm_id = card.get("nmID") or card.get("nmId")
+        history = card.get("history") or card.get("days") or []
+        for day in history:
+            dt = day.get("dt") or day.get("date")
+            if not dt or not nm_id:
+                continue
+            dt_str = str(dt)[:10]
+            oc = day.get("openCardCount", 0) or 0
+            atc = day.get("addToCartCount", 0) or 0
+            ord_ = day.get("ordersCount", 0) or 0
+            ord_sum = day.get("ordersSumRub", 0) or 0
+            buy = day.get("buyoutsCount", 0) or 0
+            buy_sum = day.get("buyoutsSumRub", 0) or 0
+            can = day.get("cancelCount", 0) or 0
+
+            rows.append({
+                "nm_id": nm_id,
+                "vendor_code": nm_to_vc.get(nm_id) or str(nm_id),
+                "dt": dt_str,
+                "open_card": int(oc),
+                "add_to_cart": int(atc),
+                "orders": int(ord_),
+                "orders_sum": float(ord_sum),
+                "buyouts": int(buy),
+                "buyouts_sum": float(buy_sum),
+                "cancels": int(can),
+                "ctr": round(atc / oc * 100, 2) if oc else 0,
+                "cart_conv": round(ord_ / atc * 100, 2) if atc else 0,
+                "order_conv": round(buy / ord_ * 100, 2) if ord_ else 0,
+                "buyout_pct": round(buy / (buy + can) * 100, 2) if (buy + can) else 0,
+                "updated_at": now
+            })
+
+    logger.info(f"sync_daily: {len(rows)} day-rows to upsert")
+    if not rows:
+        return
+
+    # Upsert по (nm_id, dt) — обновляем если уже есть
+    headers_up = {**sb_headers(), "Prefer": "resolution=merge-duplicates"}
+    for i in range(0, len(rows), 500):
+        r = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/article_daily_stats?on_conflict=nm_id,dt",
+            json=rows[i:i+500], headers=headers_up, timeout=30
+        )
+        if not r.is_success:
+            logger.error(f"sync_daily insert error: {r.status_code} {r.text[:200]}")
+
+@app.get("/api/article-daily-stats")
+def article_daily_stats(days: int = 30):
+    """Дневная статистика по своим артикулам за последние N дней."""
+    try:
+        dt_from = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/article_daily_stats?dt=gte.{dt_from}&select=*&order=dt.asc",
+            headers=sb_headers(), timeout=20
+        )
+        return resp.json() if resp.is_success else []
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/sync-daily-stats")
+def trigger_daily_sync(days: int = 30):
+    import threading
+    threading.Thread(target=sync_article_daily_stats, args=(days,), daemon=True).start()
+    return {"status": "started", "days": days}
+
 scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
 scheduler.add_job(sync_stock, "interval", hours=3, id="sync_stock")
 scheduler.add_job(sync_supply, "interval", hours=4, id="sync_supply")
 scheduler.add_job(sync_ads, "interval", hours=4, id="sync_ads")
+scheduler.add_job(lambda: sync_article_daily_stats(30), "interval", hours=6, id="sync_daily")
 scheduler.start()
 
 @app.get("/")
