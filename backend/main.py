@@ -867,70 +867,50 @@ async def upload_ratings(file: UploadFile = File(...)):
 
 @app.post("/api/upload-competitor-report")
 async def upload_competitor_report(file: UploadFile = File(...)):
-    """Принимает xlsx «Сравнение карточек» из WB Partners и сохраняет в Supabase."""
+    """Принимает xlsx «Сравнение карточек» и парсит только лист Показатели."""
     try:
         import re as _re
         contents = await file.read()
-        xl = pd.ExcelFile(io.BytesIO(contents))
 
-        # ── Общая информация ──
-        df_info = pd.read_excel(io.BytesIO(contents), sheet_name='Общая информация', header=None)
-        info = {}
-        for _, row in df_info.iterrows():
-            k = str(row.iloc[0]).strip()
-            v = str(row.iloc[1]).strip() if len(row) > 1 and str(row.iloc[1]) != 'nan' else ''
-            info[k] = v
+        # ── Период из Общая информация ──
+        period_begin = period_end = None
+        try:
+            df_info = pd.read_excel(io.BytesIO(contents), sheet_name='Общая информация', header=None)
+            for _, row in df_info.iterrows():
+                if 'Выбранный период' in str(row.iloc[0]):
+                    dates = _re.findall(r'\d{4}-\d{2}-\d{2}', str(row.iloc[1]))
+                    if len(dates) >= 2:
+                        period_begin, period_end = dates[0], dates[1]
+                    break
+        except Exception:
+            pass
 
-        def parse_date(s):
-            for fmt in ('%Y-%m-%d', '%d.%m.%Y'):
-                try:
-                    return datetime.strptime(s.strip(), fmt).date().isoformat()
-                except Exception:
-                    pass
-            return None
-
-        def extract_dates(s):
-            dates = _re.findall(r'\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4}', s)
-            return [parse_date(d) for d in dates[:2]]
-
-        p_dates = extract_dates(info.get('Выбранный период', ''))
-        pr_dates = extract_dates(info.get('Предыдущий период', ''))
-
-        session_row = {
-            "period_begin": p_dates[0] if len(p_dates) > 0 else None,
-            "period_end": p_dates[1] if len(p_dates) > 1 else None,
-            "prev_begin": pr_dates[0] if len(pr_dates) > 0 else None,
-            "prev_end": pr_dates[1] if len(pr_dates) > 1 else None,
-        }
-
-        # ── Показатели — определяем артикулы и метрики ──
+        # ── Читаем Показатели ──
         df = pd.read_excel(io.BytesIO(contents), sheet_name='Показатели', header=None)
         headers = [str(v) for v in df.iloc[1].values]
 
-        # Колонки с артикулами (не "Разница", не "предыдущий")
+        # Колонки артикулов (не Разница, не предыдущий)
         art_cols = []
         for j, h in enumerate(headers):
             if 'Артикул WB' in h and 'предыдущий' not in h.lower() and 'Разница' not in h:
-                nm_match = _re.search(r'(\d{7,10})', h)
-                if nm_match:
-                    art_cols.append((j, int(nm_match.group(1))))
+                m = _re.search(r'(\d{7,10})', h)
+                if m:
+                    art_cols.append((j, int(m.group(1))))
 
-        # Первый артикул = твой (он всегда идёт первым в сравнении)
-        own_nm = art_cols[0][1] if art_cols else None
-        logger.info(f"upload-competitor: articles={[nm for _,nm in art_cols]}, own={own_nm}")
+        if not art_cols:
+            return {"error": "Не найдены артикулы в листе Показатели. Проверь формат файла."}
 
-        def cell(row_idx, col_idx):
-            v = df.iloc[row_idx, col_idx]
-            s = str(v).strip()
-            return s if s not in ('nan', 'None', 'NaT', '-') else None
+        own_nm = art_cols[0][1]  # первый артикул = твой
 
-        def to_num(row_idx, col_idx):
-            v = cell(row_idx, col_idx)
+        def cell(i, j):
+            v = str(df.iloc[i, j]).strip()
+            return None if v in ('nan','None','NaT','-','') else v
+
+        def to_num(i, j):
+            v = cell(i, j)
             if not v: return None
-            try:
-                return float(v.replace('\xa0', '').replace(' ', '').replace(',', '.').replace('%',''))
-            except Exception:
-                return None
+            try: return float(v.replace('\xa0','').replace(' ','').replace(',','.').replace('%',''))
+            except: return None
 
         def find_row(label):
             for i in range(2, len(df)):
@@ -938,33 +918,31 @@ async def upload_competitor_report(file: UploadFile = File(...)):
                     return i
             return None
 
-        # Ищем все возможные варианты названий метрик
-        METRIC_LABELS = {
-            'name': ['Название'],
-            'brand': ['Бренд'],
-            'card_rating': ['Рейтинг карточки'],
-            'feedback_rating': ['Рейтинг по отзывам'],
-            'reviews_count': ['Количество отзывов'],
-            'price': ['Минимальная цена со скидкой (по размерам), ₽', 'Цена с учётом скидок, ₽', 'Минимальная цена'],
-            'median_price': ['Медианная цена покупателя, ₽', 'Медианная цена покупателя'],
-            'delivery_time': ['Среднее время доставки'],
-            'avg_position': ['Средняя позиция', 'Средняя позиция в поиске'],
-            'views': ['Показы'],
-            'card_opens': ['Переход в карточку, шт', 'Переходы в карточку, шт'],
-            'ctr': ['CTR'],
-            'cart_adds': ['Добавления в корзину, шт'],
-            'cart_conv': ['Конверсия в корзину, %'],
-            'orders': ['Заказы, шт'],
-            'order_conv': ['Конверсия в заказ, %'],
-            'buyouts': ['Выкупы, шт'],
-            'buyout_pct': ['Процент выкупа'],
-            'cancels': ['Отмены, шт'],
+        METRICS = {
+            'name': (['Название'], True),
+            'brand': (['Бренд'], True),
+            'card_rating': (['Рейтинг карточки'], False),
+            'feedback_rating': (['Рейтинг по отзывам'], False),
+            'reviews_count': (['Количество отзывов'], False),
+            'price': (['Минимальная цена со скидкой (по размерам), ₽','Цена с учётом скидок, ₽'], False),
+            'median_price': (['Медианная цена покупателя, ₽','Медианная цена покупателя'], False),
+            'delivery_time': (['Среднее время доставки'], True),
+            'avg_position': (['Средняя позиция','Средняя позиция в поиске'], False),
+            'views': (['Показы'], False),
+            'card_opens': (['Переход в карточку, шт','Переходы в карточку, шт'], False),
+            'ctr': (['CTR'], False),
+            'cart_adds': (['Добавления в корзину, шт'], False),
+            'cart_conv': (['Конверсия в корзину, %'], False),
+            'orders': (['Заказы, шт'], False),
+            'order_conv': (['Конверсия в заказ, %'], False),
+            'buyouts': (['Выкупы, шт'], False),
+            'buyout_pct': (['Процент выкупа'], False),
+            'cancels': (['Отмены, шт'], False),
         }
-        str_fields = {'brand', 'name', 'delivery_time'}
-        int_fields = {'reviews_count', 'views', 'card_opens', 'cart_adds', 'orders', 'buyouts', 'cancels'}
+        INT_FIELDS = {'reviews_count','views','card_opens','cart_adds','orders','buyouts','cancels'}
 
         row_idx = {}
-        for field, labels in METRIC_LABELS.items():
+        for field, (labels, _) in METRICS.items():
             for label in labels:
                 ri = find_row(label)
                 if ri is not None:
@@ -972,98 +950,48 @@ async def upload_competitor_report(file: UploadFile = File(...)):
                     break
 
         # ── Создаём сессию ──
+        session_row = {"period_begin": period_begin, "period_end": period_end}
         sess_resp = httpx.post(
             f"{SUPABASE_URL}/rest/v1/competitor_sessions",
             json=session_row,
             headers={**sb_headers(), "Prefer": "return=representation"},
             timeout=15
         )
-        logger.info(f"Session create: status={sess_resp.status_code} body={sess_resp.text[:300]}")
         if not sess_resp.is_success:
-            return {"error": f"Ошибка создания сессии ({sess_resp.status_code}): {sess_resp.text[:300]}. Выполни competitor_tables.sql в Supabase SQL Editor."}
+            return {"error": f"Ошибка БД ({sess_resp.status_code}): {sess_resp.text[:200]}. Выполни competitor_tables.sql в Supabase."}
         try:
             session_id = sess_resp.json()[0]["id"]
         except Exception as e:
-            return {"error": f"Не удалось получить session_id: {e}. Ответ: {sess_resp.text[:200]}"}
+            return {"error": f"Ошибка сессии: {e}. Ответ: {sess_resp.text[:150]}"}
 
-        # ── Метрики по артикулам ──
+        # ── Сохраняем метрики ──
         now = datetime.now(timezone.utc).isoformat()
-        metrics_rows = []
+        rows = []
         for j, nm_id in art_cols:
             r = {"session_id": session_id, "nm_id": nm_id, "is_own": nm_id == own_nm, "updated_at": now}
-            for field in METRIC_LABELS:
+            for field, (_, is_str) in METRICS.items():
                 ri = row_idx.get(field)
                 if ri is None:
                     r[field] = None
-                elif field in str_fields:
+                elif is_str:
                     r[field] = cell(ri, j)
                 else:
                     v = to_num(ri, j)
-                    # INTEGER поля не принимают float (179.0 → 179)
-                    r[field] = int(v) if (v is not None and field in int_fields) else v
-            metrics_rows.append(r)
+                    r[field] = int(v) if (v is not None and field in INT_FIELDS) else v
+            rows.append(r)
 
-        if metrics_rows:
-            mr = httpx.post(f"{SUPABASE_URL}/rest/v1/competitor_metrics",
-                            json=metrics_rows, headers=sb_headers(), timeout=20)
-            if not mr.is_success:
-                logger.error(f"metrics insert error: {mr.status_code} {mr.text[:300]}")
-                return {"error": f"Ошибка сохранения метрик: {mr.status_code} {mr.text[:300]}. Убедись что в SQL выполнены политики INSERT для competitor_metrics."}
+        mr = httpx.post(f"{SUPABASE_URL}/rest/v1/competitor_metrics",
+                        json=rows, headers=sb_headers(), timeout=20)
+        if not mr.is_success:
+            return {"error": f"Ошибка сохранения ({mr.status_code}): {mr.text[:200]}"}
 
-        # ── Поисковые запросы (общий лист) ──
-        sq_rows = []
-        sq_sheet = next((s for s in xl.sheet_names if 'Поисковые запросы по всем' in s), None)
-        if sq_sheet:
-            df_sq = pd.read_excel(io.BytesIO(contents), sheet_name=sq_sheet, header=None)
-            sq_headers = [str(v) for v in df_sq.iloc[1].values]
-            art_sq_cols = {}
-            for j, h in enumerate(sq_headers):
-                nm_m = _re.search(r'(\d{7,10})', h)
-                if nm_m and j >= 3:
-                    art_sq_cols[j] = nm_m.group(1)
-
-            for i in range(2, len(df_sq)):
-                q = str(df_sq.iloc[i, 0])
-                if q in ('nan', 'None'): continue
-                conv = {}
-                for j, nm in art_sq_cols.items():
-                    try:
-                        conv[nm] = int(float(str(df_sq.iloc[i, j])))
-                    except Exception:
-                        pass
-                try:
-                    qc = int(float(str(df_sq.iloc[i, 1])))
-                except Exception:
-                    qc = None
-                try:
-                    qp = int(float(str(df_sq.iloc[i, 2])))
-                except Exception:
-                    qp = None
-                sq_rows.append({
-                    "session_id": session_id, "query": q,
-                    "query_count": qc, "query_count_prev": qp,
-                    "cart_conv_by_nm": conv
-                })
-
-        if sq_rows:
-            for i in range(0, len(sq_rows), 100):
-                httpx.post(f"{SUPABASE_URL}/rest/v1/competitor_search_queries",
-                           json=sq_rows[i:i+100], headers=sb_headers(), timeout=20)
-
-        period = f"{session_row.get('period_begin','?')} — {session_row.get('period_end','?')}"
-        logger.info(f"upload-competitor: done. session={session_id}, metrics={len(metrics_rows)}, sq={len(sq_rows)}")
-        return {
-            "status": "ok",
-            "session_id": session_id,
-            "period": period,
-            "articles": len(metrics_rows),
-            "search_queries": len(sq_rows)
-        }
+        period = f"{period_begin or '?'} — {period_end or '?'}"
+        logger.info(f"upload-competitor: session={session_id}, {len(rows)} articles, period={period}")
+        return {"status": "ok", "session_id": session_id, "period": period, "articles": len(rows), "search_queries": 0}
 
     except Exception as e:
-        logger.error(f"upload-competitor-report error: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"upload-competitor error: {e}")
+        import traceback; logger.error(traceback.format_exc())
         return {"error": str(e)}
 
 @app.get("/api/competitor-sessions")
