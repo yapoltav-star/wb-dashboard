@@ -1091,7 +1091,8 @@ async def upload_competitor_report(file: UploadFile = File(...)):
             mr = httpx.post(f"{SUPABASE_URL}/rest/v1/competitor_metrics",
                             json=metrics_rows, headers=sb_headers(), timeout=20)
             if not mr.is_success:
-                logger.error(f"metrics insert error: {mr.status_code} {mr.text[:200]}")
+                logger.error(f"metrics insert error: {mr.status_code} {mr.text[:300]}")
+                return {"error": f"Ошибка сохранения метрик: {mr.status_code} {mr.text[:300]}. Убедись что в SQL выполнены политики INSERT для competitor_metrics."}
 
         # ── Поисковые запросы (общий лист) ──
         sq_rows = []
