@@ -994,6 +994,66 @@ async def upload_competitor_report(file: UploadFile = File(...)):
         import traceback; logger.error(traceback.format_exc())
         return {"error": str(e)}
 
+@app.get("/api/search-own-articles")
+def search_own_articles(q: str = ""):
+    """Поиск своих артикулов по vendor_code или nm_id."""
+    try:
+        if not q or len(q) < 2:
+            resp = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&limit=30",
+                           headers=sb_headers(), timeout=10)
+        else:
+            resp = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code"
+                f"&or=(vendor_code.ilike.*{q}*,nm_id.eq.{q if q.isdigit() else 0})"
+                f"&limit=20",
+                headers=sb_headers(), timeout=10)
+        return resp.json() if resp.is_success else []
+    except Exception as e:
+        return []
+
+@app.get("/api/own-article-period-stats")
+def own_article_period_stats(nm_id: int, date_from: str, date_to: str):
+    """Статистика своего артикула за период из article_daily_stats."""
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/article_daily_stats"
+            f"?nm_id=eq.{nm_id}&dt=gte.{date_from}&dt=lte.{date_to}&select=*",
+            headers=sb_headers(), timeout=15
+        )
+        rows = resp.json() if resp.is_success else []
+        if not rows:
+            return None
+        # Агрегируем по периоду
+        vc = rows[0].get("vendor_code") or str(nm_id)
+        agg = {
+            "nm_id": nm_id, "vendor_code": vc, "is_own": True,
+            "brand": vc.split("_")[0] if "_" in vc else vc,
+            "name": vc,
+            "open_card": sum(r.get("open_card",0) or 0 for r in rows),
+            "add_to_cart": sum(r.get("add_to_cart",0) or 0 for r in rows),
+            "orders": sum(r.get("orders",0) or 0 for r in rows),
+            "orders_sum": sum(r.get("orders_sum",0) or 0 for r in rows),
+            "buyouts": sum(r.get("buyouts",0) or 0 for r in rows),
+            "cancels": sum(r.get("cancels",0) or 0 for r in rows),
+        }
+        # Рейтинг из ratings_official
+        try:
+            rat = httpx.get(f"{SUPABASE_URL}/rest/v1/ratings_official?nm_id=eq.{nm_id}&select=wb_rating,reviews_total",
+                          headers=sb_headers(), timeout=10)
+            if rat.is_success and rat.json():
+                r0 = rat.json()[0]
+                agg["feedback_rating"] = r0.get("wb_rating")
+                agg["reviews_count"] = r0.get("reviews_total")
+        except Exception:
+            pass
+        total_days = len(rows)
+        agg["ctr"] = round(agg["add_to_cart"] / agg["open_card"] * 100, 1) if agg["open_card"] else 0
+        agg["cart_conv"] = round(agg["orders"] / agg["add_to_cart"] * 100, 1) if agg["add_to_cart"] else 0
+        agg["order_conv"] = round(agg["buyouts"] / agg["orders"] * 100, 1) if agg["orders"] else 0
+        return agg
+    except Exception as e:
+        return None
+
 @app.delete("/api/competitor-session/{session_id}")
 def delete_competitor_session(session_id: int):
     """Удаляет сессию и все связанные метрики (каскадно через ON DELETE CASCADE)."""
@@ -1035,6 +1095,61 @@ def get_competitor_data(session_id: int):
             "search_queries": queries.json() if queries.is_success else []
         }
     except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/my-article-stats")
+def my_article_stats(begin: str, end: str, nm_ids: str = ""):
+    """Тянет метрики своих артикулов с WB Analytics API за указанный период.
+    nm_ids — через запятую, пусто = все артикулы продавца."""
+    if not WB_TOKEN:
+        return {"error": "WB_TOKEN не задан"}
+    try:
+        body = {
+            "period": {"begin": begin, "end": end},
+            "brandNames": [], "objectIDs": [], "tagIDs": [],
+            "nmIDs": [int(x) for x in nm_ids.split(",") if x.strip()] if nm_ids else [],
+            "timezone": "Europe/Moscow",
+            "page": 1
+        }
+        resp = httpx.post(
+            f"{WB_ANALYTICS_URL}/api/analytics/v2/nm-report/detail",
+            headers=wb_headers(), json=body, timeout=30
+        )
+        logger.info(f"my-article-stats: {resp.status_code} snippet={resp.text[:300]}")
+        if not resp.is_success:
+            return {"error": f"WB API {resp.status_code}: {resp.text[:200]}"}
+        data = resp.json()
+        cards = data.get("data", {}).get("cards") or []
+
+        # Строим маппинг nm_id → vendor_code
+        st = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code", headers=sb_headers(), timeout=15)
+        nm_to_vc = {r["nm_id"]: r["vendor_code"] for r in st.json()} if st.is_success else {}
+
+        result = []
+        for c in cards:
+            nm_id = c.get("nmID")
+            stats = c.get("statistics", {}).get("selectedPeriod", {})
+            result.append({
+                "nm_id": nm_id,
+                "vendor_code": nm_to_vc.get(nm_id) or str(nm_id),
+                "brand": c.get("brandName", ""),
+                "name": c.get("objectName", ""),
+                "views": stats.get("openCardCount", 0),
+                "card_opens": stats.get("openCardCount", 0),
+                "cart_adds": stats.get("addToCartCount", 0),
+                "orders": stats.get("ordersCount", 0),
+                "orders_sum": stats.get("ordersSumRub", 0),
+                "buyouts": stats.get("buyoutsCount", 0),
+                "buyout_pct": stats.get("buyoutPercent", 0),
+                "cancels": stats.get("cancelCount", 0),
+                "ctr": round(stats.get("addToCartCount", 0) / stats.get("openCardCount", 1) * 100, 1) if stats.get("openCardCount") else 0,
+                "cart_conv": round(stats.get("ordersCount", 0) / stats.get("addToCartCount", 1) * 100, 1) if stats.get("addToCartCount") else 0,
+                "order_conv": round(stats.get("buyoutsCount", 0) / stats.get("ordersCount", 1) * 100, 1) if stats.get("ordersCount") else 0,
+                "is_own": True,
+            })
+        return result
+    except Exception as e:
+        logger.error(f"my-article-stats error: {e}")
         return {"error": str(e)}
 
 def sync_article_daily_stats(days: int = 30):
