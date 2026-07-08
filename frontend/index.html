@@ -400,31 +400,38 @@ td.tc{text-align:center}
 <!-- КОНКУРЕНТЫ -->
 <div class="page" id="page-competitors">
   <div class="toolbar">
-    <span style="font-size:13px;font-weight:600;color:var(--wb-text)">Сравнение карточек</span>
-    <div class="ml-auto" style="display:flex;gap:8px;align-items:center">
+    <span style="font-size:13px;font-weight:600">Сравнение карточек</span>
+    <div class="ml-auto">
       <button class="action-btn upload" onclick="document.getElementById('compFileInput').click()">📊 Загрузить отчёт</button>
       <input type="file" id="compFileInput" accept=".xlsx" style="display:none" onchange="uploadCompetitorReport(this.files[0])">
     </div>
   </div>
   <div id="compUploadStatus" style="display:none;padding:8px 20px;font-size:13px;color:var(--wb-muted);border-bottom:1px solid var(--wb-border)"></div>
 
-  <!-- Фильтры: период + артикулы -->
-  <div id="compFilters" style="display:none;padding:12px 20px;border-bottom:1px solid var(--wb-border);background:var(--wb-surface)">
+  <div id="compFilters" style="display:none;padding:12px 20px 10px;border-bottom:1px solid var(--wb-border);background:var(--wb-surface)">
     <div style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap">
-      <!-- Период -->
+
+      <!-- Мои артикулы -->
       <div>
-        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Период</div>
-        <div id="compPeriodBtns" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Мои артикулы</div>
+        <div style="position:relative">
+          <input id="ownArtSearch" placeholder="Поиск по артикулу..." autocomplete="off"
+            style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:220px"
+            oninput="searchOwnArticles(this.value)" onfocus="searchOwnArticles(this.value)">
+          <div id="ownArtDropdown" style="display:none;position:absolute;top:100%;left:0;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--rs);z-index:100;min-width:220px;max-height:200px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.1)"></div>
+        </div>
+        <div id="ownArtChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
       </div>
-      <!-- Артикулы -->
+
+      <!-- Периоды (мультивыбор) -->
       <div>
-        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Артикулы</div>
-        <div id="compArtChecks" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Периоды конкурентов <span style="font-weight:400;text-transform:none">(можно несколько)</span></div>
+        <div id="compPeriodBtns" style="display:flex;gap:6px;flex-wrap:wrap"></div>
       </div>
     </div>
   </div>
 
-  <div id="compRoot"><div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners<br><span style="font-size:12px;color:var(--wb-faint)">Аналитика → Сравнение карточек → Скачать</span></div></div>
+  <div id="compRoot"><div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners</div></div>
 </div>
 
 <script>
@@ -1672,15 +1679,17 @@ function downloadWarehouseXlsx(e, encodedWh) {
 }
 
 // ─────────── Конкуренты ───────────
-const COMP_COLORS = ['#D4622A','#2E90FA','#12B76A','#9747FF','#F79009','#EE46BC','#06AED4'];
+const COMP_COLORS = ['#D4622A','#E8A87C','#2a78d6','#1baf7a','#4a3aa7','#eda100','#e34948','#ee46bc','#06AED4','#9747FF'];
 let COMP_DATA = null;
 let DAILY_STATS = [];
 let DYN_CHART = null;
 let DYN_METRIC = 'open_card';
-let COMP_TAB = 'metrics';
 let COMP_SESSIONS = [];
-let COMP_SESSION_ID = null;
-let COMP_SELECTED_NMS = new Set(); // выбранные артикулы
+let COMP_SELECTED_SESSIONS = new Set();
+let COMP_OWN_ARTICLES = JSON.parse(localStorage.getItem('comp_own_articles') || '[]');
+let OWN_ARTICLE_STATS = {};
+let COMP_TAB = 'metrics';
+let COMP_ALL_METRICS = [];
 
 async function renderCompetitors() {
   try {
@@ -1690,36 +1699,42 @@ async function renderCompetitors() {
     ]);
     COMP_SESSIONS = await sessR.json();
     DAILY_STATS = await dailyR.json();
-    if(Array.isArray(DAILY_STATS)) {
-      // индексируем по nm_id+dt для быстрого доступа
-    }
-    if(!COMP_SESSIONS.length && !DAILY_STATS.length) {
-      document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners<br><span style="font-size:12px;color:var(--wb-faint)">Аналитика → Сравнение карточек → Скачать</span></div>';
+    document.getElementById('compFilters').style.display = '';
+    buildOwnArtChips();
+    if(!COMP_SESSIONS.length) {
+      document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners</div>';
       return;
     }
+    if(!COMP_SELECTED_SESSIONS.size) COMP_SELECTED_SESSIONS.add(COMP_SESSIONS[0].id);
     buildPeriodButtons();
     if(DAILY_STATS.length) buildDynChart();
-    if(!COMP_SESSION_ID && COMP_SESSIONS.length) {
-      COMP_SESSION_ID = COMP_SESSIONS[0].id;
-      await loadCompetitorSession(COMP_SESSION_ID);
-    } else {
-      renderCompetitorView();
-    }
+    await loadAllSelectedSessions();
   } catch(e) {
-    document.getElementById('compRoot').innerHTML = '<div class="empty">Ошибка загрузки данных</div>';
+    document.getElementById('compRoot').innerHTML = `<div class="empty">Ошибка: ${e.message}</div>`;
   }
 }
 
 function buildPeriodButtons() {
   const el = document.getElementById('compPeriodBtns');
+  if(!el) return;
   el.innerHTML = COMP_SESSIONS.map(s => `
     <div style="display:flex;align-items:center;gap:2px">
-      <button class="comp-period-btn${s.id===COMP_SESSION_ID?' on':''}" onclick="selectPeriod(${s.id})">
-        ${s.period_begin} — ${s.period_end}
+      <button class="comp-period-btn${COMP_SELECTED_SESSIONS.has(s.id)?' on':''}" onclick="togglePeriod(${s.id})">
+        ${s.period_begin||'?'} — ${s.period_end||'?'}
       </button>
-      <button onclick="deleteCompSession(${s.id})" title="Удалить" style="border:none;background:none;cursor:pointer;color:var(--wb-faint);font-size:15px;padding:2px 5px;line-height:1" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--wb-faint)'">✕</button>
+      <button onclick="deleteCompSession(${s.id})" title="Удалить" style="border:none;background:none;cursor:pointer;color:var(--wb-faint);font-size:14px;padding:2px 4px" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--wb-faint)'">✕</button>
     </div>`).join('');
-  document.getElementById('compFilters').style.display = '';
+}
+
+async function togglePeriod(sessionId) {
+  if(COMP_SELECTED_SESSIONS.has(sessionId)) {
+    if(COMP_SELECTED_SESSIONS.size <= 1) return;
+    COMP_SELECTED_SESSIONS.delete(sessionId);
+  } else {
+    COMP_SELECTED_SESSIONS.add(sessionId);
+  }
+  buildPeriodButtons();
+  await loadAllSelectedSessions();
 }
 
 async function deleteCompSession(sessionId) {
@@ -1727,70 +1742,102 @@ async function deleteCompSession(sessionId) {
   try {
     await fetch(`${RAILWAY_URL}/api/competitor-session/${sessionId}`, { method: 'DELETE' });
     COMP_SESSIONS = COMP_SESSIONS.filter(s => s.id !== sessionId);
-    if(COMP_SESSION_ID === sessionId) {
-      COMP_SESSION_ID = COMP_SESSIONS[0]?.id || null;
-      COMP_DATA = null;
-      COMP_SELECTED_NMS = new Set();
-    }
+    COMP_SELECTED_SESSIONS.delete(sessionId);
+    if(COMP_SESSIONS.length && !COMP_SELECTED_SESSIONS.size) COMP_SELECTED_SESSIONS.add(COMP_SESSIONS[0].id);
     buildPeriodButtons();
-    if(COMP_SESSION_ID) await loadCompetitorSession(COMP_SESSION_ID);
+    if(COMP_SESSIONS.length) await loadAllSelectedSessions();
     else document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners</div>';
-  } catch(e) {
-    alert('Ошибка удаления');
-  }
+  } catch(e) { alert('Ошибка удаления'); }
 }
 
-async function selectPeriod(sessionId) {
-  COMP_SESSION_ID = sessionId;
-  COMP_SELECTED_NMS = new Set(); // сбрасываем выбор артикулов при смене периода
-  buildPeriodButtons();
-  await loadCompetitorSession(sessionId);
-}
-
-async function loadCompetitorSession(sessionId) {
-  if(!sessionId) return;
+async function loadAllSelectedSessions() {
   document.getElementById('compRoot').innerHTML = '<div class="loading"><div class="spinner"></div><span>Загружаем данные...</span></div>';
   try {
-    const r = await fetch(`${RAILWAY_URL}/api/competitor-data/${sessionId}`);
-    COMP_DATA = await r.json();
-    // По умолчанию выбираем все артикулы
-    if(!COMP_SELECTED_NMS.size && COMP_DATA.metrics) {
-      COMP_DATA.metrics.forEach(m => COMP_SELECTED_NMS.add(m.nm_id));
+    const allMetrics = []; const seenNm = new Set();
+    for(const sid of COMP_SELECTED_SESSIONS) {
+      const r = await fetch(`${RAILWAY_URL}/api/competitor-data/${sid}`);
+      const d = await r.json();
+      for(const m of (d.metrics || [])) {
+        if(!seenNm.has(m.nm_id)) { seenNm.add(m.nm_id); allMetrics.push(m); }
+      }
     }
-    buildArtChecks();
+    COMP_ALL_METRICS = allMetrics;
+    await refreshOwnArticleStats();
     if(DAILY_STATS.length) buildDynChart();
     renderCompetitorView();
   } catch(e) {
     document.getElementById('compRoot').innerHTML = `<div class="empty">Ошибка загрузки: ${e.message}</div>`;
-    console.error('loadCompetitorSession error:', e);
   }
 }
 
-function buildArtChecks() {
-  if(!COMP_DATA || !COMP_DATA.metrics) return;
-  const el = document.getElementById('compArtChecks');
-  el.innerHTML = COMP_DATA.metrics.map((m, i) => {
-    const color = COMP_COLORS[i % COMP_COLORS.length];
-    const on = COMP_SELECTED_NMS.has(m.nm_id);
-    return `<div class="comp-art-check${on?' on':''}${m.is_own?' own':''}" onclick="toggleArtCheck(${m.nm_id})">
-      <div class="comp-art-dot" style="background:${color}"></div>
-      <div>
-        <div style="font-weight:600;font-size:12px">${m.brand || m.nm_id}</div>
-        <div style="font-size:10px;color:var(--wb-muted)">${m.nm_id}${m.is_own?' · мой':''}</div>
-      </div>
-    </div>`;
-  }).join('');
+// ── Свои артикулы ──
+async function searchOwnArticles(q) {
+  const dd = document.getElementById('ownArtDropdown');
+  if(!dd) return;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/search-own-articles?q=${encodeURIComponent(q)}`);
+    const results = await r.json();
+    if(!results.length) { dd.style.display='none'; return; }
+    dd.style.display = 'block';
+    dd.innerHTML = results.map(a =>
+      `<div style="padding:8px 12px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--wb-border)"
+        onmousedown="addOwnArticle(${a.nm_id},'${(a.vendor_code||'').replace(/'/g,'')}')"
+        onmouseover="this.style.background='var(--wb-bg)'" onmouseout="this.style.background=''">
+        <b>${a.vendor_code}</b> <span style="color:var(--wb-faint)">${a.nm_id}</span>
+      </div>`).join('');
+  } catch(e) { dd.style.display='none'; }
 }
 
-function toggleArtCheck(nmId) {
-  if(COMP_SELECTED_NMS.has(nmId)) {
-    if(COMP_SELECTED_NMS.size <= 1) return; // минимум 1
-    COMP_SELECTED_NMS.delete(nmId);
-  } else {
-    COMP_SELECTED_NMS.add(nmId);
-  }
-  buildArtChecks();
+document.addEventListener('click', e => {
+  const dd = document.getElementById('ownArtDropdown');
+  if(dd && !e.target.closest('#ownArtSearch') && !e.target.closest('#ownArtDropdown'))
+    dd.style.display = 'none';
+});
+
+async function addOwnArticle(nmId, vendorCode) {
+  const dd = document.getElementById('ownArtDropdown');
+  if(dd) dd.style.display = 'none';
+  const inp = document.getElementById('ownArtSearch');
+  if(inp) inp.value = '';
+  if(COMP_OWN_ARTICLES.find(a => a.nm_id === nmId)) return;
+  COMP_OWN_ARTICLES.push({nm_id: nmId, vendor_code: vendorCode});
+  localStorage.setItem('comp_own_articles', JSON.stringify(COMP_OWN_ARTICLES));
+  buildOwnArtChips();
+  await refreshOwnArticleStats();
   renderCompetitorView();
+}
+
+function removeOwnArticle(nmId) {
+  COMP_OWN_ARTICLES = COMP_OWN_ARTICLES.filter(a => a.nm_id !== nmId);
+  delete OWN_ARTICLE_STATS[nmId];
+  localStorage.setItem('comp_own_articles', JSON.stringify(COMP_OWN_ARTICLES));
+  buildOwnArtChips();
+  renderCompetitorView();
+}
+
+function buildOwnArtChips() {
+  const el = document.getElementById('ownArtChips');
+  if(!el) return;
+  el.innerHTML = COMP_OWN_ARTICLES.map((a,i) =>
+    `<div style="display:flex;align-items:center;gap:5px;padding:4px 8px;background:var(--wb-purple-light);border:1px solid var(--wb-purple);border-radius:6px;font-size:12px">
+      <div style="width:8px;height:8px;border-radius:50%;background:${COMP_COLORS[i%2]}"></div>
+      <b>${a.vendor_code}</b>
+      <span style="cursor:pointer;color:var(--wb-faint);margin-left:2px" onclick="removeOwnArticle(${a.nm_id})">✕</span>
+    </div>`).join('');
+}
+
+async function refreshOwnArticleStats() {
+  if(!COMP_OWN_ARTICLES.length) return;
+  const sid = [...COMP_SELECTED_SESSIONS][0];
+  const sess = COMP_SESSIONS.find(s => s.id === sid);
+  if(!sess || !sess.period_begin) return;
+  for(const a of COMP_OWN_ARTICLES) {
+    try {
+      const r = await fetch(`${RAILWAY_URL}/api/own-article-period-stats?nm_id=${a.nm_id}&date_from=${sess.period_begin}&date_to=${sess.period_end}`);
+      const stats = await r.json();
+      if(stats) OWN_ARTICLE_STATS[a.nm_id] = stats;
+    } catch(e) {}
+  }
 }
 
 const DYN_METRICS = [
@@ -1919,28 +1966,27 @@ async function triggerDailySync(days) {
 }
 
 function renderCompetitorView() {
-  if(!COMP_DATA || !COMP_DATA.metrics || !COMP_DATA.metrics.length) {
-    document.getElementById('compRoot').innerHTML = '<div class="empty">Нет данных по выбранной сессии</div>';
+  // Собираем свои артикулы первыми, затем конкуренты из выбранных сессий
+  const ownMetrics = COMP_OWN_ARTICLES.map(a => {
+    const stats = OWN_ARTICLE_STATS[a.nm_id] || {};
+    return { nm_id: a.nm_id, vendor_code: a.vendor_code, brand: a.vendor_code,
+             name: a.vendor_code, is_own: true, ...stats };
+  });
+
+  const compMetrics = COMP_ALL_METRICS.filter(m => !COMP_OWN_ARTICLES.find(a => a.nm_id === m.nm_id));
+  const allMetrics = [...ownMetrics, ...compMetrics];
+
+  if(!allMetrics.length) {
+    document.getElementById('compRoot').innerHTML = '<div class="empty">Добавь свои артикулы через поиск или загрузи файл конкурентов</div>';
     return;
   }
-  // Фильтруем по выбранным артикулам
-  const metrics = COMP_DATA.metrics.filter(m => COMP_SELECTED_NMS.has(m.nm_id));
-  if(!metrics.length) {
-    document.getElementById('compRoot').innerHTML = '<div class="empty">Выбери хотя бы один артикул</div>';
-    return;
-  }
-  const ownNm = (metrics.find(m => m.is_own) || metrics[0]).nm_id;
 
   document.getElementById('compRoot').innerHTML = `
     <div class="comp-tabs">
       <div class="comp-tab${COMP_TAB==='metrics'?' on':''}" onclick="switchCompTab('metrics')">Показатели</div>
-      <div class="comp-tab${COMP_TAB==='search'?' on':''}" onclick="switchCompTab('search')">Поисковые запросы</div>
     </div>
-    <div id="compTabMetrics" style="${COMP_TAB==='metrics'?'':'display:none'}">
-      <div style="overflow-x:auto">${buildCompMetricsTable(metrics, ownNm)}</div>
-    </div>
-    <div id="compTabSearch" style="${COMP_TAB==='search'?'':'display:none'}">
-      <div style="overflow-x:auto">${buildCompSearchTable(COMP_DATA.search_queries, metrics.map(m=>m.nm_id), ownNm)}</div>
+    <div id="compTabMetrics">
+      <div style="overflow-x:auto">${buildCompMetricsTable(allMetrics, ownMetrics[0]?.nm_id)}</div>
     </div>`;
 }
 
@@ -1962,41 +2008,46 @@ function buildCompMetricsTable(metrics, ownNm) {
 
   const SECTIONS = {
     'Карточка': [
-      ['Название','name',false],
-      ['Рейтинг по отзывам','feedback_rating',false],
-      ['Кол-во отзывов','reviews_count',false],
-      ['Цена со скидкой, ₽','price',false],
-      ['Медианная цена, ₽','median_price',false],
-      ['Время доставки','delivery_time',false],
-      ['Позиция в поиске','avg_position',true], // lower = better
+      ['Название',['name'],false],
+      ['Рейтинг по отзывам',['feedback_rating'],false],
+      ['Кол-во отзывов',['reviews_count'],false],
+      ['Цена со скидкой, ₽',['price'],false],
+      ['Медианная цена, ₽',['median_price'],false],
+      ['Позиция в поиске',['avg_position'],true],
     ],
     'Воронка продаж': [
-      ['Показы','views',false],
-      ['Переходы в карточку','card_opens',false],
-      ['CTR, %','ctr',false],
-      ['Корзина, шт','cart_adds',false],
-      ['Конверсия в корзину','cart_conv',false],
-      ['Заказы, шт','orders',false],
-      ['Конверсия в заказ','order_conv',false],
-      ['Выкупы, шт','buyouts',false],
-      ['% выкупа','buyout_pct',false],
-      ['Отмены, шт','cancels',true],
+      ['Переходы в карточку',['card_opens','open_card'],false],
+      ['CTR, %',['ctr'],false],
+      ['Корзина, шт',['cart_adds','add_to_cart'],false],
+      ['Конверсия в корзину',['cart_conv'],false],
+      ['Заказы, шт',['orders'],false],
+      ['Конверсия в заказ',['order_conv'],false],
+      ['Выкупы, шт',['buyouts'],false],
+      ['% выкупа',['buyout_pct'],false],
+      ['Отмены, шт',['cancels'],true],
     ]
+  };
+
+  const getVal = (m, fields) => {
+    for(const f of fields) {
+      if(m[f] !== null && m[f] !== undefined) return m[f];
+    }
+    return null;
   };
 
   let rows = `<table class="comp-tbl"><thead><tr><th class="metric-col">Показатель</th>${thCells}</tr></thead><tbody>`;
   for(const [section, fields] of Object.entries(SECTIONS)) {
     rows += `<tr class="section-hdr"><td colspan="${arts.length+1}">${section}</td></tr>`;
-    for(const [label, field, lowerBetter] of fields) {
+    for(const [label, fieldArr, lowerBetter] of fields) {
       const vals = arts.map(m => {
-        const v = m[field];
+        const v = getVal(m, fieldArr);
         return v !== null && v !== undefined ? parseFloat(v) : null;
       });
       const validVals = vals.filter(v => v !== null);
       const sorted = [...validVals].sort((a,b) => lowerBetter ? a-b : b-a);
       rows += `<tr><td class="metric-col">${label}</td>`;
       arts.forEach((m,i) => {
-        const raw = m[field];
+        const raw = getVal(m, fieldArr);
         const num = raw !== null && raw !== undefined ? parseFloat(raw) : null;
         let rankCls = '';
         if(num !== null && validVals.length > 1) {
@@ -2005,8 +2056,9 @@ function buildCompMetricsTable(metrics, ownNm) {
           else if(rank === 1) rankCls = 'rank-2';
           else if(rank === 2) rankCls = 'rank-3';
         }
-        const display = raw === null || raw === undefined ? '—' : (field==='delivery_time' ? raw : (Number.isInteger(num) ? fmt(num) : num));
-        rows += `<td class="${m.nm_id===ownNm?'own-col':''}"><span class="${rankCls}">${display}</span></td>`;
+        const isStr = fieldArr.includes('delivery_time') || fieldArr.includes('name');
+        const display = raw === null || raw === undefined ? '—' : (isStr ? raw : (Number.isInteger(num) ? fmt(num) : num));
+        rows += `<td class="${m.is_own?'own-col':''}"><span class="${rankCls}">${display}</span></td>`;
       });
       rows += '</tr>';
     }
