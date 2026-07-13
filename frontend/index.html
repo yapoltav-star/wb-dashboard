@@ -1827,17 +1827,16 @@ function buildOwnArtChips() {
 }
 
 async function refreshOwnArticleStats() {
-  if(!COMP_OWN_ARTICLES.length) return;
+  if(!COMP_OWN_ARTICLES.length) { OWN_ARTICLE_STATS = {}; return; }
   const sid = [...COMP_SELECTED_SESSIONS][0];
   const sess = COMP_SESSIONS.find(s => s.id === sid);
   if(!sess || !sess.period_begin) return;
-  for(const a of COMP_OWN_ARTICLES) {
-    try {
-      const r = await fetch(`${RAILWAY_URL}/api/own-article-period-stats?nm_id=${a.nm_id}&date_from=${sess.period_begin}&date_to=${sess.period_end}`);
-      const stats = await r.json();
-      if(stats) OWN_ARTICLE_STATS[a.nm_id] = stats;
-    } catch(e) {}
-  }
+  const ids = COMP_OWN_ARTICLES.map(a => a.nm_id).join(',');
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/own-articles-period-stats?nm_ids=${ids}&date_from=${sess.period_begin}&date_to=${sess.period_end}`);
+    const stats = await r.json();
+    OWN_ARTICLE_STATS = (stats && typeof stats === 'object' && !stats.error) ? stats : {};
+  } catch(e) {}
 }
 
 const DYN_METRICS = [
