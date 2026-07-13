@@ -1011,48 +1011,97 @@ def search_own_articles(q: str = ""):
     except Exception as e:
         return []
 
+def fetch_own_stats_v3(nm_ids: list[int], date_from: str, date_to: str) -> dict:
+    """Метрики своих артикулов за период из WB Sales Funnel v3.
+    Возвращает словарь {str(nm_id): {...метрики под таблицу сравнения...}}.
+    Одна карточка = один запрос ко всем nm_ids сразу (щадим лимиты WB: 3 req/min)."""
+    if not WB_TOKEN or not nm_ids:
+        return {}
+    try:
+        body = {
+            "selectedPeriod": {"start": date_from, "end": date_to},
+            "nmIds": nm_ids,
+            "brandNames": [], "subjectIds": [], "tagIds": [],
+            "orderBy": {"field": "orderSum", "mode": "desc"},
+            "limit": max(len(nm_ids), 20), "offset": 0,
+        }
+        resp = httpx.post(
+            f"{WB_ANALYTICS_URL}/api/analytics/v3/sales-funnel/products",
+            headers=wb_headers(), json=body, timeout=40
+        )
+        if not resp.is_success:
+            logger.error(f"own-stats v3 error {resp.status_code} {resp.text[:250]}")
+            return {}
+        products = resp.json().get("data", {}).get("products", []) or []
+    except Exception as e:
+        logger.error(f"own-stats v3 exception: {e}")
+        return {}
+
+    # Кол-во отзывов нет в воронке — добираем из ratings_official одним запросом
+    reviews = {}
+    try:
+        ids_csv = ",".join(str(i) for i in nm_ids)
+        rq = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?nm_id=in.({ids_csv})&select=nm_id,wb_rating,reviews_total",
+            headers=sb_headers(), timeout=10
+        )
+        if rq.is_success:
+            for r in rq.json():
+                reviews[r["nm_id"]] = r
+    except Exception:
+        pass
+
+    out = {}
+    for p in products:
+        prod = p.get("product", {}) or {}
+        sel = (p.get("statistic", {}) or {}).get("selected", {}) or {}
+        conv = sel.get("conversions", {}) or {}
+        nm = prod.get("nmId")
+        if nm is None:
+            continue
+        rev = reviews.get(nm, {})
+        fb = prod.get("feedbackRating")
+        out[str(nm)] = {
+            "nm_id": nm,
+            "vendor_code": prod.get("vendorCode") or str(nm),
+            "brand": prod.get("brandName") or "",
+            "name": prod.get("title") or "",
+            "is_own": True,
+            # Карточка
+            "feedback_rating": fb if fb else rev.get("wb_rating"),
+            "card_rating": prod.get("productRating"),
+            "reviews_count": rev.get("reviews_total"),
+            "price": sel.get("avgPrice"),
+            # median_price / avg_position / ctr в воронке WB отсутствуют → остаются "—"
+            # Воронка
+            "card_opens": sel.get("openCount"),
+            "cart_adds": sel.get("cartCount"),
+            "orders": sel.get("orderCount"),
+            "orders_sum": sel.get("orderSum"),
+            "buyouts": sel.get("buyoutCount"),
+            "cancels": sel.get("cancelCount"),
+            "cart_conv": conv.get("addToCartPercent"),
+            "order_conv": conv.get("cartToOrderPercent"),
+            "buyout_pct": conv.get("buyoutPercent"),
+        }
+    return out
+
+@app.get("/api/own-articles-period-stats")
+def own_articles_period_stats(nm_ids: str, date_from: str, date_to: str):
+    """Метрики своих артикулов за период (WB Sales Funnel v3). nm_ids — через запятую.
+    Ответ: {str(nm_id): {...}} — под колонки таблицы сравнения."""
+    ids = []
+    for x in nm_ids.split(","):
+        x = x.strip()
+        if x.isdigit():
+            ids.append(int(x))
+    return fetch_own_stats_v3(ids, date_from, date_to)
+
 @app.get("/api/own-article-period-stats")
 def own_article_period_stats(nm_id: int, date_from: str, date_to: str):
-    """Статистика своего артикула за период из article_daily_stats."""
-    try:
-        resp = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/article_daily_stats"
-            f"?nm_id=eq.{nm_id}&dt=gte.{date_from}&dt=lte.{date_to}&select=*",
-            headers=sb_headers(), timeout=15
-        )
-        rows = resp.json() if resp.is_success else []
-        if not rows:
-            return None
-        # Агрегируем по периоду
-        vc = rows[0].get("vendor_code") or str(nm_id)
-        agg = {
-            "nm_id": nm_id, "vendor_code": vc, "is_own": True,
-            "brand": vc.split("_")[0] if "_" in vc else vc,
-            "name": vc,
-            "open_card": sum(r.get("open_card",0) or 0 for r in rows),
-            "add_to_cart": sum(r.get("add_to_cart",0) or 0 for r in rows),
-            "orders": sum(r.get("orders",0) or 0 for r in rows),
-            "orders_sum": sum(r.get("orders_sum",0) or 0 for r in rows),
-            "buyouts": sum(r.get("buyouts",0) or 0 for r in rows),
-            "cancels": sum(r.get("cancels",0) or 0 for r in rows),
-        }
-        # Рейтинг из ratings_official
-        try:
-            rat = httpx.get(f"{SUPABASE_URL}/rest/v1/ratings_official?nm_id=eq.{nm_id}&select=wb_rating,reviews_total",
-                          headers=sb_headers(), timeout=10)
-            if rat.is_success and rat.json():
-                r0 = rat.json()[0]
-                agg["feedback_rating"] = r0.get("wb_rating")
-                agg["reviews_count"] = r0.get("reviews_total")
-        except Exception:
-            pass
-        total_days = len(rows)
-        agg["ctr"] = round(agg["add_to_cart"] / agg["open_card"] * 100, 1) if agg["open_card"] else 0
-        agg["cart_conv"] = round(agg["orders"] / agg["add_to_cart"] * 100, 1) if agg["add_to_cart"] else 0
-        agg["order_conv"] = round(agg["buyouts"] / agg["orders"] * 100, 1) if agg["orders"] else 0
-        return agg
-    except Exception as e:
-        return None
+    """Статистика одного своего артикула за период (WB Sales Funnel v3)."""
+    stats = fetch_own_stats_v3([nm_id], date_from, date_to)
+    return stats.get(str(nm_id))
 
 @app.delete("/api/competitor-session/{session_id}")
 def delete_competitor_session(session_id: int):
