@@ -897,6 +897,32 @@ def sync_promotions():
     finally:
         PROMO_CACHE["syncing"] = False
 
+@app.get("/api/promo-nom-debug")
+def promo_nom_debug(pid: int = 2716):
+    """Временная диагностика: реально ли nomenclatures отдаёт товары/planPrice для автоакции."""
+    out = {"pid": pid}
+    for in_action in (True, False):
+        key = "inAction_true" if in_action else "inAction_false"
+        try:
+            r = httpx.get(
+                f"{WB_CALENDAR_URL}/api/v1/calendar/promotions/nomenclatures",
+                headers=wb_headers(),
+                params={"promotionID": pid, "inAction": str(in_action).lower(), "limit": 5, "offset": 0},
+                timeout=30,
+            )
+            entry = {"status": r.status_code}
+            try:
+                body = r.json()
+                noms = (body.get("data") or {}).get("nomenclatures")
+                entry["count"] = len(noms) if noms is not None else None
+                entry["sample"] = noms[0] if noms else body
+            except Exception:
+                entry["text"] = r.text[:500]
+            out[key] = entry
+        except Exception as e:
+            out[key] = {"error": str(e)}
+    return out
+
 @app.get("/api/promotions")
 def get_promotions():
     # первый заход на вкладку — запускаем сбор данных в фоне
