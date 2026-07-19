@@ -1128,7 +1128,7 @@ async def upload_competitor_report(file: UploadFile = File(...)):
         if not art_cols:
             return {"error": "Не найдены артикулы в листе Показатели. Проверь формат файла."}
 
-        own_nm = art_cols[0][1]  # первый артикул = твой
+        # Артикулы из файла НЕ помечаем как «мой» — свой артикул добавляется вручную через поиск
 
         def cell(i, j):
             v = str(df.iloc[i, j]).strip()
@@ -1196,7 +1196,7 @@ async def upload_competitor_report(file: UploadFile = File(...)):
         now = datetime.now(timezone.utc).isoformat()
         rows = []
         for j, nm_id in art_cols:
-            r = {"session_id": session_id, "nm_id": nm_id, "is_own": nm_id == own_nm, "updated_at": now}
+            r = {"session_id": session_id, "nm_id": nm_id, "is_own": False, "updated_at": now}
             for field, (_, is_str) in METRICS.items():
                 ri = row_idx.get(field)
                 if ri is None:

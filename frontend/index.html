@@ -1928,6 +1928,8 @@ let DYN_CHART = null;
 let DYN_METRIC = 'open_card';
 let COMP_SESSIONS = [];
 let COMP_SELECTED_SESSIONS = new Set();
+let COMP_ARCHIVED = new Set(JSON.parse(localStorage.getItem('comp_archived_sessions') || '[]'));
+let COMP_ARCHIVE_OPEN = false;
 let COMP_OWN_ARTICLES = JSON.parse(localStorage.getItem('comp_own_articles') || '[]');
 let OWN_ARTICLE_STATS = {};
 let COMP_TAB = 'metrics';
@@ -1947,10 +1949,13 @@ async function renderCompetitors() {
       document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners</div>';
       return;
     }
-    if(!COMP_SELECTED_SESSIONS.size) COMP_SELECTED_SESSIONS.add(COMP_SESSIONS[0].id);
+    const active = COMP_SESSIONS.filter(s => !COMP_ARCHIVED.has(s.id));
+    COMP_SELECTED_SESSIONS = new Set([...COMP_SELECTED_SESSIONS].filter(id => active.find(s => s.id === id)));
+    if(!COMP_SELECTED_SESSIONS.size && active.length) COMP_SELECTED_SESSIONS.add(active[0].id);
     buildPeriodButtons();
     if(DAILY_STATS.length) buildDynChart();
-    await loadAllSelectedSessions();
+    if(COMP_SELECTED_SESSIONS.size) await loadAllSelectedSessions();
+    else document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Все файлы в архиве. Верни нужный из архива ниже или загрузи новый.</div>';
   } catch(e) {
     document.getElementById('compRoot').innerHTML = `<div class="empty">Ошибка: ${e.message}</div>`;
   }
@@ -1959,13 +1964,64 @@ async function renderCompetitors() {
 function buildPeriodButtons() {
   const el = document.getElementById('compPeriodBtns');
   if(!el) return;
-  el.innerHTML = COMP_SESSIONS.map(s => `
+  const active = COMP_SESSIONS.filter(s => !COMP_ARCHIVED.has(s.id));
+  const archived = COMP_SESSIONS.filter(s => COMP_ARCHIVED.has(s.id));
+  const iconBtn = (onclick, title, char, hoverColor) =>
+    `<button onclick="${onclick}" title="${title}" style="border:none;background:none;cursor:pointer;color:var(--wb-faint);font-size:14px;padding:2px 4px" onmouseover="this.style.color='${hoverColor}'" onmouseout="this.style.color='var(--wb-faint)'">${char}</button>`;
+
+  let html = active.map(s => `
     <div style="display:flex;align-items:center;gap:2px">
       <button class="comp-period-btn${COMP_SELECTED_SESSIONS.has(s.id)?' on':''}" onclick="togglePeriod(${s.id})">
         ${s.period_begin||'?'} — ${s.period_end||'?'}
       </button>
-      <button onclick="deleteCompSession(${s.id})" title="Удалить" style="border:none;background:none;cursor:pointer;color:var(--wb-faint);font-size:14px;padding:2px 4px" onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--wb-faint)'">✕</button>
+      ${iconBtn(`archiveSession(${s.id})`, 'В архив', '📦', 'var(--wb-orange)')}
+      ${iconBtn(`deleteCompSession(${s.id})`, 'Удалить', '✕', 'var(--red)')}
     </div>`).join('');
+
+  if(archived.length) {
+    html += `
+      <div style="width:100%;margin-top:4px">
+        <button onclick="toggleArchiveView()" style="border:none;background:none;cursor:pointer;color:var(--wb-muted);font-size:12px;padding:2px 0">
+          🗄 Архив (${archived.length}) ${COMP_ARCHIVE_OPEN?'▲':'▼'}
+        </button>
+        ${COMP_ARCHIVE_OPEN ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">` + archived.map(s => `
+          <div style="display:flex;align-items:center;gap:2px;opacity:.65">
+            <button class="comp-period-btn" onclick="unarchiveSession(${s.id})" title="Вернуть из архива">
+              ${s.period_begin||'?'} — ${s.period_end||'?'} ↩
+            </button>
+            ${iconBtn(`deleteCompSession(${s.id})`, 'Удалить', '✕', 'var(--red)')}
+          </div>`).join('') + `</div>` : ''}
+      </div>`;
+  }
+  el.innerHTML = html;
+}
+
+function saveArchived() {
+  localStorage.setItem('comp_archived_sessions', JSON.stringify([...COMP_ARCHIVED]));
+}
+
+function toggleArchiveView() {
+  COMP_ARCHIVE_OPEN = !COMP_ARCHIVE_OPEN;
+  buildPeriodButtons();
+}
+
+async function archiveSession(sessionId) {
+  COMP_ARCHIVED.add(sessionId);
+  saveArchived();
+  COMP_SELECTED_SESSIONS.delete(sessionId);
+  const active = COMP_SESSIONS.filter(s => !COMP_ARCHIVED.has(s.id));
+  if(!COMP_SELECTED_SESSIONS.size && active.length) COMP_SELECTED_SESSIONS.add(active[0].id);
+  buildPeriodButtons();
+  if(COMP_SELECTED_SESSIONS.size) await loadAllSelectedSessions();
+  else document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Все файлы в архиве. Верни нужный из архива или загрузи новый.</div>';
+}
+
+async function unarchiveSession(sessionId) {
+  COMP_ARCHIVED.delete(sessionId);
+  saveArchived();
+  COMP_SELECTED_SESSIONS.add(sessionId);
+  buildPeriodButtons();
+  await loadAllSelectedSessions();
 }
 
 async function togglePeriod(sessionId) {
@@ -1980,15 +2036,18 @@ async function togglePeriod(sessionId) {
 }
 
 async function deleteCompSession(sessionId) {
-  if(!confirm('Удалить этот период?')) return;
+  if(!confirm('Удалить этот период безвозвратно? Чтобы просто убрать с глаз — используй архив (📦).')) return;
   try {
     await fetch(`${RAILWAY_URL}/api/competitor-session/${sessionId}`, { method: 'DELETE' });
     COMP_SESSIONS = COMP_SESSIONS.filter(s => s.id !== sessionId);
     COMP_SELECTED_SESSIONS.delete(sessionId);
-    if(COMP_SESSIONS.length && !COMP_SELECTED_SESSIONS.size) COMP_SELECTED_SESSIONS.add(COMP_SESSIONS[0].id);
+    if(COMP_ARCHIVED.delete(sessionId)) saveArchived();
+    const active = COMP_SESSIONS.filter(s => !COMP_ARCHIVED.has(s.id));
+    if(active.length && !COMP_SELECTED_SESSIONS.size) COMP_SELECTED_SESSIONS.add(active[0].id);
     buildPeriodButtons();
-    if(COMP_SESSIONS.length) await loadAllSelectedSessions();
-    else document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners</div>';
+    if(COMP_SELECTED_SESSIONS.size) await loadAllSelectedSessions();
+    else if(!COMP_SESSIONS.length) document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners</div>';
+    else document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Все файлы в архиве. Верни нужный из архива или загрузи новый.</div>';
   } catch(e) { alert('Ошибка удаления'); }
 }
 
@@ -2214,7 +2273,9 @@ function renderCompetitorView() {
              name: a.vendor_code, is_own: true, ...stats };
   });
 
-  const compMetrics = COMP_ALL_METRICS.filter(m => !COMP_OWN_ARTICLES.find(a => a.nm_id === m.nm_id));
+  const compMetrics = COMP_ALL_METRICS
+    .filter(m => !COMP_OWN_ARTICLES.find(a => a.nm_id === m.nm_id))
+    .map(m => ({...m, is_own: false}));  // «мой» только у явно добавленных через поиск
   const allMetrics = [...ownMetrics, ...compMetrics];
 
   if(!allMetrics.length) {
@@ -2358,8 +2419,10 @@ async function uploadCompetitorReport(file) {
       COMP_SESSION_ID = result.session_id;
       COMP_SELECTED_NMS = new Set();
       COMP_SESSIONS = await (await fetch(`${RAILWAY_URL}/api/competitor-sessions`)).json();
+      if(COMP_ARCHIVED.delete(result.session_id)) saveArchived();  // свежий файл всегда активен
+      COMP_SELECTED_SESSIONS = new Set([result.session_id]);
       buildPeriodButtons();
-      await loadCompetitorSession(result.session_id);
+      await loadAllSelectedSessions();
     }
   } catch(e) {
     status.textContent = '❌ Ошибка: ' + e.message;
