@@ -897,6 +897,41 @@ def sync_promotions():
     finally:
         PROMO_CACHE["syncing"] = False
 
+@app.get("/api/promotions-debug")
+def promotions_debug():
+    """Временная диагностика: смотрим, что реально отдаёт метод details для текущих акций."""
+    now = datetime.now(timezone.utc)
+    start_dt = now.strftime("%Y-%m-%dT00:00:00Z")
+    end_dt = (now + timedelta(days=60)).strftime("%Y-%m-%dT23:59:59Z")
+    promos = fetch_calendar_promotions(start_dt, end_dt)
+    ids = [p.get("id") for p in promos if p.get("id") is not None]
+    out = {"ids": ids}
+    # вариант 1: promotionIDs через запятую
+    try:
+        r = httpx.get(f"{WB_CALENDAR_URL}/api/v1/calendar/promotions/details",
+                      headers=wb_headers(),
+                      params={"promotionIDs": ",".join(str(x) for x in ids)}, timeout=30)
+        out["comma_status"] = r.status_code
+        try:
+            out["comma_body"] = r.json()
+        except Exception:
+            out["comma_body"] = r.text[:800]
+    except Exception as e:
+        out["comma_error"] = str(e)
+    # вариант 2: повторяющиеся promotionIDs
+    try:
+        r2 = httpx.get(f"{WB_CALENDAR_URL}/api/v1/calendar/promotions/details",
+                       headers=wb_headers(),
+                       params=[("promotionIDs", str(x)) for x in ids], timeout=30)
+        out["repeat_status"] = r2.status_code
+        try:
+            out["repeat_body"] = r2.json()
+        except Exception:
+            out["repeat_body"] = r2.text[:800]
+    except Exception as e:
+        out["repeat_error"] = str(e)
+    return out
+
 @app.get("/api/promotions")
 def get_promotions():
     # первый заход на вкладку — запускаем сбор данных в фоне
