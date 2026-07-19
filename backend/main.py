@@ -751,6 +751,32 @@ def fetch_promotion_nomenclatures(promotion_id: int, in_action: bool) -> list:
         time.sleep(PROMO_RATE_DELAY)
     return noms
 
+def fetch_promotions_details(ids: list) -> dict:
+    """Детали акций по ID → {promo_id: {...}}. Работает и для автоакций (в отличие от nomenclatures)."""
+    out = {}
+    for i in range(0, len(ids), 50):
+        batch = ids[i:i + 50]
+        try:
+            resp = httpx.get(
+                f"{WB_CALENDAR_URL}/api/v1/calendar/promotions/details",
+                headers=wb_headers(),
+                params={"promotionIDs": ",".join(str(x) for x in batch)},
+                timeout=30,
+            )
+        except Exception as e:
+            logger.error(f"promo details fetch error: {e}")
+            continue
+        if not resp.is_success:
+            logger.error(f"promo details error {resp.status_code} {resp.text[:200]}")
+            continue
+        for d in ((resp.json().get("data") or {}).get("promotions") or []):
+            pid = d.get("id")
+            if pid is not None:
+                out[pid] = d
+        if i + 50 < len(ids):
+            time.sleep(PROMO_RATE_DELAY)
+    return out
+
 def build_promo_nm_to_vendor() -> dict:
     """nm_id → артикул продавца: сначала из stock_totals, добираем из feedbacks."""
     nm_to_vendor = {}
@@ -797,6 +823,10 @@ def sync_promotions():
 
         nm_to_vendor = build_promo_nm_to_vendor()
 
+        # Детали по всем акциям — работают и для автоакций (участие товаров, охват, буст)
+        promo_ids = [p.get("id") for p in promos if p.get("id") is not None]
+        details = fetch_promotions_details(promo_ids) if promo_ids else {}
+
         promotions_out, articles = [], {}
         for p in promos:
             pid = p.get("id")
@@ -810,15 +840,29 @@ def sync_promotions():
                 days_to_start = (sd.date() - now.date()).days
             except Exception:
                 pass
+            ptype = p.get("type", "regular")
+            d = details.get(pid, {})
+            ranging = d.get("ranging") or []
+            max_boost = max((r.get("boost", 0) or 0 for r in ranging), default=0)
             promotions_out.append({
                 "id": pid,
                 "name": p.get("name", f"#{pid}"),
                 "start": start,
                 "end": end,
-                "type": p.get("type", "regular"),
+                "type": ptype,
                 "days_to_start": days_to_start,
+                "in_total": d.get("inPromoActionTotal"),
+                "in_leftovers": d.get("inPromoActionLeftovers"),
+                "not_in_total": d.get("notInPromoActionTotal"),
+                "not_in_leftovers": d.get("notInPromoActionLeftovers"),
+                "participation": d.get("participationPercentage"),
+                "exceptions": d.get("exceptionProductsCount"),
+                "boost": max_boost,
             })
-            # уже участвующие + доступные для входа
+            # Список товаров с ценами входа доступен только для обычных акций.
+            # Для автоакций WB не отдаёт номенклатуры — пропускаем, чтобы не ловить 400.
+            if ptype != "regular":
+                continue
             for in_action in (True, False):
                 time.sleep(PROMO_RATE_DELAY)
                 for n in fetch_promotion_nomenclatures(pid, in_action):

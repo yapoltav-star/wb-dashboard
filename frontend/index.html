@@ -126,6 +126,19 @@ td.tc{text-align:center}
 .matrix td.promo-join .pc-delta{color:#B42318;font-weight:700;font-size:12px}
 .matrix td.promo-join .pc-plan{color:var(--wb-muted);font-size:10px;margin-top:1px}
 .matrix td.promo-none{color:var(--wb-faint);background:#FCFCFD}
+.promo-ov{width:100%;border-collapse:collapse;font-size:12px}
+.promo-ov th{position:sticky;top:0;background:#FAFAFA;font-size:10px;color:var(--wb-muted);font-weight:600;text-transform:uppercase;letter-spacing:.3px;text-align:right;padding:8px 10px;border-bottom:1px solid var(--wb-border);z-index:1}
+.promo-ov th:first-child{text-align:left}
+.promo-ov td{padding:9px 10px;border-bottom:1px solid #F5F3FA;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.promo-ov td.po-name{text-align:left;white-space:normal;max-width:340px;font-weight:600;color:var(--wb-text)}
+.promo-ov tr:hover td{background:#FBFAFE}
+.promo-ov .po-sub{display:block;font-size:10px;color:var(--wb-faint);font-weight:400}
+.po-status{display:inline-block;font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600}
+.po-status.ps-live{background:#E7F7EE;color:#0E7C44}
+.po-status.ps-soon{background:#FFF0E8;color:#B4600E}
+.po-status.ps-ended{background:#F0F0F3;color:var(--wb-muted)}
+.pc-auto{display:inline-block;margin-left:6px;font-size:9px;background:#EFE9FB;color:var(--wb-purple);border-radius:6px;padding:1px 6px;text-transform:uppercase;vertical-align:middle}
+.pc-reg{display:inline-block;margin-left:6px;font-size:9px;background:#E7F7EE;color:#0E7C44;border-radius:6px;padding:1px 6px;text-transform:uppercase;vertical-align:middle}
 .comp-tbl{width:100%;border-collapse:collapse;font-size:12px}
 .comp-period-btn{padding:5px 12px;border-radius:20px;border:1px solid var(--wb-border);font-size:12px;color:var(--wb-muted);cursor:pointer;background:var(--wb-bg);font-family:inherit;white-space:nowrap}
 .comp-period-btn.on{background:var(--wb-purple);color:#fff;border-color:var(--wb-purple)}
@@ -1733,6 +1746,80 @@ function promoCell(c) {
   return `<td class="promo-cell promo-join"><div class="pc-delta" style="color:#0E7C44">цена ок</div><div class="pc-plan">${plan}${disc}</div></td>`;
 }
 
+function promoStatusLabel(p) {
+  const now = new Date();
+  const s = p.start ? new Date(p.start) : null;
+  const e = p.end ? new Date(p.end) : null;
+  if(s && !isNaN(s) && now < s) {
+    const d = p.days_to_start;
+    return {text: (d>0 ? ('старт через ' + d + ' дн.') : (d===0 ? 'старт сегодня' : 'скоро')), cls:'ps-soon'};
+  }
+  if(e && !isNaN(e) && now > e) return {text:'завершена', cls:'ps-ended'};
+  return {text:'идёт', cls:'ps-live'};
+}
+
+function promoDatesShort(p) {
+  const f = s => { if(!s) return ''; const d = new Date(s); return isNaN(d)?'':d.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'}); };
+  const s = f(p.start), e = f(p.end);
+  return (s && e) ? (s + '–' + e) : '';
+}
+
+function promoOverviewHtml(proms) {
+  const rows = proms.map(p => {
+    const st = promoStatusLabel(p);
+    const badge = p.type === 'auto' ? '<span class="pc-auto">авто</span>' : '<span class="pc-reg">акция</span>';
+    const inT = p.in_total != null ? fmt(p.in_total) : '—';
+    const inLo = p.in_leftovers;
+    const notT = p.not_in_total != null ? fmt(p.not_in_total) : '—';
+    const part = p.participation != null ? (p.participation + '%') : '—';
+    const boost = p.boost ? ('+' + p.boost + '%') : '—';
+    const exc = (p.exceptions != null && p.exceptions > 0) ? fmt(p.exceptions) : '—';
+    return `<tr>
+      <td class="po-name">${escapeHtml(p.name)} ${badge}</td>
+      <td>${promoDatesShort(p)}</td>
+      <td style="text-align:left"><span class="po-status ${st.cls}">${st.text}</span></td>
+      <td>${inT}${(inLo!=null) ? `<span class="po-sub">${fmt(inLo)} с остатком</span>` : ''}</td>
+      <td>${notT}</td>
+      <td>${part}</td>
+      <td>${boost}</td>
+      <td>${exc}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="section-sub" style="margin:2px 0 8px">Обзор акций — участие твоих товаров</div>
+    <div class="matrix-wrap"><table class="promo-ov"><thead><tr>
+      <th>Акция</th><th>Даты</th><th>Статус</th>
+      <th>Участвует</th><th>Не участвует</th><th>Охват</th><th>Буст</th><th>Исключено</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function promoMatrixHtml(regProms, arts) {
+  const q = (document.getElementById('promoSearch').value || '').toLowerCase();
+  const rows = arts.filter(a => {
+    if(q && !String(a.vendor_code).toLowerCase().includes(q) && !String(a.nm_id).includes(q)) return false;
+    const cells = Object.values(a.cells);
+    if(PROMO_FILTER === 'canjoin') return cells.some(c => !c.in_action);
+    if(PROMO_FILTER === 'in') return cells.some(c => c.in_action);
+    return cells.length > 0;
+  });
+  if(!rows.length) return '<div class="empty">Ничего не найдено</div>';
+
+  let head = '<tr><th class="mcol-art">Артикул</th>';
+  regProms.forEach(p => {
+    head += `<th class="promo-col"><span class="pc-name">${escapeHtml(p.name)}</span>` +
+            `<span class="pc-dates">${promoDatesLabel(p)}</span></th>`;
+  });
+  head += '</tr>';
+
+  let body = '';
+  rows.forEach((a, i) => {
+    body += `<tr class="${i%2 ? 'wh-even' : ''}"><td class="mcol-art"><div class="art">${escapeHtml(String(a.vendor_code))}</div><div class="nmid">${a.nm_id}</div></td>`;
+    regProms.forEach(p => { body += promoCell(a.cells[String(p.id)]); });
+    body += '</tr>';
+  });
+  return `<div class="section-sub" style="margin:16px 0 8px">Цены для входа в обычные акции (−₽ — на сколько снизить цену)</div>
+    <div class="matrix-wrap"><table class="matrix"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+}
+
 function drawPromotions() {
   const info = document.getElementById('promoSyncInfo');
   const btn = document.getElementById('promoSyncBtn');
@@ -1753,42 +1840,36 @@ function drawPromotions() {
     return;
   }
 
-  let canJoin = 0, inAct = 0;
-  arts.forEach(a => Object.values(a.cells).forEach(c => { if(c.in_action) inAct++; else canJoin++; }));
-  cards.innerHTML = [
+  const autoCount = proms.filter(p => p.type === 'auto').length;
+  const cardArr = [
     ['Акций доступно', fmt(proms.length)],
-    ['Артикулов', fmt(arts.length)],
-    ['Можно войти (позиций)', fmt(canJoin), 'color:var(--wb-purple)'],
-    ['Уже в акции (позиций)', fmt(inAct), 'color:#0E7C44'],
-  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+    ['Из них автоакций', fmt(autoCount)],
+  ];
+  if(arts.length) {
+    let canJoin = 0, inAct = 0;
+    arts.forEach(a => Object.values(a.cells).forEach(c => { if(c.in_action) inAct++; else canJoin++; }));
+    cardArr.push(['Можно войти (позиций)', fmt(canJoin), 'color:var(--wb-purple)']);
+    cardArr.push(['Уже в акции (позиций)', fmt(inAct), 'color:#0E7C44']);
+  } else {
+    const totalIn = proms.reduce((s, p) => s + (p.in_total || 0), 0);
+    const parts = proms.map(p => p.participation).filter(v => v != null);
+    const avg = parts.length ? Math.round(parts.reduce((a, b) => a + b, 0) / parts.length) : 0;
+    cardArr.push(['Твоих товаров в акциях', fmt(totalIn)]);
+    cardArr.push(['Средний охват', avg + '%']);
+  }
+  cards.innerHTML = cardArr.map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
 
-  const q = (document.getElementById('promoSearch').value || '').toLowerCase();
-  const rows = arts.filter(a => {
-    if(q && !String(a.vendor_code).toLowerCase().includes(q) && !String(a.nm_id).includes(q)) return false;
-    const cells = Object.values(a.cells);
-    if(PROMO_FILTER === 'canjoin') return cells.some(c => !c.in_action);
-    if(PROMO_FILTER === 'in') return cells.some(c => c.in_action);
-    return cells.length > 0;
-  });
-
-  if(!rows.length) { root.innerHTML = '<div class="empty">Ничего не найдено</div>'; return; }
-
-  let head = '<tr><th class="mcol-art">Артикул</th>';
-  proms.forEach(p => {
-    head += `<th class="promo-col"><span class="pc-name">${escapeHtml(p.name)}</span>` +
-            `<span class="pc-dates">${promoDatesLabel(p)}</span>` +
-            (p.type === 'auto' ? '<span class="pc-auto">авто</span>' : '') + '</th>';
-  });
-  head += '</tr>';
-
-  let body = '';
-  rows.forEach((a, i) => {
-    body += `<tr class="${i%2 ? 'wh-even' : ''}"><td class="mcol-art"><div class="art">${escapeHtml(String(a.vendor_code))}</div><div class="nmid">${a.nm_id}</div></td>`;
-    proms.forEach(p => { body += promoCell(a.cells[String(p.id)]); });
-    body += '</tr>';
-  });
-
-  root.innerHTML = `<div class="matrix-wrap"><table class="matrix"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+  let html = promoOverviewHtml(proms);
+  const regProms = proms.filter(p => p.type === 'regular');
+  if(arts.length && regProms.length) {
+    html += promoMatrixHtml(regProms, arts);
+  } else {
+    html += `<div class="empty" style="margin-top:16px;text-align:left;padding:16px;line-height:1.55">
+      <b>Матрица цен для входа доступна только для обычных акций.</b><br>
+      Сейчас все доступные акции — <b>автоматические (автоакции)</b>. По ним Wildberries не отдаёт список товаров и цены входа через API — управлять ими можно только в личном кабинете: <b>Цены и скидки → Календарь акций</b>. Выше — сводка участия твоих товаров по каждой акции.
+    </div>`;
+  }
+  root.innerHTML = html;
 }
 
 async function triggerPromotionsSync() {
