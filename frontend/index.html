@@ -116,6 +116,16 @@ td.tc{text-align:center}
 .matrix .m-urgent{background:#FDECEC!important;color:#B42318;font-weight:600}
 .matrix .m-ok{background:#E7F7EE!important;color:#0E7C44}
 .matrix .prod-pin{margin-right:4px;vertical-align:middle}
+.matrix thead th.promo-col{text-align:center;min-width:130px;max-width:180px;white-space:normal;vertical-align:top;line-height:1.3}
+.matrix thead th.promo-col .pc-name{font-size:11px;color:var(--wb-text);text-transform:none;letter-spacing:0;font-weight:600;display:block;margin-bottom:3px}
+.matrix thead th.promo-col .pc-dates{font-size:9px;color:var(--wb-muted);font-weight:400;text-transform:none}
+.matrix thead th.promo-col .pc-auto{display:inline-block;margin-top:3px;font-size:8px;background:#EFE9FB;color:var(--wb-purple);border-radius:6px;padding:1px 5px;text-transform:uppercase}
+.matrix td.promo-cell{text-align:center;vertical-align:middle}
+.matrix td.promo-in{background:#E7F7EE!important}
+.matrix td.promo-in .pc-badge{color:#0E7C44;font-weight:700;font-size:11px}
+.matrix td.promo-join .pc-delta{color:#B42318;font-weight:700;font-size:12px}
+.matrix td.promo-join .pc-plan{color:var(--wb-muted);font-size:10px;margin-top:1px}
+.matrix td.promo-none{color:var(--wb-faint);background:#FCFCFD}
 .comp-tbl{width:100%;border-collapse:collapse;font-size:12px}
 .comp-period-btn{padding:5px 12px;border-radius:20px;border:1px solid var(--wb-border);font-size:12px;color:var(--wb-muted);cursor:pointer;background:var(--wb-bg);font-family:inherit;white-space:nowrap}
 .comp-period-btn.on{background:var(--wb-purple);color:#fff;border-color:var(--wb-purple)}
@@ -239,6 +249,7 @@ td.tc{text-align:center}
   <div class="tb-nav">
     <div class="tb-nav-item">Рост продаж</div>
     <div class="tb-nav-item on" onclick="showSection('products',this)">Товары и цены</div>
+    <div class="tb-nav-item" onclick="showSection('promotions',this)">Акции</div>
     <div class="tb-nav-item" onclick="showSection('supplies',this)">Поставки и заказы</div>
     <div class="tb-nav-item" onclick="showSection('analytics',this)">Аналитика</div>
     <div class="tb-nav-item" onclick="showSection('ads',this)">Продвижение</div>
@@ -397,6 +408,25 @@ td.tc{text-align:center}
   <div id="adsRoot"><div class="loading"><div class="spinner"></div><span>Загружаем статистику рекламы...</span></div></div>
 </div>
 
+<!-- АКЦИИ -->
+<div class="page" id="page-promotions">
+  <div class="toolbar">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="promoSearch" placeholder="Поиск по артикулу..." oninput="renderPromotions()">
+    </div>
+    <button class="filter-btn on" id="promoFltAll" onclick="setPromoFilter('all')">Все</button>
+    <button class="filter-btn" id="promoFltCanJoin" onclick="setPromoFilter('canjoin')">Можно войти</button>
+    <button class="filter-btn" id="promoFltIn" onclick="setPromoFilter('in')">Уже в акции</button>
+    <span id="promoSyncInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
+    <div class="ml-auto">
+      <button class="action-btn" id="promoSyncBtn" onclick="triggerPromotionsSync()">↻ Обновить</button>
+    </div>
+  </div>
+  <div class="cards" id="promoCards"></div>
+  <div id="promoRoot"><div class="loading"><div class="spinner"></div><span>Загружаем акции...</span></div></div>
+</div>
+
 <!-- КОНКУРЕНТЫ -->
 <div class="page" id="page-competitors">
   <div class="toolbar">
@@ -478,6 +508,7 @@ function showSection(sec, btn) {
   btn.classList.add('on');
   document.getElementById('subnav-products').style.display = sec === 'products' ? 'flex' : 'none';
   if(sec === 'products') showPage('products', document.querySelector('#subnav-products .sn-item'));
+  else if(sec === 'promotions') showPage('promotions', null);
   else if(sec === 'supplies') showPage('supply-recs', null);
   else if(sec === 'ads') showPage('ads', null);
   else if(sec === 'analytics') showPage('competitors', null);
@@ -493,6 +524,7 @@ function showPage(id, btn) {
   if(id === 'supply-recs') renderSupplyRecs();
   if(id === 'ads') renderAds();
   if(id === 'competitors') renderCompetitors();
+  if(id === 'promotions') renderPromotions();
 }
 
 async function loadData() {
@@ -1645,6 +1677,135 @@ function renderAds() {
   let html='';
   gnames.forEach(g=>{const arr=grouped[g]||[];if(!arr.length)return;html+=adsGroupBlock(g,arr);});
   document.getElementById('adsRoot').innerHTML=html||'<div class="empty">\u041d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e</div>';
+}
+
+// ─────────── Акции (Календарь акций WB) ───────────
+let PROMO_DATA = {promotions:[], articles:[], updated_at:null, syncing:false, error:null};
+let PROMO_FILTER = 'all';
+let PROMO_LOADED = false;
+let promoPollTimer = null;
+
+function renderPromotions() {
+  if(!PROMO_LOADED) { PROMO_LOADED = true; loadPromotions(); return; }
+  drawPromotions();
+}
+
+async function loadPromotions() {
+  try {
+    const resp = await fetch(`${RAILWAY_URL}/api/promotions`);
+    PROMO_DATA = await resp.json();
+  } catch(e) {
+    PROMO_DATA = {promotions:[], articles:[], updated_at:null, syncing:false, error:'Сервер не отвечает'};
+  }
+  drawPromotions();
+  clearTimeout(promoPollTimer);
+  if(PROMO_DATA.syncing) promoPollTimer = setTimeout(loadPromotions, 5000);
+}
+
+function setPromoFilter(f) {
+  PROMO_FILTER = f;
+  document.getElementById('promoFltAll').classList.toggle('on', f==='all');
+  document.getElementById('promoFltCanJoin').classList.toggle('on', f==='canjoin');
+  document.getElementById('promoFltIn').classList.toggle('on', f==='in');
+  drawPromotions();
+}
+
+function promoDatesLabel(p) {
+  const f = s => { if(!s) return ''; const d = new Date(s); return isNaN(d)?'':d.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'}); };
+  const s = f(p.start), e = f(p.end);
+  let extra = '';
+  if(p.days_to_start != null) {
+    if(p.days_to_start > 0) extra = ' · через ' + p.days_to_start + ' дн.';
+    else if(p.days_to_start === 0) extra = ' · сегодня';
+  }
+  return (s && e) ? (s + '–' + e + extra) : '';
+}
+
+function promoCell(c) {
+  if(!c) return '<td class="promo-cell promo-none">—</td>';
+  if(c.in_action) return '<td class="promo-cell promo-in"><div class="pc-badge">✓ в акции</div></td>';
+  const plan = c.plan_price != null ? ('до ' + fmt(Math.round(c.plan_price)) + ' ₽') : '';
+  const disc = c.plan_discount != null ? (' · ' + c.plan_discount + '%') : '';
+  if(c.delta != null && c.delta > 0) {
+    return `<td class="promo-cell promo-join"><div class="pc-delta">−${fmt(c.delta)} ₽</div><div class="pc-plan">${plan}${disc}</div></td>`;
+  }
+  // текущая цена уже подходит для входа — снижать не нужно
+  return `<td class="promo-cell promo-join"><div class="pc-delta" style="color:#0E7C44">цена ок</div><div class="pc-plan">${plan}${disc}</div></td>`;
+}
+
+function drawPromotions() {
+  const info = document.getElementById('promoSyncInfo');
+  const btn = document.getElementById('promoSyncBtn');
+  const root = document.getElementById('promoRoot');
+  const cards = document.getElementById('promoCards');
+  const proms = PROMO_DATA.promotions || [];
+  const arts = PROMO_DATA.articles || [];
+
+  if(PROMO_DATA.error) { info.textContent = 'Ошибка: ' + PROMO_DATA.error; if(btn) btn.disabled = false; }
+  else if(PROMO_DATA.syncing) { info.textContent = 'Собираем данные из WB…'; if(btn) btn.disabled = true; }
+  else { info.textContent = PROMO_DATA.updated_at ? ('Обновлено: ' + PROMO_DATA.updated_at) : ''; if(btn) btn.disabled = false; }
+
+  if(!proms.length) {
+    cards.innerHTML = '';
+    root.innerHTML = PROMO_DATA.syncing
+      ? '<div class="loading"><div class="spinner"></div><span>Собираем акции из WB, это может занять до минуты…</span></div>'
+      : '<div class="empty">Доступных акций не найдено. Нажми «Обновить».</div>';
+    return;
+  }
+
+  let canJoin = 0, inAct = 0;
+  arts.forEach(a => Object.values(a.cells).forEach(c => { if(c.in_action) inAct++; else canJoin++; }));
+  cards.innerHTML = [
+    ['Акций доступно', fmt(proms.length)],
+    ['Артикулов', fmt(arts.length)],
+    ['Можно войти (позиций)', fmt(canJoin), 'color:var(--wb-purple)'],
+    ['Уже в акции (позиций)', fmt(inAct), 'color:#0E7C44'],
+  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+
+  const q = (document.getElementById('promoSearch').value || '').toLowerCase();
+  const rows = arts.filter(a => {
+    if(q && !String(a.vendor_code).toLowerCase().includes(q) && !String(a.nm_id).includes(q)) return false;
+    const cells = Object.values(a.cells);
+    if(PROMO_FILTER === 'canjoin') return cells.some(c => !c.in_action);
+    if(PROMO_FILTER === 'in') return cells.some(c => c.in_action);
+    return cells.length > 0;
+  });
+
+  if(!rows.length) { root.innerHTML = '<div class="empty">Ничего не найдено</div>'; return; }
+
+  let head = '<tr><th class="mcol-art">Артикул</th>';
+  proms.forEach(p => {
+    head += `<th class="promo-col"><span class="pc-name">${escapeHtml(p.name)}</span>` +
+            `<span class="pc-dates">${promoDatesLabel(p)}</span>` +
+            (p.type === 'auto' ? '<span class="pc-auto">авто</span>' : '') + '</th>';
+  });
+  head += '</tr>';
+
+  let body = '';
+  rows.forEach((a, i) => {
+    body += `<tr class="${i%2 ? 'wh-even' : ''}"><td class="mcol-art"><div class="art">${escapeHtml(String(a.vendor_code))}</div><div class="nmid">${a.nm_id}</div></td>`;
+    proms.forEach(p => { body += promoCell(a.cells[String(p.id)]); });
+    body += '</tr>';
+  });
+
+  root.innerHTML = `<div class="matrix-wrap"><table class="matrix"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+}
+
+async function triggerPromotionsSync() {
+  const btn = document.getElementById('promoSyncBtn');
+  const info = document.getElementById('promoSyncInfo');
+  if(btn) btn.disabled = true;
+  if(info) info.textContent = 'Запросили акции у WB…';
+  try {
+    await fetch(`${RAILWAY_URL}/api/sync-promotions`, { method: 'POST' });
+    PROMO_DATA.syncing = true;
+    drawPromotions();
+    clearTimeout(promoPollTimer);
+    promoPollTimer = setTimeout(loadPromotions, 4000);
+  } catch(e) {
+    if(info) info.textContent = 'Ошибка запроса';
+    if(btn) btn.disabled = false;
+  }
 }
 
 function downloadWarehouseXlsx(e, encodedWh) {

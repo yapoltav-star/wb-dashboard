@@ -24,6 +24,7 @@ WB_ANALYTICS_URL = "https://seller-analytics-api.wildberries.ru"
 WB_STATISTICS_URL = "https://statistics-api.wildberries.ru"
 WB_SUPPLIES_URL = "https://supplies-api.wildberries.ru"
 WB_PROMOTION_URL = "https://advert-api.wildberries.ru"
+WB_CALENDAR_URL = "https://dp-calendar-api.wildberries.ru"
 
 # Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
 # а агрегаты — переносим их в отдельные поля stock_totals вместо списка складов.
@@ -689,6 +690,189 @@ def sync_ads():
     )
     logger.info(f"Ads sync complete. Rows saved: {saved}")
 
+# ---------- Календарь акций (Промо) ----------
+# Данные акций держим в кэше процесса: WB жёстко лимитирует Календарь акций
+# (10 запросов / 6 сек), а на построение матрицы нужно 2 запроса на каждую акцию.
+# Обновляется по кнопке, по расписанию и при первом обращении к вкладке.
+PROMO_CACHE = {"promotions": [], "articles": [], "updated_at": None, "syncing": False, "error": None}
+PROMO_RATE_DELAY = 0.7  # пауза между запросами к Календарю акций (лимит WB: интервал 600 мс)
+
+def fetch_calendar_promotions(start_dt: str, end_dt: str) -> list:
+    """Список акций, доступных для участия, за период [start_dt, end_dt]."""
+    promotions, offset, limit = [], 0, 1000
+    while True:
+        try:
+            resp = httpx.get(
+                f"{WB_CALENDAR_URL}/api/v1/calendar/promotions",
+                headers=wb_headers(),
+                params={"startDateTime": start_dt, "endDateTime": end_dt,
+                        "allPromo": "false", "limit": limit, "offset": offset},
+                timeout=30,
+            )
+        except Exception as e:
+            logger.error(f"calendar promotions fetch error: {e}")
+            break
+        if not resp.is_success:
+            logger.error(f"calendar promotions error {resp.status_code} {resp.text[:200]}")
+            break
+        batch = (resp.json().get("data") or {}).get("promotions") or []
+        promotions.extend(batch)
+        if len(batch) < limit:
+            break
+        offset += limit
+        time.sleep(PROMO_RATE_DELAY)
+    return promotions
+
+def fetch_promotion_nomenclatures(promotion_id: int, in_action: bool) -> list:
+    """Товары акции: in_action=False — можно добавить (есть planPrice для входа), True — уже участвуют."""
+    noms, offset, limit = [], 0, 1000
+    while True:
+        try:
+            resp = httpx.get(
+                f"{WB_CALENDAR_URL}/api/v1/calendar/promotions/nomenclatures",
+                headers=wb_headers(),
+                params={"promotionID": promotion_id, "inAction": str(in_action).lower(),
+                        "limit": limit, "offset": offset},
+                timeout=30,
+            )
+        except Exception as e:
+            logger.error(f"promo nomenclatures fetch error (promo {promotion_id}): {e}")
+            break
+        if not resp.is_success:
+            # 400/404 — у акции просто нет подходящих товаров, это не критично
+            if resp.status_code not in (400, 404):
+                logger.error(f"promo nomenclatures error {resp.status_code} {resp.text[:200]}")
+            break
+        batch = (resp.json().get("data") or {}).get("nomenclatures") or []
+        noms.extend(batch)
+        if len(batch) < limit:
+            break
+        offset += limit
+        time.sleep(PROMO_RATE_DELAY)
+    return noms
+
+def build_promo_nm_to_vendor() -> dict:
+    """nm_id → артикул продавца: сначала из stock_totals, добираем из feedbacks."""
+    nm_to_vendor = {}
+    try:
+        st = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code", headers=sb_headers(), timeout=15)
+        if st.is_success:
+            nm_to_vendor = {r["nm_id"]: r["vendor_code"] for r in st.json() if r.get("nm_id") and r.get("vendor_code")}
+    except Exception as e:
+        logger.error(f"sync_promotions: stock_totals fetch error {e}")
+    try:
+        fb = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/feedbacks?select=nm_id,article&nm_id=not.is.null&article=not.is.null",
+            headers=sb_headers(), timeout=15
+        )
+        if fb.is_success:
+            for r in fb.json():
+                nm, art = r.get("nm_id"), r.get("article", "")
+                if nm and art and nm not in nm_to_vendor:
+                    nm_to_vendor[nm] = art
+    except Exception as e:
+        logger.error(f"sync_promotions: feedbacks fallback error {e}")
+    return nm_to_vendor
+
+def sync_promotions():
+    """Строит матрицу: акции × артикулы, с ценой входа и разницей к текущей цене."""
+    if not WB_TOKEN:
+        logger.error("WB_TOKEN not set")
+        PROMO_CACHE["error"] = "WB_TOKEN не задан"
+        return
+    if PROMO_CACHE.get("syncing"):
+        logger.info("Promotions sync already running")
+        return
+    PROMO_CACHE["syncing"] = True
+    PROMO_CACHE["error"] = None
+    try:
+        logger.info("Starting promotions (calendar) sync...")
+        window_days = min(get_setting_int("promo_window_days", 60), 365)
+        now = datetime.now(timezone.utc)
+        start_dt = now.strftime("%Y-%m-%dT00:00:00Z")
+        end_dt = (now + timedelta(days=window_days)).strftime("%Y-%m-%dT23:59:59Z")
+
+        promos = fetch_calendar_promotions(start_dt, end_dt)
+        logger.info(f"Promotions sync: {len(promos)} promotions in window")
+
+        nm_to_vendor = build_promo_nm_to_vendor()
+
+        promotions_out, articles = [], {}
+        for p in promos:
+            pid = p.get("id")
+            if pid is None:
+                continue
+            start = p.get("startDateTime", "")
+            end = p.get("endDateTime", "")
+            days_to_start = None
+            try:
+                sd = datetime.fromisoformat(start.replace("Z", "+00:00"))
+                days_to_start = (sd.date() - now.date()).days
+            except Exception:
+                pass
+            promotions_out.append({
+                "id": pid,
+                "name": p.get("name", f"#{pid}"),
+                "start": start,
+                "end": end,
+                "type": p.get("type", "regular"),
+                "days_to_start": days_to_start,
+            })
+            # уже участвующие + доступные для входа
+            for in_action in (True, False):
+                time.sleep(PROMO_RATE_DELAY)
+                for n in fetch_promotion_nomenclatures(pid, in_action):
+                    nm = n.get("id")
+                    if nm is None:
+                        continue
+                    price = n.get("price")
+                    plan_price = n.get("planPrice")
+                    delta = round(price - plan_price) if (price is not None and plan_price is not None) else None
+                    entry = articles.setdefault(nm, {
+                        "nm_id": nm,
+                        "vendor_code": nm_to_vendor.get(nm) or str(nm),
+                        "cells": {},
+                    })
+                    entry["cells"][str(pid)] = {
+                        "in_action": bool(n.get("inAction")),
+                        "price": price,
+                        "plan_price": plan_price,
+                        "discount": n.get("discount"),
+                        "plan_discount": n.get("planDiscount"),
+                        "delta": delta,
+                    }
+
+        articles_list = sorted(articles.values(), key=lambda a: str(a["vendor_code"]))
+        PROMO_CACHE["promotions"] = promotions_out
+        PROMO_CACHE["articles"] = articles_list
+        PROMO_CACHE["updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+        logger.info(f"Promotions sync complete. Promotions: {len(promotions_out)}, articles: {len(articles_list)}")
+    except Exception as e:
+        logger.error(f"sync_promotions error: {e}")
+        PROMO_CACHE["error"] = str(e)
+    finally:
+        PROMO_CACHE["syncing"] = False
+
+@app.get("/api/promotions")
+def get_promotions():
+    # первый заход на вкладку — запускаем сбор данных в фоне
+    if not PROMO_CACHE["updated_at"] and not PROMO_CACHE["syncing"]:
+        import threading
+        threading.Thread(target=sync_promotions, daemon=True).start()
+    return {
+        "promotions": PROMO_CACHE["promotions"],
+        "articles": PROMO_CACHE["articles"],
+        "updated_at": PROMO_CACHE["updated_at"],
+        "syncing": PROMO_CACHE["syncing"],
+        "error": PROMO_CACHE["error"],
+    }
+
+@app.post("/api/sync-promotions")
+def trigger_promotions_sync():
+    import threading
+    threading.Thread(target=sync_promotions, daemon=True).start()
+    return {"status": "started"}
+
 @app.post("/api/upload-ratings")
 async def upload_ratings(file: UploadFile = File(...)):
     """
@@ -1322,6 +1506,7 @@ scheduler.add_job(sync_stock, "interval", hours=3, id="sync_stock")
 scheduler.add_job(sync_supply, "interval", hours=4, id="sync_supply")
 scheduler.add_job(sync_ads, "interval", hours=4, id="sync_ads")
 scheduler.add_job(lambda: sync_article_daily_stats(30), "interval", hours=6, id="sync_daily")
+scheduler.add_job(sync_promotions, "interval", hours=6, id="sync_promotions")
 scheduler.start()
 
 @app.get("/")
