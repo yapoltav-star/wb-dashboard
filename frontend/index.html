@@ -110,6 +110,15 @@ td.tc{text-align:center}
 .matrix .m-recommend.zero{font-weight:400;color:var(--wb-faint)}
 .matrix .m-info{background:#F8F5FF}
 .matrix thead th.m-info{background:#FFF0E8}
+.matrix .own-bad{background:#FEE4E2!important;color:#B42318;font-weight:700}
+.matrix .own-warn{background:#FEF0C7!important;color:#B54708;font-weight:700}
+.matrix .own-ok{background:#D1FADF!important;color:#027A48;font-weight:600}
+.ow-model-btn{display:inline-flex;align-items:center;gap:4px;max-width:220px;border:1px solid var(--wb-border);background:#fff;border-radius:6px;padding:4px 8px;font-size:12px;font-family:inherit;color:var(--wb-text);cursor:pointer;text-align:left;line-height:1.3}
+.ow-model-btn:hover{border-color:var(--wb-purple);background:var(--wb-purple-light)}
+.ow-model-btn .ow-mname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px}
+.ow-model-btn.manual{border-color:#F79009;background:#FFFAEB}
+.ow-model-btn .ow-hint{font-size:10px;color:var(--wb-faint)}
+.ow-model-select{max-width:260px;border:1px solid var(--wb-purple);border-radius:6px;padding:4px 6px;font-size:12px;font-family:inherit;background:#fff}
 .matrix tbody tr.pinned td{background:#FFFBEB}
 .matrix tbody tr.pinned td.mcol-art{background:#FFFBEB}
 .matrix tbody tr.dragging{opacity:.4}
@@ -747,6 +756,7 @@ async function triggerSupplySync() {
 let OWN_WH = {title:null, as_of:null, rows:[], updated_at:null, error:null, syncing:false};
 let OWN_WH_LOADED = false;
 let OWN_WH_FILTER = 'all';
+let OWN_WH_BY_VENDOR = {};  // vendor_code → {stock, family_stock, family}
 let ownWhPoll = null;
 
 function setOwnWhFilter(f) {
@@ -766,6 +776,7 @@ async function triggerOwnWarehouseSync() {
   if(btn) btn.disabled = true;
   if(info) info.textContent = 'Тянем Google Sheets…';
   try {
+    OWN_WH_BY_VENDOR = {};
     await fetch(`${RAILWAY_URL}/api/sync-own-warehouse`, { method: 'POST' });
     clearTimeout(ownWhPoll);
     ownWhPoll = setTimeout(() => renderOwnWarehouse(true), 1500);
@@ -781,6 +792,7 @@ async function renderOwnWarehouse(forceLoad) {
       const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-stock?refresh=${forceLoad ? 'true' : 'false'}`);
       OWN_WH = await r.json();
       OWN_WH_LOADED = true;
+      if(OWN_WH.by_vendor) OWN_WH_BY_VENDOR = OWN_WH.by_vendor;
     } catch(e) {
       OWN_WH = {rows:[], error: e.message};
     }
@@ -844,11 +856,26 @@ function drawOwnWarehouse() {
 
   const body = rows.map(r => {
     const stock = r.stock||0;
+    const famStock = r.family_stock != null ? r.family_stock : stock;
     const stockCls = stock > 0 ? '' : ' style="color:var(--wb-faint)"';
+    const vc = r.vendor_code || '';
+    const safeVc = encodeURIComponent(vc);
+    const modelLabel = r.model_name || r.name || r.model_root || '—';
+    const fam = (r.family || []).filter(x => x && x !== vc);
+    const famHint = fam.length ? `общий с ${fam.join(', ')}` : (famStock !== stock ? `семья: ${fmt(famStock)}` : '');
+    const modelBtn = vc
+      ? `<button type="button" class="ow-model-btn${r.model_manual?' manual':''}" onclick="startOwnWhModelEdit('${safeVc}')" title="Сменить модель / семью склада">
+          <span class="ow-mname">${escapeHtml(modelLabel)}</span>
+          ${r.model_manual?'<span class="ow-hint">ручн.</span>':''}
+          <span class="ow-hint">▾</span>
+        </button>
+        ${famHint?`<div style="font-size:10px;color:var(--wb-faint);margin-top:3px">${escapeHtml(famHint)}</div>`:''}
+        <div id="owModelEdit_${safeVc}"></div>`
+      : '—';
     return `<tr>
-      <td><div class="art">${r.vendor_code ? escapeHtml(r.vendor_code) : '<span style="color:var(--wb-faint)">—</span>'}</div></td>
-      <td style="text-align:left">${r.name ? escapeHtml(r.name) : '—'}</td>
-      <td${stockCls}><b>${fmt(stock)}</b></td>
+      <td><div class="art">${vc ? escapeHtml(vc) : '<span style="color:var(--wb-faint)">—</span>'}</div></td>
+      <td style="text-align:left">${modelBtn}</td>
+      <td${stockCls}><b>${fmt(stock)}</b>${famStock!==stock?`<div style="font-size:10px;color:var(--wb-muted)">семья ${fmt(famStock)}</div>`:''}</td>
       <td style="text-align:left;color:var(--wb-muted);font-size:12px">${r.note ? escapeHtml(r.note) : ''}</td>
     </tr>`;
   }).join('');
@@ -856,12 +883,64 @@ function drawOwnWarehouse() {
   root.innerHTML = `<div style="overflow-x:auto"><table class="comp-tbl">
     <thead><tr>
       <th class="metric-col">Артикул продавца</th>
-      <th>Наименование</th>
+      <th>Модель (общий склад)</th>
       <th>Остаток</th>
       <th>Примечание</th>
     </tr></thead>
     <tbody>${body}</tbody>
   </table></div>`;
+}
+
+function startOwnWhModelEdit(safeVc) {
+  const vc = decodeURIComponent(safeVc);
+  const slot = document.getElementById('owModelEdit_' + safeVc);
+  if(!slot) return;
+  // закрыть другие открытые селекты
+  document.querySelectorAll('[id^="owModelEdit_"]').forEach(el => { if(el !== slot) el.innerHTML = ''; });
+  const models = OWN_WH.models || [];
+  const cur = (OWN_WH.by_vendor || {})[vc] || {};
+  const curRoot = cur.root || vc;
+  const opts = [
+    `<option value="__auto__">↩ Как в таблице (авто)</option>`,
+    `<option value="${escapeHtml(vc)}">— Отдельно (только этот артикул) —</option>`,
+    ...models.map(m => {
+      const label = `${m.name || m.root} · ${fmt(m.family_stock||0)} шт · ${(m.members||[]).length} арт.`;
+      const sel = m.root === curRoot ? ' selected' : '';
+      return `<option value="${escapeHtml(m.root)}"${sel}>${escapeHtml(label)}</option>`;
+    })
+  ].join('');
+  slot.innerHTML = `<div style="margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+    <select class="ow-model-select" id="owModelSel_${safeVc}">${opts}</select>
+    <button class="action-btn" style="background:var(--wb-purple);color:#fff;border-color:var(--wb-purple)" onclick="saveOwnWhModel('${safeVc}')">OK</button>
+    <button class="action-btn" onclick="document.getElementById('owModelEdit_${safeVc}').innerHTML=''">✕</button>
+  </div>`;
+}
+
+async function saveOwnWhModel(safeVc) {
+  const vc = decodeURIComponent(safeVc);
+  const sel = document.getElementById('owModelSel_' + safeVc);
+  if(!sel) return;
+  const val = sel.value;
+  const body = val === '__auto__'
+    ? {vendor_code: vc, reset: true}
+    : {vendor_code: vc, root: val};
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-set-model`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await r.json();
+    if(data.error) {
+      alert('Ошибка: ' + data.error);
+      return;
+    }
+    OWN_WH = {...OWN_WH, ...data, error: null};
+    if(data.by_vendor) OWN_WH_BY_VENDOR = data.by_vendor;
+    drawOwnWarehouse();
+  } catch(e) {
+    alert('Не удалось сохранить: ' + e.message);
+  }
 }
 
 async function setSalesWindow(v) {
@@ -1563,11 +1642,23 @@ function buildSupplyMatrix() {
     });
     const plannedQty = a.plannedQty || 0;
     const totalRecommend = Math.max(0, rawRecommend - plannedQty);
+    const ow = OWN_WH_BY_VENDOR[vc] || {};
     return {
       vendor_code: vc, nm_id: a.nm_id, barcode: a.barcode, cells,
       plannedQty, totalRecommend,
+      ownStock: ow.family_stock != null ? ow.family_stock : (ow.stock || 0),
+      ownFamily: ow.family || [vc],
       isPinned: SUPPLY_PINNED.includes(vc)
     };
+  });
+
+  // Семейная потребность: сумма «поставить» по всем связанным артикулам
+  const needByVc = {};
+  articles.forEach(a => { needByVc[a.vendor_code] = a.totalRecommend; });
+  articles.forEach(a => {
+    const fam = a.ownFamily || [a.vendor_code];
+    a.familyNeed = fam.reduce((s, vc) => s + (needByVc[vc] || 0), 0);
+    a.ownCoverCls = ownStockCoverClass(a.ownStock, a.familyNeed);
   });
 
   if(q) articles = articles.filter(a => (a.vendor_code||'').toLowerCase().includes(q) || String(a.nm_id||'').includes(q) || String(a.barcode||'').includes(q));
@@ -1579,6 +1670,17 @@ function buildSupplyMatrix() {
   articles = [...pinned, ...unpinned];
 
   return { warehouses, articles };
+}
+
+// stock/need: <1.1 красный, <1.5 жёлтый, иначе зелёный
+function ownStockCoverClass(stock, need) {
+  stock = Number(stock) || 0;
+  need = Number(need) || 0;
+  if(need <= 0) return stock > 0 ? 'own-ok' : '';
+  const ratio = stock / need;
+  if(ratio < 1.1) return 'own-bad';
+  if(ratio < 1.5) return 'own-warn';
+  return 'own-ok';
 }
 
 function renderSupplyCards(matrix) {
@@ -1662,6 +1764,12 @@ function renderSupplyMatrixTable(matrix) {
       }
       return `<td class="wh-start${i%2?' wh-even':''}">${fmt(c.current_stock)}</td><td class="${i%2?'wh-even':''}">${fmt(c.ordered_qty)}</td><td class="${dlCls}">${dl}</td><td class="${i%2?'wh-even':''}">${rc2}</td>`;
     }).join('');
+    const fam = (a.ownFamily || []).filter(v => v && v !== a.vendor_code);
+    const famTip = fam.length
+      ? `Общий склад с: ${[a.vendor_code, ...fam].join(', ')}. Нужно по семье: ${fmt(a.familyNeed||0)}`
+      : `Нужно поставить: ${fmt(a.totalRecommend||0)}`;
+    const ownCls = a.ownCoverCls || '';
+    const ownVal = (a.ownStock != null) ? fmt(a.ownStock) : '—';
     return `<tr class="${a.isPinned?'pinned':''}" draggable="${a.isPinned}"
         ondragstart="supDS(event,'${safeVc}')" ondragend="supDE(event)"
         ondragover="event.preventDefault()" ondrop="supDrop(event,'${safeVc}')">
@@ -1670,7 +1778,8 @@ function renderSupplyMatrixTable(matrix) {
         <div class="art" style="display:inline">${a.vendor_code}</div><div class="nmid">${a.nm_id||'—'}${SHOW_BARCODE && a.barcode ? ' · '+a.barcode : ''}</div>
       </td>
       <td class="m-info">${a.plannedQty>0?fmt(a.plannedQty):'—'}</td>
-      <td class="m-info"><span class="${a.totalRecommend>0?'m-recommend':'m-recommend zero'}">${a.totalRecommend>0?'+'+fmt(a.totalRecommend):'—'}</span></td>
+      <td class="m-info ${ownCls}" title="${famTip}"><span class="${a.totalRecommend>0?'m-recommend':'m-recommend zero'}">${a.totalRecommend>0?'+'+fmt(a.totalRecommend):'—'}</span></td>
+      <td class="m-info ${ownCls}" title="${famTip}">${ownVal}</td>
       ${cells}
     </tr>`;
   }).join('');
@@ -1679,12 +1788,13 @@ function renderSupplyMatrixTable(matrix) {
     <thead>
       <tr>
         <th class="mcol-art" rowspan="2">Артикул продавца${SHOW_BARCODE ? ' / Баркод' : ''}</th>
-        <th colspan="2" class="m-info">Общая информация</th>
+        <th colspan="3" class="m-info">Общая информация</th>
         ${whHead1}
       </tr>
       <tr>
         <th class="mhead m-info">Уже запланировано в поставке</th>
         <th class="mhead m-info">Поставить всего</th>
+        <th class="mhead m-info">Наш склад</th>
         ${whHead2}
       </tr>
     </thead>
@@ -1692,17 +1802,34 @@ function renderSupplyMatrixTable(matrix) {
   </table></div>`;
 }
 
-function renderSupplyRecs() {
+async function ensureOwnWarehouseForSupply() {
+  if(OWN_WH_BY_VENDOR && Object.keys(OWN_WH_BY_VENDOR).length) return;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-stock?refresh=true`);
+    const data = await r.json();
+    OWN_WH_BY_VENDOR = data.by_vendor || {};
+    OWN_WH = data;
+    OWN_WH_LOADED = true;
+  } catch(e) {
+    OWN_WH_BY_VENDOR = {};
+  }
+}
+
+async function renderSupplyRecs() {
   if(!SUPPLY_REPORT.length) {
     document.getElementById('supplyCards').innerHTML = '';
     document.getElementById('supplyRoot').innerHTML = '<div class="empty">Данных пока нет. Нажми «Обновить» — соберём заказы и остатки с WB (2–3 минуты).</div>';
     return;
   }
   document.getElementById('barcodeToggleBtn').classList.toggle('primary', SHOW_BARCODE);
+  document.getElementById('supplyRoot').innerHTML = '<div class="loading"><div class="spinner"></div><span>Сверяем с нашим складом...</span></div>';
+  await ensureOwnWarehouseForSupply();
   const matrix = buildSupplyMatrix();
   renderSupplyCards(matrix);
   let note = '';
-  if(!STOCK_TOTALS.length) note = '<div class="empty" style="margin-bottom:10px">Колонки «В пути», «Всего на складах» пока пустые — это подтянется после первой полной синхронизации.</div>';
+  if(!Object.keys(OWN_WH_BY_VENDOR).length) {
+    note = '<div class="empty" style="margin-bottom:10px">Колонка «Наш склад» пустая — не удалось подтянуть Google Sheets. Открой вкладку «Наш склад» и нажми Обновить.</div>';
+  }
   document.getElementById('supplyRoot').innerHTML = note + renderSupplyMatrixTable(matrix);
 }
 

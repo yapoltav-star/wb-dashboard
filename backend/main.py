@@ -319,7 +319,9 @@ def _parse_int_cell(v):
         return None
 
 def fetch_own_warehouse_stock() -> dict:
-    """Тянет CSV из Google Sheets «Остатки на складе»."""
+    """Тянет CSV из Google Sheets «Остатки на складе».
+    Берём только 1-ю таблицу (до ИТОГО / «Принято на склад»), без блоков принято/обмен.
+    Строим семьи артикулов: пустые строки-артикулы под основным (044→037) делят остаток."""
     import csv as _csv
     import re as _re
     url = (
@@ -355,12 +357,10 @@ def fetch_own_warehouse_stock() -> dict:
                     return i
         return None
 
-    # Основной остаток — колонка «остататки на складе» (с опечаткой в исходнике)
     col_vc = find_col("артикул продавца", "артикул")
     col_name = find_col("наименование", "название")
-    col_stock = find_col("остататки на складе", "остатки на складе", "остаток")
+    col_stock = find_col("остататки на складе", "остатки на складе")
     col_note = find_col("примечание")
-    # Если не нашли «остататки», берём 12-ю колонку (индекс 11) как в шаблоне
     if col_stock is None and len(header) > 11:
         col_stock = 11
     if col_vc is None:
@@ -368,33 +368,252 @@ def fetch_own_warehouse_stock() -> dict:
     if col_name is None:
         col_name = 2
 
-    out = []
+    # ── Только 1-я таблица ──
+    raw_rows = []
     for r in rows_raw[2:]:
         if not r or not any(str(c).strip() for c in r):
             continue
+        pn = str(r[0]).strip() if r else ""
+        joined = " ".join(str(c).lower() for c in r)
+        if pn.upper().startswith("ИТОГО") or "принято на склад" in joined:
+            break
+        if pn.replace("\\", "") in ("П/Н", "ПН") and "артикул" not in joined:
+            break
+
         def cell(i):
             return str(r[i]).strip() if i is not None and i < len(r) else ""
+
         vc = cell(col_vc)
         name = cell(col_name)
         note = cell(col_note)
-        stock = _parse_int_cell(cell(col_stock))
-        # Пропускаем пустые строки и «итоги» без названия и артикула
+        stock_raw = cell(col_stock)
+        stock = _parse_int_cell(stock_raw)
         if not vc and not name:
             continue
-        out.append({
+        raw_rows.append({
             "vendor_code": vc or None,
             "name": name or None,
             "stock": stock if stock is not None else 0,
             "note": note or None,
+            "has_stock_cell": bool(stock_raw),
+        })
+
+    # Личный остаток по артикулу (сумма, если vc повторяется)
+    personal = {}
+    for row in raw_rows:
+        vc = row["vendor_code"]
+        if not vc:
+            continue
+        personal[vc] = personal.get(vc, 0) + (row["stock"] or 0)
+
+    # Семьи: основной (есть имя или ячейка остатка) + следующие «голые» артикулы без имени
+    # Пример: 044_LK_GT5Pro_black_O (380) → 037_G7Pro_black_O (пусто) делят 380
+    families = []  # [{root, members:[], name}]
+    cur = None
+    for row in raw_rows:
+        vc = row["vendor_code"]
+        if not vc:
+            continue
+        is_main = bool(row["name"]) or row["has_stock_cell"]
+        if is_main:
+            if cur:
+                families.append(cur)
+            cur = {"root": vc, "members": [vc], "name": row["name"]}
+        else:
+            if cur is None:
+                cur = {"root": vc, "members": [vc], "name": None}
+            elif vc not in cur["members"]:
+                cur["members"].append(vc)
+    if cur:
+        families.append(cur)
+
+    # Если артикул попал в несколько семей — объединяем
+    parent = {}
+    def find(x):
+        if parent.get(x, x) != x:
+            parent[x] = find(parent[x])
+        return parent.get(x, x)
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for fam in families:
+        root = fam["root"]
+        parent.setdefault(root, root)
+        for m in fam["members"]:
+            parent.setdefault(m, m)
+            union(root, m)
+
+    root_members = {}
+    for vc in personal:
+        parent.setdefault(vc, vc)
+        r = find(vc)
+        root_members.setdefault(r, [])
+        if vc not in root_members[r]:
+            root_members[r].append(vc)
+    # также члены семей без личного остатка
+    for fam in families:
+        for m in fam["members"]:
+            parent.setdefault(m, m)
+            r = find(m)
+            root_members.setdefault(r, [])
+            if m not in root_members[r]:
+                root_members[r].append(m)
+
+    auto_by_vendor = {}
+    for root, members in root_members.items():
+        fam_stock = sum(personal.get(m, 0) for m in members)
+        for m in members:
+            auto_by_vendor[m] = {
+                "stock": personal.get(m, 0),
+                "family_stock": fam_stock,
+                "family": list(members),
+                "root": root,
+            }
+
+    # Имена моделей (наименование корня семьи)
+    name_by_vc = {}
+    for row in raw_rows:
+        vc = row["vendor_code"]
+        if vc and row.get("name"):
+            name_by_vc[vc] = row["name"]
+
+    model_map = get_setting_json("own_wh_model_map", {}) or {}
+    by_vendor, models = _apply_own_wh_model_map(auto_by_vendor, personal, name_by_vc, model_map)
+
+    out = []
+    seen_vc = set()
+    for row in raw_rows:
+        vc = row["vendor_code"]
+        if vc and vc in seen_vc and not row["name"] and not row["has_stock_cell"]:
+            continue
+        if vc:
+            seen_vc.add(vc)
+        meta = by_vendor.get(vc, {}) if vc else {}
+        out.append({
+            "vendor_code": vc,
+            "name": row["name"],
+            "model_name": meta.get("model_name") or row["name"],
+            "model_root": meta.get("root"),
+            "model_manual": bool(vc and vc in model_map),
+            "stock": meta.get("stock", row["stock"] or 0),
+            "family_stock": meta.get("family_stock", row["stock"] or 0),
+            "family": meta.get("family", [vc] if vc else []),
+            "note": row["note"],
         })
 
     return {
         "title": title or "Остатки на складе",
         "as_of": as_of,
         "rows": out,
+        "by_vendor": by_vendor,
+        "models": models,
+        "model_map": model_map,
+        "personal": personal,
+        "name_by_vc": name_by_vc,
+        "auto_by_vendor": auto_by_vendor,
         "updated_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
         "error": None,
     }
+
+
+def _apply_own_wh_model_map(auto_by_vendor: dict, personal: dict, name_by_vc: dict, model_map: dict):
+    """Пересобирает семьи с учётом ручных привязок артикул → корень модели.
+    model_map: {vendor_code: root_vendor_code}. Если root == vendor — отдельно."""
+    model_map = {str(k): str(v) for k, v in (model_map or {}).items() if k and v}
+
+    all_vcs = set(auto_by_vendor.keys()) | set(personal.keys()) | set(model_map.keys())
+    # эффективный корень
+    root_of = {}
+    for vc in all_vcs:
+        if vc in model_map:
+            root_of[vc] = model_map[vc]
+        else:
+            root_of[vc] = (auto_by_vendor.get(vc) or {}).get("root") or vc
+
+    def resolve(vc, depth=0):
+        if depth > 8:
+            return vc
+        r = root_of.get(vc, vc)
+        if r == vc:
+            return vc
+        # если корень сам переназначен — идём дальше
+        rr = root_of.get(r, r)
+        if rr != r:
+            return resolve(r, depth + 1)
+        return r
+
+    groups = {}
+    for vc in all_vcs:
+        r = resolve(vc)
+        groups.setdefault(r, [])
+        if vc not in groups[r]:
+            groups[r].append(vc)
+
+    by_vendor = {}
+    models = []
+    for root, members in sorted(groups.items(), key=lambda x: x[0]):
+        members = sorted(members)
+        fam_stock = sum(personal.get(m, 0) for m in members)
+        model_name = name_by_vc.get(root) or (auto_by_vendor.get(root) or {}).get("model_name")
+        if not model_name:
+            # любое имя из членов
+            for m in members:
+                if name_by_vc.get(m):
+                    model_name = name_by_vc[m]
+                    break
+        if not model_name:
+            model_name = root
+        models.append({
+            "root": root,
+            "name": model_name,
+            "members": members,
+            "family_stock": fam_stock,
+        })
+        for m in members:
+            by_vendor[m] = {
+                "stock": personal.get(m, 0),
+                "family_stock": fam_stock,
+                "family": members,
+                "root": root,
+                "model_name": model_name,
+                "manual": m in model_map,
+            }
+    models.sort(key=lambda x: (x["name"] or "").lower())
+    return by_vendor, models
+
+
+def _rebuild_own_wh_from_cache():
+    """Пересчитывает by_vendor/rows из кэша + актуальной model_map (без повторного Google Sheets)."""
+    auto = OWN_WAREHOUSE_CACHE.get("auto_by_vendor") or {}
+    personal = OWN_WAREHOUSE_CACHE.get("personal") or {}
+    name_by_vc = OWN_WAREHOUSE_CACHE.get("name_by_vc") or {}
+    if not auto and not personal:
+        return False
+    model_map = get_setting_json("own_wh_model_map", {}) or {}
+    by_vendor, models = _apply_own_wh_model_map(auto, personal, name_by_vc, model_map)
+    OWN_WAREHOUSE_CACHE["by_vendor"] = by_vendor
+    OWN_WAREHOUSE_CACHE["models"] = models
+    OWN_WAREHOUSE_CACHE["model_map"] = model_map
+    # обновить поля в rows
+    rows = OWN_WAREHOUSE_CACHE.get("rows") or []
+    new_rows = []
+    for row in rows:
+        vc = row.get("vendor_code")
+        meta = by_vendor.get(vc, {}) if vc else {}
+        new_rows.append({
+            **row,
+            "model_name": meta.get("model_name") or row.get("name"),
+            "model_root": meta.get("root"),
+            "model_manual": bool(vc and vc in model_map),
+            "stock": meta.get("stock", row.get("stock") or 0),
+            "family_stock": meta.get("family_stock", row.get("stock") or 0),
+            "family": meta.get("family", [vc] if vc else []),
+        })
+    OWN_WAREHOUSE_CACHE["rows"] = new_rows
+    return True
+
 
 def refresh_own_warehouse_stock():
     OWN_WAREHOUSE_CACHE["syncing"] = True
@@ -416,13 +635,54 @@ def get_own_warehouse_stock(refresh: bool = False):
         if OWN_WAREHOUSE_CACHE.get("syncing"):
             return {**OWN_WAREHOUSE_CACHE, "syncing": True}
         refresh_own_warehouse_stock()
+    else:
+        # подтянуть актуальные ручные привязки моделей
+        if not _rebuild_own_wh_from_cache():
+            refresh_own_warehouse_stock()
     return {
         "title": OWN_WAREHOUSE_CACHE.get("title"),
         "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
         "rows": OWN_WAREHOUSE_CACHE.get("rows") or [],
+        "by_vendor": OWN_WAREHOUSE_CACHE.get("by_vendor") or {},
+        "models": OWN_WAREHOUSE_CACHE.get("models") or [],
+        "model_map": OWN_WAREHOUSE_CACHE.get("model_map") or {},
         "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
         "error": OWN_WAREHOUSE_CACHE.get("error"),
         "syncing": OWN_WAREHOUSE_CACHE.get("syncing", False),
+    }
+
+@app.post("/api/own-warehouse-set-model")
+async def own_warehouse_set_model(request: dict):
+    """Привязать артикул к модели (корню семьи) или сбросить на авто из таблицы.
+    body: {vendor_code, root} — root=null|'' сброс на авто; root=vendor_code — отдельно;
+    root=другой артикул — в его семью."""
+    vc = (request.get("vendor_code") or "").strip()
+    if not vc:
+        return {"error": "vendor_code required"}
+    root = request.get("root")
+    model_map = get_setting_json("own_wh_model_map", {}) or {}
+    reset = request.get("reset") or root is None or root == ""
+    if reset:
+        model_map.pop(vc, None)
+    else:
+        root = str(root).strip()
+        if not root:
+            model_map.pop(vc, None)
+        else:
+            model_map[vc] = root
+    if not save_setting_value("own_wh_model_map", model_map):
+        return {"error": "не удалось сохранить в settings"}
+    # если кэш пуст — подтянем лист
+    if not OWN_WAREHOUSE_CACHE.get("auto_by_vendor"):
+        refresh_own_warehouse_stock()
+    else:
+        _rebuild_own_wh_from_cache()
+    return {
+        "status": "ok",
+        "model_map": OWN_WAREHOUSE_CACHE.get("model_map") or model_map,
+        "by_vendor": OWN_WAREHOUSE_CACHE.get("by_vendor") or {},
+        "models": OWN_WAREHOUSE_CACHE.get("models") or [],
+        "rows": OWN_WAREHOUSE_CACHE.get("rows") or [],
     }
 
 @app.post("/api/sync-own-warehouse")
@@ -467,6 +727,49 @@ def get_setting_int(key: str, default: int) -> int:
     except Exception:
         pass
     return default
+
+def get_setting_raw(key: str, default=None):
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/settings?key=eq.{key}&select=value",
+            headers=sb_headers(), timeout=10
+        )
+        if resp.is_success and resp.json():
+            return resp.json()[0]["value"]
+    except Exception:
+        pass
+    return default
+
+def get_setting_json(key: str, default=None):
+    if default is None:
+        default = {}
+    raw = get_setting_raw(key, None)
+    if raw is None:
+        return default
+    try:
+        import json as _json
+        val = _json.loads(raw) if isinstance(raw, str) else raw
+        return val if val is not None else default
+    except Exception:
+        return default
+
+def save_setting_value(key: str, value) -> bool:
+    import json as _json
+    payload = {
+        "key": key,
+        "value": value if isinstance(value, str) else _json.dumps(value, ensure_ascii=False),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        resp = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/settings?on_conflict=key",
+            json=payload,
+            headers=sb_headers(), timeout=10
+        )
+        return resp.is_success
+    except Exception as e:
+        logger.error(f"save_setting_value({key}) error: {e}")
+        return False
 
 def parse_wb_dt(s: str):
     """WB отдаёт даты в orders/sales без таймзоны (например '2026-06-10T10:00:00').
