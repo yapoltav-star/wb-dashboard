@@ -1213,9 +1213,19 @@ async def upload_competitor_report(file: UploadFile = File(...)):
         if not mr.is_success:
             return {"error": f"Ошибка сохранения ({mr.status_code}): {mr.text[:200]}"}
 
+        brands = sorted({(r.get("brand") or "").strip() for r in rows if (r.get("brand") or "").strip()})
         period = f"{period_begin or '?'} — {period_end or '?'}"
-        logger.info(f"upload-competitor: session={session_id}, {len(rows)} articles, period={period}")
-        return {"status": "ok", "session_id": session_id, "period": period, "articles": len(rows), "search_queries": 0}
+        logger.info(f"upload-competitor: session={session_id}, {len(rows)} articles, period={period}, brands={brands}")
+        return {
+            "status": "ok",
+            "session_id": session_id,
+            "period": period,
+            "period_begin": period_begin,
+            "period_end": period_end,
+            "brands": brands,
+            "articles": len(rows),
+            "search_queries": 0,
+        }
 
     except Exception as e:
         logger.error(f"upload-competitor error: {e}")
@@ -1345,13 +1355,42 @@ def delete_competitor_session(session_id: int):
 
 @app.get("/api/competitor-sessions")
 def get_competitor_sessions():
-    """Список загруженных сессий сравнения."""
+    """Список загруженных сессий сравнения (+ уникальные бренды из метрик)."""
     try:
         resp = httpx.get(
             f"{SUPABASE_URL}/rest/v1/competitor_sessions?select=*&order=uploaded_at.desc",
             headers=sb_headers(), timeout=15
         )
-        return resp.json() if resp.is_success else []
+        if not resp.is_success:
+            return []
+        sessions = resp.json() or []
+        if not sessions:
+            return []
+
+        # Бренды из competitor_metrics — чтобы подпись файла была «14–20 июля · Brand»
+        brands_by_sid = {}
+        try:
+            ids = ",".join(str(s["id"]) for s in sessions if s.get("id") is not None)
+            if ids:
+                br = httpx.get(
+                    f"{SUPABASE_URL}/rest/v1/competitor_metrics?session_id=in.({ids})&select=session_id,brand",
+                    headers=sb_headers(), timeout=15
+                )
+                if br.is_success:
+                    for row in br.json() or []:
+                        sid = row.get("session_id")
+                        brand = (row.get("brand") or "").strip()
+                        if sid is None or not brand:
+                            continue
+                        brands_by_sid.setdefault(sid, [])
+                        if brand not in brands_by_sid[sid]:
+                            brands_by_sid[sid].append(brand)
+        except Exception as e:
+            logger.warning(f"competitor-sessions brands enrich: {e}")
+
+        for s in sessions:
+            s["brands"] = brands_by_sid.get(s.get("id"), [])
+        return sessions
     except Exception:
         return []
 

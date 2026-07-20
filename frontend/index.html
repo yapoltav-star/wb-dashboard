@@ -140,7 +140,7 @@ td.tc{text-align:center}
 .pc-auto{display:inline-block;margin-left:6px;font-size:9px;background:#EFE9FB;color:var(--wb-purple);border-radius:6px;padding:1px 6px;text-transform:uppercase;vertical-align:middle}
 .pc-reg{display:inline-block;margin-left:6px;font-size:9px;background:#E7F7EE;color:#0E7C44;border-radius:6px;padding:1px 6px;text-transform:uppercase;vertical-align:middle}
 .comp-tbl{width:100%;border-collapse:collapse;font-size:12px}
-.comp-period-btn{padding:5px 12px;border-radius:20px;border:1px solid var(--wb-border);font-size:12px;color:var(--wb-muted);cursor:pointer;background:var(--wb-bg);font-family:inherit;white-space:nowrap}
+.comp-period-btn{padding:5px 12px;border-radius:20px;border:1px solid var(--wb-border);font-size:12px;color:var(--wb-muted);cursor:pointer;background:var(--wb-bg);font-family:inherit;white-space:normal;text-align:left;line-height:1.35;max-width:280px}
 .comp-period-btn.on{background:var(--wb-purple);color:#fff;border-color:var(--wb-purple)}
 .comp-art-check{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:6px;border:1px solid var(--wb-border);cursor:pointer;font-size:12px;background:var(--wb-bg);user-select:none}
 .comp-art-check.on{background:var(--wb-purple-light);border-color:var(--wb-purple)}
@@ -1962,6 +1962,27 @@ async function renderCompetitors() {
   }
 }
 
+function formatCompPeriod(begin, end) {
+  if(!begin || !end) return '?';
+  const MONTHS = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+  const b = new Date(begin + 'T00:00:00');
+  const e = new Date(end + 'T00:00:00');
+  if(isNaN(b) || isNaN(e)) return `${begin} — ${end}`;
+  const bd = b.getDate(), bm = b.getMonth(), by = b.getFullYear();
+  const ed = e.getDate(), em = e.getMonth(), ey = e.getFullYear();
+  if(by === ey && bm === em) return `${bd}–${ed} ${MONTHS[bm]}`;
+  if(by === ey) return `${bd} ${MONTHS[bm]} – ${ed} ${MONTHS[em]}`;
+  return `${bd} ${MONTHS[bm]} ${by} – ${ed} ${MONTHS[em]} ${ey}`;
+}
+
+function formatCompSessionLabel(s) {
+  const period = formatCompPeriod(s.period_begin, s.period_end);
+  const brands = (s.brands || []).filter(Boolean);
+  if(!brands.length) return period;
+  const shown = brands.length > 4 ? brands.slice(0,4).join(', ') + '…' : brands.join(', ');
+  return `${period} · ${shown}`;
+}
+
 function buildPeriodButtons() {
   const el = document.getElementById('compPeriodBtns');
   if(!el) return;
@@ -1970,14 +1991,18 @@ function buildPeriodButtons() {
   const iconBtn = (onclick, title, char, hoverColor) =>
     `<button onclick="${onclick}" title="${title}" style="border:none;background:none;cursor:pointer;color:var(--wb-faint);font-size:14px;padding:2px 4px" onmouseover="this.style.color='${hoverColor}'" onmouseout="this.style.color='var(--wb-faint)'">${char}</button>`;
 
-  let html = active.map(s => `
+  let html = active.map(s => {
+    const label = formatCompSessionLabel(s);
+    const tip = (s.brands||[]).length ? `${formatCompPeriod(s.period_begin,s.period_end)} · ${(s.brands||[]).join(', ')}` : label;
+    return `
     <div style="display:flex;align-items:center;gap:2px">
-      <button class="comp-period-btn${COMP_SELECTED_SESSIONS.has(s.id)?' on':''}" onclick="togglePeriod(${s.id})">
-        ${s.period_begin||'?'} — ${s.period_end||'?'}
+      <button class="comp-period-btn${COMP_SELECTED_SESSIONS.has(s.id)?' on':''}" onclick="togglePeriod(${s.id})" title="${tip.replace(/"/g,'&quot;')}">
+        ${label}
       </button>
       ${iconBtn(`archiveSession(${s.id})`, 'В архив', '📦', 'var(--wb-orange)')}
       ${iconBtn(`deleteCompSession(${s.id})`, 'Удалить', '✕', 'var(--red)')}
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
   if(archived.length) {
     html += `
@@ -1985,13 +2010,16 @@ function buildPeriodButtons() {
         <button onclick="toggleArchiveView()" style="border:none;background:none;cursor:pointer;color:var(--wb-muted);font-size:12px;padding:2px 0">
           🗄 Архив (${archived.length}) ${COMP_ARCHIVE_OPEN?'▲':'▼'}
         </button>
-        ${COMP_ARCHIVE_OPEN ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">` + archived.map(s => `
+        ${COMP_ARCHIVE_OPEN ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">` + archived.map(s => {
+          const label = formatCompSessionLabel(s);
+          return `
           <div style="display:flex;align-items:center;gap:2px;opacity:.65">
             <button class="comp-period-btn" onclick="unarchiveSession(${s.id})" title="Вернуть из архива">
-              ${s.period_begin||'?'} — ${s.period_end||'?'} ↩
+              ${label} ↩
             </button>
             ${iconBtn(`deleteCompSession(${s.id})`, 'Удалить', '✕', 'var(--red)')}
-          </div>`).join('') + `</div>` : ''}
+          </div>`;
+        }).join('') + `</div>` : ''}
       </div>`;
   }
   el.innerHTML = html;
@@ -2452,7 +2480,12 @@ async function uploadCompetitorReport(file) {
     if(result.error) {
       status.textContent = '❌ Ошибка: ' + result.error;
     } else {
-      status.textContent = `✅ Загружено: ${result.period}, ${result.articles} артикулов, ${result.search_queries} запросов`;
+      const label = formatCompSessionLabel({
+        period_begin: result.period_begin,
+        period_end: result.period_end,
+        brands: result.brands || [],
+      });
+      status.textContent = `✅ Загружено: ${label}, ${result.articles} артикулов`;
       COMP_DATA = null;
       COMP_SESSION_ID = result.session_id;
       COMP_SELECTED_NMS = new Set();
