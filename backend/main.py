@@ -25,6 +25,7 @@ WB_STATISTICS_URL = "https://statistics-api.wildberries.ru"
 WB_SUPPLIES_URL = "https://supplies-api.wildberries.ru"
 WB_PROMOTION_URL = "https://advert-api.wildberries.ru"
 WB_CALENDAR_URL = "https://dp-calendar-api.wildberries.ru"
+WB_CONTENT_URL = "https://content-api.wildberries.ru"
 
 # Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
 # а агрегаты — переносим их в отдельные поля stock_totals вместо списка складов.
@@ -1234,43 +1235,134 @@ async def upload_competitor_report(file: UploadFile = File(...)):
 
 @app.get("/api/search-own-articles")
 def search_own_articles(q: str = ""):
-    """Поиск своих артикулов по артикулу продавца (префикс: 034…) или nm_id."""
-    try:
-        q = (q or "").strip()
-        if not q:
-            resp = httpx.get(
-                f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&order=vendor_code.asc&limit=40",
-                headers=sb_headers(), timeout=10
+    """Поиск своих артикулов по артикулу продавца (vendorCode).
+    Сначала Content API WB (textSearch), иначе — ratings/feedbacks/stock с фильтром
+    «не подставляй nmId вместо артикула продавца»."""
+    q = (q or "").strip().rstrip(".…").strip()
+    for ch in ("\\", "%", ",", "(", ")"):
+        q = q.replace(ch, "")
+    q = q.strip()
+
+    def is_real_vendor(vc, nm_id=None) -> bool:
+        vc = (vc or "").strip()
+        if not vc:
+            return False
+        if nm_id is not None and vc == str(nm_id):
+            return False
+        return True
+
+    # ── 1) Content API: настоящий vendorCode + поиск по префиксу/тексту ──
+    if WB_TOKEN:
+        try:
+            filt = {"withPhoto": -1}
+            if q:
+                filt["textSearch"] = q
+            resp = httpx.post(
+                f"{WB_CONTENT_URL}/content/v2/get/cards/list",
+                headers=wb_headers(),
+                json={
+                    "settings": {
+                        "sort": {"ascending": True},
+                        "filter": filt,
+                        "cursor": {"limit": 80},
+                    }
+                },
+                timeout=20,
             )
-            return resp.json() if resp.is_success else []
+            if resp.is_success:
+                cards = resp.json().get("cards") or []
+                out, seen = [], set()
+                ql = q.lower()
+                for c in cards:
+                    nm = c.get("nmID") or c.get("nmId")
+                    vc = (c.get("vendorCode") or "").strip()
+                    if not nm or not is_real_vendor(vc, nm) or nm in seen:
+                        continue
+                    if ql and not vc.lower().startswith(ql) and ql not in vc.lower():
+                        continue
+                    seen.add(nm)
+                    out.append({"nm_id": nm, "vendor_code": vc})
+                # Префиксные совпадения выше «содержит»
+                if ql:
+                    out.sort(key=lambda a: (
+                        0 if a["vendor_code"].lower().startswith(ql) else 1,
+                        a["vendor_code"].lower(),
+                    ))
+                else:
+                    out.sort(key=lambda a: a["vendor_code"].lower())
+                if out:
+                    return out[:50]
+            else:
+                logger.warning(f"search-own content-api {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            logger.warning(f"search-own content-api error: {e}")
 
-        # Экранируем спецсимволы PostgREST / LIKE; хвостовые точки из «034…» убираем
-        safe = q.rstrip(".…").strip()
-        for ch in ("\\", "%", "_", ",", "(", ")"):
-            safe = safe.replace(ch, "")
-        safe = safe.strip()
-        if not safe:
-            return []
+    # ── 2) Fallback из БД: ratings_official → feedbacks → stock_totals ──
+    by_nm = {}
 
-        # Префикс по vendor_code: 034 → все артикулы, начинающиеся на 034
-        filters = [f"vendor_code.ilike.{safe}*"]
-        if safe.isdigit():
-            filters.append(f"nm_id.eq.{safe}")
+    def add_row(nm, vc, prefer=False):
+        if not nm or not is_real_vendor(vc, nm):
+            return
+        vc = vc.strip()
+        cur = by_nm.get(nm)
+        if cur is None or (prefer and not cur.get("prefer")):
+            by_nm[nm] = {"nm_id": nm, "vendor_code": vc, "prefer": prefer}
 
-        resp = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/stock_totals",
-            params={
-                "select": "nm_id,vendor_code",
-                "or": f"({','.join(filters)})",
-                "order": "vendor_code.asc",
-                "limit": "50",
-            },
-            headers=sb_headers(),
-            timeout=10,
-        )
-        return resp.json() if resp.is_success else []
-    except Exception:
-        return []
+    try:
+        params = {"select": "nm_id,article", "nm_id": "not.is.null", "limit": "80"}
+        if q:
+            params["article"] = f"ilike.{q}*"
+            params["order"] = "article.asc"
+        else:
+            params["order"] = "article.asc"
+            params["limit"] = "50"
+        r = httpx.get(f"{SUPABASE_URL}/rest/v1/ratings_official", params=params,
+                      headers=sb_headers(), timeout=10)
+        if r.is_success:
+            for row in r.json() or []:
+                add_row(row.get("nm_id"), row.get("article"), prefer=True)
+    except Exception as e:
+        logger.warning(f"search-own ratings fallback: {e}")
+
+    try:
+        params = {"select": "nm_id,article", "nm_id": "not.is.null", "article": "not.is.null", "limit": "120"}
+        if q:
+            params["article"] = f"ilike.{q}*"
+        r = httpx.get(f"{SUPABASE_URL}/rest/v1/feedbacks", params=params,
+                      headers=sb_headers(), timeout=10)
+        if r.is_success:
+            for row in r.json() or []:
+                add_row(row.get("nm_id"), row.get("article"), prefer=True)
+    except Exception as e:
+        logger.warning(f"search-own feedbacks fallback: {e}")
+
+    try:
+        params = {"select": "nm_id,vendor_code", "limit": "80"}
+        if q:
+            params["vendor_code"] = f"ilike.{q}*"
+            params["order"] = "vendor_code.asc"
+        else:
+            params["order"] = "vendor_code.asc"
+            params["limit"] = "50"
+        r = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_totals", params=params,
+                      headers=sb_headers(), timeout=10)
+        if r.is_success:
+            for row in r.json() or []:
+                add_row(row.get("nm_id"), row.get("vendor_code"), prefer=False)
+    except Exception as e:
+        logger.warning(f"search-own stock fallback: {e}")
+
+    out = [{"nm_id": v["nm_id"], "vendor_code": v["vendor_code"]} for v in by_nm.values()]
+    ql = q.lower()
+    if ql:
+        out = [a for a in out if a["vendor_code"].lower().startswith(ql) or ql in a["vendor_code"].lower()]
+        out.sort(key=lambda a: (
+            0 if a["vendor_code"].lower().startswith(ql) else 1,
+            a["vendor_code"].lower(),
+        ))
+    else:
+        out.sort(key=lambda a: a["vendor_code"].lower())
+    return out[:50]
 
 def fetch_own_stats_v3(nm_ids: list[int], date_from: str, date_to: str) -> dict:
     """Метрики своих артикулов за период из WB Sales Funnel v3.
