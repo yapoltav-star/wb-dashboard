@@ -283,6 +283,10 @@ td.tc{text-align:center}
   <div class="sn-item" onclick="showPage('ratings',this)">Отзывы и вопросы</div>
   <div class="sn-item" onclick="showPage('groups',this)">Склейки</div>
 </div>
+<div class="subnav" id="subnav-supplies" style="display:none">
+  <div class="sn-item on" onclick="showPage('supply-recs',this)">Рекомендации поставок</div>
+  <div class="sn-item" onclick="showPage('own-warehouse',this)">Наш склад</div>
+</div>
 
 <!-- Upload modal -->
 <div class="modal-overlay" id="uploadModal">
@@ -404,6 +408,26 @@ td.tc{text-align:center}
   <div id="supplyRoot"><div class="loading"><div class="spinner"></div><span>Загружаем рекомендации...</span></div></div>
 </div>
 
+<div class="page" id="page-own-warehouse">
+  <div class="toolbar">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="owSearch" placeholder="Поиск по артикулу или названию..." oninput="renderOwnWarehouse()">
+    </div>
+    <button class="filter-btn on" id="owFltAll" onclick="setOwnWhFilter('all')">Все</button>
+    <button class="filter-btn" id="owFltInStock" onclick="setOwnWhFilter('instock')">В наличии</button>
+    <button class="filter-btn" id="owFltZero" onclick="setOwnWhFilter('zero')">Нулевые</button>
+    <button class="filter-btn" id="owFltNoArt" onclick="setOwnWhFilter('noart')">Без артикула</button>
+    <span id="ownWhInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
+    <div class="ml-auto">
+      <a class="action-btn" href="https://docs.google.com/spreadsheets/d/1Lhoy4s_KX0pWndsd3Y5oCOjTFCtfEfVUM4AgtBv4Crc/edit?gid=1829622647" target="_blank" rel="noopener" style="text-decoration:none">↗ Таблица</a>
+      <button class="action-btn" id="ownWhSyncBtn" onclick="triggerOwnWarehouseSync()">↻ Обновить</button>
+    </div>
+  </div>
+  <div class="cards" id="ownWhCards"></div>
+  <div id="ownWhRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить», чтобы подтянуть остатки из Google Sheets</div></div>
+</div>
+
 <div class="page" id="page-ads">
   <div class="toolbar">
     <div class="search">
@@ -521,9 +545,10 @@ function showSection(sec, btn) {
   document.querySelectorAll('.tb-nav-item').forEach(t => t.classList.remove('on'));
   btn.classList.add('on');
   document.getElementById('subnav-products').style.display = sec === 'products' ? 'flex' : 'none';
+  document.getElementById('subnav-supplies').style.display = sec === 'supplies' ? 'flex' : 'none';
   if(sec === 'products') showPage('products', document.querySelector('#subnav-products .sn-item'));
   else if(sec === 'promotions') showPage('promotions', null);
-  else if(sec === 'supplies') showPage('supply-recs', null);
+  else if(sec === 'supplies') showPage('supply-recs', document.querySelector('#subnav-supplies .sn-item'));
   else if(sec === 'ads') showPage('ads', null);
   else if(sec === 'analytics') showPage('competitors', null);
 }
@@ -536,6 +561,7 @@ function showPage(id, btn) {
   if(id === 'groups') renderGroupManager();
   if(id === 'products') renderProducts();
   if(id === 'supply-recs') renderSupplyRecs();
+  if(id === 'own-warehouse') renderOwnWarehouse(true);
   if(id === 'ads') renderAds();
   if(id === 'competitors') renderCompetitors();
   if(id === 'promotions') renderPromotions();
@@ -715,6 +741,127 @@ async function triggerSupplySync() {
     if(info) info.textContent = 'Ошибка запроса';
     if(btn) btn.disabled = false;
   }
+}
+
+// ── Наш склад (Google Sheets) ──
+let OWN_WH = {title:null, as_of:null, rows:[], updated_at:null, error:null, syncing:false};
+let OWN_WH_LOADED = false;
+let OWN_WH_FILTER = 'all';
+let ownWhPoll = null;
+
+function setOwnWhFilter(f) {
+  OWN_WH_FILTER = f;
+  ['All','InStock','Zero','NoArt'].forEach(k => {
+    const el = document.getElementById('owFlt' + k);
+    if(!el) return;
+    const map = {All:'all', InStock:'instock', Zero:'zero', NoArt:'noart'};
+    el.classList.toggle('on', map[k] === f);
+  });
+  renderOwnWarehouse();
+}
+
+async function triggerOwnWarehouseSync() {
+  const btn = document.getElementById('ownWhSyncBtn');
+  const info = document.getElementById('ownWhInfo');
+  if(btn) btn.disabled = true;
+  if(info) info.textContent = 'Тянем Google Sheets…';
+  try {
+    await fetch(`${RAILWAY_URL}/api/sync-own-warehouse`, { method: 'POST' });
+    clearTimeout(ownWhPoll);
+    ownWhPoll = setTimeout(() => renderOwnWarehouse(true), 1500);
+  } catch(e) {
+    if(info) info.textContent = 'Ошибка запроса';
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function renderOwnWarehouse(forceLoad) {
+  if(forceLoad || !OWN_WH_LOADED) {
+    try {
+      const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-stock?refresh=${forceLoad ? 'true' : 'false'}`);
+      OWN_WH = await r.json();
+      OWN_WH_LOADED = true;
+    } catch(e) {
+      OWN_WH = {rows:[], error: e.message};
+    }
+  }
+  drawOwnWarehouse();
+  clearTimeout(ownWhPoll);
+  if(OWN_WH.syncing) {
+    ownWhPoll = setTimeout(() => renderOwnWarehouse(true), 2000);
+  } else {
+    const btn = document.getElementById('ownWhSyncBtn');
+    if(btn) btn.disabled = false;
+  }
+}
+
+function drawOwnWarehouse() {
+  const info = document.getElementById('ownWhInfo');
+  const root = document.getElementById('ownWhRoot');
+  const cards = document.getElementById('ownWhCards');
+  if(!root) return;
+
+  if(OWN_WH.error) {
+    if(info) info.textContent = 'Ошибка: ' + OWN_WH.error;
+  } else if(OWN_WH.syncing) {
+    if(info) info.textContent = 'Обновляем…';
+  } else {
+    const bits = [];
+    if(OWN_WH.as_of) bits.push('на ' + OWN_WH.as_of);
+    if(OWN_WH.updated_at) bits.push('подтянуто ' + OWN_WH.updated_at);
+    if(info) info.textContent = bits.join(' · ');
+  }
+
+  let rows = OWN_WH.rows || [];
+  const q = ((document.getElementById('owSearch') || {}).value || '').trim().toLowerCase();
+  if(q) {
+    rows = rows.filter(r =>
+      String(r.vendor_code||'').toLowerCase().includes(q) ||
+      String(r.name||'').toLowerCase().includes(q) ||
+      String(r.note||'').toLowerCase().includes(q)
+    );
+  }
+  if(OWN_WH_FILTER === 'instock') rows = rows.filter(r => (r.stock||0) > 0);
+  else if(OWN_WH_FILTER === 'zero') rows = rows.filter(r => !(r.stock > 0));
+  else if(OWN_WH_FILTER === 'noart') rows = rows.filter(r => !r.vendor_code);
+
+  const totalQty = rows.reduce((s,r) => s + (r.stock||0), 0);
+  const withArt = rows.filter(r => r.vendor_code).length;
+  if(cards) {
+    cards.innerHTML = [
+      ['Позиций', fmt(rows.length)],
+      ['С артикулом', fmt(withArt)],
+      ['Сумма остатков', fmt(totalQty)],
+    ].map(([l,v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v">${v}</div></div>`).join('');
+  }
+
+  if(!rows.length) {
+    root.innerHTML = OWN_WH.syncing
+      ? '<div class="loading"><div class="spinner"></div><span>Тянем таблицу…</span></div>'
+      : '<div class="empty" style="padding:40px 20px">Нет строк. Нажми «Обновить» или проверь доступ к Google Sheets.</div>';
+    return;
+  }
+
+  const body = rows.map(r => {
+    const stock = r.stock||0;
+    const stockCls = stock > 0 ? '' : ' style="color:var(--wb-faint)"';
+    return `<tr>
+      <td><div class="art">${r.vendor_code ? escapeHtml(r.vendor_code) : '<span style="color:var(--wb-faint)">—</span>'}</div></td>
+      <td style="text-align:left">${r.name ? escapeHtml(r.name) : '—'}</td>
+      <td${stockCls}><b>${fmt(stock)}</b></td>
+      <td style="text-align:left;color:var(--wb-muted);font-size:12px">${r.note ? escapeHtml(r.note) : ''}</td>
+    </tr>`;
+  }).join('');
+
+  root.innerHTML = `<div style="overflow-x:auto"><table class="comp-tbl">
+    <thead><tr>
+      <th class="metric-col">Артикул продавца</th>
+      <th>Наименование</th>
+      <th>Остаток</th>
+      <th>Примечание</th>
+    </tr></thead>
+    <tbody>${body}</tbody>
+  </table></div>`;
 }
 
 async function setSalesWindow(v) {

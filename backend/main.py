@@ -294,6 +294,145 @@ def sync_stock():
     )
     logger.info(f"Stock sync complete. Articles: {saved}, warehouse rows: {len(warehouses)}")
 
+# ---------- Остатки нашего склада (Google Sheets) ----------
+OWN_WAREHOUSE_SHEET_ID = os.getenv(
+    "OWN_WAREHOUSE_SHEET_ID",
+    "1Lhoy4s_KX0pWndsd3Y5oCOjTFCtfEfVUM4AgtBv4Crc",
+)
+OWN_WAREHOUSE_GID = os.getenv("OWN_WAREHOUSE_GID", "1829622647")
+OWN_WAREHOUSE_CACHE = {
+    "title": None,
+    "as_of": None,
+    "rows": [],
+    "updated_at": None,
+    "error": None,
+    "syncing": False,
+}
+
+def _parse_int_cell(v):
+    s = str(v or "").strip().replace("\xa0", "").replace(" ", "").replace(",", ".")
+    if not s or s.lower() in ("nan", "none", "-"):
+        return None
+    try:
+        return int(float(s))
+    except Exception:
+        return None
+
+def fetch_own_warehouse_stock() -> dict:
+    """Тянет CSV из Google Sheets «Остатки на складе»."""
+    import csv as _csv
+    import re as _re
+    url = (
+        f"https://docs.google.com/spreadsheets/d/{OWN_WAREHOUSE_SHEET_ID}"
+        f"/export?format=csv&gid={OWN_WAREHOUSE_GID}"
+    )
+    resp = httpx.get(url, timeout=30, follow_redirects=True)
+    if not resp.is_success:
+        raise RuntimeError(f"Google Sheets HTTP {resp.status_code}")
+    text = resp.text
+    if not text.strip() or text.lstrip().startswith("<!"):
+        raise RuntimeError("Таблица недоступна (нужен доступ «все у кого есть ссылка»)")
+
+    rows_raw = list(_csv.reader(io.StringIO(text)))
+    if len(rows_raw) < 2:
+        raise RuntimeError("Пустая таблица")
+
+    title = (rows_raw[0][0] if rows_raw[0] else "").strip()
+    as_of = None
+    m = _re.search(r"(\d{1,2})[./](\d{1,2})[./](\d{2,4})", title)
+    if m:
+        d, mo, y = m.group(1), m.group(2), m.group(3)
+        if len(y) == 2:
+            y = "20" + y
+        as_of = f"{int(d):02d}.{int(mo):02d}.{y}"
+
+    header = [str(h).strip().lower() for h in rows_raw[1]]
+
+    def find_col(*needles):
+        for i, h in enumerate(header):
+            for n in needles:
+                if n in h:
+                    return i
+        return None
+
+    # Основной остаток — колонка «остататки на складе» (с опечаткой в исходнике)
+    col_vc = find_col("артикул продавца", "артикул")
+    col_name = find_col("наименование", "название")
+    col_stock = find_col("остататки на складе", "остатки на складе", "остаток")
+    col_note = find_col("примечание")
+    # Если не нашли «остататки», берём 12-ю колонку (индекс 11) как в шаблоне
+    if col_stock is None and len(header) > 11:
+        col_stock = 11
+    if col_vc is None:
+        col_vc = 1
+    if col_name is None:
+        col_name = 2
+
+    out = []
+    for r in rows_raw[2:]:
+        if not r or not any(str(c).strip() for c in r):
+            continue
+        def cell(i):
+            return str(r[i]).strip() if i is not None and i < len(r) else ""
+        vc = cell(col_vc)
+        name = cell(col_name)
+        note = cell(col_note)
+        stock = _parse_int_cell(cell(col_stock))
+        # Пропускаем пустые строки и «итоги» без названия и артикула
+        if not vc and not name:
+            continue
+        out.append({
+            "vendor_code": vc or None,
+            "name": name or None,
+            "stock": stock if stock is not None else 0,
+            "note": note or None,
+        })
+
+    return {
+        "title": title or "Остатки на складе",
+        "as_of": as_of,
+        "rows": out,
+        "updated_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
+        "error": None,
+    }
+
+def refresh_own_warehouse_stock():
+    OWN_WAREHOUSE_CACHE["syncing"] = True
+    OWN_WAREHOUSE_CACHE["error"] = None
+    try:
+        data = fetch_own_warehouse_stock()
+        OWN_WAREHOUSE_CACHE.update(data)
+        OWN_WAREHOUSE_CACHE["syncing"] = False
+        logger.info(f"own-warehouse: {len(data['rows'])} rows, as_of={data.get('as_of')}")
+    except Exception as e:
+        logger.error(f"own-warehouse refresh error: {e}")
+        OWN_WAREHOUSE_CACHE["syncing"] = False
+        OWN_WAREHOUSE_CACHE["error"] = str(e)
+
+@app.get("/api/own-warehouse-stock")
+def get_own_warehouse_stock(refresh: bool = False):
+    """Остатки нашего склада из Google Sheets."""
+    if refresh or not OWN_WAREHOUSE_CACHE.get("rows"):
+        if OWN_WAREHOUSE_CACHE.get("syncing"):
+            return {**OWN_WAREHOUSE_CACHE, "syncing": True}
+        refresh_own_warehouse_stock()
+    return {
+        "title": OWN_WAREHOUSE_CACHE.get("title"),
+        "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
+        "rows": OWN_WAREHOUSE_CACHE.get("rows") or [],
+        "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
+        "error": OWN_WAREHOUSE_CACHE.get("error"),
+        "syncing": OWN_WAREHOUSE_CACHE.get("syncing", False),
+    }
+
+@app.post("/api/sync-own-warehouse")
+def sync_own_warehouse():
+    import threading
+    if OWN_WAREHOUSE_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    threading.Thread(target=refresh_own_warehouse_stock, daemon=True).start()
+    return {"status": "started"}
+
 # ---------- Рекомендации по поставкам: заказы + продажи по складам (WB Statistics API) ----------
 # Заказано — /api/v1/supplier/orders, Выкупили — /api/v1/supplier/sales (только saleID, начинающиеся
 # на "S" — это продажи; "R" — возврат, "D" — доплата, их не считаем). Текущий остаток берём из уже
