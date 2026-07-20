@@ -1234,19 +1234,42 @@ async def upload_competitor_report(file: UploadFile = File(...)):
 
 @app.get("/api/search-own-articles")
 def search_own_articles(q: str = ""):
-    """Поиск своих артикулов по vendor_code или nm_id."""
+    """Поиск своих артикулов по артикулу продавца (префикс: 034…) или nm_id."""
     try:
-        if not q or len(q) < 2:
-            resp = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&limit=30",
-                           headers=sb_headers(), timeout=10)
-        else:
+        q = (q or "").strip()
+        if not q:
             resp = httpx.get(
-                f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code"
-                f"&or=(vendor_code.ilike.*{q}*,nm_id.eq.{q if q.isdigit() else 0})"
-                f"&limit=20",
-                headers=sb_headers(), timeout=10)
+                f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&order=vendor_code.asc&limit=40",
+                headers=sb_headers(), timeout=10
+            )
+            return resp.json() if resp.is_success else []
+
+        # Экранируем спецсимволы PostgREST / LIKE; хвостовые точки из «034…» убираем
+        safe = q.rstrip(".…").strip()
+        for ch in ("\\", "%", "_", ",", "(", ")"):
+            safe = safe.replace(ch, "")
+        safe = safe.strip()
+        if not safe:
+            return []
+
+        # Префикс по vendor_code: 034 → все артикулы, начинающиеся на 034
+        filters = [f"vendor_code.ilike.{safe}*"]
+        if safe.isdigit():
+            filters.append(f"nm_id.eq.{safe}")
+
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals",
+            params={
+                "select": "nm_id,vendor_code",
+                "or": f"({','.join(filters)})",
+                "order": "vendor_code.asc",
+                "limit": "50",
+            },
+            headers=sb_headers(),
+            timeout=10,
+        )
         return resp.json() if resp.is_success else []
-    except Exception as e:
+    except Exception:
         return []
 
 def fetch_own_stats_v3(nm_ids: list[int], date_from: str, date_to: str) -> dict:

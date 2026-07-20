@@ -459,10 +459,10 @@ td.tc{text-align:center}
       <div>
         <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Мои артикулы</div>
         <div style="position:relative">
-          <input id="ownArtSearch" placeholder="Поиск по артикулу..." autocomplete="off"
-            style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:220px"
+          <input id="ownArtSearch" placeholder="Артикул продавца, напр. 034…" autocomplete="off"
+            style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:260px"
             oninput="searchOwnArticles(this.value)" onfocus="searchOwnArticles(this.value)">
-          <div id="ownArtDropdown" style="display:none;position:absolute;top:100%;left:0;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--rs);z-index:100;min-width:220px;max-height:200px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.1)"></div>
+          <div id="ownArtDropdown" style="display:none;position:absolute;top:100%;left:0;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--rs);z-index:100;min-width:260px;max-height:280px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.1)"></div>
         </div>
         <div id="ownArtChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
       </div>
@@ -2105,16 +2105,32 @@ async function searchOwnArticles(q) {
   const dd = document.getElementById('ownArtDropdown');
   if(!dd) return;
   try {
-    const r = await fetch(`${RAILWAY_URL}/api/search-own-articles?q=${encodeURIComponent(q)}`);
+    const r = await fetch(`${RAILWAY_URL}/api/search-own-articles?q=${encodeURIComponent((q||'').trim())}`);
     const results = await r.json();
-    if(!results.length) { dd.style.display='none'; return; }
+    if(!Array.isArray(results) || !results.length) {
+      dd.style.display = (q||'').trim() ? 'block' : 'none';
+      dd.innerHTML = (q||'').trim()
+        ? `<div style="padding:10px 12px;font-size:12px;color:var(--wb-muted)">Ничего не найдено по «${(q||'').trim()}»</div>`
+        : '';
+      return;
+    }
+    const prefix = (q||'').trim().replace(/\.+$/,'').toLowerCase();
     dd.style.display = 'block';
-    dd.innerHTML = results.map(a =>
-      `<div style="padding:8px 12px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--wb-border)"
-        onmousedown="addOwnArticle(${a.nm_id},'${(a.vendor_code||'').replace(/'/g,'')}')"
+    dd.innerHTML = results.map(a => {
+      const vc = String(a.vendor_code || '');
+      let label = vc;
+      if(prefix && vc.toLowerCase().startsWith(prefix)) {
+        label = `<span style="color:var(--wb-purple)">${vc.slice(0, prefix.length)}</span>${vc.slice(prefix.length)}`;
+      } else {
+        label = `<b>${vc}</b>`;
+      }
+      const safeVc = vc.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      return `<div style="padding:8px 12px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--wb-border)"
+        onmousedown="addOwnArticle(${a.nm_id},'${safeVc}')"
         onmouseover="this.style.background='var(--wb-bg)'" onmouseout="this.style.background=''">
-        <b>${a.vendor_code}</b> <span style="color:var(--wb-faint)">${a.nm_id}</span>
-      </div>`).join('');
+        <b>${label}</b> <span style="color:var(--wb-faint)">${a.nm_id}</span>
+      </div>`;
+    }).join('');
   } catch(e) { dd.style.display='none'; }
 }
 
