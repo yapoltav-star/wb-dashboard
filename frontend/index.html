@@ -152,6 +152,7 @@ td.tc{text-align:center}
 .comp-tbl thead .metric-col{z-index:3;background:#FAFAF9}
 .comp-tbl tr:hover td{background:#FAFAF9}
 .comp-tbl .own-col{background:var(--wb-purple-light)!important}
+.comp-thumb{width:48px;height:64px;object-fit:cover;border-radius:6px;background:#F0EDE8;display:block;margin:0 auto 6px;border:1px solid var(--wb-border)}
 .comp-tbl .rank-1{background:#FFF3CD;color:#856404;font-weight:700;border-radius:3px;padding:1px 5px}
 .comp-tbl .rank-2{background:#E8E8E8;color:#555;font-weight:700;border-radius:3px;padding:1px 5px}
 .comp-tbl .rank-3{background:#F2E4D5;color:#7D4E1F;font-weight:700;border-radius:3px;padding:1px 5px}
@@ -2265,12 +2266,40 @@ async function triggerDailySync(days) {
   }
 }
 
+// Мини-фото карточки WB по nmId (публичный CDN, без API)
+function wbThumbUrl(nmId, ext='webp') {
+  const nm = Number(nmId);
+  if(!nm) return '';
+  const vol = Math.floor(nm / 1e5);
+  const part = Math.floor(nm / 1e3);
+  const ranges = [143,287,431,719,1007,1061,1115,1169,1313,1601,1655,1919,2045,2189,2405,2621,2837,3053,3269,3485,3701,3917,4133,4349,4565,4877,5189,5501,5813,6125,6437,6749,7061,7373,7685,7997,8309,8741,9173,9605,10373,11141,11909,12677,13445,14213];
+  let basket = 47;
+  for(let i=0;i<ranges.length;i++){ if(vol<=ranges[i]){ basket=i+1; break; } }
+  return `https://basket-${String(basket).padStart(2,'0')}.wbbasket.ru/vol${vol}/part${part}/${nm}/images/tm/1.${ext}`;
+}
+
+function wbThumbHtml(nmId) {
+  const webp = wbThumbUrl(nmId, 'webp');
+  if(!webp) return '';
+  const jpg = wbThumbUrl(nmId, 'jpg');
+  return `<img class="comp-thumb" src="${webp}" alt="" loading="lazy"
+    onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${jpg}';}else{this.style.display='none'}">`;
+}
+
 function renderCompetitorView() {
   // Собираем свои артикулы первыми, затем конкуренты из выбранных сессий
   const ownMetrics = COMP_OWN_ARTICLES.map(a => {
-    const stats = OWN_ARTICLE_STATS[a.nm_id] || {};
-    return { nm_id: a.nm_id, vendor_code: a.vendor_code, brand: a.vendor_code,
-             name: a.vendor_code, is_own: true, ...stats };
+    const stats = OWN_ARTICLE_STATS[a.nm_id] || OWN_ARTICLE_STATS[String(a.nm_id)] || {};
+    const vendor = a.vendor_code || stats.vendor_code || String(a.nm_id);
+    // vendor_code поверх stats — свои карточки всегда показываем артикулом продавца
+    return {
+      ...stats,
+      nm_id: a.nm_id,
+      vendor_code: vendor,
+      brand: vendor,
+      name: stats.name || vendor,
+      is_own: true,
+    };
   });
 
   const compMetrics = COMP_ALL_METRICS
@@ -2302,11 +2331,20 @@ function switchCompTab(tab) {
 function buildCompMetricsTable(metrics, ownNm) {
   const arts = metrics.map((m,i) => ({...m, color: COMP_COLORS[i % COMP_COLORS.length]}));
 
-  const thCells = arts.map(m => `<th class="${m.nm_id===ownNm?'own-col':''}">
-    <div style="color:${m.color};font-weight:600;font-size:12px;white-space:normal;max-width:120px">${m.brand || m.nm_id}</div>
-    <div style="font-size:10px;font-weight:400;color:var(--wb-muted);max-width:120px;white-space:normal;line-height:1.3;margin-top:2px">${(m.name||'').slice(0,30)}</div>
+  const thCells = arts.map(m => {
+    const title = m.is_own
+      ? (m.vendor_code || m.nm_id)
+      : (m.brand || m.vendor_code || m.nm_id);
+    const subtitle = m.is_own
+      ? ((m.name && m.name !== m.vendor_code) ? String(m.name).slice(0,30) : '')
+      : String(m.name || '').slice(0,30);
+    return `<th class="${m.nm_id===ownNm || m.is_own?'own-col':''}">
+    ${wbThumbHtml(m.nm_id)}
+    <div style="color:${m.color};font-weight:600;font-size:12px;white-space:normal;max-width:120px">${title}</div>
+    ${subtitle ? `<div style="font-size:10px;font-weight:400;color:var(--wb-muted);max-width:120px;white-space:normal;line-height:1.3;margin-top:2px">${subtitle}</div>` : ''}
     <div style="font-size:10px;color:var(--wb-faint);margin-top:2px">${m.nm_id}${m.is_own?'&nbsp;<b style="color:var(--wb-purple)">мой</b>':''}</div>
-  </th>`).join('');
+  </th>`;
+  }).join('');
 
   const SECTIONS = {
     'Карточка': [
