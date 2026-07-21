@@ -982,15 +982,34 @@ def _parse_advert_v2_items(payload) -> list:
 def _advert_id_from_item(camp: dict):
     return camp.get("advertId") or camp.get("advert_id") or camp.get("id")
 
+def _advert_name_from_item(camp: dict) -> str:
+    """В v2 название лежит в settings.name; в старых ответах — в name."""
+    name = (camp.get("name") or "").strip()
+    if name:
+        return name
+    settings = camp.get("settings")
+    if isinstance(settings, dict):
+        name = (settings.get("name") or "").strip()
+        if name:
+            return name
+    return ""
+
+def _advert_type_from_item(camp: dict) -> int:
+    type_id = camp.get("type") or camp.get("type_id")
+    if type_id:
+        return int(type_id)
+    settings = camp.get("settings") if isinstance(camp.get("settings"), dict) else {}
+    # иногда тип оплаты/ставки вместо type — оставим 0
+    return int(settings.get("type") or 0)
+
 def fetch_campaigns_meta(include_finished: bool = False) -> dict:
-    """Активные (9) и на паузе (11). Имена — как в кабинете WB (advert/v2)."""
+    """Активные (9) и на паузе (11). Имена — как в кабинете WB (settings.name)."""
     allowed = (9, 11, 7) if include_finished else (9, 11)
     statuses = "9,11,7" if include_finished else "9,11"
     meta = {}
 
-    # 1) основной путь: /api/advert/v2/adverts — там реальные названия кампаний
+    # 1) основной путь: /api/advert/v2/adverts
     try:
-        # payment_type иногда обязателен на стороне WB — пробуем без и с фильтрами
         param_sets = [
             {"statuses": statuses},
             {"statuses": statuses, "payment_type": "cpm"},
@@ -1006,29 +1025,38 @@ def fetch_campaigns_meta(include_finished: bool = False) -> dict:
             if not resp.is_success:
                 logger.warning(f"advert/v2/adverts {resp.status_code} params={params}: {resp.text[:200]}")
                 continue
-            for camp in _parse_advert_v2_items(resp.json()):
+            items = _parse_advert_v2_items(resp.json())
+            if items and not meta:
+                # лог структуры один раз — чтобы видеть поля, если снова сломается
+                sample = items[0] if isinstance(items[0], dict) else {}
+                logger.info(
+                    f"advert/v2 sample keys={list(sample.keys())[:20]} "
+                    f"settings_keys={list((sample.get('settings') or {}).keys())[:15] if isinstance(sample.get('settings'), dict) else None}"
+                )
+            for camp in items:
+                if not isinstance(camp, dict):
+                    continue
                 aid = _advert_id_from_item(camp)
                 if not aid:
                     continue
                 status = camp.get("status")
                 if status is not None and status not in allowed:
                     continue
-                type_id = camp.get("type") or camp.get("type_id") or 0
+                type_id = _advert_type_from_item(camp)
                 type_name = AD_TYPE_NAMES.get(type_id, f"Тип {type_id}" if type_id else "")
-                name = (camp.get("name") or "").strip()
+                name = _advert_name_from_item(camp)
                 prev = meta.get(aid) or {}
                 meta[aid] = {
                     "type_id": type_id or prev.get("type_id") or 0,
-                    "type_name": type_name or prev.get("type_name") or "Кампания",
+                    "type_name": type_name or prev.get("type_name") or "",
                     "status": status if status is not None else prev.get("status"),
                     "name": name or prev.get("name") or "",
                 }
-            if meta:
-                break
+            # не break: cpm+cpc могут дополнять друг друга
     except Exception as e:
         logger.error(f"WB advert/v2/adverts exception: {e}")
 
-    # 2) fallback: список id из count, имена доберём отдельно
+    # 2) fallback: список id из count
     if not meta:
         try:
             resp = httpx.get(f"{WB_PROMOTION_URL}/adv/v1/promotion/count", headers=wb_headers(), timeout=20)
@@ -1052,23 +1080,25 @@ def fetch_campaigns_meta(include_finished: bool = False) -> dict:
             logger.error(f"WB promotion/count exception: {e}")
 
     enrich_campaign_names(meta)
-    # если имени всё ещё нет — аккуратный fallback, не «Поиск #id» как основное
     for aid, m in meta.items():
-        if not (m.get("name") or "").strip():
-            m["name"] = m.get("type_name") or f"Кампания #{aid}"
+        if not (m.get("name") or "").strip() or is_placeholder_campaign_name(m.get("name") or "", aid):
+            # последний шанс — не оставляем голое «Кампания»
+            if not (m.get("name") or "").strip() or m.get("name") == "Кампания":
+                m["name"] = (m.get("type_name") and f"{m['type_name']} #{aid}") or f"#{aid}"
     return meta
 
 def enrich_campaign_names(meta: dict) -> None:
-    """Дотягивает названия кампаний через /api/advert/v2/adverts?ids=..."""
+    """Дотягивает названия через /api/advert/v2/adverts?ids=... и старый promotion/adverts."""
     need = [
         aid for aid, m in meta.items()
-        if re_fullmatch_placeholder(m.get("name") or "", aid)
+        if is_placeholder_campaign_name(m.get("name") or "", aid)
     ]
     if not need:
         return
 
     for i in range(0, len(need), 50):
         batch = need[i:i + 50]
+        got = False
         try:
             resp = httpx.get(
                 f"{WB_PROMOTION_URL}/api/advert/v2/adverts",
@@ -1076,29 +1106,53 @@ def enrich_campaign_names(meta: dict) -> None:
                 params={"ids": ",".join(str(x) for x in batch)},
                 timeout=20,
             )
-            if not resp.is_success:
-                logger.warning(f"advert/v2 names {resp.status_code}: {resp.text[:200]}")
-            else:
+            if resp.is_success:
                 for camp in _parse_advert_v2_items(resp.json()):
+                    if not isinstance(camp, dict):
+                        continue
                     aid = _advert_id_from_item(camp)
                     if aid and aid in meta:
-                        name = (camp.get("name") or "").strip()
+                        name = _advert_name_from_item(camp)
                         if name:
                             meta[aid]["name"] = name
-                        if camp.get("type") is not None:
-                            meta[aid]["type_id"] = camp.get("type")
-                            meta[aid]["type_name"] = AD_TYPE_NAMES.get(
-                                camp.get("type"), meta[aid].get("type_name")
-                            )
+                            got = True
+                        type_id = _advert_type_from_item(camp)
+                        if type_id:
+                            meta[aid]["type_id"] = type_id
+                            meta[aid]["type_name"] = AD_TYPE_NAMES.get(type_id, meta[aid].get("type_name"))
+            else:
+                logger.warning(f"advert/v2 names {resp.status_code}: {resp.text[:200]}")
         except Exception as e:
             logger.warning(f"campaign names v2 skip: {e}")
+
+        # старый endpoint — на случай если v2 без settings.name
+        still = [aid for aid in batch if is_placeholder_campaign_name(meta[aid].get("name") or "", aid)]
+        if still:
+            try:
+                resp = httpx.post(
+                    f"{WB_PROMOTION_URL}/adv/v1/promotion/adverts",
+                    json=still, headers=wb_headers(), timeout=20
+                )
+                if resp.is_success:
+                    for camp in resp.json() or []:
+                        aid = camp.get("advertId") or camp.get("advert_id")
+                        if aid and aid in meta:
+                            name = (camp.get("name") or "").strip()
+                            if name:
+                                meta[aid]["name"] = name
+                                got = True
+            except Exception as e:
+                logger.warning(f"campaign names v1 skip: {e}")
         if i + 50 < len(need):
             time.sleep(0.3)
+        logger.info(f"enrich names batch {i//50+1}: need={len(batch)} got_any={got}")
 
-def re_fullmatch_placeholder(name: str, aid) -> bool:
-    """True если имя — наша заглушка, а не название из WB."""
+def is_placeholder_campaign_name(name: str, aid) -> bool:
+    """True если имя — заглушка, а не название из кабинета WB."""
     n = (name or "").strip()
     if not n:
+        return True
+    if n in ("Кампания", "Без названия", "Неизвестно"):
         return True
     if n == f"#{aid}" or n == f"Кампания #{aid}":
         return True
