@@ -965,60 +965,146 @@ ADS_CACHE = {
     "period_end": None,
 }
 
-def fetch_campaigns_meta(include_finished: bool = False) -> dict:
-    """Активные (9) и на паузе (11). Завершённые (7) — только по флагу (их обычно сотни)."""
-    try:
-        resp = httpx.get(f"{WB_PROMOTION_URL}/adv/v1/promotion/count", headers=wb_headers(), timeout=20)
-        if not resp.is_success:
-            logger.error(f"WB promotion/count error {resp.status_code} {resp.text[:300]}")
-            return {}
-        data = resp.json()
-    except Exception as e:
-        logger.error(f"WB promotion/count exception: {e}")
-        return {}
+def _parse_advert_v2_items(payload) -> list:
+    if payload is None:
+        return []
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("adverts", "data", "items"):
+            val = payload.get(key)
+            if isinstance(val, list):
+                return val
+            if isinstance(val, dict) and isinstance(val.get("adverts"), list):
+                return val["adverts"]
+    return []
 
+def _advert_id_from_item(camp: dict):
+    return camp.get("advertId") or camp.get("advert_id") or camp.get("id")
+
+def fetch_campaigns_meta(include_finished: bool = False) -> dict:
+    """Активные (9) и на паузе (11). Имена — как в кабинете WB (advert/v2)."""
     allowed = (9, 11, 7) if include_finished else (9, 11)
+    statuses = "9,11,7" if include_finished else "9,11"
     meta = {}
-    for group in data.get("adverts", []) or []:
-        type_id = group.get("type", 0)
-        type_name = AD_TYPE_NAMES.get(type_id, f"Тип {type_id}")
-        status = group.get("status")
-        if status not in allowed:
-            continue
-        for item in group.get("advert_list", []) or []:
-            aid = item.get("advertId")
-            if aid:
+
+    # 1) основной путь: /api/advert/v2/adverts — там реальные названия кампаний
+    try:
+        # payment_type иногда обязателен на стороне WB — пробуем без и с фильтрами
+        param_sets = [
+            {"statuses": statuses},
+            {"statuses": statuses, "payment_type": "cpm"},
+            {"statuses": statuses, "payment_type": "cpc"},
+        ]
+        for params in param_sets:
+            resp = httpx.get(
+                f"{WB_PROMOTION_URL}/api/advert/v2/adverts",
+                headers=wb_headers(),
+                params=params,
+                timeout=30,
+            )
+            if not resp.is_success:
+                logger.warning(f"advert/v2/adverts {resp.status_code} params={params}: {resp.text[:200]}")
+                continue
+            for camp in _parse_advert_v2_items(resp.json()):
+                aid = _advert_id_from_item(camp)
+                if not aid:
+                    continue
+                status = camp.get("status")
+                if status is not None and status not in allowed:
+                    continue
+                type_id = camp.get("type") or camp.get("type_id") or 0
+                type_name = AD_TYPE_NAMES.get(type_id, f"Тип {type_id}" if type_id else "")
+                name = (camp.get("name") or "").strip()
+                prev = meta.get(aid) or {}
                 meta[aid] = {
-                    "type_id": type_id,
-                    "type_name": type_name,
-                    "status": status,
-                    "name": f"{type_name} #{aid}",
+                    "type_id": type_id or prev.get("type_id") or 0,
+                    "type_name": type_name or prev.get("type_name") or "Кампания",
+                    "status": status if status is not None else prev.get("status"),
+                    "name": name or prev.get("name") or "",
                 }
+            if meta:
+                break
+    except Exception as e:
+        logger.error(f"WB advert/v2/adverts exception: {e}")
+
+    # 2) fallback: список id из count, имена доберём отдельно
+    if not meta:
+        try:
+            resp = httpx.get(f"{WB_PROMOTION_URL}/adv/v1/promotion/count", headers=wb_headers(), timeout=20)
+            if resp.is_success:
+                for group in (resp.json() or {}).get("adverts", []) or []:
+                    type_id = group.get("type", 0)
+                    type_name = AD_TYPE_NAMES.get(type_id, f"Тип {type_id}")
+                    status = group.get("status")
+                    if status not in allowed:
+                        continue
+                    for item in group.get("advert_list", []) or []:
+                        aid = item.get("advertId")
+                        if aid:
+                            meta[aid] = {
+                                "type_id": type_id,
+                                "type_name": type_name,
+                                "status": status,
+                                "name": "",
+                            }
+        except Exception as e:
+            logger.error(f"WB promotion/count exception: {e}")
+
+    enrich_campaign_names(meta)
+    # если имени всё ещё нет — аккуратный fallback, не «Поиск #id» как основное
+    for aid, m in meta.items():
+        if not (m.get("name") or "").strip():
+            m["name"] = m.get("type_name") or f"Кампания #{aid}"
     return meta
 
 def enrich_campaign_names(meta: dict) -> None:
-    """Подтягивает имена кампаний батчами. Не критично — при ошибке оставляем заглушки."""
-    all_ids = list(meta.keys())
-    if not all_ids:
+    """Дотягивает названия кампаний через /api/advert/v2/adverts?ids=..."""
+    need = [
+        aid for aid, m in meta.items()
+        if re_fullmatch_placeholder(m.get("name") or "", aid)
+    ]
+    if not need:
         return
-    for i in range(0, len(all_ids), 50):
-        batch = all_ids[i:i + 50]
+
+    for i in range(0, len(need), 50):
+        batch = need[i:i + 50]
         try:
-            resp = httpx.post(
-                f"{WB_PROMOTION_URL}/adv/v1/promotion/adverts",
-                json=batch, headers=wb_headers(), timeout=15
+            resp = httpx.get(
+                f"{WB_PROMOTION_URL}/api/advert/v2/adverts",
+                headers=wb_headers(),
+                params={"ids": ",".join(str(x) for x in batch)},
+                timeout=20,
             )
-            if resp.is_success:
-                for camp in resp.json() or []:
-                    aid = camp.get("advertId")
+            if not resp.is_success:
+                logger.warning(f"advert/v2 names {resp.status_code}: {resp.text[:200]}")
+            else:
+                for camp in _parse_advert_v2_items(resp.json()):
+                    aid = _advert_id_from_item(camp)
                     if aid and aid in meta:
                         name = (camp.get("name") or "").strip()
                         if name:
                             meta[aid]["name"] = name
+                        if camp.get("type") is not None:
+                            meta[aid]["type_id"] = camp.get("type")
+                            meta[aid]["type_name"] = AD_TYPE_NAMES.get(
+                                camp.get("type"), meta[aid].get("type_name")
+                            )
         except Exception as e:
-            logger.warning(f"campaign names batch skip: {e}")
-        if i + 50 < len(all_ids):
+            logger.warning(f"campaign names v2 skip: {e}")
+        if i + 50 < len(need):
             time.sleep(0.3)
+
+def re_fullmatch_placeholder(name: str, aid) -> bool:
+    """True если имя — наша заглушка, а не название из WB."""
+    n = (name or "").strip()
+    if not n:
+        return True
+    if n == f"#{aid}" or n == f"Кампания #{aid}":
+        return True
+    if n.endswith(f" #{aid}"):
+        return True
+    return False
 
 def fetch_ad_stats_by_campaign(ids: list, begin_date: str, end_date: str) -> dict:
     """Тянет /adv/v3/fullstats → {campaign_id: метрики}. Пауза 20с только между батчами."""
@@ -1121,9 +1207,6 @@ def sync_ads():
             ADS_CACHE["error"] = "Нет активных или на паузе кампаний"
             logger.info("Ads sync: no eligible campaigns")
             return
-
-        ADS_CACHE["progress"] = f"имена ({len(campaigns_meta)} камп.)…"
-        enrich_campaign_names(campaigns_meta)
 
         logger.info(f"Ads sync: {len(campaigns_meta)} campaigns, {begin_date}…{end_date}")
         agg = fetch_ad_stats_by_campaign(
