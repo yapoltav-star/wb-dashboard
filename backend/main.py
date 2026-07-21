@@ -1518,7 +1518,7 @@ async def upload_promo_excel(file: UploadFile = File(...)):
 
         # Сортировка: нужные сверху → в акции → прочие → слабые снизу; внутри по −₽
         order = {"need": 0, "in": 1, "other": 2, "weak": 3}
-        articles.sort(key=lambda a: (order.get(a["priority"], 9), -(a["delta"] or 0), str(a["vendor_code"])))
+        articles.sort(key=lambda a: (order.get(a["priority"], 9), a["delta"] if a.get("delta") is not None else 10**12, str(a["vendor_code"])))
 
         promo_name = _parse_promo_excel_name(file.filename or "")
         need_n = sum(1 for a in articles if a["priority"] == "need")

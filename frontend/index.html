@@ -2030,7 +2030,8 @@ function promoFixSession(sess) {
   if(!sess) return sess;
   const articles = (sess.articles || []).map(promoFixArticle);
   const order = {need:0, in:1, other:2, weak:3};
-  articles.sort((a,b) => (order[a.priority]??9) - (order[b.priority]??9) || (b.delta||0) - (a.delta||0));
+  // внутри «нужно снизить» — сначала где меньше −₽
+  articles.sort((a,b) => (order[a.priority]??9) - (order[b.priority]??9) || (a.delta||0) - (b.delta||0) || String(a.vendor_code).localeCompare(String(b.vendor_code)));
   return {
     ...sess,
     articles,
@@ -2041,6 +2042,26 @@ function promoFixSession(sess) {
       weak: articles.filter(a => a.priority==='weak').length,
     }
   };
+}
+
+/** Чем меньше типичное снижение для входа — тем выше акция в списке/матрице. */
+function promoSessionEaseScore(sess) {
+  const s = promoFixSession(sess);
+  const needDeltas = (s.articles || [])
+    .filter(a => a.priority === 'need' && a.delta != null && a.delta > 0)
+    .map(a => a.delta);
+  if(!needDeltas.length) return 0; // уже всё ок / нечего снижать — наверх
+  needDeltas.sort((a,b) => a-b);
+  const mid = Math.floor(needDeltas.length / 2);
+  return needDeltas.length % 2 ? needDeltas[mid] : (needDeltas[mid-1] + needDeltas[mid]) / 2;
+}
+
+function promoSessionsSorted() {
+  return [...PROMO_SESSIONS].sort((a, b) => {
+    const ea = promoSessionEaseScore(a), eb = promoSessionEaseScore(b);
+    if(ea !== eb) return ea - eb;
+    return String(a.promo_name||'').localeCompare(String(b.promo_name||''), 'ru');
+  });
 }
 
 function getActivePromoSession() {
@@ -2121,7 +2142,7 @@ function drawPromoExcel() {
 
   if(bar) bar.style.display = PROMO_SESSIONS.length ? 'block' : 'none';
   if(chips) {
-    chips.innerHTML = PROMO_SESSIONS.map(s => {
+    chips.innerHTML = promoSessionsSorted().map(s => {
       const on = s.id === PROMO_ACTIVE_ID;
       return `<button type="button" class="comp-period-btn${on?' on':''}" onclick="selectPromoSession('${s.id}')" style="${on?'border-color:var(--wb-purple);color:var(--wb-purple);background:#F5F0FF':''}">
         ${escapeHtml(s.promo_name)}
@@ -2236,21 +2257,28 @@ function drawPromoExcel() {
 }
 
 function promoMultiMatrixHtml() {
+  const sessions = promoSessionsSorted().map(promoFixSession);
   const byVc = {};
-  const sessions = PROMO_SESSIONS.map(promoFixSession);
   sessions.forEach(s => {
     (s.articles || []).forEach(a => {
       const vc = a.vendor_code;
       if(!vc) return;
-      if(!byVc[vc]) byVc[vc] = {vendor_code: vc, nm_id: a.nm_id, name: a.name, cells: {}, bestPriority: 'weak'};
+      if(!byVc[vc]) byVc[vc] = {vendor_code: vc, nm_id: a.nm_id, name: a.name, cells: {}, bestPriority: 'weak', minNeedDelta: Infinity};
       byVc[vc].cells[s.id] = a;
       const order = {need:0, in:1, other:2, weak:3};
       if((order[a.priority] ?? 9) < (order[byVc[vc].bestPriority] ?? 9)) byVc[vc].bestPriority = a.priority;
+      if(a.priority === 'need' && a.delta != null && a.delta < byVc[vc].minNeedDelta) byVc[vc].minNeedDelta = a.delta;
     });
   });
   const rows = Object.values(byVc).sort((a,b) => {
     const order = {need:0, in:1, other:2, weak:3};
-    return (order[a.bestPriority]??9) - (order[b.bestPriority]??9);
+    const pa = order[a.bestPriority]??9, pb = order[b.bestPriority]??9;
+    if(pa !== pb) return pa - pb;
+    // среди «нужно снизить» — сначала где меньше −₽ хотя бы в одной акции
+    const da = a.minNeedDelta === Infinity ? 1e12 : a.minNeedDelta;
+    const db = b.minNeedDelta === Infinity ? 1e12 : b.minNeedDelta;
+    if(da !== db) return da - db;
+    return String(a.vendor_code).localeCompare(String(b.vendor_code));
   });
   let head = '<tr><th class="mcol-art">Артикул</th>';
   sessions.forEach(s => {
@@ -2269,7 +2297,7 @@ function promoMultiMatrixHtml() {
     });
     body += '</tr>';
   });
-  return `<div class="section-sub" style="margin:2px 0 8px">Сравнение по загруженным акциям</div>
+  return `<div class="section-sub" style="margin:2px 0 8px">Сравнение по загруженным акциям <span style="font-weight:400;color:var(--wb-faint)">(слева — где меньше снижать)</span></div>
     <div class="matrix-wrap"><table class="matrix"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
 }
 
