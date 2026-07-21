@@ -959,13 +959,14 @@ ADS_CACHE = {
     "updated_at": None,
     "syncing": False,
     "error": None,
+    "progress": None,
     "window_days": None,
     "period_begin": None,
     "period_end": None,
 }
 
-def fetch_campaigns_meta() -> dict:
-    """Возвращает {advertId: {name, type_id, type_name}} для активных/паузных/завершённых кампаний."""
+def fetch_campaigns_meta(include_finished: bool = False) -> dict:
+    """Активные (9) и на паузе (11). Завершённые (7) — только по флагу (их обычно сотни)."""
     try:
         resp = httpx.get(f"{WB_PROMOTION_URL}/adv/v1/promotion/count", headers=wb_headers(), timeout=20)
         if not resp.is_success:
@@ -976,12 +977,13 @@ def fetch_campaigns_meta() -> dict:
         logger.error(f"WB promotion/count exception: {e}")
         return {}
 
+    allowed = (9, 11, 7) if include_finished else (9, 11)
     meta = {}
     for group in data.get("adverts", []) or []:
         type_id = group.get("type", 0)
         type_name = AD_TYPE_NAMES.get(type_id, f"Тип {type_id}")
-        # fullstats отдаёт только 7/9/11
-        if group.get("status") not in (7, 9, 11):
+        status = group.get("status")
+        if status not in allowed:
             continue
         for item in group.get("advert_list", []) or []:
             aid = item.get("advertId")
@@ -989,59 +991,44 @@ def fetch_campaigns_meta() -> dict:
                 meta[aid] = {
                     "type_id": type_id,
                     "type_name": type_name,
+                    "status": status,
                     "name": f"{type_name} #{aid}",
                 }
+    return meta
 
+def enrich_campaign_names(meta: dict) -> None:
+    """Подтягивает имена кампаний батчами. Не критично — при ошибке оставляем заглушки."""
     all_ids = list(meta.keys())
+    if not all_ids:
+        return
     for i in range(0, len(all_ids), 50):
         batch = all_ids[i:i + 50]
-        # сначала новый endpoint, потом старый
-        named = False
         try:
-            resp = httpx.get(
-                f"{WB_PROMOTION_URL}/api/advert/v2/adverts",
-                headers=wb_headers(),
-                params={"ids": ",".join(str(x) for x in batch)},
-                timeout=20,
+            resp = httpx.post(
+                f"{WB_PROMOTION_URL}/adv/v1/promotion/adverts",
+                json=batch, headers=wb_headers(), timeout=15
             )
             if resp.is_success:
-                payload = resp.json() or []
-                items = payload if isinstance(payload, list) else (payload.get("adverts") or payload.get("data") or [])
-                for camp in items:
-                    aid = camp.get("advertId") or camp.get("id")
+                for camp in resp.json() or []:
+                    aid = camp.get("advertId")
                     if aid and aid in meta:
                         name = (camp.get("name") or "").strip()
                         if name:
                             meta[aid]["name"] = name
-                            named = True
         except Exception as e:
-            logger.error(f"WB advert/v2/adverts exception: {e}")
-
-        if not named:
-            try:
-                resp = httpx.post(
-                    f"{WB_PROMOTION_URL}/adv/v1/promotion/adverts",
-                    json=batch, headers=wb_headers(), timeout=20
-                )
-                if resp.is_success:
-                    for camp in resp.json() or []:
-                        aid = camp.get("advertId")
-                        if aid and aid in meta:
-                            name = (camp.get("name") or "").strip()
-                            if name:
-                                meta[aid]["name"] = name
-            except Exception as e:
-                logger.error(f"WB promotion/adverts exception: {e}")
+            logger.warning(f"campaign names batch skip: {e}")
         if i + 50 < len(all_ids):
-            time.sleep(1)
-    return meta
+            time.sleep(0.3)
 
 def fetch_ad_stats_by_campaign(ids: list, begin_date: str, end_date: str) -> dict:
-    """Тянет /adv/v3/fullstats и возвращает {campaign_id: метрики} по итогам кампании."""
+    """Тянет /adv/v3/fullstats → {campaign_id: метрики}. Пауза 20с только между батчами."""
     agg = {}
     errors = []
+    total_batches = max(1, (len(ids) + 49) // 50)
     for i in range(0, len(ids), 50):
         batch = ids[i:i + 50]
+        batch_no = i // 50 + 1
+        ADS_CACHE["progress"] = f"статистика WB {batch_no}/{total_batches}"
         try:
             resp = httpx.get(
                 f"{WB_PROMOTION_URL}/adv/v3/fullstats",
@@ -1050,8 +1037,9 @@ def fetch_ad_stats_by_campaign(ids: list, begin_date: str, end_date: str) -> dic
                 timeout=60,
             )
             if resp.status_code == 429:
-                logger.warning("WB fullstats 429 — ждём 25с и повторяем батч")
-                time.sleep(25)
+                logger.warning("WB fullstats 429 — ждём 22с и повторяем")
+                ADS_CACHE["progress"] = f"лимит WB, ждём… ({batch_no}/{total_batches})"
+                time.sleep(22)
                 resp = httpx.get(
                     f"{WB_PROMOTION_URL}/adv/v3/fullstats",
                     headers=wb_headers(),
@@ -1062,6 +1050,9 @@ def fetch_ad_stats_by_campaign(ids: list, begin_date: str, end_date: str) -> dic
                 msg = f"fullstats {resp.status_code}: {resp.text[:300]}"
                 logger.error(f"WB {msg}")
                 errors.append(msg)
+                # при 429 на базовом тарифе дальше бессмысленно долбить
+                if resp.status_code == 429:
+                    break
                 continue
             campaigns = resp.json()
         except Exception as e:
@@ -1073,7 +1064,6 @@ def fetch_ad_stats_by_campaign(ids: list, begin_date: str, end_date: str) -> dic
             campaign_id = camp.get("advertId")
             if not campaign_id:
                 continue
-            # топ-уровень fullstats уже содержит итоги по кампании
             views = int(camp.get("views") or 0)
             clicks = int(camp.get("clicks") or 0)
             atbs = int(camp.get("atbs") or 0)
@@ -1081,7 +1071,6 @@ def fetch_ad_stats_by_campaign(ids: list, begin_date: str, end_date: str) -> dic
             spend = float(camp.get("sum") or 0)
             revenue = float(camp.get("sum_price") or 0)
 
-            # если топ пустой — суммируем days (на всякий)
             if not (views or clicks or orders or spend) and camp.get("days"):
                 for day in camp.get("days") or []:
                     views += int(day.get("views") or 0)
@@ -1103,7 +1092,7 @@ def fetch_ad_stats_by_campaign(ids: list, begin_date: str, end_date: str) -> dic
             a["revenue"] += revenue
 
         if i + 50 < len(ids):
-            time.sleep(21)  # лимит WB: интервал 20с
+            time.sleep(20)
     if errors and not agg:
         raise RuntimeError("; ".join(errors[:3]))
     return agg
@@ -1118,6 +1107,7 @@ def sync_ads():
         return
     ADS_CACHE["syncing"] = True
     ADS_CACHE["error"] = None
+    ADS_CACHE["progress"] = "список кампаний…"
     try:
         logger.info("Starting ads (promotion) sync...")
         window_days = get_setting_int("ads_window_days", 30)
@@ -1125,12 +1115,15 @@ def sync_ads():
         end_date = datetime.now(timezone.utc).date()
         begin_date = end_date - timedelta(days=window_days - 1)
 
-        campaigns_meta = fetch_campaigns_meta()
+        # только активные + пауза — иначе тянем сотни завершённых и ждём по 20с на батч
+        campaigns_meta = fetch_campaigns_meta(include_finished=False)
         if not campaigns_meta:
-            ADS_CACHE["error"] = "Нет активных/паузных/завершённых кампаний (статусы 7/9/11)"
+            ADS_CACHE["error"] = "Нет активных или на паузе кампаний"
             logger.info("Ads sync: no eligible campaigns")
-            ADS_CACHE["syncing"] = False
             return
+
+        ADS_CACHE["progress"] = f"имена ({len(campaigns_meta)} камп.)…"
+        enrich_campaign_names(campaigns_meta)
 
         logger.info(f"Ads sync: {len(campaigns_meta)} campaigns, {begin_date}…{end_date}")
         agg = fetch_ad_stats_by_campaign(
@@ -1170,7 +1163,6 @@ def sync_ads():
                 "cv_ord": round(orders / atbs * 100, 2) if atbs else 0,
                 "period_days": window_days,
                 "updated_at": now_iso,
-                # совместимость со старым фронтом / supabase
                 "vendor_code": name,
                 "nm_id": campaign_id,
             }
@@ -1185,8 +1177,8 @@ def sync_ads():
         ADS_CACHE["period_begin"] = begin_date.isoformat()
         ADS_CACHE["period_end"] = end_date.isoformat()
         ADS_CACHE["error"] = None
+        ADS_CACHE["progress"] = None
 
-        # В БД пишем только если есть что писать; старые данные не трогаем при пустом результате-ошибке
         if rows:
             try:
                 httpx.delete(f"{SUPABASE_URL}/rest/v1/ad_stats?id=gte.0", headers=sb_headers(), timeout=15)
@@ -1211,8 +1203,10 @@ def sync_ads():
     except Exception as e:
         logger.error(f"sync_ads error: {e}")
         ADS_CACHE["error"] = str(e)
+        ADS_CACHE["progress"] = None
     finally:
         ADS_CACHE["syncing"] = False
+        ADS_CACHE["progress"] = None
 
 @app.get("/api/ads")
 def get_ads(refresh: bool = False):
@@ -1263,6 +1257,7 @@ def get_ads(refresh: bool = False):
         "updated_at": ADS_CACHE.get("updated_at"),
         "syncing": ADS_CACHE.get("syncing", False),
         "error": ADS_CACHE.get("error"),
+        "progress": ADS_CACHE.get("progress"),
         "window_days": ADS_CACHE.get("window_days"),
         "period_begin": ADS_CACHE.get("period_begin"),
         "period_end": ADS_CACHE.get("period_end"),

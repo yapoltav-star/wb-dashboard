@@ -631,9 +631,11 @@ async function loadAdsPage() {
     AD_STATS = d.campaigns || d.ad_stats || AD_STATS || [];
     const info = document.getElementById('adsSyncInfo');
     if(d.syncing) {
-      if(info) info.textContent = 'Считаем статистику у WB…';
-      triggerAdsSync(); // продолжит поллинг
-    } else if(d.updated_at && info && !info.textContent) {
+      if(info) info.textContent = d.progress || 'Считаем статистику у WB…';
+      // только поллинг, не стартуем второй синк
+      clearTimeout(window._adsPoll);
+      window._adsPoll = setTimeout(loadAdsPage, 3000);
+    } else if(d.updated_at && info) {
       info.textContent = 'Обновлено ' + d.updated_at;
     } else if(d.error && info) {
       info.textContent = 'Ошибка: ' + d.error;
@@ -1037,7 +1039,7 @@ async function triggerAdsSync() {
         const d = await r.json();
         AD_STATS = d.campaigns || d.ad_stats || [];
         if(d.syncing) {
-          if(info) info.textContent = 'Считаем статистику у WB…';
+          if(info) info.textContent = d.progress || 'Считаем статистику у WB…';
           if(tries < 60) window._adsPoll = setTimeout(poll, 3000);
           else {
             if(info) info.textContent = d.error || 'Долго нет ответа — нажми ещё раз';
