@@ -138,6 +138,10 @@ td.tc{text-align:center}
 .matrix.promo-xls tr.promo-row-need td{background:#FEF3F2}
 .matrix.promo-xls tr.promo-row-in td{background:#F0FDF4}
 .matrix.promo-xls tr.promo-row-weak td{background:#F9FAFB;color:var(--wb-muted)}
+.pace-delta-up{color:#027A48;font-weight:700}
+.pace-delta-down{color:#B42318;font-weight:700}
+.pace-delta-flat{color:var(--wb-muted)}
+.pace-hint{font-size:11px;color:var(--wb-muted);line-height:1.45;padding:0 4px 10px}
 .promo-ov{width:100%;border-collapse:collapse;font-size:12px}
 .promo-ov th{position:sticky;top:0;background:#FAFAFA;font-size:10px;color:var(--wb-muted);font-weight:600;text-transform:uppercase;letter-spacing:.3px;text-align:right;padding:8px 10px;border-bottom:1px solid var(--wb-border);z-index:1}
 .promo-ov th:first-child{text-align:left}
@@ -273,7 +277,7 @@ td.tc{text-align:center}
     <img src="data:image/png;base64,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" alt="PVS" style="height:36px;width:auto;display:block">
   </div>
   <div class="tb-nav">
-    <div class="tb-nav-item">Рост продаж</div>
+    <div class="tb-nav-item" onclick="showSection('growth',this)">Рост продаж</div>
     <div class="tb-nav-item on" onclick="showSection('products',this)">Отзывы и оценки</div>
     <div class="tb-nav-item" onclick="showSection('promotions',this)">Акции</div>
     <div class="tb-nav-item" onclick="showSection('supplies',this)">Остатки и поставки</div>
@@ -294,6 +298,9 @@ td.tc{text-align:center}
   <div class="sn-item on" onclick="showPage('products',this)">Последние отзывы</div>
   <div class="sn-item" onclick="showPage('ratings',this)">Оценки</div>
   <div class="sn-item" onclick="showPage('groups',this)">Склейки</div>
+</div>
+<div class="subnav" id="subnav-growth" style="display:none">
+  <div class="sn-item on" onclick="showPage('sales-pace',this)">Темп к вчера</div>
 </div>
 <div class="subnav" id="subnav-supplies" style="display:none">
   <div class="sn-item on" onclick="showPage('supply-recs',this)">Рекомендации поставок</div>
@@ -317,6 +324,26 @@ td.tc{text-align:center}
       <button class="action-btn" onclick="closeUploadModal()">Отмена</button>
     </div>
   </div>
+</div>
+
+<!-- РОСТ ПРОДАЖ -->
+<div class="page" id="page-sales-pace">
+  <div class="toolbar">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="paceSearch" placeholder="Поиск по артикулу..." oninput="drawSalesPace()">
+    </div>
+    <button class="filter-btn on" id="paceFltAll" onclick="setPaceFilter('all')">Все</button>
+    <button class="filter-btn" id="paceFltDown" onclick="setPaceFilter('down')">Падают</button>
+    <button class="filter-btn" id="paceFltUp" onclick="setPaceFilter('up')">Растут</button>
+    <button class="filter-btn" id="paceFltFlat" onclick="setPaceFilter('flat')">Без изменений</button>
+    <span id="paceInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
+    <div class="ml-auto">
+      <button class="action-btn" id="paceSyncBtn" onclick="triggerSalesPaceSync()">↻ Обновить</button>
+    </div>
+  </div>
+  <div class="cards" id="paceCards"></div>
+  <div id="paceRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить» — сравним заказы и воронку: сегодня до сейчас vs вчера до того же времени.</div></div>
 </div>
 
 <div class="page" id="page-ratings">
@@ -564,7 +591,10 @@ function showSection(sec, btn) {
   btn.classList.add('on');
   document.getElementById('subnav-products').style.display = sec === 'products' ? 'flex' : 'none';
   document.getElementById('subnav-supplies').style.display = sec === 'supplies' ? 'flex' : 'none';
+  const sg = document.getElementById('subnav-growth');
+  if(sg) sg.style.display = sec === 'growth' ? 'flex' : 'none';
   if(sec === 'products') showPage('products', document.querySelector('#subnav-products .sn-item'));
+  else if(sec === 'growth') showPage('sales-pace', document.querySelector('#subnav-growth .sn-item'));
   else if(sec === 'promotions') showPage('promotions', null);
   else if(sec === 'supplies') showPage('supply-recs', document.querySelector('#subnav-supplies .sn-item'));
   else if(sec === 'ads') showPage('ads', null);
@@ -583,6 +613,7 @@ function showPage(id, btn) {
   if(id === 'ads') renderAds();
   if(id === 'competitors') renderCompetitors();
   if(id === 'promotions') renderPromotions();
+  if(id === 'sales-pace') renderSalesPace(true);
 }
 
 async function loadData() {
@@ -1974,6 +2005,161 @@ function renderAds() {
   let html='';
   gnames.forEach(g=>{const arr=grouped[g]||[];if(!arr.length)return;html+=adsGroupBlock(g,arr);});
   document.getElementById('adsRoot').innerHTML=html||'<div class="empty">\u041d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e</div>';
+}
+
+// ─────────── Рост продаж: темп к вчера (то же время) ───────────
+let PACE_DATA = {articles:[], as_of:null, compare_as_of:null, syncing:false, error:null};
+let PACE_FILTER = 'all';
+let PACE_LOADED = false;
+let pacePoll = null;
+
+function renderSalesPace(force) {
+  if(force || !PACE_LOADED) {
+    PACE_LOADED = true;
+    loadSalesPace();
+    return;
+  }
+  drawSalesPace();
+}
+
+async function loadSalesPace() {
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/sales-pace`);
+    PACE_DATA = await r.json();
+  } catch(e) {
+    PACE_DATA = {articles:[], error: e.message, syncing:false};
+  }
+  drawSalesPace();
+  clearTimeout(pacePoll);
+  if(PACE_DATA.syncing) pacePoll = setTimeout(loadSalesPace, 4000);
+}
+
+function setPaceFilter(f) {
+  PACE_FILTER = f;
+  ['All','Down','Up','Flat'].forEach(k => {
+    const el = document.getElementById('paceFlt' + k);
+    if(!el) return;
+    const map = {All:'all', Down:'down', Up:'up', Flat:'flat'};
+    el.classList.toggle('on', map[k] === f);
+  });
+  drawSalesPace();
+}
+
+function paceDeltaHtml(d, unit) {
+  if(d == null) return '<span class="pace-delta-flat">—</span>';
+  const u = unit || '';
+  if(d > 0) return `<span class="pace-delta-up">+${fmt(d)}${u}</span>`;
+  if(d < 0) return `<span class="pace-delta-down">${fmt(d)}${u}</span>`;
+  return `<span class="pace-delta-flat">0</span>`;
+}
+
+function drawSalesPace() {
+  const info = document.getElementById('paceInfo');
+  const root = document.getElementById('paceRoot');
+  const cards = document.getElementById('paceCards');
+  const btn = document.getElementById('paceSyncBtn');
+  if(!root) return;
+
+  if(PACE_DATA.error) {
+    if(info) info.textContent = 'Ошибка: ' + PACE_DATA.error;
+    if(btn) btn.disabled = false;
+  } else if(PACE_DATA.syncing) {
+    if(info) info.textContent = 'Считаем темп…';
+    if(btn) btn.disabled = true;
+  } else {
+    const bits = [];
+    if(PACE_DATA.as_of) bits.push('сейчас: ' + PACE_DATA.as_of);
+    if(PACE_DATA.compare_as_of) bits.push('вчерашний снимок: ' + PACE_DATA.compare_as_of);
+    else bits.push('воронка: снимок за вчера ещё копится (нужен ~сутки)');
+    if(info) info.textContent = bits.join(' · ');
+    if(btn) btn.disabled = false;
+  }
+
+  let arts = [...(PACE_DATA.articles || [])];
+  const q = ((document.getElementById('paceSearch') || {}).value || '').toLowerCase().trim();
+  if(q) arts = arts.filter(a => String(a.vendor_code||'').toLowerCase().includes(q) || String(a.nm_id||'').includes(q) || String(a.name||'').toLowerCase().includes(q));
+  if(PACE_FILTER === 'down') arts = arts.filter(a => (a.orders_delta||0) < 0);
+  else if(PACE_FILTER === 'up') arts = arts.filter(a => (a.orders_delta||0) > 0);
+  else if(PACE_FILTER === 'flat') arts = arts.filter(a => (a.orders_delta||0) === 0);
+
+  const all = PACE_DATA.articles || [];
+  const downN = all.filter(a => (a.orders_delta||0) < 0).length;
+  const upN = all.filter(a => (a.orders_delta||0) > 0).length;
+  const sumDelta = all.reduce((s,a) => s + (a.orders_delta||0), 0);
+  if(cards) {
+    cards.innerHTML = [
+      ['Сейчас (МСК)', PACE_DATA.now_time || '—'],
+      ['Артикулов', fmt(all.length)],
+      ['Падают по заказам', fmt(downN), 'color:#B42318'],
+      ['Растут по заказам', fmt(upN), 'color:#027A48'],
+      ['Δ заказов всего', (sumDelta>0?'+':'') + fmt(sumDelta), sumDelta<0?'color:#B42318':(sumDelta>0?'color:#027A48':'')],
+    ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+  }
+
+  if(PACE_DATA.syncing && !all.length) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Тянем заказы и воронку с WB (до ~1–2 мин)…</span></div>';
+    return;
+  }
+  if(!arts.length) {
+    root.innerHTML = PACE_DATA.syncing
+      ? '<div class="loading"><div class="spinner"></div><span>Считаем…</span></div>'
+      : '<div class="empty">Нет данных. Нажми «Обновить».</div>';
+    return;
+  }
+
+  const tLabel = PACE_DATA.now_time ? ('сегодня до ' + PACE_DATA.now_time) : 'сегодня';
+  const yLabel = PACE_DATA.now_time ? ('вчера до ' + PACE_DATA.now_time) : 'вчера';
+
+  const body = arts.map((a,i) => {
+    const rowCls = (a.orders_delta||0) < 0 ? 'promo-row-need' : ((a.orders_delta||0) > 0 ? 'promo-row-in' : '');
+    return `<tr class="${rowCls}${i%2?' wh-even':''}">
+      <td class="mcol-art"><div class="art">${escapeHtml(String(a.vendor_code||''))}</div><div class="nmid">${a.nm_id||''}</div></td>
+      <td style="text-align:left;max-width:200px;font-size:12px;color:var(--wb-muted)">${escapeHtml(a.name||'—')}</td>
+      <td>${fmt(a.orders_today||0)}</td>
+      <td>${fmt(a.orders_yesterday||0)}</td>
+      <td>${paceDeltaHtml(a.orders_delta)}</td>
+      <td>${fmt(a.opens_today||0)}</td>
+      <td>${a.opens_delta==null?'—':fmt(a.opens_yesterday||0)}</td>
+      <td>${paceDeltaHtml(a.opens_delta)}</td>
+      <td>${fmt(a.cart_today||0)}</td>
+      <td>${a.cart_delta==null?'—':fmt(a.cart_yesterday||0)}</td>
+      <td>${paceDeltaHtml(a.cart_delta)}</td>
+    </tr>`;
+  }).join('');
+
+  root.innerHTML = `<div class="pace-hint">Сравнение <b>к тому же времени</b>: ${escapeHtml(tLabel)} vs ${escapeHtml(yLabel)} (Москва).
+    Заказы — из ленты WB по минутам. Показы и корзина — из воронки (WB обновляет раз в час); вчерашняя воронка появляется после первых суточных снимков.</div>
+    <div class="matrix-wrap"><table class="matrix promo-xls">
+      <thead><tr>
+        <th class="mcol-art" rowspan="2">Артикул</th>
+        <th rowspan="2">Название</th>
+        <th colspan="3">Заказы</th>
+        <th colspan="3">Показы карточки</th>
+        <th colspan="3">В корзину</th>
+      </tr><tr>
+        <th class="mhead">Сегодня</th><th class="mhead">Вчера</th><th class="mhead">Δ</th>
+        <th class="mhead">Сегодня</th><th class="mhead">Вчера</th><th class="mhead">Δ</th>
+        <th class="mhead">Сегодня</th><th class="mhead">Вчера</th><th class="mhead">Δ</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>`;
+}
+
+async function triggerSalesPaceSync() {
+  const btn = document.getElementById('paceSyncBtn');
+  const info = document.getElementById('paceInfo');
+  if(btn) btn.disabled = true;
+  if(info) info.textContent = 'Запросили WB…';
+  try {
+    await fetch(`${RAILWAY_URL}/api/sync-sales-pace`, { method: 'POST' });
+    PACE_DATA.syncing = true;
+    drawSalesPace();
+    clearTimeout(pacePoll);
+    pacePoll = setTimeout(loadSalesPace, 5000);
+  } catch(e) {
+    if(info) info.textContent = 'Ошибка запроса';
+    if(btn) btn.disabled = false;
+  }
 }
 
 // ─────────── Акции (Excel из Календаря акций WB) ───────────

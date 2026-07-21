@@ -2320,6 +2320,241 @@ def trigger_daily_sync(days: int = 30):
     threading.Thread(target=sync_article_daily_stats, args=(days,), daemon=True).start()
     return {"status": "started", "days": days}
 
+# ---------- Рост продаж: темп «сегодня до сейчас» vs «вчера до того же времени» ----------
+# Заказы — точно по времени из Statistics API.
+# Воронка (показы/корзина/заказы в аналитике) обновляется у WB раз в час — копим снимки
+# и сравниваем с ближайшим снимком сутки назад.
+SALES_PACE_CACHE = {
+    "articles": [], "as_of": None, "compare_as_of": None,
+    "syncing": False, "error": None, "updated_at": None,
+}
+SALES_PACE_SNAPS_KEY = "sales_pace_funnel_snaps"
+
+def _msk_now():
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Moscow")).replace(tzinfo=None)
+    except Exception:
+        return datetime.utcnow() + timedelta(hours=3)
+
+def _funnel_products_day(day_str: str, nm_ids: list = None) -> dict:
+    """Воронка за один день → {nm_id: {opens, cart, orders, vendor_code, name}}."""
+    if not WB_TOKEN:
+        return {}
+    out = {}
+    offset = 0
+    limit = 1000
+    for _ in range(20):
+        body = {
+            "selectedPeriod": {"start": day_str, "end": day_str},
+            "nmIds": nm_ids or [],
+            "brandNames": [], "subjectIds": [], "tagIds": [],
+            "orderBy": {"field": "orderCount", "mode": "desc"},
+            "limit": limit, "offset": offset,
+        }
+        try:
+            resp = httpx.post(
+                f"{WB_ANALYTICS_URL}/api/analytics/v3/sales-funnel/products",
+                headers=wb_headers(), json=body, timeout=40
+            )
+            if not resp.is_success:
+                logger.error(f"sales-pace funnel error {resp.status_code} {resp.text[:200]}")
+                break
+            products = resp.json().get("data", {}).get("products", []) or []
+        except Exception as e:
+            logger.error(f"sales-pace funnel exception: {e}")
+            break
+        if not products:
+            break
+        for p in products:
+            prod = p.get("product", {}) or {}
+            sel = (p.get("statistic", {}) or {}).get("selected", {}) or {}
+            nm = prod.get("nmId")
+            if nm is None:
+                continue
+            out[int(nm)] = {
+                "nm_id": int(nm),
+                "vendor_code": prod.get("vendorCode") or str(nm),
+                "name": prod.get("title") or "",
+                "opens": int(sel.get("openCount") or 0),
+                "cart": int(sel.get("cartCount") or 0),
+                "orders": int(sel.get("orderCount") or 0),
+            }
+        if len(products) < limit:
+            break
+        offset += limit
+        time.sleep(0.7)
+    return out
+
+def sync_sales_pace():
+    """Считает темп продаж по артикулам и сохраняет снимок воронки."""
+    if not WB_TOKEN:
+        SALES_PACE_CACHE["error"] = "WB_TOKEN не задан"
+        return
+    if SALES_PACE_CACHE.get("syncing"):
+        return
+    SALES_PACE_CACHE["syncing"] = True
+    SALES_PACE_CACHE["error"] = None
+    try:
+        now = _msk_now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        yest_start = today_start - timedelta(days=1)
+        yest_same = yest_start + (now - today_start)
+        today_str = today_start.strftime("%Y-%m-%d")
+        yest_str = yest_start.strftime("%Y-%m-%d")
+
+        # ── Заказы: точно до текущего времени / до того же времени вчера ──
+        date_from = yest_start.strftime("%Y-%m-%dT00:00:00")
+        orders = fetch_supplier_feed("/api/v1/supplier/orders", date_from, max_pages=3)
+        today_ord = {}
+        yest_ord = {}
+        vc_from_orders = {}
+        for o in orders:
+            nm = o.get("nmId")
+            if not nm:
+                continue
+            d = parse_wb_dt(o.get("date", ""))
+            if d is None:
+                continue
+            if o.get("supplierArticle"):
+                vc_from_orders[nm] = o["supplierArticle"]
+            if today_start <= d <= now:
+                today_ord[nm] = today_ord.get(nm, 0) + 1
+            elif yest_start <= d <= yest_same:
+                yest_ord[nm] = yest_ord.get(nm, 0) + 1
+
+        # ── Воронка сегодня (кумулятив с начала дня) ──
+        funnel_today = _funnel_products_day(today_str)
+
+        # Снимки: сохраняем текущую воронку, ищем вчерашний около того же часа
+        hour_key = now.strftime("%Y-%m-%dT%H")
+        snaps = get_setting_json(SALES_PACE_SNAPS_KEY, []) or []
+        if not isinstance(snaps, list):
+            snaps = []
+        snap_payload = {
+            "hour_key": hour_key,
+            "as_of": now.strftime("%Y-%m-%d %H:%M"),
+            "day": today_str,
+            "products": {
+                str(nm): {"opens": v["opens"], "cart": v["cart"], "orders": v["orders"]}
+                for nm, v in funnel_today.items()
+            },
+        }
+        snaps = [s for s in snaps if s.get("hour_key") != hour_key]
+        snaps.append(snap_payload)
+        # храним ~3 суток почасовых снимков
+        cutoff_day = (today_start - timedelta(days=3)).strftime("%Y-%m-%d")
+        snaps = [s for s in snaps if (s.get("day") or "") >= cutoff_day]
+        snaps.sort(key=lambda s: s.get("hour_key") or "")
+        save_setting_value(SALES_PACE_SNAPS_KEY, snaps)
+
+        target_yest_hour = yest_same.strftime("%Y-%m-%dT%H")
+        yest_snap = None
+        for s in snaps:
+            if s.get("day") == yest_str and (s.get("hour_key") or "") <= target_yest_hour:
+                yest_snap = s
+        # если нет снимка ≤ часа — возьмём любой за вчера ближайший
+        if yest_snap is None:
+            yest_candidates = [s for s in snaps if s.get("day") == yest_str]
+            if yest_candidates:
+                yest_snap = min(
+                    yest_candidates,
+                    key=lambda s: abs(
+                        (datetime.strptime(s["hour_key"], "%Y-%m-%dT%H") - yest_same.replace(minute=0, second=0, microsecond=0)).total_seconds()
+                    ) if s.get("hour_key") else 10**9
+                )
+
+        funnel_yest = (yest_snap or {}).get("products") or {}
+        compare_as_of = (yest_snap or {}).get("as_of")
+
+        # vendor map fallback
+        try:
+            st = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code",
+                headers=sb_headers(), timeout=15
+            )
+            nm_to_vendor = {r["nm_id"]: r["vendor_code"] for r in st.json()} if st.is_success else {}
+        except Exception:
+            nm_to_vendor = {}
+
+        all_nms = set(today_ord) | set(yest_ord) | set(funnel_today) | {int(k) for k in funnel_yest.keys() if str(k).isdigit()}
+        articles = []
+        for nm in all_nms:
+            ft = funnel_today.get(nm) or {}
+            fy = funnel_yest.get(str(nm)) or funnel_yest.get(nm) or {}
+            o_t = today_ord.get(nm, 0)
+            o_y = yest_ord.get(nm, 0)
+            opens_t = int(ft.get("opens") or 0)
+            opens_y = int(fy.get("opens") or 0)
+            cart_t = int(ft.get("cart") or 0)
+            cart_y = int(fy.get("cart") or 0)
+            # для заказов приоритет — Statistics (точнее по времени)
+            articles.append({
+                "nm_id": nm,
+                "vendor_code": ft.get("vendor_code") or nm_to_vendor.get(nm) or vc_from_orders.get(nm) or str(nm),
+                "name": ft.get("name") or "",
+                "orders_today": o_t,
+                "orders_yesterday": o_y,
+                "orders_delta": o_t - o_y,
+                "opens_today": opens_t,
+                "opens_yesterday": opens_y,
+                "opens_delta": opens_t - opens_y if yest_snap else None,
+                "cart_today": cart_t,
+                "cart_yesterday": cart_y,
+                "cart_delta": cart_t - cart_y if yest_snap else None,
+                "funnel_compare_ready": bool(yest_snap),
+            })
+
+        # падение заказов — выше
+        articles.sort(key=lambda a: (a["orders_delta"], a["orders_today"], str(a["vendor_code"])))
+
+        SALES_PACE_CACHE.update({
+            "articles": articles,
+            "as_of": now.strftime("%d.%m.%Y %H:%M"),
+            "compare_as_of": compare_as_of,
+            "today": today_str,
+            "yesterday": yest_str,
+            "now_time": now.strftime("%H:%M"),
+            "updated_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
+            "funnel_snaps": len([s for s in snaps if s.get("day") == yest_str]),
+            "syncing": False,
+            "error": None,
+        })
+        logger.info(f"sales-pace: {len(articles)} arts, as_of={SALES_PACE_CACHE['as_of']}, yest_snap={compare_as_of}")
+    except Exception as e:
+        logger.error(f"sync_sales_pace error: {e}")
+        SALES_PACE_CACHE["error"] = str(e)
+        SALES_PACE_CACHE["syncing"] = False
+    finally:
+        SALES_PACE_CACHE["syncing"] = False
+
+@app.get("/api/sales-pace")
+def get_sales_pace(refresh: bool = False):
+    if refresh or not SALES_PACE_CACHE.get("articles"):
+        if not SALES_PACE_CACHE.get("syncing"):
+            import threading
+            threading.Thread(target=sync_sales_pace, daemon=True).start()
+    return {
+        "articles": SALES_PACE_CACHE.get("articles") or [],
+        "as_of": SALES_PACE_CACHE.get("as_of"),
+        "compare_as_of": SALES_PACE_CACHE.get("compare_as_of"),
+        "today": SALES_PACE_CACHE.get("today"),
+        "yesterday": SALES_PACE_CACHE.get("yesterday"),
+        "now_time": SALES_PACE_CACHE.get("now_time"),
+        "updated_at": SALES_PACE_CACHE.get("updated_at"),
+        "funnel_snaps": SALES_PACE_CACHE.get("funnel_snaps"),
+        "syncing": SALES_PACE_CACHE.get("syncing", False),
+        "error": SALES_PACE_CACHE.get("error"),
+    }
+
+@app.post("/api/sync-sales-pace")
+def trigger_sales_pace_sync():
+    import threading
+    if SALES_PACE_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    threading.Thread(target=sync_sales_pace, daemon=True).start()
+    return {"status": "started"}
+
 scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
 scheduler.add_job(sync_stock, "interval", hours=3, id="sync_stock")
@@ -2327,6 +2562,7 @@ scheduler.add_job(sync_supply, "interval", hours=4, id="sync_supply")
 scheduler.add_job(sync_ads, "interval", hours=4, id="sync_ads")
 scheduler.add_job(lambda: sync_article_daily_stats(30), "interval", hours=6, id="sync_daily")
 scheduler.add_job(sync_promotions, "interval", hours=6, id="sync_promotions")
+scheduler.add_job(sync_sales_pace, "interval", hours=1, id="sync_sales_pace")
 scheduler.start()
 
 @app.get("/")
