@@ -954,6 +954,16 @@ AD_TYPE_NAMES = {
     6: "Каталог", 8: "Автоматическая", 9: "Поиск"
 }
 
+ADS_CACHE = {
+    "campaigns": [],
+    "updated_at": None,
+    "syncing": False,
+    "error": None,
+    "window_days": None,
+    "period_begin": None,
+    "period_end": None,
+}
+
 def fetch_campaigns_meta() -> dict:
     """Возвращает {advertId: {name, type_id, type_name}} для активных/паузных/завершённых кампаний."""
     try:
@@ -967,44 +977,69 @@ def fetch_campaigns_meta() -> dict:
         return {}
 
     meta = {}
-    for group in data.get("adverts", []):
+    for group in data.get("adverts", []) or []:
         type_id = group.get("type", 0)
         type_name = AD_TYPE_NAMES.get(type_id, f"Тип {type_id}")
-        if group.get("status") in (7, 9, 11):
-            for item in group.get("advert_list", []):
-                aid = item.get("advertId")
-                if aid:
-                    meta[aid] = {
-                        "type_id": type_id,
-                        "type_name": type_name,
-                        "name": f"{type_name} #{aid}"  # имя уточним отдельным запросом
-                    }
+        # fullstats отдаёт только 7/9/11
+        if group.get("status") not in (7, 9, 11):
+            continue
+        for item in group.get("advert_list", []) or []:
+            aid = item.get("advertId")
+            if aid:
+                meta[aid] = {
+                    "type_id": type_id,
+                    "type_name": type_name,
+                    "name": f"{type_name} #{aid}",
+                }
 
-    # Получаем имена кампаний батчами по 50
     all_ids = list(meta.keys())
     for i in range(0, len(all_ids), 50):
-        batch = all_ids[i:i+50]
+        batch = all_ids[i:i + 50]
+        # сначала новый endpoint, потом старый
+        named = False
         try:
-            resp = httpx.post(
-                f"{WB_PROMOTION_URL}/adv/v1/promotion/adverts",
-                json=batch, headers=wb_headers(), timeout=20
+            resp = httpx.get(
+                f"{WB_PROMOTION_URL}/api/advert/v2/adverts",
+                headers=wb_headers(),
+                params={"ids": ",".join(str(x) for x in batch)},
+                timeout=20,
             )
             if resp.is_success:
-                for camp in resp.json() or []:
-                    aid = camp.get("advertId")
+                payload = resp.json() or []
+                items = payload if isinstance(payload, list) else (payload.get("adverts") or payload.get("data") or [])
+                for camp in items:
+                    aid = camp.get("advertId") or camp.get("id")
                     if aid and aid in meta:
-                        name = camp.get("name", "").strip()
+                        name = (camp.get("name") or "").strip()
                         if name:
                             meta[aid]["name"] = name
+                            named = True
         except Exception as e:
-            logger.error(f"WB promotion/adverts exception: {e}")
+            logger.error(f"WB advert/v2/adverts exception: {e}")
+
+        if not named:
+            try:
+                resp = httpx.post(
+                    f"{WB_PROMOTION_URL}/adv/v1/promotion/adverts",
+                    json=batch, headers=wb_headers(), timeout=20
+                )
+                if resp.is_success:
+                    for camp in resp.json() or []:
+                        aid = camp.get("advertId")
+                        if aid and aid in meta:
+                            name = (camp.get("name") or "").strip()
+                            if name:
+                                meta[aid]["name"] = name
+            except Exception as e:
+                logger.error(f"WB promotion/adverts exception: {e}")
         if i + 50 < len(all_ids):
             time.sleep(1)
     return meta
 
-def fetch_ad_stats_per_campaign(ids: list, begin_date: str, end_date: str) -> dict:
-    """Тянет /adv/v3/fullstats и возвращает {(nm_id, campaign_id): {...метрики...}}."""
+def fetch_ad_stats_by_campaign(ids: list, begin_date: str, end_date: str) -> dict:
+    """Тянет /adv/v3/fullstats и возвращает {campaign_id: метрики} по итогам кампании."""
     agg = {}
+    errors = []
     for i in range(0, len(ids), 50):
         batch = ids[i:i + 50]
         try:
@@ -1012,126 +1047,226 @@ def fetch_ad_stats_per_campaign(ids: list, begin_date: str, end_date: str) -> di
                 f"{WB_PROMOTION_URL}/adv/v3/fullstats",
                 headers=wb_headers(),
                 params={"ids": ",".join(str(x) for x in batch), "beginDate": begin_date, "endDate": end_date},
-                timeout=30
+                timeout=60,
             )
+            if resp.status_code == 429:
+                logger.warning("WB fullstats 429 — ждём 25с и повторяем батч")
+                time.sleep(25)
+                resp = httpx.get(
+                    f"{WB_PROMOTION_URL}/adv/v3/fullstats",
+                    headers=wb_headers(),
+                    params={"ids": ",".join(str(x) for x in batch), "beginDate": begin_date, "endDate": end_date},
+                    timeout=60,
+                )
             if not resp.is_success:
-                logger.error(f"WB fullstats error {resp.status_code} {resp.text[:300]}")
+                msg = f"fullstats {resp.status_code}: {resp.text[:300]}"
+                logger.error(f"WB {msg}")
+                errors.append(msg)
                 continue
             campaigns = resp.json()
         except Exception as e:
             logger.error(f"WB fullstats exception: {e}")
+            errors.append(str(e))
             continue
 
         for camp in campaigns or []:
             campaign_id = camp.get("advertId")
             if not campaign_id:
                 continue
-            for day in camp.get("days", []):
-                for app in day.get("apps", []):
-                    for nm in app.get("nms", []):
-                        nm_id = nm.get("nmId")
-                        if not nm_id:
-                            continue
-                        key = (nm_id, campaign_id)
-                        a = agg.setdefault(key, {
-                            "views": 0, "clicks": 0, "atbs": 0,
-                            "orders": 0, "spend": 0.0, "revenue": 0.0
-                        })
-                        a["views"]   += nm.get("views", 0) or 0
-                        a["clicks"]  += nm.get("clicks", 0) or 0
-                        a["atbs"]    += nm.get("atbs", 0) or 0
-                        a["orders"]  += nm.get("orders", 0) or 0
-                        a["spend"]   += nm.get("sum", 0) or 0
-                        # sum_price = выручка (стоимость заказов) — для ДРР
-                        a["revenue"] += nm.get("sum_price", 0) or 0
+            # топ-уровень fullstats уже содержит итоги по кампании
+            views = int(camp.get("views") or 0)
+            clicks = int(camp.get("clicks") or 0)
+            atbs = int(camp.get("atbs") or 0)
+            orders = int(camp.get("orders") or 0)
+            spend = float(camp.get("sum") or 0)
+            revenue = float(camp.get("sum_price") or 0)
+
+            # если топ пустой — суммируем days (на всякий)
+            if not (views or clicks or orders or spend) and camp.get("days"):
+                for day in camp.get("days") or []:
+                    views += int(day.get("views") or 0)
+                    clicks += int(day.get("clicks") or 0)
+                    atbs += int(day.get("atbs") or 0)
+                    orders += int(day.get("orders") or 0)
+                    spend += float(day.get("sum") or 0)
+                    revenue += float(day.get("sum_price") or 0)
+
+            a = agg.setdefault(campaign_id, {
+                "views": 0, "clicks": 0, "atbs": 0,
+                "orders": 0, "spend": 0.0, "revenue": 0.0,
+            })
+            a["views"] += views
+            a["clicks"] += clicks
+            a["atbs"] += atbs
+            a["orders"] += orders
+            a["spend"] += spend
+            a["revenue"] += revenue
 
         if i + 50 < len(ids):
-            time.sleep(7)  # лимит 3 запроса / 20 сек
+            time.sleep(21)  # лимит WB: интервал 20с
+    if errors and not agg:
+        raise RuntimeError("; ".join(errors[:3]))
     return agg
 
 def sync_ads():
+    """Синк рекламы: список кампаний с затратами/показами/ДРР/заказами."""
     if not WB_TOKEN:
+        ADS_CACHE["error"] = "WB_TOKEN не задан"
         logger.error("WB_TOKEN not set")
         return
-    logger.info("Starting ads (promotion) sync...")
-    window_days = get_setting_int("ads_window_days", 30)
-    window_days = min(window_days, 31)
-    end_date = datetime.now(timezone.utc).date()
-    begin_date = end_date - timedelta(days=window_days - 1)
-
-    campaigns_meta = fetch_campaigns_meta()
-    if not campaigns_meta:
-        logger.info("Ads sync: no eligible campaigns")
-        httpx.delete(f"{SUPABASE_URL}/rest/v1/ad_stats?id=gte.0", headers=sb_headers(), timeout=15)
+    if ADS_CACHE.get("syncing"):
         return
-
-    logger.info(f"Ads sync: {len(campaigns_meta)} campaigns")
-    agg = fetch_ad_stats_per_campaign(list(campaigns_meta.keys()), begin_date.isoformat(), end_date.isoformat())
-
+    ADS_CACHE["syncing"] = True
+    ADS_CACHE["error"] = None
     try:
-        st = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code", headers=sb_headers(), timeout=15)
-        nm_to_vendor = {r["nm_id"]: r["vendor_code"] for r in st.json()} if st.is_success else {}
-    except Exception as e:
-        logger.error(f"sync_ads: stock_totals fetch error {e}")
-        nm_to_vendor = {}
+        logger.info("Starting ads (promotion) sync...")
+        window_days = get_setting_int("ads_window_days", 30)
+        window_days = min(max(window_days, 1), 31)
+        end_date = datetime.now(timezone.utc).date()
+        begin_date = end_date - timedelta(days=window_days - 1)
 
-    # Добираем маппинг из feedbacks (там article = артикул продавца) для тех nm_id которых нет в stock_totals
-    try:
-        fb = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/feedbacks?select=nm_id,article&nm_id=not.is.null&article=not.is.null",
-            headers=sb_headers(), timeout=15
+        campaigns_meta = fetch_campaigns_meta()
+        if not campaigns_meta:
+            ADS_CACHE["error"] = "Нет активных/паузных/завершённых кампаний (статусы 7/9/11)"
+            logger.info("Ads sync: no eligible campaigns")
+            ADS_CACHE["syncing"] = False
+            return
+
+        logger.info(f"Ads sync: {len(campaigns_meta)} campaigns, {begin_date}…{end_date}")
+        agg = fetch_ad_stats_by_campaign(
+            list(campaigns_meta.keys()), begin_date.isoformat(), end_date.isoformat()
         )
-        if fb.is_success:
-            for r in fb.json():
-                nm = r.get("nm_id")
-                art = r.get("article", "")
-                if nm and art and nm not in nm_to_vendor:
-                    nm_to_vendor[nm] = art
+
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        campaigns = []
+        rows = []
+        for campaign_id, meta in campaigns_meta.items():
+            a = agg.get(campaign_id) or {
+                "views": 0, "clicks": 0, "atbs": 0, "orders": 0, "spend": 0.0, "revenue": 0.0,
+            }
+            views, clicks, atbs, orders = a["views"], a["clicks"], a["atbs"], a["orders"]
+            spend, revenue = round(a["spend"], 2), round(a["revenue"], 2)
+            drr = round(spend / revenue * 100, 2) if revenue else 0
+            ctr = round(clicks / views * 100, 2) if views else 0
+            cpc = round(spend / clicks, 2) if clicks else 0
+            cr = round(orders / clicks * 100, 2) if clicks else 0
+            name = meta.get("name") or f"#{campaign_id}"
+            item = {
+                "campaign_id": campaign_id,
+                "campaign_name": name,
+                "campaign_type": meta.get("type_name") or "Неизвестно",
+                "views": views,
+                "clicks": clicks,
+                "atbs": atbs,
+                "orders": orders,
+                "spend": spend,
+                "revenue": revenue,
+                "drr": drr,
+                "ctr": ctr,
+                "cpc": cpc,
+                "cr": cr,
+                "cv_atb": round(atbs / clicks * 100, 2) if clicks else 0,
+                "cv_ord": round(orders / atbs * 100, 2) if atbs else 0,
+                "period_days": window_days,
+                "updated_at": now_iso,
+                # совместимость со старым фронтом / supabase
+                "vendor_code": name,
+                "nm_id": campaign_id,
+            }
+            campaigns.append(item)
+            rows.append(item)
+
+        campaigns.sort(key=lambda c: (-(c["spend"] or 0), str(c["campaign_name"])))
+
+        ADS_CACHE["campaigns"] = campaigns
+        ADS_CACHE["updated_at"] = now.strftime("%d.%m.%Y %H:%M")
+        ADS_CACHE["window_days"] = window_days
+        ADS_CACHE["period_begin"] = begin_date.isoformat()
+        ADS_CACHE["period_end"] = end_date.isoformat()
+        ADS_CACHE["error"] = None
+
+        # В БД пишем только если есть что писать; старые данные не трогаем при пустом результате-ошибке
+        if rows:
+            try:
+                httpx.delete(f"{SUPABASE_URL}/rest/v1/ad_stats?id=gte.0", headers=sb_headers(), timeout=15)
+                saved = 0
+                for i in range(0, len(rows), 200):
+                    batch = rows[i:i + 200]
+                    resp = httpx.post(f"{SUPABASE_URL}/rest/v1/ad_stats", json=batch, headers=sb_headers(), timeout=30)
+                    if resp.is_success:
+                        saved += len(batch)
+                    else:
+                        logger.error(f"ad_stats insert error {resp.status_code} {resp.text[:300]}")
+                logger.info(f"Ads sync: saved {saved}/{len(rows)} rows to supabase")
+            except Exception as e:
+                logger.error(f"Ads sync supabase write error: {e}")
+
+        httpx.post(
+            f"{SUPABASE_URL}/rest/v1/settings",
+            json={"key": "last_ads_sync", "value": ADS_CACHE["updated_at"], "updated_at": now_iso},
+            headers=sb_headers(), timeout=10,
+        )
+        logger.info(f"Ads sync complete. Campaigns: {len(campaigns)}")
     except Exception as e:
-        logger.error(f"sync_ads: feedbacks fallback error {e}")
+        logger.error(f"sync_ads error: {e}")
+        ADS_CACHE["error"] = str(e)
+    finally:
+        ADS_CACHE["syncing"] = False
 
-    now = datetime.now(timezone.utc).isoformat()
-    rows = []
-    for (nm_id, campaign_id), a in agg.items():
-        camp = campaigns_meta.get(campaign_id, {})
-        views, clicks, atbs, orders = a["views"], a["clicks"], a["atbs"], a["orders"]
-        spend, revenue = round(a["spend"], 2), round(a["revenue"], 2)
-        ctr  = round(clicks / views * 100, 2) if views else 0
-        cpc  = round(spend / clicks, 2) if clicks else 0
-        cr   = round(orders / clicks * 100, 2) if clicks else 0
-        cv_atb  = round(atbs / clicks * 100, 2) if clicks else 0   # клики → корзина
-        cv_ord  = round(orders / atbs * 100, 2) if atbs else 0     # корзина → заказ
-        drr  = round(spend / revenue * 100, 2) if revenue else 0
-        rows.append({
-            "vendor_code":   nm_to_vendor.get(nm_id) or str(nm_id),
-            "nm_id":         nm_id,
-            "campaign_id":   campaign_id,
-            "campaign_name": camp.get("name", f"#{campaign_id}"),
-            "campaign_type": camp.get("type_name", "Неизвестно"),
-            "views": views, "clicks": clicks, "atbs": atbs,
-            "orders": orders, "spend": spend, "revenue": revenue,
-            "ctr": ctr, "cpc": cpc, "cr": cr,
-            "cv_atb": cv_atb, "cv_ord": cv_ord, "drr": drr,
-            "period_days": window_days,
-            "updated_at": now,
-        })
-
-    httpx.delete(f"{SUPABASE_URL}/rest/v1/ad_stats?id=gte.0", headers=sb_headers(), timeout=15)
-    saved = 0
-    for i in range(0, len(rows), 300):
-        batch = rows[i:i + 300]
-        resp = httpx.post(f"{SUPABASE_URL}/rest/v1/ad_stats", json=batch, headers=sb_headers(), timeout=30)
-        if resp.is_success:
-            saved += len(batch)
-        else:
-            logger.error(f"ad_stats insert error {resp.status_code} {resp.text[:300]}")
-
-    httpx.post(
-        f"{SUPABASE_URL}/rest/v1/settings",
-        json={"key": "last_ads_sync", "value": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"), "updated_at": now},
-        headers=sb_headers(), timeout=10
-    )
-    logger.info(f"Ads sync complete. Rows saved: {saved}")
+@app.get("/api/ads")
+def get_ads(refresh: bool = False):
+    """Список кампаний с метриками. refresh=1 — запустить синк."""
+    if refresh and not ADS_CACHE.get("syncing"):
+        import threading
+        threading.Thread(target=sync_ads, daemon=True).start()
+    camps = ADS_CACHE.get("campaigns") or []
+    # если кэш пуст — подтянем из supabase (после рестарта)
+    if not camps and not ADS_CACHE.get("syncing"):
+        try:
+            ads = httpx.get(f"{SUPABASE_URL}/rest/v1/ad_stats?select=*", headers=sb_headers(), timeout=20)
+            if ads.is_success:
+                raw = ads.json() or []
+                by = {}
+                for r in raw:
+                    cid = r.get("campaign_id")
+                    if cid is None:
+                        continue
+                    if cid not in by:
+                        by[cid] = {
+                            "campaign_id": cid,
+                            "campaign_name": r.get("campaign_name") or f"#{cid}",
+                            "campaign_type": r.get("campaign_type") or "",
+                            "views": 0, "clicks": 0, "atbs": 0, "orders": 0,
+                            "spend": 0.0, "revenue": 0.0, "drr": 0,
+                            "vendor_code": r.get("campaign_name") or str(cid),
+                            "nm_id": cid,
+                        }
+                    c = by[cid]
+                    c["views"] += r.get("views") or 0
+                    c["clicks"] += r.get("clicks") or 0
+                    c["atbs"] += r.get("atbs") or 0
+                    c["orders"] += r.get("orders") or 0
+                    c["spend"] += float(r.get("spend") or 0)
+                    c["revenue"] += float(r.get("revenue") or 0)
+                for c in by.values():
+                    c["spend"] = round(c["spend"], 2)
+                    c["revenue"] = round(c["revenue"], 2)
+                    c["drr"] = round(c["spend"] / c["revenue"] * 100, 2) if c["revenue"] else 0
+                camps = sorted(by.values(), key=lambda x: (-x["spend"], str(x["campaign_name"])))
+                ADS_CACHE["campaigns"] = camps
+        except Exception as e:
+            logger.error(f"get_ads supabase fallback: {e}")
+    return {
+        "campaigns": camps,
+        "ad_stats": camps,  # алиас под старый фронт
+        "updated_at": ADS_CACHE.get("updated_at"),
+        "syncing": ADS_CACHE.get("syncing", False),
+        "error": ADS_CACHE.get("error"),
+        "window_days": ADS_CACHE.get("window_days"),
+        "period_begin": ADS_CACHE.get("period_begin"),
+        "period_end": ADS_CACHE.get("period_end"),
+    }
 
 # ---------- Календарь акций (Промо) ----------
 # Данные акций держим в кэше процесса: WB жёстко лимитирует Календарь акций
@@ -2757,6 +2892,8 @@ def trigger_supply_full_sync():
 @app.post("/api/sync-ads")
 def trigger_ads_sync():
     import threading
+    if ADS_CACHE.get("syncing"):
+        return {"status": "already_running"}
     threading.Thread(target=sync_ads, daemon=True).start()
     return {"status": "started"}
 
@@ -2873,12 +3010,15 @@ def dashboard_data():
         logger.error(f"dashboard-data supply_report error: {e}")
 
     try:
-        ads = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/ad_stats?select=*",
-            headers=sb_headers(), timeout=20
-        )
-        if ads.is_success:
-            result["ad_stats"] = ads.json()
+        if ADS_CACHE.get("campaigns"):
+            result["ad_stats"] = ADS_CACHE["campaigns"]
+        else:
+            ads = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/ad_stats?select=*",
+                headers=sb_headers(), timeout=20
+            )
+            if ads.is_success:
+                result["ad_stats"] = ads.json()
     except Exception as e:
         logger.error(f"dashboard-data ad_stats error: {e}")
 

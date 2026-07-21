@@ -617,10 +617,29 @@ function showPage(id, btn) {
   if(id === 'products') renderProducts();
   if(id === 'supply-recs') renderSupplyRecs();
   if(id === 'own-warehouse') renderOwnWarehouse(true);
-  if(id === 'ads') renderAds();
+  if(id === 'ads') loadAdsPage();
   if(id === 'competitors') renderCompetitors();
   if(id === 'promotions') renderPromotions();
   if(id === 'sales-pace') renderSalesPace(true);
+}
+
+async function loadAdsPage() {
+  renderAds();
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/ads`);
+    const d = await r.json();
+    AD_STATS = d.campaigns || d.ad_stats || AD_STATS || [];
+    const info = document.getElementById('adsSyncInfo');
+    if(d.syncing) {
+      if(info) info.textContent = 'Считаем статистику у WB…';
+      triggerAdsSync(); // продолжит поллинг
+    } else if(d.updated_at && info && !info.textContent) {
+      info.textContent = 'Обновлено ' + d.updated_at;
+    } else if(d.error && info) {
+      info.textContent = 'Ошибка: ' + d.error;
+    }
+    renderAds();
+  } catch(e) {}
 }
 
 async function loadData() {
@@ -1006,14 +1025,37 @@ async function triggerAdsSync() {
   const btn = document.getElementById('adsSyncBtn');
   const info = document.getElementById('adsSyncInfo');
   if(btn) btn.disabled = true;
-  if(info) info.textContent = 'Запросили статистику у WB...';
+  if(info) info.textContent = 'Запросили статистику у WB…';
   try {
     await fetch(`${RAILWAY_URL}/api/sync-ads`, { method: 'POST' });
-    setTimeout(async () => {
-      await loadData();
-      if(document.getElementById('page-ads').classList.contains('on')) renderAds();
-      if(btn) btn.disabled = false;
-    }, 30000);
+    clearTimeout(window._adsPoll);
+    let tries = 0;
+    const poll = async () => {
+      tries++;
+      try {
+        const r = await fetch(`${RAILWAY_URL}/api/ads`);
+        const d = await r.json();
+        AD_STATS = d.campaigns || d.ad_stats || [];
+        if(d.syncing) {
+          if(info) info.textContent = 'Считаем статистику у WB…';
+          if(tries < 60) window._adsPoll = setTimeout(poll, 3000);
+          else {
+            if(info) info.textContent = d.error || 'Долго нет ответа — нажми ещё раз';
+            if(btn) btn.disabled = false;
+          }
+        } else {
+          if(info) info.textContent = d.error
+            ? ('Ошибка: ' + d.error)
+            : (d.updated_at ? ('Обновлено ' + d.updated_at) : '');
+          if(btn) btn.disabled = false;
+          renderAds();
+        }
+      } catch(e) {
+        if(info) info.textContent = 'Ошибка загрузки';
+        if(btn) btn.disabled = false;
+      }
+    };
+    window._adsPoll = setTimeout(poll, 2000);
   } catch(e) {
     if(info) info.textContent = 'Ошибка запроса';
     if(btn) btn.disabled = false;
