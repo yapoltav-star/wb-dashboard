@@ -274,7 +274,7 @@ td.tc{text-align:center}
   </div>
   <div class="tb-nav">
     <div class="tb-nav-item">Рост продаж</div>
-    <div class="tb-nav-item on" onclick="showSection('products',this)">Товары и цены</div>
+    <div class="tb-nav-item on" onclick="showSection('products',this)">Отзывы и оценки</div>
     <div class="tb-nav-item" onclick="showSection('promotions',this)">Акции</div>
     <div class="tb-nav-item" onclick="showSection('supplies',this)">Остатки и поставки</div>
     <div class="tb-nav-item" onclick="showSection('analytics',this)">Конкуренты</div>
@@ -291,8 +291,8 @@ td.tc{text-align:center}
 </div>
 
 <div class="subnav" id="subnav-products">
-  <div class="sn-item on" onclick="showPage('products',this)">Товары</div>
-  <div class="sn-item" onclick="showPage('ratings',this)">Отзывы и вопросы</div>
+  <div class="sn-item on" onclick="showPage('products',this)">Последние отзывы</div>
+  <div class="sn-item" onclick="showPage('ratings',this)">Оценки</div>
   <div class="sn-item" onclick="showPage('groups',this)">Склейки</div>
 </div>
 <div class="subnav" id="subnav-supplies" style="display:none">
@@ -596,7 +596,7 @@ async function loadData() {
     // Groups
     GROUPS = {};
     (data.groups || []).forEach(g => { GROUPS[g.name] = g.articles || []; });
-    Object.keys(GROUPS).forEach(g => { if(EXP[g]===undefined) EXP[g]=true; });
+    Object.keys(GROUPS).forEach(g => { if(EXP[g]===undefined) EXP[g]=false; });
 
     // Official ratings
     RATINGS = {};
@@ -666,7 +666,7 @@ async function loadData() {
     if(asEl) asEl.textContent = (data.settings || {}).last_ads_sync ? 'Обновлено: ' + data.settings.last_ads_sync : 'Данные ещё не загружены';
 
     if(EXP && Object.keys(EXP).length === 0) {
-      Object.keys(GROUPS).concat(['Без склейки']).forEach(g => { EXP[g] = true; });
+      Object.keys(GROUPS).concat(['Без склейки']).forEach(g => { EXP[g] = false; });
     }
 
     renderCards();
@@ -1185,7 +1185,7 @@ function gblock(grp, arts) {
   const avg = weightedTotal ? Math.round(weightedSum/weightedTotal*100)/100 : null;
   const y1 = tot.r1;
   const gi = Object.keys(GROUPS).concat(['Без склейки']).indexOf(grp);
-  const isOpen = EXP[grp];
+  const isOpen = EXP[grp] === true;
   const officialInGroup = arts.filter(a => a.is_official).length;
 
   const sorted = [...arts].sort((a,b) => {
