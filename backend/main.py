@@ -2559,13 +2559,16 @@ def sync_sales_pace(period: str = "day"):
         except Exception:
             nm_to_vendor = {}
 
-        all_nms = set(cur_ord) | set(prev_ord) | set(funnel_cur) | set(funnel_prev)
+        # только артикулы с заказами в текущем или прошлом окне
+        all_nms = set(cur_ord) | set(prev_ord)
         articles = []
         for nm in all_nms:
             ft = funnel_cur.get(nm) or {}
             fy = funnel_prev.get(nm) or {}
             o_t = cur_ord.get(nm, 0)
             o_y = prev_ord.get(nm, 0)
+            if o_t <= 0 and o_y <= 0:
+                continue
             opens_t = int(ft.get("opens") or 0)
             opens_y = int(fy.get("opens") or 0)
             cart_t = int(ft.get("cart") or 0)

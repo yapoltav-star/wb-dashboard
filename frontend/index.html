@@ -2130,7 +2130,7 @@ function drawSalesPace() {
     if(btn) btn.disabled = false;
   }
 
-  let arts = [...(PACE_DATA.articles || [])];
+  let arts = [...(PACE_DATA.articles || [])].filter(a => (a.orders_today||0) > 0 || (a.orders_yesterday||0) > 0);
   const q = ((document.getElementById('paceSearch') || {}).value || '').toLowerCase().trim();
   if(q) arts = arts.filter(a => String(a.vendor_code||'').toLowerCase().includes(q) || String(a.nm_id||'').includes(q) || String(a.name||'').toLowerCase().includes(q));
   if(PACE_FILTER === 'down') arts = arts.filter(a => (a.orders_delta||0) < 0);
@@ -2171,7 +2171,7 @@ function drawSalesPace() {
   });
   arts = [...pinned, ...unpinned];
 
-  const all = PACE_DATA.articles || [];
+  const all = (PACE_DATA.articles || []).filter(a => (a.orders_today||0) > 0 || (a.orders_yesterday||0) > 0);
   const downN = all.filter(a => (a.orders_delta||0) < 0).length;
   const upN = all.filter(a => (a.orders_delta||0) > 0).length;
   const sumDelta = all.reduce((s,a) => s + (a.orders_delta||0), 0);
