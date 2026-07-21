@@ -2002,11 +2002,52 @@ function setPromoExcelFilter(f) {
   drawPromoExcel();
 }
 
+function promoEffectivePrice(a) {
+  if(!a) return null;
+  if(a.price_sale != null) return a.price_sale;
+  if(a.price != null && a.cur_discount != null)
+    return Math.round(Number(a.price) * (100 - Number(a.cur_discount)) / 100);
+  return a.price != null ? Number(a.price) : null;
+}
+
+function promoFixArticle(a) {
+  // Пересчёт на лету: старые сессии в localStorage считали delta от розницы без скидки
+  const copy = {...a};
+  const eff = promoEffectivePrice(copy);
+  copy.price_sale = eff;
+  if(eff != null && copy.plan_price != null) copy.delta = Math.round(eff - Number(copy.plan_price));
+  const turn = copy.turnover;
+  const stock = Number(copy.stock) || 0;
+  const is_weak = (turn != null && turn >= 999) || (stock <= 0 && (turn == null || turn >= 100));
+  if(!copy.in_action && copy.delta != null && copy.delta > 0 && !is_weak) copy.priority = 'need';
+  else if(is_weak) copy.priority = 'weak';
+  else if(copy.in_action) copy.priority = 'in';
+  else copy.priority = 'other';
+  return copy;
+}
+
+function promoFixSession(sess) {
+  if(!sess) return sess;
+  const articles = (sess.articles || []).map(promoFixArticle);
+  const order = {need:0, in:1, other:2, weak:3};
+  articles.sort((a,b) => (order[a.priority]??9) - (order[b.priority]??9) || (b.delta||0) - (a.delta||0));
+  return {
+    ...sess,
+    articles,
+    stats: {
+      total: articles.length,
+      need: articles.filter(a => a.priority==='need').length,
+      in_action: articles.filter(a => a.in_action).length,
+      weak: articles.filter(a => a.priority==='weak').length,
+    }
+  };
+}
+
 function getActivePromoSession() {
   if(!PROMO_SESSIONS.length) return null;
   let s = PROMO_SESSIONS.find(x => x.id === PROMO_ACTIVE_ID);
   if(!s) { s = PROMO_SESSIONS[0]; PROMO_ACTIVE_ID = s.id; }
-  return s;
+  return promoFixSession(s);
 }
 
 function selectPromoSession(id) {
@@ -2146,7 +2187,10 @@ function drawPromoExcel() {
       ? `<span class="pc-delta">−${fmt(a.delta)} ₽</span>`
       : (a.in_action ? '<span class="pc-badge">✓</span>' : '—');
     const plan = a.plan_price != null ? fmt(Math.round(a.plan_price)) : '—';
-    const price = a.price != null ? fmt(Math.round(a.price)) : '—';
+    const price = (() => {
+      const eff = promoEffectivePrice(a);
+      return eff != null ? fmt(Math.round(eff)) : '—';
+    })();
     const turn = a.turnover != null ? (a.turnover >= 999 ? 'нет продаж' : fmt(Math.round(a.turnover))) : '—';
     const stock = a.stock != null ? fmt(Math.round(a.stock)) : '—';
     const disc = a.load_discount != null ? (Math.round(a.load_discount) + '%') : '—';
@@ -2193,7 +2237,8 @@ function drawPromoExcel() {
 
 function promoMultiMatrixHtml() {
   const byVc = {};
-  PROMO_SESSIONS.forEach(s => {
+  const sessions = PROMO_SESSIONS.map(promoFixSession);
+  sessions.forEach(s => {
     (s.articles || []).forEach(a => {
       const vc = a.vendor_code;
       if(!vc) return;
@@ -2208,14 +2253,14 @@ function promoMultiMatrixHtml() {
     return (order[a.bestPriority]??9) - (order[b.bestPriority]??9);
   });
   let head = '<tr><th class="mcol-art">Артикул</th>';
-  PROMO_SESSIONS.forEach(s => {
+  sessions.forEach(s => {
     head += `<th class="promo-col"><span class="pc-name">${escapeHtml(s.promo_name)}</span></th>`;
   });
   head += '</tr>';
   let body = '';
   rows.forEach((a,i) => {
     body += `<tr class="${i%2?'wh-even':''}"><td class="mcol-art"><div class="art">${escapeHtml(a.vendor_code)}</div><div class="nmid">${a.nm_id||''}</div></td>`;
-    PROMO_SESSIONS.forEach(s => {
+    sessions.forEach(s => {
       const c = a.cells[s.id];
       if(!c) { body += '<td class="promo-cell promo-none">—</td>'; return; }
       if(c.in_action) body += '<td class="promo-cell promo-in"><div class="pc-badge">✓ в акции</div></td>';

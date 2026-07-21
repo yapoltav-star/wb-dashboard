@@ -1466,11 +1466,19 @@ async def upload_promo_excel(file: UploadFile = File(...)):
             nm = cell(row, col_nm)
             if vc is None and nm is None:
                 continue
-            price = to_num(cell(row, col_price))
+            price = to_num(cell(row, col_price))  # розничная до скидки продавца
             plan = to_num(cell(row, col_plan))
+            cur_disc = to_num(cell(row, col_cur_disc))
+            # Цена «как на сайте» = розничная минус скидка продавца (6000−18% = 4920)
+            price_sale = None
+            if price is not None:
+                if cur_disc is not None:
+                    price_sale = round(price * (100.0 - cur_disc) / 100.0)
+                else:
+                    price_sale = price
             delta = None
-            if price is not None and plan is not None:
-                delta = int(round(price - plan))
+            if price_sale is not None and plan is not None:
+                delta = int(round(price_sale - plan))
             turn = to_num(cell(row, col_turn))
             stock_wb = to_num(cell(row, col_stock_wb)) or 0
             stock_seller = to_num(cell(row, col_stock_seller)) or 0
@@ -1496,12 +1504,13 @@ async def upload_promo_excel(file: UploadFile = File(...)):
                 "in_action": in_action,
                 "plan_price": plan,
                 "price": price,
+                "price_sale": price_sale,
                 "delta": delta,
                 "turnover": turn,
                 "stock_wb": stock_wb,
                 "stock_seller": stock_seller,
                 "stock": stock_wb + stock_seller,
-                "cur_discount": to_num(cell(row, col_cur_disc)),
+                "cur_discount": cur_disc,
                 "load_discount": to_num(cell(row, col_load_disc)),
                 "status": str(cell(row, col_status) or "") or None,
                 "priority": priority,
