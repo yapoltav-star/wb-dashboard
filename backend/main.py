@@ -1360,6 +1360,177 @@ def trigger_promotions_sync():
     threading.Thread(target=sync_promotions, daemon=True).start()
     return {"status": "started"}
 
+def _parse_promo_excel_name(filename: str) -> str:
+    """Из имени файла WB: «...для акции_<название>_<дата время>.xlsx»."""
+    import re as _re
+    name = (filename or "").rsplit("/", 1)[-1]
+    name = _re.sub(r"\.xlsx?$", "", name, flags=_re.I)
+    m = _re.search(r"для акции[_\s]+(.+?)_\d{1,2}\.\d{1,2}\.\d{2,4}", name, flags=_re.I)
+    if m:
+        return m.group(1).strip(" _-")
+    m = _re.search(r"акци[ия][_\s]+(.+)$", name, flags=_re.I)
+    if m:
+        return m.group(1).strip(" _-")
+    return name or "Акция"
+
+@app.post("/api/upload-promo-excel")
+async def upload_promo_excel(file: UploadFile = File(...)):
+    """Парсит xlsx «Все товары подходящие для акции_…» из Календаря акций WB.
+    Возвращает список артикулов с ценами/участием — фронт сам сортирует и хранит сессии."""
+    try:
+        from openpyxl import load_workbook
+        import re as _re
+
+        contents = await file.read()
+        if not contents:
+            return {"error": "Пустой файл"}
+
+        wb = load_workbook(io.BytesIO(contents), data_only=False)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            return {"error": "Пустой лист"}
+
+        # Ищем строку заголовков
+        header_i = None
+        header = None
+        for i, row in enumerate(rows[:15]):
+            vals = [str(c or "").strip().lower() for c in row]
+            joined = " | ".join(vals)
+            if "артикул" in joined and ("планов" in joined or "участ" in joined or "wb" in joined):
+                header_i = i
+                header = [str(c or "").strip() for c in row]
+                break
+        if header_i is None:
+            return {"error": "Не найдены заголовки (нужны колонки артикул / плановая цена). Проверь, что это файл из Календаря акций."}
+
+        def find_col(*needles):
+            for j, h in enumerate(header):
+                hl = h.lower()
+                if all(n.lower() in hl for n in needles):
+                    return j
+            return None
+
+        col_in = find_col("участ")  # «Товар уже участвует в акции»
+        col_brand = find_col("бренд")
+        col_subject = find_col("предмет")
+        col_name = find_col("наименование")
+        col_vc = find_col("артикул поставщика") or find_col("артикул продавца")
+        col_nm = find_col("артикул wb") or find_col("артикул вб")
+        col_turn = find_col("оборачиваемость")
+        col_stock_wb = find_col("остаток", "складах") or find_col("остаток товара на складах")
+        col_stock_seller = find_col("остаток", "продавца")
+        col_plan = find_col("плановая")
+        col_price = find_col("текущая розничная") or find_col("розничная цена")
+        col_cur_disc = find_col("текущая скидка")
+        col_load_disc = find_col("загружаемая скидка")
+        col_status = find_col("статус")
+
+        if col_vc is None and col_nm is None:
+            return {"error": "Нет колонки артикула поставщика / WB"}
+
+        def cell(row, idx):
+            if idx is None or idx >= len(row):
+                return None
+            v = row[idx]
+            if v is None:
+                return None
+            if isinstance(v, str) and not v.strip():
+                return None
+            return v
+
+        def to_num(v):
+            if v is None:
+                return None
+            if isinstance(v, (int, float)):
+                return float(v)
+            s = str(v).replace("\xa0", "").replace(" ", "").replace(",", ".").replace("%", "")
+            try:
+                return float(s)
+            except Exception:
+                return None
+
+        def to_bool_in_action(v):
+            if v is None:
+                return False
+            if isinstance(v, bool):
+                return v
+            s = str(v).strip().lower()
+            return s in ("да", "yes", "true", "1", "участвует")
+
+        articles = []
+        for row in rows[header_i + 1:]:
+            if not row or not any(c is not None and str(c).strip() for c in row):
+                continue
+            vc = cell(row, col_vc)
+            nm = cell(row, col_nm)
+            if vc is None and nm is None:
+                continue
+            price = to_num(cell(row, col_price))
+            plan = to_num(cell(row, col_plan))
+            delta = None
+            if price is not None and plan is not None:
+                delta = int(round(price - plan))
+            turn = to_num(cell(row, col_turn))
+            stock_wb = to_num(cell(row, col_stock_wb)) or 0
+            stock_seller = to_num(cell(row, col_stock_seller)) or 0
+            in_action = to_bool_in_action(cell(row, col_in))
+            # слабые/пустые: оборачиваемость 999 у WB = нет продаж
+            is_weak = (turn is not None and turn >= 999) or (stock_wb + stock_seller <= 0 and (turn is None or turn >= 100))
+            need = (not in_action) and (delta is not None and delta > 0) and not is_weak
+            if need:
+                priority = "need"
+            elif is_weak:
+                priority = "weak"
+            elif in_action:
+                priority = "in"
+            else:
+                priority = "other"
+
+            articles.append({
+                "vendor_code": str(vc).strip() if vc is not None else str(nm),
+                "nm_id": int(nm) if isinstance(nm, (int, float)) else (int(to_num(nm)) if to_num(nm) else None),
+                "name": str(cell(row, col_name) or "") or None,
+                "brand": str(cell(row, col_brand) or "") or None,
+                "subject": str(cell(row, col_subject) or "") or None,
+                "in_action": in_action,
+                "plan_price": plan,
+                "price": price,
+                "delta": delta,
+                "turnover": turn,
+                "stock_wb": stock_wb,
+                "stock_seller": stock_seller,
+                "stock": stock_wb + stock_seller,
+                "cur_discount": to_num(cell(row, col_cur_disc)),
+                "load_discount": to_num(cell(row, col_load_disc)),
+                "status": str(cell(row, col_status) or "") or None,
+                "priority": priority,
+            })
+
+        # Сортировка: нужные сверху → в акции → прочие → слабые снизу; внутри по −₽
+        order = {"need": 0, "in": 1, "other": 2, "weak": 3}
+        articles.sort(key=lambda a: (order.get(a["priority"], 9), -(a["delta"] or 0), str(a["vendor_code"])))
+
+        promo_name = _parse_promo_excel_name(file.filename or "")
+        need_n = sum(1 for a in articles if a["priority"] == "need")
+        in_n = sum(1 for a in articles if a["in_action"])
+        weak_n = sum(1 for a in articles if a["priority"] == "weak")
+
+        return {
+            "promo_name": promo_name,
+            "filename": file.filename,
+            "articles": articles,
+            "stats": {
+                "total": len(articles),
+                "need": need_n,
+                "in_action": in_n,
+                "weak": weak_n,
+            },
+        }
+    except Exception as e:
+        logger.error(f"upload-promo-excel error: {e}")
+        return {"error": str(e)}
+
 @app.post("/api/upload-ratings")
 async def upload_ratings(file: UploadFile = File(...)):
     """
