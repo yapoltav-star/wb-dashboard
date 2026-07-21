@@ -2499,6 +2499,10 @@ def sync_sales_pace():
                 "opens_today": opens_t,
                 "opens_yesterday": opens_y,
                 "opens_delta": opens_t - opens_y if yest_snap else None,
+                # openCount у WB = переходы в карточку (клики)
+                "clicks_today": opens_t,
+                "clicks_yesterday": opens_y,
+                "clicks_delta": opens_t - opens_y if yest_snap else None,
                 "cart_today": cart_t,
                 "cart_yesterday": cart_y,
                 "cart_delta": cart_t - cart_y if yest_snap else None,

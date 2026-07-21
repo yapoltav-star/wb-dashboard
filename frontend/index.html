@@ -2012,6 +2012,8 @@ let PACE_DATA = {articles:[], as_of:null, compare_as_of:null, syncing:false, err
 let PACE_FILTER = 'all';
 let PACE_LOADED = false;
 let pacePoll = null;
+let PACE_SORT = {key: 'orders_delta', dir: 1}; // 1 = хуже сверху (падение), -1 = наоборот
+let PACE_PINNED = JSON.parse(localStorage.getItem('wb_pace_pinned') || '[]');
 
 function renderSalesPace(force) {
   if(force || !PACE_LOADED) {
@@ -2045,12 +2047,42 @@ function setPaceFilter(f) {
   drawSalesPace();
 }
 
+function paceSort(key) {
+  if(PACE_SORT.key === key) PACE_SORT.dir *= -1;
+  else {
+    PACE_SORT.key = key;
+    // для дельт по умолчанию: сначала падение (меньше = выше)
+    PACE_SORT.dir = key.endsWith('_delta') ? 1 : -1;
+  }
+  drawSalesPace();
+}
+
+function paceSortMark(key) {
+  if(PACE_SORT.key !== key) return '';
+  return PACE_SORT.dir === 1 ? ' ↑' : ' ↓';
+}
+
+function togglePacePin(vcEnc, e) {
+  if(e) e.stopPropagation();
+  const vc = decodeURIComponent(vcEnc);
+  const i = PACE_PINNED.indexOf(vc);
+  if(i >= 0) PACE_PINNED.splice(i, 1);
+  else PACE_PINNED.push(vc);
+  localStorage.setItem('wb_pace_pinned', JSON.stringify(PACE_PINNED));
+  drawSalesPace();
+}
+
 function paceDeltaHtml(d, unit) {
   if(d == null) return '<span class="pace-delta-flat">—</span>';
   const u = unit || '';
   if(d > 0) return `<span class="pace-delta-up">+${fmt(d)}${u}</span>`;
   if(d < 0) return `<span class="pace-delta-down">${fmt(d)}${u}</span>`;
   return `<span class="pace-delta-flat">0</span>`;
+}
+
+function paceTh(label, key, rowspan) {
+  const rs = rowspan ? ` rowspan="${rowspan}"` : '';
+  return `<th class="mhead" style="cursor:pointer" onclick="paceSort('${key}')"${rs}>${label}${paceSortMark(key)}</th>`;
 }
 
 function drawSalesPace() {
@@ -2082,6 +2114,40 @@ function drawSalesPace() {
   else if(PACE_FILTER === 'up') arts = arts.filter(a => (a.orders_delta||0) > 0);
   else if(PACE_FILTER === 'flat') arts = arts.filter(a => (a.orders_delta||0) === 0);
 
+  // алиас: переходы = opens (openCount WB = переходы в карточку)
+  arts = arts.map(a => ({
+    ...a,
+    clicks_today: a.opens_today,
+    clicks_yesterday: a.opens_yesterday,
+    clicks_delta: a.opens_delta,
+    isPinned: PACE_PINNED.includes(a.vendor_code),
+  }));
+
+  const sk = PACE_SORT.key;
+  const sd = PACE_SORT.dir;
+  arts.sort((a, b) => {
+    if(a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
+    let va = a[sk], vb = b[sk];
+    if(va == null && vb == null) return 0;
+    if(va == null) return 1;
+    if(vb == null) return -1;
+    if(typeof va === 'string') return String(va).localeCompare(String(vb), 'ru') * (sd === 1 ? 1 : -1);
+    return (va - vb) * sd;
+  });
+  // среди закреплённых — свой порядок пинов
+  const pinned = PACE_PINNED.map(vc => arts.find(a => a.vendor_code === vc)).filter(Boolean);
+  const unpinned = arts.filter(a => !a.isPinned);
+  // unpinned already sorted; re-sort pinned by same key
+  pinned.sort((a, b) => {
+    let va = a[sk], vb = b[sk];
+    if(va == null && vb == null) return PACE_PINNED.indexOf(a.vendor_code) - PACE_PINNED.indexOf(b.vendor_code);
+    if(va == null) return 1;
+    if(vb == null) return -1;
+    if(typeof va === 'string') return String(va).localeCompare(String(vb), 'ru') * (sd === 1 ? 1 : -1);
+    return (va - vb) * sd;
+  });
+  arts = [...pinned, ...unpinned];
+
   const all = PACE_DATA.articles || [];
   const downN = all.filter(a => (a.orders_delta||0) < 0).length;
   const upN = all.filter(a => (a.orders_delta||0) > 0).length;
@@ -2111,16 +2177,21 @@ function drawSalesPace() {
   const yLabel = PACE_DATA.now_time ? ('вчера до ' + PACE_DATA.now_time) : 'вчера';
 
   const body = arts.map((a,i) => {
-    const rowCls = (a.orders_delta||0) < 0 ? 'promo-row-need' : ((a.orders_delta||0) > 0 ? 'promo-row-in' : '');
-    return `<tr class="${rowCls}${i%2?' wh-even':''}">
-      <td class="mcol-art"><div class="art">${escapeHtml(String(a.vendor_code||''))}</div><div class="nmid">${a.nm_id||''}</div></td>
+    const rowCls = a.isPinned ? 'pinned' : ((a.orders_delta||0) < 0 ? 'promo-row-need' : ((a.orders_delta||0) > 0 ? 'promo-row-in' : ''));
+    const safeVc = encodeURIComponent(a.vendor_code || '');
+    return `<tr class="${rowCls}${i%2 && !a.isPinned?' wh-even':''}">
+      <td class="mcol-art">
+        <span class="prod-pin${a.isPinned?' on':''}" onclick="togglePacePin('${safeVc}', event)" title="${a.isPinned?'Открепить':'Закрепить'}">📌</span>
+        <div class="art" style="display:inline">${escapeHtml(String(a.vendor_code||''))}</div>
+        <div class="nmid">${a.nm_id||''}</div>
+      </td>
       <td style="text-align:left;max-width:200px;font-size:12px;color:var(--wb-muted)">${escapeHtml(a.name||'—')}</td>
       <td>${fmt(a.orders_today||0)}</td>
       <td>${fmt(a.orders_yesterday||0)}</td>
       <td>${paceDeltaHtml(a.orders_delta)}</td>
-      <td>${fmt(a.opens_today||0)}</td>
-      <td>${a.opens_delta==null?'—':fmt(a.opens_yesterday||0)}</td>
-      <td>${paceDeltaHtml(a.opens_delta)}</td>
+      <td>${fmt(a.clicks_today||0)}</td>
+      <td>${a.clicks_delta==null?'—':fmt(a.clicks_yesterday||0)}</td>
+      <td>${paceDeltaHtml(a.clicks_delta)}</td>
       <td>${fmt(a.cart_today||0)}</td>
       <td>${a.cart_delta==null?'—':fmt(a.cart_yesterday||0)}</td>
       <td>${paceDeltaHtml(a.cart_delta)}</td>
@@ -2128,18 +2199,24 @@ function drawSalesPace() {
   }).join('');
 
   root.innerHTML = `<div class="pace-hint">Сравнение <b>к тому же времени</b>: ${escapeHtml(tLabel)} vs ${escapeHtml(yLabel)} (Москва).
-    Заказы — из ленты WB по минутам. Показы и корзина — из воронки (WB обновляет раз в час); вчерашняя воронка появляется после первых суточных снимков.</div>
+    Заказы — по минутам. <b>Переходы</b> — клики в карточку (openCount воронки WB). Корзина — из воронки. Кликни заголовок столбца для сортировки, 📌 — закрепить артикул сверху.</div>
     <div class="matrix-wrap"><table class="matrix promo-xls">
       <thead><tr>
-        <th class="mcol-art" rowspan="2">Артикул</th>
-        <th rowspan="2">Название</th>
+        ${paceTh('Артикул', 'vendor_code', 2)}
+        ${paceTh('Название', 'name', 2)}
         <th colspan="3">Заказы</th>
-        <th colspan="3">Показы карточки</th>
+        <th colspan="3">Переходы в карточку</th>
         <th colspan="3">В корзину</th>
       </tr><tr>
-        <th class="mhead">Сегодня</th><th class="mhead">Вчера</th><th class="mhead">Δ</th>
-        <th class="mhead">Сегодня</th><th class="mhead">Вчера</th><th class="mhead">Δ</th>
-        <th class="mhead">Сегодня</th><th class="mhead">Вчера</th><th class="mhead">Δ</th>
+        ${paceTh('Сегодня', 'orders_today')}
+        ${paceTh('Вчера', 'orders_yesterday')}
+        ${paceTh('Δ', 'orders_delta')}
+        ${paceTh('Сегодня', 'clicks_today')}
+        ${paceTh('Вчера', 'clicks_yesterday')}
+        ${paceTh('Δ', 'clicks_delta')}
+        ${paceTh('Сегодня', 'cart_today')}
+        ${paceTh('Вчера', 'cart_yesterday')}
+        ${paceTh('Δ', 'cart_delta')}
       </tr></thead>
       <tbody>${body}</tbody>
     </table></div>`;
