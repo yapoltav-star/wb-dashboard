@@ -596,7 +596,7 @@ async function loadData() {
     // Groups
     GROUPS = {};
     (data.groups || []).forEach(g => { GROUPS[g.name] = g.articles || []; });
-    Object.keys(GROUPS).forEach(g => { if(EXP[g]===undefined) EXP[g]=false; });
+    Object.keys(GROUPS).concat(['Без склейки']).forEach(g => { if(EXP[g]===undefined) EXP[g]=false; });
 
     // Official ratings
     RATINGS = {};
@@ -1285,7 +1285,7 @@ function render() {
 function TG(i) {
   const g = Object.keys(GROUPS).concat(['Без склейки'])[i];
   if(!g) return;
-  EXP[g] = !EXP[g];
+  EXP[g] = EXP[g] !== true; // открыть только по клику; по умолчанию свёрнуто
   const el = document.getElementById('g'+i);
   if(el) el.classList.toggle('open', EXP[g]);
 }
