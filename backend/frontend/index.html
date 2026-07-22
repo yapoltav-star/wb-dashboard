@@ -114,6 +114,15 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .fin-drop .fin-drop-s{font-size:12px;color:var(--wb-muted)}
 .fin-tabs{display:flex;gap:6px;margin-bottom:12px}
 .fin-missing{color:var(--amber);font-size:12px}
+.fin-cost-inp{
+  width:96px;border:1px solid var(--wb-border);border-radius:6px;padding:5px 8px;
+  font-size:13px;font-family:inherit;text-align:right;background:#FAFAF8;color:var(--wb-text);
+}
+.fin-cost-inp:focus{outline:none;border-color:var(--wb-purple);background:#fff;box-shadow:0 0 0 2px rgba(212,98,42,.12)}
+.fin-cost-inp.saving{opacity:.6}
+.fin-cost-inp.ok{border-color:var(--green)}
+.fin-cost-inp.err{border-color:var(--red)}
+
 .group{margin-bottom:12px;border-radius:var(--r);overflow:hidden;border:1px solid var(--wb-border);background:var(--wb-surface)}
 .gh{display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer;user-select:none;border-bottom:1px solid var(--wb-border)}
 .gh:hover{background:#FAFAFA}
@@ -643,6 +652,7 @@ td.tc{text-align:center}
       <button class="filter-btn on" id="finTabWb" onclick="setFinTab('wb')">Склад WB</button>
       <button class="filter-btn" id="finTabOwn" onclick="setFinTab('own')">Наш склад</button>
       <button class="filter-btn" id="finTabMiss" onclick="setFinTab('miss')">Без себестоимости</button>
+      <button class="filter-btn" id="finTabAll" onclick="setFinTab('all')">Все цены</button>
     </div>
     <div class="search" style="margin-bottom:12px">
       <span style="color:var(--wb-faint);font-size:14px">🔍</span>
@@ -3503,11 +3513,21 @@ function drawFinance() {
 
 function setFinTab(t) {
   FIN_TAB = t;
-  ['Wb','Own','Miss'].forEach(k => {
+  ['Wb','Own','Miss','All'].forEach(k => {
     const el = document.getElementById('finTab' + k);
-    if(el) el.classList.toggle('on', ({Wb:'wb',Own:'own',Miss:'miss'})[k] === t);
+    if(el) el.classList.toggle('on', ({Wb:'wb',Own:'own',Miss:'miss',All:'all'})[k] === t);
   });
   drawFinanceTable();
+}
+
+function finCostInputHtml(r) {
+  const vc = encodeURIComponent(String(r.vendor_code || ''));
+  const nm = r.nm_id != null ? String(r.nm_id) : '';
+  const val = r.cost != null ? r.cost : '';
+  return `<input class="fin-cost-inp" type="number" min="0" step="1" value="${val}"
+    data-vc="${vc}" data-nm="${nm}" data-prev="${val}"
+    onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"
+    onchange="saveFinanceCost(this)" title="Изменить себестоимость">`;
 }
 
 function drawFinanceTable() {
@@ -3518,70 +3538,139 @@ function drawFinanceTable() {
     root.innerHTML = `<div class="empty">${escapeHtml(d.error)}</div>`;
     return;
   }
-  if(!(d.costs_count > 0)) {
+  if(!(d.costs_count > 0) && FIN_TAB !== 'all' && FIN_TAB !== 'miss') {
     root.innerHTML = '<div class="empty">Сначала загрузи файл с себестоимостью (артикул + цена).</div>';
     return;
   }
   const q = ((document.getElementById('finSearch') || {}).value || '').toLowerCase().trim();
   let rows = [];
   let title = '';
+  let showQty = true;
   if(FIN_TAB === 'wb') {
     rows = [...(d.wb && d.wb.rows || [])];
     title = 'Остатки на складах WB';
   } else if(FIN_TAB === 'own') {
     rows = [...(d.own && d.own.rows || [])];
     title = 'Остатки на нашем складе';
+  } else if(FIN_TAB === 'all') {
+    rows = [...(d.costs || [])].map(c => ({
+      vendor_code: c.vendor_code,
+      nm_id: c.nm_id,
+      cost: c.cost,
+      cost_default: c.default,
+      cost_as_of: c.as_of,
+      qty: null,
+      value: null,
+      manual: c.manual,
+      name: c.manual ? 'изменено вручную' : '',
+    }));
+    title = 'Все себестоимости (можно править)';
+    showQty = false;
   } else {
     const miss = [];
     (d.wb && d.wb.rows || []).forEach(r => { if(r.cost == null) miss.push({...r, where: 'WB'}); });
     (d.own && d.own.rows || []).forEach(r => { if(r.cost == null) miss.push({...r, where: 'Наш'}); });
     rows = miss;
-    title = 'Артикулы без себестоимости';
+    title = 'Артикулы без себестоимости — впиши цену';
   }
-  if(q) rows = rows.filter(r => String(r.vendor_code||'').toLowerCase().includes(q) || String(r.name||'').toLowerCase().includes(q));
+  if(q) rows = rows.filter(r =>
+    String(r.vendor_code||'').toLowerCase().includes(q) ||
+    String(r.name||'').toLowerCase().includes(q) ||
+    String(r.nm_id||'').includes(q)
+  );
 
   if(!rows.length) {
     root.innerHTML = `<div class="empty">${FIN_TAB === 'miss' ? 'Все артикулы с остатком имеют себестоимость' : 'Нет строк'}</div>`;
     return;
   }
 
-  const sumQty = rows.reduce((s,r) => s + (r.qty||0), 0);
-  const sumVal = rows.reduce((s,r) => s + (r.value != null ? r.value : 0), 0);
+  const sumQty = showQty ? rows.reduce((s,r) => s + (r.qty||0), 0) : 0;
+  const sumVal = showQty ? rows.reduce((s,r) => s + (r.value != null ? r.value : 0), 0) : 0;
   const body = rows.map((r,i) => {
-    const miss = r.cost == null;
-    const costHint = (!miss && r.cost_as_of)
+    const costHint = (r.cost_as_of)
       ? `<div class="nmid">с ${escapeHtml(String(r.cost_as_of))}${r.cost_default!=null && r.cost_default!==r.cost ? ' · было '+fmtMoney(r.cost_default) : ''}</div>`
-      : (!miss && r.cost_default!=null && r.cost_default!==r.cost ? `<div class="nmid">было ${fmtMoney(r.cost_default)}</div>` : '');
+      : (r.cost_default!=null && r.cost!=null && r.cost_default!==r.cost ? `<div class="nmid">было ${fmtMoney(r.cost_default)}</div>` : '');
     const nmLine = r.nm_id ? `nm ${r.nm_id}` : '';
     const extra = [r.name, r.where, nmLine].filter(Boolean).join(' · ');
+    const valCell = showQty
+      ? (r.cost == null || r.qty == null ? '—' : fmtMoney((r.qty||0) * r.cost))
+      : '';
     return `<tr class="${i%2?'wh-even':''}">
       <td class="mcol-art" style="text-align:left">
         <div class="art">${escapeHtml(String(r.vendor_code||''))}</div>
         <div class="nmid">${escapeHtml(extra)}</div>
       </td>
-      <td>${fmt(r.qty||0)}</td>
-      <td>${miss ? '<span class="fin-missing">нет</span>' : fmtMoney(r.cost)}${costHint}</td>
-      <td>${miss ? '—' : fmtMoney(r.value)}</td>
+      ${showQty ? `<td>${fmt(r.qty||0)}</td>` : ''}
+      <td>${finCostInputHtml(r)}${costHint}</td>
+      ${showQty ? `<td class="fin-row-sum">${valCell}</td>` : ''}
     </tr>`;
   }).join('');
 
-  root.innerHTML = `<div style="font-size:12px;color:var(--wb-muted);margin-bottom:8px">${title} · ${fmt(rows.length)} арт. · итого ${fmtMoney(sumVal)}</div>
+  const headQty = showQty ? '<th class="mhead">Кол-во</th>' : '';
+  const headSum = showQty ? '<th class="mhead">Сумма</th>' : '';
+  const foot = showQty ? `<tr class="total-row">
+      <td class="mcol-art" style="text-align:left;font-weight:700">Итого</td>
+      <td style="font-weight:700">${fmt(sumQty)}</td>
+      <td></td>
+      <td style="font-weight:700;color:var(--wb-purple)">${fmtMoney(sumVal)}</td>
+    </tr>` : '';
+
+  root.innerHTML = `<div style="font-size:12px;color:var(--wb-muted);margin-bottom:8px">${title} · ${fmt(rows.length)} арт.${showQty ? ' · итого ' + fmtMoney(sumVal) : ''} · клик по себесу — правка</div>
     <div class="matrix-wrap"><table class="matrix promo-xls">
       <thead><tr>
         <th class="mhead" style="text-align:left">Артикул продавца</th>
-        <th class="mhead">Кол-во</th>
+        ${headQty}
         <th class="mhead">Себест.</th>
-        <th class="mhead">Сумма</th>
+        ${headSum}
       </tr></thead>
-      <tbody>${body}
-        <tr class="total-row">
-          <td class="mcol-art" style="text-align:left;font-weight:700">Итого</td>
-          <td style="font-weight:700">${fmt(sumQty)}</td>
-          <td></td>
-          <td style="font-weight:700;color:var(--wb-purple)">${fmtMoney(sumVal)}</td>
-        </tr>
-      </tbody>
+      <tbody>${body}${foot}</tbody>
     </table></div>`;
+}
+
+async function saveFinanceCost(inp) {
+  if(!inp) return;
+  const vc = decodeURIComponent(inp.dataset.vc || '');
+  const nm = inp.dataset.nm || '';
+  const raw = String(inp.value || '').trim();
+  if(raw === '') {
+    inp.classList.add('err');
+    return;
+  }
+  const cost = Number(String(raw).replace(',', '.'));
+  if(isNaN(cost) || cost < 0) {
+    inp.classList.add('err');
+    return;
+  }
+  const prev = inp.dataset.prev;
+  if(String(prev) === String(cost)) return;
+
+  inp.classList.remove('err','ok');
+  inp.classList.add('saving');
+  inp.disabled = true;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/finance/cost`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({vendor_code: vc, nm_id: nm || null, cost}),
+    });
+    const d = await r.json();
+    if(d.error) {
+      inp.classList.add('err');
+      alert(d.error);
+      inp.value = prev;
+    } else {
+      inp.dataset.prev = String(cost);
+      inp.classList.add('ok');
+      // мягко пересчитаем итоги без полной перерисовки фокуса
+      await loadFinance(true);
+    }
+  } catch(e) {
+    inp.classList.add('err');
+    inp.value = prev;
+  } finally {
+    inp.classList.remove('saving');
+    inp.disabled = false;
+  }
 }
 
 function finDzOver(e){ e.preventDefault(); document.getElementById('finDrop').classList.add('over'); }

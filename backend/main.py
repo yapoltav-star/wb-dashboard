@@ -3740,7 +3740,110 @@ def get_finance():
             "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
         },
         "grand_total": round(wb_sum["total_value"] + own_sum["total_value"], 2),
+        "costs": sorted(
+            [
+                {
+                    "vendor_code": e.get("vendor_code") or vc,
+                    "nm_id": e.get("nm_id"),
+                    "cost": e.get("cost"),
+                    "default": e.get("default"),
+                    "as_of": e.get("as_of"),
+                    "manual": bool(e.get("manual")),
+                }
+                for vc, e in by_vendor.items()
+            ],
+            key=lambda x: str(x.get("vendor_code") or ""),
+        ),
     }
+
+@app.post("/api/finance/cost")
+async def save_finance_cost(request: dict):
+    """Ручное изменение себестоимости по артикулу продавца и/или nm_id."""
+    vc = _norm_vendor_key(request.get("vendor_code"))
+    nm_raw = request.get("nm_id")
+    nm_id = None
+    if nm_raw not in (None, ""):
+        try:
+            nm_id = int(float(str(nm_raw).strip()))
+        except Exception:
+            return {"error": "Некорректный nm_id"}
+    cost = _parse_cost_number(request.get("cost"))
+    if cost is None:
+        return {"error": "Укажи себестоимость числом ≥ 0"}
+    if not vc and nm_id is None:
+        return {"error": "Нужен артикул продавца или nm_id"}
+
+    raw = get_setting_json(COST_PRICES_KEY, {}) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    if raw.get("_v") == 2 or "by_vendor" in raw or "by_nm" in raw:
+        by_vendor = dict(raw.get("by_vendor") or {})
+        by_nm = dict(raw.get("by_nm") or {})
+    else:
+        by_vendor, by_nm = {}, {}
+        for k, v in raw.items():
+            if str(k).startswith("_"):
+                continue
+            key = _norm_vendor_key(k)
+            if not key:
+                continue
+            m = _cost_entry_meta(v)
+            entry = {
+                **m,
+                "vendor_code": key,
+                "nm_id": v.get("nm_id") if isinstance(v, dict) else None,
+                "history": v.get("history") if isinstance(v, dict) else [],
+            }
+            by_vendor[key] = entry
+            if entry.get("nm_id") is not None:
+                by_nm[str(entry["nm_id"])] = entry
+
+    # найти существующую запись
+    prev = None
+    if vc and vc in by_vendor:
+        prev = by_vendor[vc]
+    elif nm_id is not None and str(nm_id) in by_nm:
+        prev = by_nm[str(nm_id)]
+        if not vc:
+            vc = _norm_vendor_key(prev.get("vendor_code"))
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    prev_default = None
+    prev_history = []
+    if isinstance(prev, dict):
+        prev_default = _parse_cost_number(prev.get("default"))
+        prev_history = list(prev.get("history") or [])
+        if not vc:
+            vc = _norm_vendor_key(prev.get("vendor_code"))
+        if nm_id is None and prev.get("nm_id") is not None:
+            nm_id = prev.get("nm_id")
+
+    if not vc:
+        vc = f"nm_{nm_id}" if nm_id is not None else ""
+    if prev_default is None:
+        prev_default = cost
+
+    entry = {
+        "cost": round(cost, 4),
+        "default": round(prev_default, 4) if prev_default is not None else round(cost, 4),
+        "as_of": today,
+        "vendor_code": vc,
+        "nm_id": nm_id,
+        "manual": True,
+        "history": prev_history + [{"date": today, "cost": round(cost, 4), "manual": True}],
+    }
+    by_vendor[vc] = entry
+    if nm_id is not None:
+        by_nm[str(nm_id)] = entry
+
+    save_setting_value(COST_PRICES_KEY, {"_v": 2, "by_vendor": by_vendor, "by_nm": by_nm})
+    meta = get_setting_json(COST_META_KEY, {}) or {}
+    if isinstance(meta, dict):
+        meta["last_manual_edit"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+        meta["total_articles"] = len(by_vendor)
+        save_setting_value(COST_META_KEY, meta)
+
+    return {"status": "ok", "entry": entry}
 
 if __name__ == "__main__":
     import uvicorn
