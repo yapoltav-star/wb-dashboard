@@ -653,7 +653,9 @@ td.tc{text-align:center}
 </div>
 
 <script>
-const RAILWAY_URL = 'https://wb-dashboard-production-baf4.up.railway.app';
+const RAILWAY_URL = (typeof location !== 'undefined' && location.hostname && location.hostname.includes('railway.app'))
+  ? ''
+  : 'https://wb-dashboard-production-baf4.up.railway.app';
 
 var ALL = [], RATINGS = {}, GROUPS = {}, SK = 'avg_rating', SD = -1, EXP = {};
 var HAS_OFFICIAL = false;
@@ -711,7 +713,12 @@ function showSection(sec, btn) {
 function showPage(id, btn) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
   document.querySelectorAll('.sn-item').forEach(t => t.classList.remove('on'));
-  document.getElementById('page-' + id).classList.add('on');
+  const page = document.getElementById('page-' + id);
+  if(!page) {
+    console.error('page not found:', id);
+    return;
+  }
+  page.classList.add('on');
   if(btn) btn.classList.add('on');
   if(id === 'groups') renderGroupManager();
   if(id === 'products') renderProducts();

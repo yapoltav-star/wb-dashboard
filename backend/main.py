@@ -8,7 +8,10 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 import pandas as pd
+from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -2933,9 +2936,24 @@ scheduler.add_job(sync_promotions, "interval", hours=6, id="sync_promotions")
 scheduler.add_job(lambda: sync_sales_pace("day"), "interval", hours=1, id="sync_sales_pace")
 scheduler.start()
 
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+
 @app.get("/")
 def root():
-    return {"status": "ok"}
+    index = FRONTEND_DIR / "index.html"
+    if index.exists():
+        return FileResponse(index, media_type="text/html; charset=utf-8")
+    return {"status": "ok", "hint": "frontend/index.html not found"}
+
+@app.get("/index.html")
+def root_index():
+    index = FRONTEND_DIR / "index.html"
+    if index.exists():
+        return FileResponse(index, media_type="text/html; charset=utf-8")
+    return HTMLResponse("<h1>frontend missing</h1>", status_code=404)
+
+if FRONTEND_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 @app.get("/api/status")
 def status():
