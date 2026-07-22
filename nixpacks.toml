@@ -2,7 +2,10 @@
 nixPkgs = ["python311"]
 
 [phases.install]
-cmds = ["pip install --break-system-packages -r backend/requirements.txt"]
+cmds = [
+  "pip install --break-system-packages -r backend/requirements.txt",
+  "mkdir -p backend/frontend && cp -R frontend/. backend/frontend/"
+]
 
 [start]
 cmd = "cd backend && python main.py"

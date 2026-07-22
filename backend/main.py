@@ -2936,14 +2936,29 @@ scheduler.add_job(sync_promotions, "interval", hours=6, id="sync_promotions")
 scheduler.add_job(lambda: sync_sales_pace("day"), "interval", hours=1, id="sync_sales_pace")
 scheduler.start()
 
-FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+FRONTEND_CANDIDATES = [
+    Path(__file__).resolve().parent.parent / "frontend",  # repo/frontend
+    Path(__file__).resolve().parent / "frontend",         # backend/frontend
+    Path.cwd() / "frontend",
+    Path.cwd().parent / "frontend",
+]
+
+def _resolve_frontend_dir():
+    for p in FRONTEND_CANDIDATES:
+        if (p / "index.html").exists():
+            return p
+    return FRONTEND_CANDIDATES[0]
+
+FRONTEND_DIR = _resolve_frontend_dir()
+logger.info(f"FRONTEND_DIR={FRONTEND_DIR} exists={FRONTEND_DIR.exists()} index={(FRONTEND_DIR / 'index.html').exists()}")
 
 @app.get("/")
 def root():
     index = FRONTEND_DIR / "index.html"
     if index.exists():
         return FileResponse(index, media_type="text/html; charset=utf-8")
-    return {"status": "ok", "hint": "frontend/index.html not found"}
+    tried = [str(p) for p in FRONTEND_CANDIDATES]
+    return {"status": "ok", "hint": "frontend/index.html not found", "tried": tried}
 
 @app.get("/index.html")
 def root_index():
@@ -2952,7 +2967,7 @@ def root_index():
         return FileResponse(index, media_type="text/html; charset=utf-8")
     return HTMLResponse("<h1>frontend missing</h1>", status_code=404)
 
-if FRONTEND_DIR.exists():
+if (FRONTEND_DIR / "index.html").exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 @app.get("/api/status")
