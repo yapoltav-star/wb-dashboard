@@ -3483,13 +3483,14 @@ function drawFinance() {
     const bits = [];
     if(m.uploaded_at) bits.push('себестоимость от ' + m.uploaded_at + (m.filename ? ' · ' + m.filename : ''));
     bits.push((d.costs_count || 0) + ' арт. с ценой');
+    if(d.nm_mapped) bits.push(d.nm_mapped + ' SKU');
     meta.textContent = bits.join(' · ') || 'Загрузи файл себестоимости';
   }
   const wb = d.wb || {};
   const own = d.own || {};
   if(cards) {
     cards.innerHTML = [
-      ['Всего в остатках', fmtMoney(d.grand_total), 'color:var(--wb-purple)'],
+      ['Итого себестоимость', fmtMoney(d.grand_total), 'color:var(--wb-purple)'],
       ['Склад WB', fmtMoney(wb.total_value)],
       ['Наш склад', fmtMoney(own.total_value)],
       ['Шт на WB', fmt(wb.total_qty || 0)],
@@ -3544,15 +3545,19 @@ function drawFinanceTable() {
     return;
   }
 
+  const sumQty = rows.reduce((s,r) => s + (r.qty||0), 0);
+  const sumVal = rows.reduce((s,r) => s + (r.value != null ? r.value : 0), 0);
   const body = rows.map((r,i) => {
     const miss = r.cost == null;
     const costHint = (!miss && r.cost_as_of)
       ? `<div class="nmid">с ${escapeHtml(String(r.cost_as_of))}${r.cost_default!=null && r.cost_default!==r.cost ? ' · было '+fmtMoney(r.cost_default) : ''}</div>`
       : (!miss && r.cost_default!=null && r.cost_default!==r.cost ? `<div class="nmid">было ${fmtMoney(r.cost_default)}</div>` : '');
+    const nmLine = r.nm_id ? `nm ${r.nm_id}` : '';
+    const extra = [r.name, r.where, nmLine].filter(Boolean).join(' · ');
     return `<tr class="${i%2?'wh-even':''}">
       <td class="mcol-art" style="text-align:left">
         <div class="art">${escapeHtml(String(r.vendor_code||''))}</div>
-        <div class="nmid">${escapeHtml(String(r.name||''))}${r.where ? ' · ' + r.where : ''}</div>
+        <div class="nmid">${escapeHtml(extra)}</div>
       </td>
       <td>${fmt(r.qty||0)}</td>
       <td>${miss ? '<span class="fin-missing">нет</span>' : fmtMoney(r.cost)}${costHint}</td>
@@ -3560,15 +3565,22 @@ function drawFinanceTable() {
     </tr>`;
   }).join('');
 
-  root.innerHTML = `<div style="font-size:12px;color:var(--wb-muted);margin-bottom:8px">${title} · ${fmt(rows.length)} арт.</div>
+  root.innerHTML = `<div style="font-size:12px;color:var(--wb-muted);margin-bottom:8px">${title} · ${fmt(rows.length)} арт. · итого ${fmtMoney(sumVal)}</div>
     <div class="matrix-wrap"><table class="matrix promo-xls">
       <thead><tr>
-        <th class="mhead" style="text-align:left">Артикул</th>
+        <th class="mhead" style="text-align:left">Артикул продавца</th>
         <th class="mhead">Кол-во</th>
         <th class="mhead">Себест.</th>
         <th class="mhead">Сумма</th>
       </tr></thead>
-      <tbody>${body}</tbody>
+      <tbody>${body}
+        <tr class="total-row">
+          <td class="mcol-art" style="text-align:left;font-weight:700">Итого</td>
+          <td style="font-weight:700">${fmt(sumQty)}</td>
+          <td></td>
+          <td style="font-weight:700;color:var(--wb-purple)">${fmtMoney(sumVal)}</td>
+        </tr>
+      </tbody>
     </table></div>`;
 }
 

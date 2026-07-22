@@ -3349,7 +3349,7 @@ def parse_cost_price_workbook(contents: bytes, as_of=None):
         h2 = next(rows_iter)
     except StopIteration:
         wb.close()
-        return {}, {"error": "Пустой файл"}
+        return {"by_vendor": {}, "by_nm": {}}, {"error": "Пустой файл"}
 
     # колонки себестоимости: (col_idx, date_or_None_for_default)
     cost_cols = []
@@ -3391,24 +3391,33 @@ def parse_cost_price_workbook(contents: bytes, as_of=None):
                     continue  # fulfillment twin
                 cost_cols.append((i, d))
 
-    # артикул: колонка «Артикул»
+    # артикул продавца + SKU (nm_id WB)
     vc_col = 1
+    sku_col = 0
     for i, top in enumerate(h1):
         t = str(top or "").strip().lower()
         if t == "артикул" or "артикул продавца" in t:
             vc_col = i
-            break
+        if t == "sku" or t in ("nm_id", "nmid", "код нм", "номенклатура"):
+            sku_col = i
 
     default_idxs = [i for i, d in cost_cols if d is None]
     dated_idxs = [(i, d) for i, d in cost_cols if d is not None]
 
-    costs = {}
+    by_vendor = {}
+    by_nm = {}
     for row in rows_iter:
         if not row or vc_col >= len(row):
             continue
         vc = _norm_vendor_key(row[vc_col])
         if not vc or vc.lower() in ("артикул", "nan", "none"):
             continue
+        nm_id = None
+        if sku_col is not None and sku_col < len(row) and row[sku_col] not in (None, ""):
+            try:
+                nm_id = int(float(str(row[sku_col]).strip()))
+            except Exception:
+                nm_id = None
         default_cost = None
         for i in default_idxs:
             if i < len(row):
@@ -3425,21 +3434,28 @@ def parse_cost_price_workbook(contents: bytes, as_of=None):
         eff, as_of_used = _effective_cost_from_history(default_cost, dated, as_of)
         if eff is None:
             continue
-        costs[vc] = {
+        entry = {
             "cost": round(eff, 4),
             "default": round(default_cost, 4) if default_cost is not None else None,
             "as_of": as_of_used,
+            "vendor_code": vc,
+            "nm_id": nm_id,
             "history": (
                 ([{"date": None, "cost": round(default_cost, 4)}] if default_cost is not None else [])
                 + [{"date": d.isoformat(), "cost": round(c, 4)} for d, c in sorted(dated, key=lambda x: x[0])]
             ),
         }
+        by_vendor[vc] = entry
+        if nm_id is not None:
+            by_nm[str(nm_id)] = entry
     wb.close()
-    return costs, {
+    return {"by_vendor": by_vendor, "by_nm": by_nm}, {
         "format": "dated_cost_matrix",
         "default_cols": len(default_idxs),
         "date_cols": len(dated_idxs),
         "as_of": as_of.isoformat(),
+        "vendors": len(by_vendor),
+        "nms": len(by_nm),
     }
 
 @app.post("/api/upload-costs")
@@ -3449,26 +3465,26 @@ async def upload_costs(file: UploadFile = File(...)):
     - формат с датами (По умолчанию + колонки дат Себестоимость/Фулфилмент)
     - или простой файл Артикул + Себестоимость
     Актуальная цена остатков = последняя себестоимость с датой <= сегодня, иначе «По умолчанию».
+    Матчинг остатков WB: по артикулу продавца и по SKU (nm_id).
     """
     try:
         contents = await file.read()
         name = (file.filename or "").lower()
-        costs = {}
+        by_vendor, by_nm = {}, {}
         parse_meta = {}
 
-        # 1) пробуем матрицу с датами (твой cost_price.xlsx)
         if name.endswith(".xlsx") or name.endswith(".xls") or not name.endswith(".csv"):
             try:
-                costs, parse_meta = parse_cost_price_workbook(contents)
+                parsed, parse_meta = parse_cost_price_workbook(contents)
+                by_vendor = (parsed or {}).get("by_vendor") or {}
+                by_nm = (parsed or {}).get("by_nm") or {}
             except Exception as e:
                 logger.warning(f"dated cost parse failed, fallback: {e}")
-                costs, parse_meta = {}, {"dated_error": str(e)}
+                by_vendor, by_nm, parse_meta = {}, {}, {"dated_error": str(e)}
 
-        # 2) простой формат
-        if not costs:
+        if not by_vendor:
             if name.endswith(".csv"):
                 df = pd.read_csv(io.BytesIO(contents), dtype=str, sep=None, engine="python")
-                header_row = 0
             else:
                 xl = pd.ExcelFile(io.BytesIO(contents))
                 best = None
@@ -3496,11 +3512,12 @@ async def upload_costs(file: UploadFile = File(...)):
                         if n in low:
                             return orig
                 return None
-            col_vc = find_col("артикул продавца") or find_col("артикул") or find_col("vendor", "sku")
+            col_vc = find_col("артикул продавца") or find_col("артикул") or find_col("vendor")
+            col_sku = find_col("sku", "nm_id", "nmid")
             col_cost = find_col("по умолчанию") or find_col("себестоим", "cost", "закуп") or find_col("цена")
             if not col_vc or not col_cost:
                 return {
-                    "error": "Не удалось прочитать файл. Нужен Excel как cost_price: Артикул + По умолчанию + даты.",
+                    "error": "Не удалось прочитать файл. Нужен Excel как cost_price: SKU + Артикул + По умолчанию + даты.",
                     "columns": list(df.columns.astype(str)),
                     "parse_meta": parse_meta,
                 }
@@ -3511,32 +3528,49 @@ async def upload_costs(file: UploadFile = File(...)):
                 cost = _parse_cost_number(row.get(col_cost))
                 if cost is None:
                     continue
-                costs[vc] = {"cost": round(cost, 4), "default": round(cost, 4), "as_of": None, "history": []}
+                nm_id = None
+                if col_sku is not None:
+                    try:
+                        nm_id = int(float(str(row.get(col_sku)).strip()))
+                    except Exception:
+                        nm_id = None
+                entry = {
+                    "cost": round(cost, 4),
+                    "default": round(cost, 4),
+                    "as_of": None,
+                    "vendor_code": vc,
+                    "nm_id": nm_id,
+                    "history": [],
+                }
+                by_vendor[vc] = entry
+                if nm_id is not None:
+                    by_nm[str(nm_id)] = entry
             parse_meta["format"] = "simple"
 
-        if not costs:
+        if not by_vendor:
             return {"error": "В файле не найдено артикулов с себестоимостью", "parse_meta": parse_meta}
 
-        # полная замена прайса этим файлом (актуальный снимок)
-        save_setting_value(COST_PRICES_KEY, costs)
+        payload = {"_v": 2, "by_vendor": by_vendor, "by_nm": by_nm}
+        save_setting_value(COST_PRICES_KEY, payload)
         meta = {
             "filename": file.filename,
             "uploaded_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
-            "rows_in_file": len(costs),
-            "total_articles": len(costs),
+            "rows_in_file": len(by_vendor),
+            "total_articles": len(by_vendor),
+            "nm_mapped": len(by_nm),
             "format": parse_meta.get("format"),
             "as_of": parse_meta.get("as_of"),
             "date_cols": parse_meta.get("date_cols"),
         }
         save_setting_value(COST_META_KEY, meta)
 
-        # пример для проверки
         sample_vc = "039_DT10_mini_gold_O"
-        sample = costs.get(sample_vc)
+        sample = by_vendor.get(sample_vc)
         return {
             "status": "ok",
-            "loaded": len(costs),
-            "total": len(costs),
+            "loaded": len(by_vendor),
+            "total": len(by_vendor),
+            "nm_mapped": len(by_nm),
             "meta": meta,
             "sample": {sample_vc: sample} if sample else None,
         }
@@ -3544,25 +3578,76 @@ async def upload_costs(file: UploadFile = File(...)):
         logger.error(f"upload-costs error: {e}")
         return {"error": str(e)}
 
+def _load_cost_indexes():
+    """Возвращает (by_vendor, by_nm) из settings — поддерживает старый и новый формат."""
+    raw = get_setting_json(COST_PRICES_KEY, {}) or {}
+    if not isinstance(raw, dict):
+        return {}, {}
+    if raw.get("_v") == 2 or ("by_vendor" in raw or "by_nm" in raw):
+        by_vendor = raw.get("by_vendor") or {}
+        by_nm = raw.get("by_nm") or {}
+    else:
+        # старый формат: {vendor: entry|float}
+        by_vendor, by_nm = {}, {}
+        for k, v in raw.items():
+            if str(k).startswith("_"):
+                continue
+            vc = _norm_vendor_key(k)
+            if not vc:
+                continue
+            meta = _cost_entry_meta(v)
+            if meta["cost"] is None:
+                continue
+            entry = {**meta, "vendor_code": vc, "nm_id": None}
+            if isinstance(v, dict):
+                entry["nm_id"] = v.get("nm_id")
+                entry["history"] = v.get("history") or []
+                if entry["nm_id"] is not None:
+                    by_nm[str(entry["nm_id"])] = entry
+            by_vendor[vc] = entry
+    # нормализуем meta
+    out_v, out_n = {}, {}
+    for vc, v in by_vendor.items():
+        m = _cost_entry_meta(v)
+        if m["cost"] is None:
+            continue
+        entry = {
+            **m,
+            "vendor_code": (v.get("vendor_code") if isinstance(v, dict) else None) or vc,
+            "nm_id": v.get("nm_id") if isinstance(v, dict) else None,
+        }
+        out_v[_norm_vendor_key(vc)] = entry
+        if entry.get("nm_id") is not None:
+            out_n[str(entry["nm_id"])] = entry
+    for nm, v in by_nm.items():
+        m = _cost_entry_meta(v)
+        if m["cost"] is None:
+            continue
+        entry = {
+            **m,
+            "vendor_code": (v.get("vendor_code") if isinstance(v, dict) else None) or "",
+            "nm_id": int(nm) if str(nm).isdigit() else (v.get("nm_id") if isinstance(v, dict) else None),
+        }
+        out_n[str(nm)] = entry
+        if entry["vendor_code"]:
+            out_v.setdefault(_norm_vendor_key(entry["vendor_code"]), entry)
+    return out_v, out_n
+
 @app.get("/api/finance")
 def get_finance():
     """Себестоимость остатков: WB + наш склад (актуальная цена на сегодня)."""
-    costs_raw = get_setting_json(COST_PRICES_KEY, {}) or {}
-    if not isinstance(costs_raw, dict):
-        costs_raw = {}
-    costs = {}
-    for k, v in costs_raw.items():
-        vc = _norm_vendor_key(k)
-        if not vc:
-            continue
-        meta = _cost_entry_meta(v)
-        if meta["cost"] is None:
-            continue
-        costs[vc] = meta
-
+    by_vendor, by_nm = _load_cost_indexes()
     meta = get_setting_json(COST_META_KEY, {}) or {}
 
-    # WB остатки
+    def resolve_cost(vendor_code=None, nm_id=None):
+        vc = _norm_vendor_key(vendor_code)
+        if vc and vc in by_vendor:
+            return by_vendor[vc]
+        if nm_id is not None and str(nm_id) in by_nm:
+            return by_nm[str(nm_id)]
+        return {}
+
+    # WB остатки — vendor_code в stock_totals часто пустой, матчим по nm_id (SKU из файла)
     wb_rows = []
     try:
         st = httpx.get(
@@ -3571,16 +3656,17 @@ def get_finance():
         )
         if st.is_success:
             for r in st.json() or []:
-                vc = _norm_vendor_key(r.get("vendor_code"))
+                nm_id = r.get("nm_id")
                 qty = int(r.get("quantity_warehouses_full") or 0)
                 if qty <= 0:
                     continue
-                cm = costs.get(vc) or {}
+                cm = resolve_cost(r.get("vendor_code"), nm_id)
                 cost = cm.get("cost")
                 value = round(qty * cost, 2) if cost is not None else None
+                seller = _norm_vendor_key(cm.get("vendor_code") or r.get("vendor_code")) or ""
                 wb_rows.append({
-                    "vendor_code": vc or str(r.get("nm_id") or ""),
-                    "nm_id": r.get("nm_id"),
+                    "vendor_code": seller or (str(nm_id) if nm_id else ""),
+                    "nm_id": nm_id,
                     "name": r.get("subject_name") or "",
                     "qty": qty,
                     "cost": cost,
@@ -3611,7 +3697,7 @@ def get_finance():
         qty = int(r.get("stock") or 0)
         if qty <= 0:
             continue
-        cm = costs.get(vc) or {}
+        cm = resolve_cost(vc, None)
         cost = cm.get("cost")
         value = round(qty * cost, 2) if cost is not None else None
         own_rows.append({
@@ -3643,7 +3729,8 @@ def get_finance():
     own_rows.sort(key=lambda x: (-(x["value"] or 0), str(x["vendor_code"])))
 
     return {
-        "costs_count": len(costs),
+        "costs_count": len(by_vendor),
+        "nm_mapped": len(by_nm),
         "meta": meta,
         "wb": {**wb_sum, "rows": wb_rows},
         "own": {
