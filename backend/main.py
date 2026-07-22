@@ -3288,7 +3288,59 @@ def _parse_cost_number(v):
         return None
 
 def _norm_vendor_key(v):
-    return str(v or "").strip()
+    """Артикул продавца: trim + латиница O вместо кириллической О (частая путаница в Excel)."""
+    s = str(v or "").strip()
+    if not s:
+        return ""
+    return s.replace("\u041e", "O").replace("\u043e", "o")
+
+
+def build_nm_to_vendor_map() -> dict:
+    """nm_id → артикул продавца (033_…). stock_totals часто без vendor_code — берём из рейтингов/отзывов."""
+    m = {}
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?select=nm_id,article&nm_id=not.is.null&article=not.is.null&limit=5000",
+            headers=sb_headers(), timeout=20,
+        )
+        if r.is_success:
+            for row in r.json() or []:
+                nm, art = row.get("nm_id"), _norm_vendor_key(row.get("article"))
+                if nm is not None and art and art != str(nm):
+                    m[int(nm)] = art
+    except Exception as e:
+        logger.warning(f"build_nm_to_vendor_map ratings: {e}")
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/feedbacks?select=nm_id,article&nm_id=not.is.null&article=not.is.null&limit=5000",
+            headers=sb_headers(), timeout=20,
+        )
+        if r.is_success:
+            for row in r.json() or []:
+                nm, art = row.get("nm_id"), _norm_vendor_key(row.get("article"))
+                if nm is None or not art or art == str(nm):
+                    continue
+                nm = int(nm)
+                if nm not in m:
+                    m[nm] = art
+    except Exception as e:
+        logger.warning(f"build_nm_to_vendor_map feedbacks: {e}")
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&limit=5000",
+            headers=sb_headers(), timeout=15,
+        )
+        if r.is_success:
+            for row in r.json() or []:
+                nm, art = row.get("nm_id"), _norm_vendor_key(row.get("vendor_code"))
+                if nm is None or not art or art == str(nm):
+                    continue
+                nm = int(nm)
+                if nm not in m:
+                    m[nm] = art
+    except Exception as e:
+        logger.warning(f"build_nm_to_vendor_map stock: {e}")
+    return m
 
 def _parse_header_date(v):
     """Парсит дату из заголовка колонки (datetime / '2026-03-30' / '30.03.2026')."""
@@ -3420,17 +3472,34 @@ def parse_cost_price_workbook(contents: bytes, as_of=None):
     sku_col = 0
     for i, top in enumerate(h1):
         t = str(top or "").strip().lower()
-        if t == "артикул" or "артикул продавца" in t:
+        if t == "артикул" or "артикул продавца" in t or t == "vendorcode" or t == "vendor_code":
             vc_col = i
-        if t == "sku" or t in ("nm_id", "nmid", "код нм", "номенклатура"):
+        if t in ("sku", "nm_id", "nmid", "код нм", "номенклатура", "нм", "nm"):
             sku_col = i
+    # если заголовки пустые из‑за merge — эвристика по данным первых строк
+    peek = []
+    rows_list = list(rows_iter)
+    for row in rows_list[:30]:
+        if row:
+            peek.append(row)
+    if peek and (not h1[0] or str(h1[0]).strip() == ""):
+        # col0 выглядит как nm_id (длинное число), col1 — артикул продавца
+        c0 = peek[0][0] if peek[0] else None
+        c1 = peek[0][1] if len(peek[0]) > 1 else None
+        try:
+            if c0 is not None and float(str(c0)) > 10000:
+                sku_col = 0
+        except Exception:
+            pass
+        if c1 is not None and not str(c1).replace(".", "").isdigit():
+            vc_col = 1
 
     default_idxs = [i for i, d in cost_cols if d is None]
     dated_idxs = [(i, d) for i, d in cost_cols if d is not None]
 
     by_vendor = {}
     by_nm = {}
-    for row in rows_iter:
+    for row in rows_list:
         if not row or vc_col >= len(row):
             continue
         vc = _norm_vendor_key(row[vc_col])
@@ -3439,7 +3508,12 @@ def parse_cost_price_workbook(contents: bytes, as_of=None):
         nm_id = None
         if sku_col is not None and sku_col < len(row) and row[sku_col] not in (None, ""):
             try:
-                nm_id = int(float(str(row[sku_col]).strip()))
+                raw_sku = str(row[sku_col]).strip()
+                # nm_id WB — обычно 6–12 цифр; не путать с артикулом продавца
+                if raw_sku.replace(".", "", 1).isdigit():
+                    nm_id = int(float(raw_sku))
+                    if nm_id < 10000:
+                        nm_id = None
             except Exception:
                 nm_id = None
         default_cost = None
@@ -3662,6 +3736,16 @@ def get_finance():
     """Себестоимость остатков: WB + наш склад (актуальная цена на сегодня)."""
     by_vendor, by_nm = _load_cost_indexes()
     meta = get_setting_json(COST_META_KEY, {}) or {}
+    nm_to_vendor = build_nm_to_vendor_map()
+    # дополняем карту из файла себестоимости (если SKU был в Excel)
+    for nm_s, entry in by_nm.items():
+        try:
+            nm = int(nm_s)
+        except Exception:
+            continue
+        vc = _norm_vendor_key(entry.get("vendor_code"))
+        if vc and vc != str(nm) and nm not in nm_to_vendor:
+            nm_to_vendor[nm] = vc
 
     def resolve_cost(vendor_code=None, nm_id=None):
         vc = _norm_vendor_key(vendor_code)
@@ -3669,9 +3753,15 @@ def get_finance():
             return by_vendor[vc]
         if nm_id is not None and str(nm_id) in by_nm:
             return by_nm[str(nm_id)]
+        # иногда в by_vendor ключ с другим регистром
+        if vc:
+            low = vc.lower()
+            for k, e in by_vendor.items():
+                if k.lower() == low:
+                    return e
         return {}
 
-    # WB остатки — vendor_code в stock_totals часто пустой, матчим по nm_id (SKU из файла)
+    # WB остатки — vendor_code в stock_totals часто пустой, матчим через ratings/nm_id
     wb_rows = []
     try:
         st = httpx.get(
@@ -3684,10 +3774,25 @@ def get_finance():
                 qty = int(r.get("quantity_warehouses_full") or 0)
                 if qty <= 0:
                     continue
-                cm = resolve_cost(r.get("vendor_code"), nm_id)
+                try:
+                    nm_int = int(nm_id) if nm_id is not None else None
+                except Exception:
+                    nm_int = None
+                stock_vc = _norm_vendor_key(r.get("vendor_code"))
+                if stock_vc and nm_int is not None and stock_vc == str(nm_int):
+                    stock_vc = ""
+                seller = (
+                    stock_vc
+                    or (nm_to_vendor.get(nm_int) if nm_int is not None else "")
+                    or ""
+                )
+                seller = _norm_vendor_key(seller)
+                cm = resolve_cost(seller, nm_id)
+                # если себес нашли по nm — подтянем артикул из файла
+                if not seller:
+                    seller = _norm_vendor_key(cm.get("vendor_code")) or ""
                 cost = cm.get("cost")
                 value = round(qty * cost, 2) if cost is not None else None
-                seller = _norm_vendor_key(cm.get("vendor_code") or r.get("vendor_code")) or ""
                 wb_rows.append({
                     "vendor_code": seller or (str(nm_id) if nm_id else ""),
                     "nm_id": nm_id,
