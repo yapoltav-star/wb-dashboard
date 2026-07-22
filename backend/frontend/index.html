@@ -4282,7 +4282,7 @@ function drawCfo() {
           <tr><td>Interest coverage</td><td>${h.interest_coverage != null ? h.interest_coverage + '×' : '—'}</td><td>≥ 3×</td><td>${cfoPill((h.floors||{}).coverage)}</td></tr>
           <tr><td>Current ratio</td><td>${t.current_ratio != null ? t.current_ratio : '—'}</td><td>≥ 1.1</td><td>${cfoPill((h.floors||{}).current_ratio)}</td></tr>
           <tr><td>Маржа от реализации</td><td>${h.margin_channels_pct != null ? h.margin_channels_pct + '%' : '—'}</td><td>≥ ${h.target_margin_pct}%</td><td>${cfoPill((h.floors||{}).margin)}</td></tr>
-          <tr><td>Средняя ставка банков</td><td>${h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—'}</td><td>≤ 25%</td><td>${cfoPill((h.floors||{}).avg_rate)}</td></tr>
+          <tr><td>Средняя ставка банков</td><td>${h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—'}</td><td>≤ 25% (потолок)</td><td>${cfoPill((h.floors||{}).avg_rate, 'ceiling')}</td></tr>
           <tr><td>Реализация / мес</td><td>${fmtMoney(t.realization)}</td><td>${fmtMoney(h.min_realization_for_salary_interest)} (ЗП+% при марже ${h.target_margin_pct}%)</td><td>${cfoPill((h.floors||{}).realization)}</td></tr>
         </tbody>
       </table>
@@ -4342,9 +4342,11 @@ function drawCfo() {
     </div>`;
 }
 
-function cfoPill(floor) {
+function cfoPill(floor, kind) {
   if(!floor || !floor.status) return '<span class="cfo-pill warn">—</span>';
-  const label = floor.status === 'ok' ? 'ОК' : (floor.status === 'warn' ? 'Внимание' : 'Ниже пола');
+  let label = 'ОК';
+  if(floor.status === 'warn') label = 'Внимание';
+  else if(floor.status === 'bad') label = (kind === 'ceiling') ? 'Выше потолка' : 'Ниже пола';
   return `<span class="cfo-pill ${floor.status}">${label}</span>`;
 }
 
@@ -4356,18 +4358,18 @@ function drawCfoSituation() {
   const verdEl = document.getElementById('cfoVerdict');
   if(!healthEl) return;
   const items = [
-    ['Interest coverage', h.interest_coverage != null ? h.interest_coverage + '×' : '—', (h.floors||{}).coverage],
-    ['Средняя ставка', h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—', (h.floors||{}).avg_rate],
-    ['% по кредитам / мес', fmtMoney(t.bank_interest), null],
-    ['Маржа от реализации', h.margin_channels_pct != null ? h.margin_channels_pct + '%' : '—', (h.floors||{}).margin],
-    ['Leverage банков', h.leverage_bank_months != null ? h.leverage_bank_months + ' мес ЧП' : '—', null],
-    ['Долг / активы', h.debt_to_assets != null ? Math.round(h.debt_to_assets * 100) + '%' : '—', null],
-    ['Current ratio', t.current_ratio != null ? t.current_ratio : '—', (h.floors||{}).current_ratio],
-    ['Кэш vs пол', fmtMoney(t.cash), (h.floors||{}).cash],
+    ['Interest coverage', h.interest_coverage != null ? h.interest_coverage + '×' : '—', (h.floors||{}).coverage, 'floor'],
+    ['Средняя ставка', h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—', (h.floors||{}).avg_rate, 'ceiling'],
+    ['% по кредитам / мес', fmtMoney(t.bank_interest), null, null],
+    ['Маржа от реализации', h.margin_channels_pct != null ? h.margin_channels_pct + '%' : '—', (h.floors||{}).margin, 'floor'],
+    ['Leverage банков', h.leverage_bank_months != null ? h.leverage_bank_months + ' мес ЧП' : '—', null, null],
+    ['Долг / активы', h.debt_to_assets != null ? Math.round(h.debt_to_assets * 100) + '%' : '—', null, null],
+    ['Current ratio', t.current_ratio != null ? t.current_ratio : '—', (h.floors||{}).current_ratio, 'floor'],
+    ['Кэш vs пол', fmtMoney(t.cash), (h.floors||{}).cash, 'floor'],
   ];
-  healthEl.innerHTML = items.map(([l,v,f]) => {
+  healthEl.innerHTML = items.map(([l,v,f,kind]) => {
     const st = (f && f.status) || '';
-    return `<div class="cfo-hcard ${st}"><div class="hl">${l}</div><div class="hv">${v}</div>${f ? `<div class="hs">${cfoPill(f)}</div>` : ''}</div>`;
+    return `<div class="cfo-hcard ${st}"><div class="hl">${l}</div><div class="hv">${v}</div>${f ? `<div class="hs">${cfoPill(f, kind)}</div>` : ''}</div>`;
   }).join('');
 
   if(verdEl) {
@@ -4375,9 +4377,9 @@ function drawCfoSituation() {
     const bad = Object.values(floors).filter(x => x && x.status === 'bad').length;
     const warn = Object.values(floors).filter(x => x && x.status === 'warn').length;
     let text;
-    if(bad === 0 && warn === 0) text = 'Ситуация нормальная: все ключевые полы зелёные. Можно давить на рост и гасить дорогой долг.';
-    else if(bad === 0) text = 'В целом держаться можно, но есть жёлтые зоны — смотри красные линии ниже. Не раздувай дорогой долг.';
-    else text = 'Есть показатели ниже пола (красные). Сначала касса / ставка / coverage, потом уже агрессивный рост.';
+    if(bad === 0 && warn === 0) text = 'Ситуация нормальная: все ключевые границы зелёные. Можно давить на рост и гасить дорогой долг.';
+    else if(bad === 0) text = 'В целом держаться можно, но есть жёлтые зоны — смотри границы ниже. Не раздувай дорогой долг.';
+    else text = 'Есть показатели вне безопасной зоны (красные). Сначала касса / ставка / coverage, потом уже агрессивный рост.';
     verdEl.style.display = 'block';
     verdEl.textContent = text;
   }
