@@ -221,6 +221,23 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .cfo-hcard.ok{border-color:rgba(18,183,106,.35);background:rgba(18,183,106,.06)}
 .cfo-hcard.warn{border-color:rgba(247,144,9,.4);background:rgba(247,144,9,.07)}
 .cfo-hcard.bad{border-color:rgba(240,68,56,.4);background:rgba(240,68,56,.06)}
+.cfo-hcard[data-tip], .cfo-tip[data-tip]{position:relative;cursor:help}
+.cfo-hcard[data-tip]::after, .cfo-tip[data-tip]::after{
+  content:attr(data-tip);
+  position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);
+  width:max(220px, 100%);max-width:280px;
+  padding:8px 10px;border-radius:8px;background:#1F1F2E;color:#fff;
+  font-size:11px;font-weight:400;line-height:1.4;letter-spacing:0;
+  opacity:0;pointer-events:none;transition:opacity .15s;z-index:40;
+  box-shadow:0 6px 20px rgba(0,0,0,.18);white-space:normal;text-align:left;
+}
+.cfo-hcard[data-tip]::before, .cfo-tip[data-tip]::before{
+  content:'';position:absolute;left:50%;bottom:calc(100% + 2px);transform:translateX(-50%);
+  border:6px solid transparent;border-top-color:#1F1F2E;opacity:0;transition:opacity .15s;z-index:41;
+}
+.cfo-hcard[data-tip]:hover::after, .cfo-hcard[data-tip]:hover::before,
+.cfo-tip[data-tip]:hover::after, .cfo-tip[data-tip]:hover::before{opacity:1}
+.cfo-floors td.cfo-tip{cursor:help;border-bottom-style:dashed}
 .cfo-floors{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
 .cfo-floors th{text-align:left;color:var(--wb-muted);font-weight:500;padding:6px;border-bottom:1px solid var(--wb-border)}
 .cfo-floors td{padding:7px 6px;border-bottom:1px solid var(--wb-border);font-variant-numeric:tabular-nums}
@@ -4274,16 +4291,16 @@ function drawCfo() {
 
   root.innerHTML = `
     <div class="cfo-box">
-      <h3>Красные линии (нельзя падать ниже)</h3>
+      <h3>Границы безопасности</h3>
       <table class="cfo-floors">
-        <thead><tr><th>Показатель</th><th>Сейчас</th><th>Пол</th><th>Статус</th></tr></thead>
+        <thead><tr><th>Показатель</th><th>Сейчас</th><th>Граница</th><th>Статус</th></tr></thead>
         <tbody>
-          <tr><td>Кэш на счёте</td><td>${fmtMoney(t.cash)}</td><td>${fmtMoney(h.cash_floor)}</td><td>${cfoPill((h.floors||{}).cash)}</td></tr>
-          <tr><td>Interest coverage</td><td>${h.interest_coverage != null ? h.interest_coverage + '×' : '—'}</td><td>≥ 3×</td><td>${cfoPill((h.floors||{}).coverage)}</td></tr>
-          <tr><td>Current ratio</td><td>${t.current_ratio != null ? t.current_ratio : '—'}</td><td>≥ 1.1</td><td>${cfoPill((h.floors||{}).current_ratio)}</td></tr>
-          <tr><td>Маржа от реализации</td><td>${h.margin_channels_pct != null ? h.margin_channels_pct + '%' : '—'}</td><td>≥ ${h.target_margin_pct}%</td><td>${cfoPill((h.floors||{}).margin)}</td></tr>
-          <tr><td>Средняя ставка банков</td><td>${h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—'}</td><td>≤ 25% (потолок)</td><td>${cfoPill((h.floors||{}).avg_rate, 'ceiling')}</td></tr>
-          <tr><td>Реализация / мес</td><td>${fmtMoney(t.realization)}</td><td>${fmtMoney(h.min_realization_for_salary_interest)} (ЗП+% при марже ${h.target_margin_pct}%)</td><td>${cfoPill((h.floors||{}).realization)}</td></tr>
+          <tr><td class="cfo-tip" data-tip="${escTip(CFO_TIPS.cash)}">Кэш на счёте</td><td>${fmtMoney(t.cash)}</td><td>${fmtMoney(h.cash_floor)}</td><td>${cfoPill((h.floors||{}).cash)}</td></tr>
+          <tr><td class="cfo-tip" data-tip="${escTip(CFO_TIPS.coverage)}">Interest coverage</td><td>${h.interest_coverage != null ? h.interest_coverage + '×' : '—'}</td><td>≥ 3×</td><td>${cfoPill((h.floors||{}).coverage)}</td></tr>
+          <tr><td class="cfo-tip" data-tip="${escTip(CFO_TIPS.current_ratio)}">Current ratio</td><td>${t.current_ratio != null ? t.current_ratio : '—'}</td><td>≥ 1.1</td><td>${cfoPill((h.floors||{}).current_ratio)}</td></tr>
+          <tr><td class="cfo-tip" data-tip="${escTip(CFO_TIPS.margin)}">Маржа от реализации</td><td>${h.margin_channels_pct != null ? h.margin_channels_pct + '%' : '—'}</td><td>≥ ${h.target_margin_pct}%</td><td>${cfoPill((h.floors||{}).margin)}</td></tr>
+          <tr><td class="cfo-tip" data-tip="${escTip(CFO_TIPS.avg_rate)}">Средняя ставка банков</td><td>${h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—'}</td><td>≤ 25% (потолок)</td><td>${cfoPill((h.floors||{}).avg_rate, 'ceiling')}</td></tr>
+          <tr><td class="cfo-tip" data-tip="${escTip(CFO_TIPS.realization)}">Реализация / мес</td><td>${fmtMoney(t.realization)}</td><td>${fmtMoney(h.min_realization_for_salary_interest)} (ЗП+% при марже ${h.target_margin_pct}%)</td><td>${cfoPill((h.floors||{}).realization)}</td></tr>
         </tbody>
       </table>
       <div class="cfo-hint">
@@ -4350,6 +4367,22 @@ function cfoPill(floor, kind) {
   return `<span class="cfo-pill ${floor.status}">${label}</span>`;
 }
 
+const CFO_TIPS = {
+  coverage: 'Interest coverage — во сколько раз прибыль (после ЗП, до процентов) покрывает проценты по кредитам. Формула: (ЧП каналов − ЗП) ÷ проценты. Норма ≥ 3×. Пример: 16× значит на 1 ₽ процентов зарабатываешь ~16 ₽.',
+  avg_rate: 'Средняя ставка — средневзвешенный процент по всем кредитам (чем больше тело кредита, тем сильнее его ставка влияет на среднее). Чем ниже — тем дешевле долг. Потолок комфорта ≤ 25%. Выше — дорого.',
+  bank_interest: 'Сумма процентов по всем кредитам за месяц. Именно это вычитается из чистой прибыли. Погашение тела долга сюда не входит — это только касса.',
+  margin: 'Маржа от реализации — какая доля реализации остаётся чистой прибылью каналов (до вычета ЗП и банковских %). Считается: ЧП каналов ÷ реализация. Твой ориентир ~15%.',
+  leverage: 'Leverage банков — за сколько месяцев честной ЧП можно закрыть всё тело банковских кредитов. Формула: тело банков ÷ честная ЧП. Чем меньше месяцев — тем легче долг.',
+  debt_assets: 'Долг / активы — какая доля оборотных активов фактически профинансирована долгами (банки + поставщики). Высокая доля = сильный рычаг. Для торговли с товарным кредитом часто нормально, если ставка низкая.',
+  current_ratio: 'Current ratio — хватает ли оборотных активов закрыть все обязательства. Формула: активы ÷ (поставщики + банки). ≥ 1.1 комфортно, около 1 — впритык, ниже 1 — формально не покрываешь долги активами.',
+  cash: 'Живые деньги на расчётном счёте. Пол — минимальный запас на неделю/платежи (сейчас ~4 млн). Ниже пола = касса слишком тонкая при недельных циклах WB и поставщиков.',
+  realization: 'Реализация за месяц по каналам. При твоей целевой марже считается минимум реализации, ниже которого не хватит на ЗП и проценты.',
+};
+
+function escTip(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}
+
 function drawCfoSituation() {
   const d = CFO_DATA || {};
   const t = d.totals || {};
@@ -4358,18 +4391,18 @@ function drawCfoSituation() {
   const verdEl = document.getElementById('cfoVerdict');
   if(!healthEl) return;
   const items = [
-    ['Interest coverage', h.interest_coverage != null ? h.interest_coverage + '×' : '—', (h.floors||{}).coverage, 'floor'],
-    ['Средняя ставка', h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—', (h.floors||{}).avg_rate, 'ceiling'],
-    ['% по кредитам / мес', fmtMoney(t.bank_interest), null, null],
-    ['Маржа от реализации', h.margin_channels_pct != null ? h.margin_channels_pct + '%' : '—', (h.floors||{}).margin, 'floor'],
-    ['Leverage банков', h.leverage_bank_months != null ? h.leverage_bank_months + ' мес ЧП' : '—', null, null],
-    ['Долг / активы', h.debt_to_assets != null ? Math.round(h.debt_to_assets * 100) + '%' : '—', null, null],
-    ['Current ratio', t.current_ratio != null ? t.current_ratio : '—', (h.floors||{}).current_ratio, 'floor'],
-    ['Кэш vs пол', fmtMoney(t.cash), (h.floors||{}).cash, 'floor'],
+    ['Interest coverage', h.interest_coverage != null ? h.interest_coverage + '×' : '—', (h.floors||{}).coverage, 'floor', CFO_TIPS.coverage],
+    ['Средняя ставка', h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—', (h.floors||{}).avg_rate, 'ceiling', CFO_TIPS.avg_rate],
+    ['% по кредитам / мес', fmtMoney(t.bank_interest), null, null, CFO_TIPS.bank_interest],
+    ['Маржа от реализации', h.margin_channels_pct != null ? h.margin_channels_pct + '%' : '—', (h.floors||{}).margin, 'floor', CFO_TIPS.margin],
+    ['Leverage банков', h.leverage_bank_months != null ? h.leverage_bank_months + ' мес ЧП' : '—', null, null, CFO_TIPS.leverage],
+    ['Долг / активы', h.debt_to_assets != null ? Math.round(h.debt_to_assets * 100) + '%' : '—', null, null, CFO_TIPS.debt_assets],
+    ['Current ratio', t.current_ratio != null ? t.current_ratio : '—', (h.floors||{}).current_ratio, 'floor', CFO_TIPS.current_ratio],
+    ['Кэш vs пол', fmtMoney(t.cash), (h.floors||{}).cash, 'floor', CFO_TIPS.cash],
   ];
-  healthEl.innerHTML = items.map(([l,v,f,kind]) => {
+  healthEl.innerHTML = items.map(([l,v,f,kind,tip]) => {
     const st = (f && f.status) || '';
-    return `<div class="cfo-hcard ${st}"><div class="hl">${l}</div><div class="hv">${v}</div>${f ? `<div class="hs">${cfoPill(f, kind)}</div>` : ''}</div>`;
+    return `<div class="cfo-hcard ${st}" data-tip="${escTip(tip)}"><div class="hl">${l}</div><div class="hv">${v}</div>${f ? `<div class="hs">${cfoPill(f, kind)}</div>` : ''}</div>`;
   }).join('');
 
   if(verdEl) {
