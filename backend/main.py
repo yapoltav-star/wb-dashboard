@@ -4,15 +4,12 @@ import io
 import json
 import time
 import logging
-import hashlib
-import hmac
 from datetime import datetime, timedelta, timezone, date
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
 import pandas as pd
 from pathlib import Path
 
@@ -25,50 +22,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 WB_TOKEN = os.getenv("WB_TOKEN", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-SITE_PASSWORD = os.getenv("SITE_PASSWORD", "0072")
-SITE_AUTH_SECRET = os.getenv("SITE_AUTH_SECRET", SITE_PASSWORD)
-AUTH_COOKIE = "wb_session"
-AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
-AUTH_PUBLIC_PATHS = {"/login", "/api/login", "/api/status", "/favicon.ico"}
-
-
-def _auth_token() -> str:
-    return hmac.new(
-        SITE_AUTH_SECRET.encode("utf-8"),
-        SITE_PASSWORD.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-
-def _password_ok(password: str) -> bool:
-    a = hashlib.sha256((password or "").encode("utf-8")).digest()
-    b = hashlib.sha256(SITE_PASSWORD.encode("utf-8")).digest()
-    return hmac.compare_digest(a, b)
-
-
-def _request_authed(request: Request) -> bool:
-    cookie = request.cookies.get(AUTH_COOKIE) or ""
-    expected = _auth_token()
-    if cookie and hmac.compare_digest(cookie, expected):
-        return True
-    if _password_ok(request.headers.get("X-Site-Password") or ""):
-        return True
-    return False
-
-
-class SiteAuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        path = request.url.path
-        if request.method == "OPTIONS" or path in AUTH_PUBLIC_PATHS:
-            return await call_next(request)
-        if _request_authed(request):
-            return await call_next(request)
-        if path.startswith("/api/"):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        return RedirectResponse(url="/login", status_code=302)
-
-
-app.add_middleware(SiteAuthMiddleware)
 WB_FEEDBACKS_URL = "https://feedbacks-api.wildberries.ru"
 WB_ANALYTICS_URL = "https://seller-analytics-api.wildberries.ru"
 WB_STATISTICS_URL = "https://statistics-api.wildberries.ru"
@@ -3022,106 +2975,6 @@ def _resolve_frontend_dir():
 
 FRONTEND_DIR = _resolve_frontend_dir()
 logger.info(f"FRONTEND_DIR={FRONTEND_DIR} exists={FRONTEND_DIR.exists()} index={(FRONTEND_DIR / 'index.html').exists()}")
-
-LOGIN_HTML = """<!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Вход · WB Dashboard</title>
-<style>
-  :root { --bg:#F3F1ED; --card:#FFFCFA; --ink:#1C1917; --muted:#78716C; --accent:#D4622A; --line:#E7E5E4; }
-  * { box-sizing:border-box; }
-  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
-    font-family: "Segoe UI", system-ui, sans-serif; color:var(--ink);
-    background: radial-gradient(1200px 600px at 20% 0%, #F8E6D8 0%, transparent 55%),
-                radial-gradient(900px 500px at 90% 20%, #E8E4DC 0%, transparent 50%),
-                var(--bg); }
-  .box { width:min(380px,92vw); background:var(--card); border:1px solid var(--line);
-    border-radius:16px; padding:28px 26px 24px; box-shadow:0 10px 40px rgba(28,25,23,.06); }
-  h1 { margin:0 0 6px; font-size:22px; letter-spacing:-.02em; }
-  p { margin:0 0 20px; color:var(--muted); font-size:14px; }
-  label { display:block; font-size:12px; font-weight:600; color:var(--muted); margin-bottom:6px; }
-  input { width:100%; padding:12px 14px; border:1px solid var(--line); border-radius:10px;
-    font-size:16px; letter-spacing:.12em; background:#fff; outline:none; }
-  input:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(212,98,42,.15); }
-  button { width:100%; margin-top:14px; padding:12px 14px; border:0; border-radius:10px;
-    background:var(--accent); color:#fff; font-size:15px; font-weight:600; cursor:pointer; }
-  button:hover { filter:brightness(.96); }
-  button:disabled { opacity:.6; cursor:wait; }
-  .err { margin-top:12px; color:#B91C1C; font-size:13px; min-height:18px; }
-</style>
-</head>
-<body>
-  <form class="box" id="f" autocomplete="current-password">
-    <h1>WB Dashboard</h1>
-    <p>Введите пароль для доступа</p>
-    <label for="pw">Пароль</label>
-    <input id="pw" name="password" type="password" inputmode="numeric" autofocus required />
-    <button type="submit" id="btn">Войти</button>
-    <div class="err" id="err"></div>
-  </form>
-<script>
-document.getElementById('f').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const btn = document.getElementById('btn');
-  const err = document.getElementById('err');
-  err.textContent = '';
-  btn.disabled = true;
-  try {
-    const r = await fetch('/api/login', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({password: document.getElementById('pw').value})
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) { err.textContent = j.error || 'Неверный пароль'; btn.disabled = false; return; }
-    location.href = '/';
-  } catch (x) {
-    err.textContent = 'Ошибка сети';
-    btn.disabled = false;
-  }
-});
-</script>
-</body>
-</html>
-"""
-
-
-@app.get("/login", response_class=HTMLResponse)
-def login_page():
-    return HTMLResponse(LOGIN_HTML)
-
-
-@app.post("/api/login")
-async def api_login(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    password = str((body or {}).get("password") or "")
-    if not _password_ok(password):
-        return JSONResponse({"error": "Неверный пароль"}, status_code=401)
-    resp = JSONResponse({"status": "ok"})
-    secure = os.getenv("COOKIE_SECURE", "true").lower() != "false"
-    resp.set_cookie(
-        key=AUTH_COOKIE,
-        value=_auth_token(),
-        httponly=True,
-        samesite="lax",
-        secure=secure,
-        max_age=AUTH_COOKIE_MAX_AGE,
-        path="/",
-    )
-    return resp
-
-
-@app.post("/api/logout")
-async def api_logout():
-    resp = JSONResponse({"status": "ok"})
-    resp.delete_cookie(AUTH_COOKIE, path="/")
-    return resp
-
 
 @app.get("/")
 def root():
