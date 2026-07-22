@@ -65,6 +65,65 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .action-btn.primary{background:var(--wb-purple);color:#fff;border-color:var(--wb-purple)}
 .action-btn.primary:hover{background:var(--wb-purple-dark)}
 
+/* Date range picker (ads) */
+.drp{position:relative;display:inline-flex;align-items:center}
+.drp-field{
+  display:flex;align-items:center;gap:8px;min-width:220px;padding:6px 10px 6px 12px;
+  border:1.5px solid var(--wb-border);border-radius:var(--rs);background:var(--wb-surface);
+  font-size:13px;font-family:inherit;color:var(--wb-text);cursor:pointer;user-select:none;
+  transition:border-color .15s, box-shadow .15s;
+}
+.drp-field:hover,.drp.open .drp-field{border-color:var(--wb-purple)}
+.drp.open .drp-field{box-shadow:0 0 0 3px rgba(212,98,42,.12)}
+.drp-field .drp-val{flex:1;font-variant-numeric:tabular-nums;letter-spacing:.01em}
+.drp-field .drp-ico{color:var(--wb-faint);font-size:14px;line-height:1}
+.drp-pop{
+  display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:40;
+  background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:10px;
+  box-shadow:0 12px 40px rgba(74,69,64,.14);overflow:hidden;
+}
+.drp.open .drp-pop{display:flex}
+.drp-side{
+  display:flex;flex-direction:column;gap:2px;padding:14px 10px;border-right:1px solid var(--wb-border);
+  min-width:108px;background:#FAFAF8;
+}
+.drp-side button{
+  border:none;background:transparent;text-align:left;padding:8px 10px;border-radius:6px;
+  font-size:13px;font-family:inherit;color:var(--wb-text);cursor:pointer;
+}
+.drp-side button:hover{background:var(--wb-purple-light);color:var(--wb-purple)}
+.drp-side button.on{background:var(--wb-purple);color:#fff}
+.drp-cals{display:flex;gap:8px;padding:12px 14px 14px}
+.drp-cal{width:230px}
+.drp-cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:4px}
+.drp-cal-title{font-size:13px;font-weight:600;flex:1;text-align:center;color:var(--wb-text)}
+.drp-nav{
+  width:28px;height:28px;border:none;border-radius:6px;background:transparent;
+  color:var(--wb-muted);cursor:pointer;font-size:14px;font-family:inherit;line-height:1;
+}
+.drp-nav:hover{background:var(--wb-purple-light);color:var(--wb-purple)}
+.drp-dow{display:grid;grid-template-columns:repeat(7,1fr);gap:0;margin-bottom:4px}
+.drp-dow span{text-align:center;font-size:11px;color:var(--wb-faint);padding:4px 0;font-weight:500}
+.drp-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:0}
+.drp-day{
+  aspect-ratio:1;border:none;background:transparent;font-size:12px;font-family:inherit;
+  color:var(--wb-text);cursor:pointer;border-radius:0;position:relative;padding:0;
+}
+.drp-day:hover:not(.out):not(.sel):not(:disabled){background:var(--wb-purple-light);border-radius:6px}
+.drp-day.out{color:var(--wb-faint);opacity:.55}
+.drp-day.in-range{background:rgba(212,98,42,.12)}
+.drp-day.sel{background:var(--wb-purple);color:#fff;border-radius:6px;font-weight:600;z-index:1}
+.drp-day.sel-start{border-radius:6px 0 0 6px}
+.drp-day.sel-end{border-radius:0 6px 6px 0}
+.drp-day.sel.sel-start.sel-end{border-radius:6px}
+.drp-day:disabled{opacity:.35;cursor:default}
+.drp-hint{font-size:11px;color:var(--wb-muted);padding:0 14px 12px;text-align:right}
+@media(max-width:720px){
+  .drp-pop{flex-direction:column;max-width:min(320px,92vw)}
+  .drp-side{flex-direction:row;flex-wrap:wrap;border-right:none;border-bottom:1px solid var(--wb-border);min-width:0}
+  .drp-cals{flex-direction:column;align-items:center}
+}
+
 /* Finance lock */
 .fin-lock{
   min-height:calc(100vh - 100px);display:flex;align-items:center;justify-content:center;
@@ -537,9 +596,24 @@ td.tc{text-align:center}
       <span style="color:var(--wb-faint);font-size:14px">🔍</span>
       <input id="adsSearch" placeholder="Поиск по кампании..." oninput="renderAds()">
     </div>
-    <span style="font-size:12px;color:var(--wb-muted)">Период:</span>
-    <input id="adsWindowInput" type="number" min="1" max="31" style="width:56px;border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 8px;font-size:12px;font-family:inherit" onchange="setAdsWindow(this.value)">
-    <span style="font-size:12px;color:var(--wb-muted)">дней (макс. 31)</span>
+    <div class="drp" id="adsDrp">
+      <button type="button" class="drp-field" id="adsDrpField" onclick="toggleAdsDrp(event)" aria-label="Выбор периода">
+        <span class="drp-val" id="adsDrpLabel">—</span>
+        <span class="drp-ico">📅</span>
+      </button>
+      <div class="drp-pop" id="adsDrpPop" onclick="event.stopPropagation()">
+        <div class="drp-side" id="adsDrpPresets">
+          <button type="button" data-preset="today" onclick="adsDrpPreset('today')">Сегодня</button>
+          <button type="button" data-preset="yesterday" onclick="adsDrpPreset('yesterday')">Вчера</button>
+          <button type="button" data-preset="week" onclick="adsDrpPreset('week')">Неделя</button>
+          <button type="button" data-preset="month" onclick="adsDrpPreset('month')">Месяц</button>
+        </div>
+        <div>
+          <div class="drp-cals" id="adsDrpCals"></div>
+          <div class="drp-hint">Макс. 31 день · WB fullstats</div>
+        </div>
+      </div>
+    </div>
     <span id="adsSyncInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
     <div class="ml-auto">
       <button class="action-btn" id="adsSyncBtn" onclick="triggerAdsSync()">↻ Обновить</button>
@@ -747,6 +821,7 @@ async function loadAdsPage() {
     const r = await fetch(`${RAILWAY_URL}/api/ads`);
     const d = await r.json();
     AD_STATS = d.campaigns || d.ad_stats || AD_STATS || [];
+    if(d.period_begin && d.period_end) initAdsDrp(d.period_begin, d.period_end);
     const info = document.getElementById('adsSyncInfo');
     if(d.syncing) {
       if(info) info.textContent = d.progress || 'Считаем статистику у WB…';
@@ -837,8 +912,17 @@ async function loadData() {
 
     // Продвижение — статистика рекламы
     AD_STATS = data.ad_stats || [];
-    const awEl = document.getElementById('adsWindowInput');
-    if(awEl) awEl.value = parseInt((data.settings || {}).ads_window_days) || 30;
+    {
+      const s = data.settings || {};
+      let from = s.ads_date_from, to = s.ads_date_to;
+      if(!from || !to) {
+        const days = Math.min(31, Math.max(1, parseInt(s.ads_window_days) || 7));
+        const end = new Date(); end.setHours(12,0,0,0);
+        const begin = new Date(end); begin.setDate(begin.getDate() - (days - 1));
+        from = adsFmtISO(begin); to = adsFmtISO(end);
+      }
+      initAdsDrp(from, to);
+    }
     const asEl = document.getElementById('adsSyncInfo');
     if(asEl) asEl.textContent = (data.settings || {}).last_ads_sync ? 'Обновлено: ' + data.settings.last_ads_sync : 'Данные ещё не загружены';
 
@@ -1156,6 +1240,7 @@ async function triggerAdsSync() {
         const r = await fetch(`${RAILWAY_URL}/api/ads`);
         const d = await r.json();
         AD_STATS = d.campaigns || d.ad_stats || [];
+        if(d.period_begin && d.period_end) initAdsDrp(d.period_begin, d.period_end);
         if(d.syncing) {
           if(info) info.textContent = d.progress || 'Считаем статистику у WB…';
           if(tries < 60) window._adsPoll = setTimeout(poll, 3000);
@@ -1182,16 +1267,225 @@ async function triggerAdsSync() {
   }
 }
 
-async function setAdsWindow(v) {
-  const days = Math.min(31, Math.max(1, parseInt(v) || 30));
-  document.getElementById('adsWindowInput').value = days;
+const ADS_MONTHS_RU = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
+const ADS_DOW_RU = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+let adsDrpFrom = null; // Date at noon local
+let adsDrpTo = null;
+let adsDrpPick = null; // first click while choosing new range
+let adsDrpView = null; // Date: first day of left month
+let adsDrpOpen = false;
+
+function adsDayKey(d) {
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+function adsFmtISO(d) { return adsDayKey(d); }
+function adsFmtRU(d) {
+  return String(d.getDate()).padStart(2,'0') + '.' + String(d.getMonth()+1).padStart(2,'0') + '.' + d.getFullYear();
+}
+function adsParseISO(s) {
+  if(!s) return null;
+  const m = String(s).slice(0,10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!m) return null;
+  return new Date(+m[1], +m[2]-1, +m[3], 12, 0, 0, 0);
+}
+function adsToday() {
+  const d = new Date(); d.setHours(12,0,0,0); return d;
+}
+function adsAddDays(d, n) {
+  const x = new Date(d); x.setDate(x.getDate() + n); return x;
+}
+function adsClampRange(from, to) {
+  if(to < from) { const t = from; from = to; to = t; }
+  const span = Math.round((to - from) / 86400000);
+  if(span > 30) from = adsAddDays(to, -30);
+  return [from, to];
+}
+
+function initAdsDrp(fromISO, toISO) {
+  let from = adsParseISO(fromISO);
+  let to = adsParseISO(toISO);
+  if(!from || !to) {
+    to = adsToday();
+    from = adsAddDays(to, -6);
+  }
+  [from, to] = adsClampRange(from, to);
+  adsDrpFrom = from;
+  adsDrpTo = to;
+  adsDrpPick = null;
+  adsDrpView = new Date(from.getFullYear(), from.getMonth(), 1, 12, 0, 0, 0);
+  updateAdsDrpLabel();
+  renderAdsDrp();
+}
+
+function updateAdsDrpLabel() {
+  const el = document.getElementById('adsDrpLabel');
+  if(!el || !adsDrpFrom || !adsDrpTo) return;
+  el.textContent = adsFmtRU(adsDrpFrom) + ' → ' + adsFmtRU(adsDrpTo);
+}
+
+function toggleAdsDrp(e) {
+  if(e) e.stopPropagation();
+  adsDrpOpen = !adsDrpOpen;
+  const root = document.getElementById('adsDrp');
+  if(root) root.classList.toggle('open', adsDrpOpen);
+  if(adsDrpOpen) {
+    adsDrpPick = null;
+    adsDrpView = new Date(adsDrpFrom.getFullYear(), adsDrpFrom.getMonth(), 1, 12, 0, 0, 0);
+    renderAdsDrp();
+  }
+}
+function closeAdsDrp() {
+  adsDrpOpen = false;
+  const root = document.getElementById('adsDrp');
+  if(root) root.classList.remove('open');
+}
+document.addEventListener('click', (e) => {
+  const root = document.getElementById('adsDrp');
+  if(!root || !adsDrpOpen) return;
+  if(!root.contains(e.target)) closeAdsDrp();
+});
+
+function adsDrpNav(deltaMonths) {
+  const m = adsDrpView.getMonth() + deltaMonths;
+  adsDrpView = new Date(adsDrpView.getFullYear(), m, 1, 12, 0, 0, 0);
+  renderAdsDrp();
+}
+
+function adsDrpPreset(kind) {
+  const today = adsToday();
+  let from, to;
+  if(kind === 'today') { from = to = today; }
+  else if(kind === 'yesterday') { from = to = adsAddDays(today, -1); }
+  else if(kind === 'week') { to = today; from = adsAddDays(today, -6); }
+  else if(kind === 'month') { to = today; from = adsAddDays(today, -30); }
+  else return;
+  applyAdsPeriod(from, to);
+}
+
+async function applyAdsPeriod(from, to) {
+  [from, to] = adsClampRange(from, to);
+  adsDrpFrom = from;
+  adsDrpTo = to;
+  adsDrpPick = null;
+  updateAdsDrpLabel();
+  closeAdsDrp();
+  const days = Math.round((to - from) / 86400000) + 1;
   try {
-    await fetch(`${RAILWAY_URL}/api/save-setting`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({key: 'ads_window_days', value: days})
-    });
+    await Promise.all([
+      fetch(`${RAILWAY_URL}/api/save-setting`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({key: 'ads_date_from', value: adsFmtISO(from)})
+      }),
+      fetch(`${RAILWAY_URL}/api/save-setting`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({key: 'ads_date_to', value: adsFmtISO(to)})
+      }),
+      fetch(`${RAILWAY_URL}/api/save-setting`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({key: 'ads_window_days', value: days})
+      }),
+    ]);
   } catch(e) {}
-  triggerAdsSync(); // период изменился — нужен новый запрос к WB
+  triggerAdsSync();
+}
+
+function adsDrpClickDay(iso) {
+  const d = adsParseISO(iso);
+  if(!d) return;
+  if(!adsDrpPick) {
+    adsDrpPick = d;
+    renderAdsDrp();
+    return;
+  }
+  applyAdsPeriod(adsDrpPick, d);
+}
+
+function renderAdsDrp() {
+  const host = document.getElementById('adsDrpCals');
+  if(!host || !adsDrpView) return;
+  const left = adsDrpView;
+  const right = new Date(left.getFullYear(), left.getMonth() + 1, 1, 12, 0, 0, 0);
+  host.innerHTML = adsDrpMonthHTML(left, true) + adsDrpMonthHTML(right, false);
+
+  // highlight active preset
+  const today = adsToday();
+  const yest = adsAddDays(today, -1);
+  const weekFrom = adsAddDays(today, -6);
+  const monthFrom = adsAddDays(today, -30);
+  const fk = adsDayKey(adsDrpFrom), tk = adsDayKey(adsDrpTo);
+  const presets = document.querySelectorAll('#adsDrpPresets button');
+  presets.forEach(btn => {
+    const p = btn.dataset.preset;
+    let on = false;
+    if(p === 'today') on = fk === adsDayKey(today) && tk === adsDayKey(today);
+    if(p === 'yesterday') on = fk === adsDayKey(yest) && tk === adsDayKey(yest);
+    if(p === 'week') on = fk === adsDayKey(weekFrom) && tk === adsDayKey(today);
+    if(p === 'month') on = fk === adsDayKey(monthFrom) && tk === adsDayKey(today);
+    btn.classList.toggle('on', on);
+  });
+}
+
+function adsDrpMonthHTML(monthDate, isLeft) {
+  const y = monthDate.getFullYear(), m = monthDate.getMonth();
+  const title = ADS_MONTHS_RU[m] + ' ' + y;
+  const firstDow = (new Date(y, m, 1).getDay() + 6) % 7; // Mon=0
+  const daysIn = new Date(y, m + 1, 0).getDate();
+  const prevDays = new Date(y, m, 0).getDate();
+
+  const rangeFrom = adsDrpPick || adsDrpFrom;
+  const rangeTo = adsDrpPick ? adsDrpPick : adsDrpTo;
+  const a = rangeFrom <= rangeTo ? rangeFrom : rangeTo;
+  const b = rangeFrom <= rangeTo ? rangeTo : rangeFrom;
+  const aKey = adsDayKey(a), bKey = adsDayKey(b);
+  const todayKey = adsDayKey(adsToday());
+
+  let navL = '', navR = '';
+  if(isLeft) {
+    navL = `<button type="button" class="drp-nav" onclick="adsDrpNav(-12)" title="Год назад">«</button>
+            <button type="button" class="drp-nav" onclick="adsDrpNav(-1)" title="Месяц назад">‹</button>`;
+    navR = `<span style="width:56px"></span>`;
+  } else {
+    navL = `<span style="width:56px"></span>`;
+    navR = `<button type="button" class="drp-nav" onclick="adsDrpNav(1)" title="Месяц вперёд">›</button>
+            <button type="button" class="drp-nav" onclick="adsDrpNav(12)" title="Год вперёд">»</button>`;
+  }
+
+  let cells = '';
+  for(let i = 0; i < 42; i++) {
+    let dayNum, cellDate, out = false;
+    if(i < firstDow) {
+      dayNum = prevDays - firstDow + i + 1;
+      cellDate = new Date(y, m - 1, dayNum, 12, 0, 0, 0);
+      out = true;
+    } else if(i >= firstDow + daysIn) {
+      dayNum = i - firstDow - daysIn + 1;
+      cellDate = new Date(y, m + 1, dayNum, 12, 0, 0, 0);
+      out = true;
+    } else {
+      dayNum = i - firstDow + 1;
+      cellDate = new Date(y, m, dayNum, 12, 0, 0, 0);
+    }
+    const key = adsDayKey(cellDate);
+    const isStart = key === aKey;
+    const isEnd = key === bKey;
+    const inRange = cellDate >= a && cellDate <= b && !(isStart && isEnd);
+    const future = key > todayKey;
+    let cls = 'drp-day';
+    if(out) cls += ' out';
+    if(inRange && !isStart && !isEnd) cls += ' in-range';
+    if(isStart || isEnd) {
+      cls += ' sel';
+      if(isStart) cls += ' sel-start';
+      if(isEnd) cls += ' sel-end';
+    }
+    cells += `<button type="button" class="${cls}" ${future ? 'disabled' : ''} data-iso="${key}" onclick="adsDrpClickDay('${key}')">${dayNum}</button>`;
+  }
+
+  return `<div class="drp-cal">
+    <div class="drp-cal-head">${navL}<div class="drp-cal-title">${title}</div>${navR}</div>
+    <div class="drp-dow">${ADS_DOW_RU.map(d => `<span>${d}</span>`).join('')}</div>
+    <div class="drp-grid">${cells}</div>
+  </div>`;
 }
 
 async function setTargetDays(v) {

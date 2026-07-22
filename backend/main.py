@@ -1240,6 +1240,32 @@ def fetch_ad_stats_by_campaign(ids: list, begin_date: str, end_date: str) -> dic
         raise RuntimeError("; ".join(errors[:3]))
     return agg
 
+def _ads_period_dates():
+    """Период статистики рекламы: ads_date_from/to или окно ads_window_days (макс. 31 день)."""
+    today = datetime.now(timezone.utc).date()
+    raw_from = get_setting_raw("ads_date_from", None)
+    raw_to = get_setting_raw("ads_date_to", None)
+    begin = end = None
+    try:
+        if raw_from:
+            begin = datetime.strptime(str(raw_from)[:10], "%Y-%m-%d").date()
+        if raw_to:
+            end = datetime.strptime(str(raw_to)[:10], "%Y-%m-%d").date()
+    except Exception:
+        begin = end = None
+    if begin and end:
+        if end < begin:
+            begin, end = end, begin
+        # лимит WB fullstats — 31 день
+        if (end - begin).days > 30:
+            begin = end - timedelta(days=30)
+        return begin, end
+    window_days = get_setting_int("ads_window_days", 7)
+    window_days = min(max(window_days, 1), 31)
+    end = today
+    begin = end - timedelta(days=window_days - 1)
+    return begin, end
+
 def sync_ads():
     """Синк рекламы: список кампаний с затратами/показами/ДРР/заказами."""
     if not WB_TOKEN:
@@ -1253,10 +1279,8 @@ def sync_ads():
     ADS_CACHE["progress"] = "список кампаний…"
     try:
         logger.info("Starting ads (promotion) sync...")
-        window_days = get_setting_int("ads_window_days", 30)
-        window_days = min(max(window_days, 1), 31)
-        end_date = datetime.now(timezone.utc).date()
-        begin_date = end_date - timedelta(days=window_days - 1)
+        begin_date, end_date = _ads_period_dates()
+        window_days = (end_date - begin_date).days + 1
 
         # только активные + пауза — иначе тянем сотни завершённых и ждём по 20с на батч
         campaigns_meta = fetch_campaigns_meta(include_finished=False)
@@ -3071,7 +3095,7 @@ async def save_setting(request: dict):
         return {"error": "key required"}
     try:
         resp = httpx.post(
-            f"{SUPABASE_URL}/rest/v1/settings",
+            f"{SUPABASE_URL}/rest/v1/settings?on_conflict=key",
             json={"key": key, "value": str(value), "updated_at": datetime.now(timezone.utc).isoformat()},
             headers=sb_headers(), timeout=10
         )
