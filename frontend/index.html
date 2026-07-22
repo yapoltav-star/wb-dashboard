@@ -636,7 +636,7 @@ td.tc{text-align:center}
       ondragover="finDzOver(event)" ondragleave="finDzLeave(event)" ondrop="finDzDrop(event)">
       <input type="file" id="finCostInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="uploadFinanceCosts(this.files[0])">
       <div class="fin-drop-t">Загрузить файл себестоимости</div>
-      <div class="fin-drop-s">Excel или CSV · колонки «Артикул» и «Себестоимость»</div>
+      <div class="fin-drop-s">Excel cost_price: «По умолчанию» + колонки дат. Для остатков берётся последняя себестоимость на сегодня</div>
     </div>
     <div class="cards" id="finCards"></div>
     <div class="fin-tabs">
@@ -3546,13 +3546,16 @@ function drawFinanceTable() {
 
   const body = rows.map((r,i) => {
     const miss = r.cost == null;
+    const costHint = (!miss && r.cost_as_of)
+      ? `<div class="nmid">с ${escapeHtml(String(r.cost_as_of))}${r.cost_default!=null && r.cost_default!==r.cost ? ' · было '+fmtMoney(r.cost_default) : ''}</div>`
+      : (!miss && r.cost_default!=null && r.cost_default!==r.cost ? `<div class="nmid">было ${fmtMoney(r.cost_default)}</div>` : '');
     return `<tr class="${i%2?'wh-even':''}">
       <td class="mcol-art" style="text-align:left">
         <div class="art">${escapeHtml(String(r.vendor_code||''))}</div>
         <div class="nmid">${escapeHtml(String(r.name||''))}${r.where ? ' · ' + r.where : ''}</div>
       </td>
       <td>${fmt(r.qty||0)}</td>
-      <td>${miss ? '<span class="fin-missing">нет</span>' : fmtMoney(r.cost)}</td>
+      <td>${miss ? '<span class="fin-missing">нет</span>' : fmtMoney(r.cost)}${costHint}</td>
       <td>${miss ? '—' : fmtMoney(r.value)}</td>
     </tr>`;
   }).join('');

@@ -4,7 +4,7 @@ import io
 import json
 import time
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -3266,98 +3266,299 @@ def _parse_cost_number(v):
 def _norm_vendor_key(v):
     return str(v or "").strip()
 
+def _parse_header_date(v):
+    """Парсит дату из заголовка колонки (datetime / '2026-03-30' / '30.03.2026')."""
+    if v is None or v == "":
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    s = str(v).strip()
+    if not s or s.lower() in ("по умолчанию", "default", "sku", "артикул", "наименование", "размер"):
+        return None
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y.%m.%d"):
+        try:
+            return datetime.strptime(s[:10], fmt).date()
+        except Exception:
+            pass
+    try:
+        # excel serial sometimes comes as number string
+        n = float(s)
+        if 30000 < n < 60000:
+            from datetime import date as _date
+            return (_date(1899, 12, 30) + timedelta(days=int(n)))
+    except Exception:
+        pass
+    return None
+
+def _effective_cost_from_history(default_cost, dated_costs, as_of=None):
+    """
+    dated_costs: [(date, cost), ...] — только даты, где цена явно задана.
+    Берём последнюю дату <= as_of, иначе default.
+    """
+    as_of = as_of or datetime.now(timezone.utc).date()
+    applicable = [(d, c) for d, c in dated_costs if d is not None and d <= as_of and c is not None]
+    if applicable:
+        d, c = max(applicable, key=lambda x: x[0])
+        return c, d.isoformat()
+    if default_cost is not None:
+        return default_cost, None
+    return None, None
+
+def _cost_entry_value(entry):
+    """Достаёт актуальную себестоимость из float или объекта."""
+    if entry is None:
+        return None
+    if isinstance(entry, dict):
+        return _parse_cost_number(entry.get("cost"))
+    return _parse_cost_number(entry)
+
+def _cost_entry_meta(entry):
+    if isinstance(entry, dict):
+        return {
+            "cost": _parse_cost_number(entry.get("cost")),
+            "default": _parse_cost_number(entry.get("default")),
+            "as_of": entry.get("as_of"),
+        }
+    c = _parse_cost_number(entry)
+    return {"cost": c, "default": c, "as_of": None}
+
+def parse_cost_price_workbook(contents: bytes, as_of=None):
+    """
+    Формат листа «Себестоимость»:
+      row1: SKU | Артикул | … | По умолчанию | По умолчанию | 2026-03-30 | 2026-03-30 | …
+      row2:          …        | Себестоимость | Фулфилмент | Себестоимость | Фулфилмент | …
+    Для остатков берём только «Себестоимость»: default + последняя дата <= сегодня.
+    """
+    from openpyxl import load_workbook
+    as_of = as_of or datetime.now(timezone.utc).date()
+    wb = load_workbook(io.BytesIO(contents), data_only=True, read_only=True)
+    # предпочитаем лист с «себестоим» в названии
+    ws = None
+    for name in wb.sheetnames:
+        if "себестоим" in name.lower() or "cost" in name.lower():
+            ws = wb[name]
+            break
+    if ws is None:
+        ws = wb[wb.sheetnames[0]]
+
+    rows_iter = ws.iter_rows(values_only=True)
+    try:
+        h1 = next(rows_iter)
+        h2 = next(rows_iter)
+    except StopIteration:
+        wb.close()
+        return {}, {"error": "Пустой файл"}
+
+    # колонки себестоимости: (col_idx, date_or_None_for_default)
+    cost_cols = []
+    for i, (top, sub) in enumerate(zip(h1, h2)):
+        sub_l = str(sub or "").strip().lower()
+        top_s = str(top or "").strip().lower()
+        if "себестоим" not in sub_l and "себестоим" not in top_s and "cost" not in sub_l:
+            # default pair sometimes has sub only
+            if top_s == "по умолчанию" and ("себестоим" in sub_l or sub_l == ""):
+                # только если сосед/этот — себестоимость; skip fulfillment
+                if "фулфил" in sub_l or "fulfill" in sub_l:
+                    continue
+            else:
+                continue
+        if "фулфил" in sub_l or "fulfill" in sub_l:
+            continue
+        d = _parse_header_date(top)
+        is_default = d is None and ("умолчан" in top_s or top_s in ("", "none", "nan"))
+        if d is None and not is_default and "умолчан" not in top_s:
+            # заголовок не дата и не default — пропускаем
+            continue
+        cost_cols.append((i, d))  # d=None → default
+
+    # если по sub-заголовку не нашли — ищем пары «По умолчанию»/даты где чётные = себес
+    if not cost_cols:
+        for i, top in enumerate(h1):
+            top_s = str(top or "").strip().lower()
+            d = _parse_header_date(top)
+            if "умолчан" in top_s:
+                # первая из пары default = себес (col 4), вторая фулфилмент
+                # определяем: если следующий top такой же — это пара, берём только первый
+                prev_same = i > 0 and str(h1[i - 1] or "").strip().lower() == top_s
+                if prev_same:
+                    continue  # вторая колонка пары
+                cost_cols.append((i, None))
+            elif d is not None:
+                prev_d = _parse_header_date(h1[i - 1]) if i > 0 else None
+                if prev_d == d:
+                    continue  # fulfillment twin
+                cost_cols.append((i, d))
+
+    # артикул: колонка «Артикул»
+    vc_col = 1
+    for i, top in enumerate(h1):
+        t = str(top or "").strip().lower()
+        if t == "артикул" or "артикул продавца" in t:
+            vc_col = i
+            break
+
+    default_idxs = [i for i, d in cost_cols if d is None]
+    dated_idxs = [(i, d) for i, d in cost_cols if d is not None]
+
+    costs = {}
+    for row in rows_iter:
+        if not row or vc_col >= len(row):
+            continue
+        vc = _norm_vendor_key(row[vc_col])
+        if not vc or vc.lower() in ("артикул", "nan", "none"):
+            continue
+        default_cost = None
+        for i in default_idxs:
+            if i < len(row):
+                c = _parse_cost_number(row[i])
+                if c is not None:
+                    default_cost = c
+                    break
+        dated = []
+        for i, d in dated_idxs:
+            if i < len(row) and row[i] not in (None, ""):
+                c = _parse_cost_number(row[i])
+                if c is not None:
+                    dated.append((d, c))
+        eff, as_of_used = _effective_cost_from_history(default_cost, dated, as_of)
+        if eff is None:
+            continue
+        costs[vc] = {
+            "cost": round(eff, 4),
+            "default": round(default_cost, 4) if default_cost is not None else None,
+            "as_of": as_of_used,
+            "history": (
+                ([{"date": None, "cost": round(default_cost, 4)}] if default_cost is not None else [])
+                + [{"date": d.isoformat(), "cost": round(c, 4)} for d, c in sorted(dated, key=lambda x: x[0])]
+            ),
+        }
+    wb.close()
+    return costs, {
+        "format": "dated_cost_matrix",
+        "default_cols": len(default_idxs),
+        "date_cols": len(dated_idxs),
+        "as_of": as_of.isoformat(),
+    }
+
 @app.post("/api/upload-costs")
 async def upload_costs(file: UploadFile = File(...)):
     """
-    Excel/CSV с себестоимостью.
-    Ищем колонки: артикул (+ продавца) и себестоимость / cost / цена закупки.
+    Excel себестоимости:
+    - формат с датами (По умолчанию + колонки дат Себестоимость/Фулфилмент)
+    - или простой файл Артикул + Себестоимость
+    Актуальная цена остатков = последняя себестоимость с датой <= сегодня, иначе «По умолчанию».
     """
     try:
         contents = await file.read()
         name = (file.filename or "").lower()
-        df = None
-        if name.endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(contents), dtype=str, sep=None, engine="python")
-        else:
-            xl = pd.ExcelFile(io.BytesIO(contents))
-            best = None
-            for s in xl.sheet_names:
-                tmp = pd.read_excel(io.BytesIO(contents), sheet_name=s, header=None, dtype=str)
-                for i, row in tmp.iterrows():
-                    vals = [str(v).strip().lower() for v in row.values]
-                    joined = " | ".join(vals)
-                    if ("артикул" in joined or "vendor" in joined or "sku" in joined) and (
-                        "себестоим" in joined or "cost" in joined or "закуп" in joined or "цена" in joined
-                    ):
-                        best = (s, i, tmp)
-                        break
-                if best:
-                    break
-            if not best:
-                # fallback: первый лист, первая строка как заголовок
-                s0 = xl.sheet_names[0]
-                tmp = pd.read_excel(io.BytesIO(contents), sheet_name=s0, header=None, dtype=str)
-                best = (s0, 0, tmp)
-            sheet_name, header_row, tmp = best
-            tmp.columns = [str(c).strip() for c in tmp.iloc[header_row].tolist()]
-            df = tmp.iloc[header_row + 1:].reset_index(drop=True)
-
-        cols = {str(c).strip().lower(): c for c in df.columns}
-        def find_col(*needles):
-            for low, orig in cols.items():
-                for n in needles:
-                    if n in low:
-                        return orig
-            return None
-
-        col_vc = find_col("артикул продавца", "vendor", "sku") or find_col("артикул")
-        col_cost = find_col("себестоим", "cost", "закуп", "себес") or find_col("цена")
-        if not col_vc or not col_cost:
-            return {
-                "error": "Не найдены колонки. Нужны «Артикул» и «Себестоимость» (или Cost).",
-                "columns": list(df.columns.astype(str)),
-            }
-
         costs = {}
-        for _, row in df.iterrows():
-            vc = _norm_vendor_key(row.get(col_vc))
-            if not vc or vc.lower() in ("nan", "none", "артикул", "артикул продавца"):
-                continue
-            cost = _parse_cost_number(row.get(col_cost))
-            if cost is None:
-                continue
-            costs[vc] = round(cost, 4)
+        parse_meta = {}
+
+        # 1) пробуем матрицу с датами (твой cost_price.xlsx)
+        if name.endswith(".xlsx") or name.endswith(".xls") or not name.endswith(".csv"):
+            try:
+                costs, parse_meta = parse_cost_price_workbook(contents)
+            except Exception as e:
+                logger.warning(f"dated cost parse failed, fallback: {e}")
+                costs, parse_meta = {}, {"dated_error": str(e)}
+
+        # 2) простой формат
+        if not costs:
+            if name.endswith(".csv"):
+                df = pd.read_csv(io.BytesIO(contents), dtype=str, sep=None, engine="python")
+                header_row = 0
+            else:
+                xl = pd.ExcelFile(io.BytesIO(contents))
+                best = None
+                for s in xl.sheet_names:
+                    tmp = pd.read_excel(io.BytesIO(contents), sheet_name=s, header=None, dtype=str)
+                    for i, row in tmp.iterrows():
+                        vals = [str(v).strip().lower() for v in row.values]
+                        joined = " | ".join(vals)
+                        if "артикул" in joined and ("себестоим" in joined or "cost" in joined or "умолчан" in joined):
+                            best = (i, tmp)
+                            break
+                    if best:
+                        break
+                if not best:
+                    tmp = pd.read_excel(io.BytesIO(contents), sheet_name=0, header=None, dtype=str)
+                    best = (0, tmp)
+                header_row, tmp = best
+                tmp.columns = [str(c).strip() for c in tmp.iloc[header_row].tolist()]
+                df = tmp.iloc[header_row + 1:].reset_index(drop=True)
+
+            cols = {str(c).strip().lower(): c for c in df.columns}
+            def find_col(*needles):
+                for low, orig in cols.items():
+                    for n in needles:
+                        if n in low:
+                            return orig
+                return None
+            col_vc = find_col("артикул продавца") or find_col("артикул") or find_col("vendor", "sku")
+            col_cost = find_col("по умолчанию") or find_col("себестоим", "cost", "закуп") or find_col("цена")
+            if not col_vc or not col_cost:
+                return {
+                    "error": "Не удалось прочитать файл. Нужен Excel как cost_price: Артикул + По умолчанию + даты.",
+                    "columns": list(df.columns.astype(str)),
+                    "parse_meta": parse_meta,
+                }
+            for _, row in df.iterrows():
+                vc = _norm_vendor_key(row.get(col_vc))
+                if not vc or vc.lower() in ("nan", "none", "артикул"):
+                    continue
+                cost = _parse_cost_number(row.get(col_cost))
+                if cost is None:
+                    continue
+                costs[vc] = {"cost": round(cost, 4), "default": round(cost, 4), "as_of": None, "history": []}
+            parse_meta["format"] = "simple"
 
         if not costs:
-            return {"error": "В файле не найдено ни одной пары артикул + себестоимость"}
+            return {"error": "В файле не найдено артикулов с себестоимостью", "parse_meta": parse_meta}
 
-        # merge с уже сохранёнными (новые перекрывают)
-        prev = get_setting_json(COST_PRICES_KEY, {}) or {}
-        if not isinstance(prev, dict):
-            prev = {}
-        prev.update(costs)
-        save_setting_value(COST_PRICES_KEY, prev)
+        # полная замена прайса этим файлом (актуальный снимок)
+        save_setting_value(COST_PRICES_KEY, costs)
         meta = {
             "filename": file.filename,
             "uploaded_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
             "rows_in_file": len(costs),
-            "total_articles": len(prev),
+            "total_articles": len(costs),
+            "format": parse_meta.get("format"),
+            "as_of": parse_meta.get("as_of"),
+            "date_cols": parse_meta.get("date_cols"),
         }
         save_setting_value(COST_META_KEY, meta)
-        return {"status": "ok", "loaded": len(costs), "total": len(prev), "meta": meta}
+
+        # пример для проверки
+        sample_vc = "039_DT10_mini_gold_O"
+        sample = costs.get(sample_vc)
+        return {
+            "status": "ok",
+            "loaded": len(costs),
+            "total": len(costs),
+            "meta": meta,
+            "sample": {sample_vc: sample} if sample else None,
+        }
     except Exception as e:
         logger.error(f"upload-costs error: {e}")
         return {"error": str(e)}
 
 @app.get("/api/finance")
 def get_finance():
-    """Себестоимость остатков: WB + наш склад."""
+    """Себестоимость остатков: WB + наш склад (актуальная цена на сегодня)."""
     costs_raw = get_setting_json(COST_PRICES_KEY, {}) or {}
     if not isinstance(costs_raw, dict):
         costs_raw = {}
-    # нормализуем ключи
-    costs = {_norm_vendor_key(k): _parse_cost_number(v) for k, v in costs_raw.items()}
-    costs = {k: v for k, v in costs.items() if k and v is not None}
+    costs = {}
+    for k, v in costs_raw.items():
+        vc = _norm_vendor_key(k)
+        if not vc:
+            continue
+        meta = _cost_entry_meta(v)
+        if meta["cost"] is None:
+            continue
+        costs[vc] = meta
 
     meta = get_setting_json(COST_META_KEY, {}) or {}
 
@@ -3374,7 +3575,8 @@ def get_finance():
                 qty = int(r.get("quantity_warehouses_full") or 0)
                 if qty <= 0:
                     continue
-                cost = costs.get(vc)
+                cm = costs.get(vc) or {}
+                cost = cm.get("cost")
                 value = round(qty * cost, 2) if cost is not None else None
                 wb_rows.append({
                     "vendor_code": vc or str(r.get("nm_id") or ""),
@@ -3382,6 +3584,8 @@ def get_finance():
                     "name": r.get("subject_name") or "",
                     "qty": qty,
                     "cost": cost,
+                    "cost_default": cm.get("default"),
+                    "cost_as_of": cm.get("as_of"),
                     "value": value,
                     "in_way": int(r.get("in_way_to_client") or 0) + int(r.get("in_way_from_client") or 0),
                 })
@@ -3404,17 +3608,19 @@ def get_finance():
         if not vc or vc in seen_own:
             continue
         seen_own.add(vc)
-        # личный остаток — без двойного учёта семей
         qty = int(r.get("stock") or 0)
         if qty <= 0:
             continue
-        cost = costs.get(vc)
+        cm = costs.get(vc) or {}
+        cost = cm.get("cost")
         value = round(qty * cost, 2) if cost is not None else None
         own_rows.append({
             "vendor_code": vc,
             "name": r.get("name") or "",
             "qty": qty,
             "cost": cost,
+            "cost_default": cm.get("default"),
+            "cost_as_of": cm.get("as_of"),
             "value": value,
             "family_stock": r.get("family_stock"),
         })
