@@ -3211,6 +3211,211 @@ async def save_groups(request: dict):
         logger.error(f"save-groups error: {e}")
         return {"error": str(e)}
 
+# ---------- Финансы: себестоимость остатков ----------
+COST_PRICES_KEY = "cost_prices"
+COST_META_KEY = "cost_prices_meta"
+
+def _parse_cost_number(v):
+    if v is None:
+        return None
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v) if float(v) >= 0 else None
+    s = str(v).strip().replace("\xa0", " ").replace(" ", "").replace(",", ".")
+    s = s.replace("₽", "").replace("руб.", "").replace("руб", "")
+    if not s or s.lower() in ("nan", "none", "-", "—"):
+        return None
+    try:
+        n = float(s)
+        return n if n >= 0 else None
+    except Exception:
+        return None
+
+def _norm_vendor_key(v):
+    return str(v or "").strip()
+
+@app.post("/api/upload-costs")
+async def upload_costs(file: UploadFile = File(...)):
+    """
+    Excel/CSV с себестоимостью.
+    Ищем колонки: артикул (+ продавца) и себестоимость / cost / цена закупки.
+    """
+    try:
+        contents = await file.read()
+        name = (file.filename or "").lower()
+        df = None
+        if name.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(contents), dtype=str, sep=None, engine="python")
+        else:
+            xl = pd.ExcelFile(io.BytesIO(contents))
+            best = None
+            for s in xl.sheet_names:
+                tmp = pd.read_excel(io.BytesIO(contents), sheet_name=s, header=None, dtype=str)
+                for i, row in tmp.iterrows():
+                    vals = [str(v).strip().lower() for v in row.values]
+                    joined = " | ".join(vals)
+                    if ("артикул" in joined or "vendor" in joined or "sku" in joined) and (
+                        "себестоим" in joined or "cost" in joined or "закуп" in joined or "цена" in joined
+                    ):
+                        best = (s, i, tmp)
+                        break
+                if best:
+                    break
+            if not best:
+                # fallback: первый лист, первая строка как заголовок
+                s0 = xl.sheet_names[0]
+                tmp = pd.read_excel(io.BytesIO(contents), sheet_name=s0, header=None, dtype=str)
+                best = (s0, 0, tmp)
+            sheet_name, header_row, tmp = best
+            tmp.columns = [str(c).strip() for c in tmp.iloc[header_row].tolist()]
+            df = tmp.iloc[header_row + 1:].reset_index(drop=True)
+
+        cols = {str(c).strip().lower(): c for c in df.columns}
+        def find_col(*needles):
+            for low, orig in cols.items():
+                for n in needles:
+                    if n in low:
+                        return orig
+            return None
+
+        col_vc = find_col("артикул продавца", "vendor", "sku") or find_col("артикул")
+        col_cost = find_col("себестоим", "cost", "закуп", "себес") or find_col("цена")
+        if not col_vc or not col_cost:
+            return {
+                "error": "Не найдены колонки. Нужны «Артикул» и «Себестоимость» (или Cost).",
+                "columns": list(df.columns.astype(str)),
+            }
+
+        costs = {}
+        for _, row in df.iterrows():
+            vc = _norm_vendor_key(row.get(col_vc))
+            if not vc or vc.lower() in ("nan", "none", "артикул", "артикул продавца"):
+                continue
+            cost = _parse_cost_number(row.get(col_cost))
+            if cost is None:
+                continue
+            costs[vc] = round(cost, 4)
+
+        if not costs:
+            return {"error": "В файле не найдено ни одной пары артикул + себестоимость"}
+
+        # merge с уже сохранёнными (новые перекрывают)
+        prev = get_setting_json(COST_PRICES_KEY, {}) or {}
+        if not isinstance(prev, dict):
+            prev = {}
+        prev.update(costs)
+        save_setting_value(COST_PRICES_KEY, prev)
+        meta = {
+            "filename": file.filename,
+            "uploaded_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
+            "rows_in_file": len(costs),
+            "total_articles": len(prev),
+        }
+        save_setting_value(COST_META_KEY, meta)
+        return {"status": "ok", "loaded": len(costs), "total": len(prev), "meta": meta}
+    except Exception as e:
+        logger.error(f"upload-costs error: {e}")
+        return {"error": str(e)}
+
+@app.get("/api/finance")
+def get_finance():
+    """Себестоимость остатков: WB + наш склад."""
+    costs_raw = get_setting_json(COST_PRICES_KEY, {}) or {}
+    if not isinstance(costs_raw, dict):
+        costs_raw = {}
+    # нормализуем ключи
+    costs = {_norm_vendor_key(k): _parse_cost_number(v) for k, v in costs_raw.items()}
+    costs = {k: v for k, v in costs.items() if k and v is not None}
+
+    meta = get_setting_json(COST_META_KEY, {}) or {}
+
+    # WB остатки
+    wb_rows = []
+    try:
+        st = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code,quantity_warehouses_full,in_way_to_client,in_way_from_client,subject_name",
+            headers=sb_headers(), timeout=20,
+        )
+        if st.is_success:
+            for r in st.json() or []:
+                vc = _norm_vendor_key(r.get("vendor_code"))
+                qty = int(r.get("quantity_warehouses_full") or 0)
+                if qty <= 0:
+                    continue
+                cost = costs.get(vc)
+                value = round(qty * cost, 2) if cost is not None else None
+                wb_rows.append({
+                    "vendor_code": vc or str(r.get("nm_id") or ""),
+                    "nm_id": r.get("nm_id"),
+                    "name": r.get("subject_name") or "",
+                    "qty": qty,
+                    "cost": cost,
+                    "value": value,
+                    "in_way": int(r.get("in_way_to_client") or 0) + int(r.get("in_way_from_client") or 0),
+                })
+    except Exception as e:
+        logger.error(f"finance stock_totals: {e}")
+
+    # Наш склад
+    own = OWN_WAREHOUSE_CACHE.get("rows") or []
+    if not own and not OWN_WAREHOUSE_CACHE.get("syncing"):
+        try:
+            refresh_own_warehouse_stock()
+            own = OWN_WAREHOUSE_CACHE.get("rows") or []
+        except Exception as e:
+            logger.error(f"finance own-wh refresh: {e}")
+
+    own_rows = []
+    seen_own = set()
+    for r in own:
+        vc = _norm_vendor_key(r.get("vendor_code"))
+        if not vc or vc in seen_own:
+            continue
+        seen_own.add(vc)
+        # личный остаток — без двойного учёта семей
+        qty = int(r.get("stock") or 0)
+        if qty <= 0:
+            continue
+        cost = costs.get(vc)
+        value = round(qty * cost, 2) if cost is not None else None
+        own_rows.append({
+            "vendor_code": vc,
+            "name": r.get("name") or "",
+            "qty": qty,
+            "cost": cost,
+            "value": value,
+            "family_stock": r.get("family_stock"),
+        })
+
+    def summarize(rows):
+        with_cost = [x for x in rows if x.get("value") is not None]
+        without = [x for x in rows if x.get("value") is None]
+        return {
+            "total_value": round(sum(x["value"] for x in with_cost), 2),
+            "total_qty": sum(x["qty"] for x in rows),
+            "qty_with_cost": sum(x["qty"] for x in with_cost),
+            "qty_without_cost": sum(x["qty"] for x in without),
+            "articles": len(rows),
+            "articles_without_cost": len(without),
+        }
+
+    wb_sum = summarize(wb_rows)
+    own_sum = summarize(own_rows)
+    wb_rows.sort(key=lambda x: (-(x["value"] or 0), str(x["vendor_code"])))
+    own_rows.sort(key=lambda x: (-(x["value"] or 0), str(x["vendor_code"])))
+
+    return {
+        "costs_count": len(costs),
+        "meta": meta,
+        "wb": {**wb_sum, "rows": wb_rows},
+        "own": {
+            **own_sum,
+            "rows": own_rows,
+            "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
+            "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
+        },
+        "grand_total": round(wb_sum["total_value"] + own_sum["total_value"], 2),
+    }
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8080))

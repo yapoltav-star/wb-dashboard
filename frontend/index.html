@@ -65,6 +65,55 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .action-btn.primary{background:var(--wb-purple);color:#fff;border-color:var(--wb-purple)}
 .action-btn.primary:hover{background:var(--wb-purple-dark)}
 
+/* Finance lock */
+.fin-lock{
+  min-height:calc(100vh - 100px);display:flex;align-items:center;justify-content:center;
+  padding:40px 20px;position:relative;overflow:hidden;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 10%, rgba(212,98,42,.12), transparent 55%),
+    radial-gradient(ellipse 70% 50% at 90% 80%, rgba(74,69,64,.08), transparent 50%),
+    linear-gradient(165deg, #F7F4F1 0%, #EFEAE5 45%, #F5F3F0 100%);
+}
+.fin-lock-card{
+  width:min(400px,100%);background:var(--wb-surface);border:1px solid var(--wb-border);
+  border-radius:16px;padding:36px 32px 28px;box-shadow:0 18px 50px rgba(74,69,64,.08);
+  text-align:center;position:relative;z-index:1;animation:finIn .45s ease both;
+}
+@keyframes finIn{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}
+.fin-lock-icon{
+  width:56px;height:56px;margin:0 auto 18px;border-radius:16px;
+  background:linear-gradient(145deg,#D4622A,#B84E1E);color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:22px;
+  box-shadow:0 8px 20px rgba(212,98,42,.28);
+}
+.fin-lock-title{font-size:22px;font-weight:600;letter-spacing:-.02em;margin-bottom:6px}
+.fin-lock-sub{font-size:13px;color:var(--wb-muted);margin-bottom:28px;line-height:1.45}
+.fin-pin{display:flex;gap:10px;justify-content:center;margin-bottom:18px}
+.fin-pin input{
+  width:52px;height:58px;text-align:center;font-size:22px;font-weight:600;font-family:inherit;
+  border:1.5px solid var(--wb-border);border-radius:12px;background:#FAFAF8;color:var(--wb-text);
+  outline:none;transition:border-color .15s, box-shadow .15s, background .15s;
+  caret-color:var(--wb-purple);
+}
+.fin-pin input:focus{border-color:var(--wb-purple);background:#fff;box-shadow:0 0 0 3px rgba(212,98,42,.15)}
+.fin-lock-err{font-size:12px;color:var(--red);min-height:18px;margin-bottom:10px;opacity:0;transition:opacity .2s}
+.fin-lock-err.on{opacity:1}
+.fin-lock-card.shake{animation:finShake .4s ease}
+@keyframes finShake{0%,100%{transform:translateX(0)}20%{transform:translateX(-8px)}40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(5px)}}
+.fin-lock-hint{font-size:11px;color:var(--wb-faint);margin-top:16px}
+
+.fin-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+.fin-head h2{font-size:20px;font-weight:600;letter-spacing:-.02em}
+.fin-head p{font-size:13px;color:var(--wb-muted);margin-top:4px}
+.fin-drop{
+  border:1.5px dashed var(--wb-border);border-radius:12px;padding:22px;text-align:center;
+  background:var(--wb-surface);margin-bottom:20px;cursor:pointer;transition:border-color .15s, background .15s;
+}
+.fin-drop:hover,.fin-drop.over{border-color:var(--wb-purple);background:var(--wb-purple-light)}
+.fin-drop .fin-drop-t{font-size:14px;font-weight:500;margin-bottom:4px}
+.fin-drop .fin-drop-s{font-size:12px;color:var(--wb-muted)}
+.fin-tabs{display:flex;gap:6px;margin-bottom:12px}
+.fin-missing{color:var(--amber);font-size:12px}
 .group{margin-bottom:12px;border-radius:var(--r);overflow:hidden;border:1px solid var(--wb-border);background:var(--wb-surface)}
 .gh{display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer;user-select:none;border-bottom:1px solid var(--wb-border)}
 .gh:hover{background:#FAFAFA}
@@ -283,7 +332,7 @@ td.tc{text-align:center}
     <div class="tb-nav-item" onclick="showSection('supplies',this)">Остатки и поставки</div>
     <div class="tb-nav-item" onclick="showSection('analytics',this)">Конкуренты</div>
     <div class="tb-nav-item" onclick="showSection('ads',this)">Продвижение</div>
-    <div class="tb-nav-item">Финансы</div>
+    <div class="tb-nav-item" onclick="showSection('finance',this)">Финансы</div>
   </div>
   <div class="tb-right">
     <div class="tb-sync">
@@ -553,6 +602,56 @@ td.tc{text-align:center}
   <div id="compRoot"><div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners</div></div>
 </div>
 
+<!-- ФИНАНСЫ -->
+<div class="page" id="page-finance">
+  <div id="finGate" class="fin-lock">
+    <div class="fin-lock-card" id="finLockCard">
+      <div class="fin-lock-icon">🔒</div>
+      <div class="fin-lock-title">Финансы</div>
+      <div class="fin-lock-sub">Раздел закрыт. Введи пароль, чтобы открыть<br>себестоимость и стоимость остатков.</div>
+      <div class="fin-pin" id="finPin">
+        <input type="password" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Цифра 1">
+        <input type="password" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Цифра 2">
+        <input type="password" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Цифра 3">
+        <input type="password" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Цифра 4">
+      </div>
+      <div class="fin-lock-err" id="finLockErr">Неверный пароль</div>
+      <button class="action-btn primary" style="width:100%;padding:10px 14px;font-size:13px" onclick="submitFinancePin()">Открыть</button>
+      <div class="fin-lock-hint">Доступ только для тебя</div>
+    </div>
+  </div>
+  <div id="finBody" style="display:none">
+    <div class="fin-head">
+      <div>
+        <h2>Финансы</h2>
+        <p id="finMeta">Себестоимость остатков на WB и на нашем складе</p>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="action-btn" onclick="loadFinance(true)">↻ Пересчитать</button>
+        <button class="action-btn" onclick="lockFinance()">Заблокировать</button>
+      </div>
+    </div>
+    <div class="fin-drop" id="finDrop"
+      onclick="document.getElementById('finCostInput').click()"
+      ondragover="finDzOver(event)" ondragleave="finDzLeave(event)" ondrop="finDzDrop(event)">
+      <input type="file" id="finCostInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="uploadFinanceCosts(this.files[0])">
+      <div class="fin-drop-t">Загрузить файл себестоимости</div>
+      <div class="fin-drop-s">Excel или CSV · колонки «Артикул» и «Себестоимость»</div>
+    </div>
+    <div class="cards" id="finCards"></div>
+    <div class="fin-tabs">
+      <button class="filter-btn on" id="finTabWb" onclick="setFinTab('wb')">Склад WB</button>
+      <button class="filter-btn" id="finTabOwn" onclick="setFinTab('own')">Наш склад</button>
+      <button class="filter-btn" id="finTabMiss" onclick="setFinTab('miss')">Без себестоимости</button>
+    </div>
+    <div class="search" style="margin-bottom:12px">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="finSearch" placeholder="Поиск по артикулу..." oninput="drawFinanceTable()">
+    </div>
+    <div id="finRoot"></div>
+  </div>
+</div>
+
 <script>
 const RAILWAY_URL = 'https://wb-dashboard-production-baf4.up.railway.app';
 
@@ -606,6 +705,7 @@ function showSection(sec, btn) {
   else if(sec === 'supplies') showPage('supply-recs', document.querySelector('#subnav-supplies .sn-item'));
   else if(sec === 'ads') showPage('ads', null);
   else if(sec === 'analytics') showPage('competitors', null);
+  else if(sec === 'finance') showPage('finance', null);
 }
 
 function showPage(id, btn) {
@@ -621,6 +721,7 @@ function showPage(id, btn) {
   if(id === 'competitors') renderCompetitors();
   if(id === 'promotions') renderPromotions();
   if(id === 'sales-pace') renderSalesPace(true);
+  if(id === 'finance') renderFinance();
 }
 
 async function loadAdsPage() {
@@ -3256,6 +3357,241 @@ async function uploadCompetitorReport(file) {
     status.textContent = '❌ Ошибка: ' + e.message;
   }
   document.getElementById('compFileInput').value = '';
+}
+
+// ─────────── Финансы ───────────
+const FINANCE_PIN = '1997';
+let FINANCE_OK = sessionStorage.getItem('wb_finance_ok') === '1';
+let FINANCE_DATA = null;
+let FIN_TAB = 'wb';
+
+function renderFinance() {
+  const gate = document.getElementById('finGate');
+  const body = document.getElementById('finBody');
+  if(!gate || !body) return;
+  if(FINANCE_OK) {
+    gate.style.display = 'none';
+    body.style.display = 'block';
+    loadFinance(false);
+    return;
+  }
+  gate.style.display = 'flex';
+  body.style.display = 'none';
+  setupFinancePin();
+}
+
+function setupFinancePin() {
+  const inputs = [...document.querySelectorAll('#finPin input')];
+  if(!inputs.length) return;
+  inputs.forEach((inp, i) => {
+    inp.value = '';
+    inp.oninput = () => {
+      const v = inp.value.replace(/\D/g, '').slice(-1);
+      inp.value = v;
+      document.getElementById('finLockErr').classList.remove('on');
+      if(v && i < inputs.length - 1) inputs[i + 1].focus();
+      if(inputs.every(x => x.value)) submitFinancePin();
+    };
+    inp.onkeydown = (e) => {
+      if(e.key === 'Backspace' && !inp.value && i > 0) {
+        inputs[i - 1].focus();
+        inputs[i - 1].value = '';
+      }
+      if(e.key === 'Enter') submitFinancePin();
+    };
+    inp.onpaste = (e) => {
+      e.preventDefault();
+      const text = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, 4);
+      text.split('').forEach((ch, j) => { if(inputs[j]) inputs[j].value = ch; });
+      if(text.length === 4) submitFinancePin();
+      else if(inputs[text.length]) inputs[text.length].focus();
+    };
+  });
+  setTimeout(() => inputs[0].focus(), 50);
+}
+
+function submitFinancePin() {
+  const inputs = [...document.querySelectorAll('#finPin input')];
+  const code = inputs.map(i => i.value).join('');
+  const card = document.getElementById('finLockCard');
+  const err = document.getElementById('finLockErr');
+  if(code.length < 4) {
+    err.textContent = 'Введи все 4 цифры';
+    err.classList.add('on');
+    return;
+  }
+  if(code === FINANCE_PIN) {
+    FINANCE_OK = true;
+    sessionStorage.setItem('wb_finance_ok', '1');
+    err.classList.remove('on');
+    renderFinance();
+    return;
+  }
+  err.textContent = 'Неверный пароль';
+  err.classList.add('on');
+  card.classList.remove('shake');
+  void card.offsetWidth;
+  card.classList.add('shake');
+  inputs.forEach(i => i.value = '');
+  inputs[0].focus();
+}
+
+function lockFinance() {
+  FINANCE_OK = false;
+  sessionStorage.removeItem('wb_finance_ok');
+  FINANCE_DATA = null;
+  renderFinance();
+}
+
+async function loadFinance(force) {
+  const root = document.getElementById('finRoot');
+  const cards = document.getElementById('finCards');
+  if(root && (!FINANCE_DATA || force)) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Считаем стоимость остатков…</span></div>';
+  }
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/finance`);
+    FINANCE_DATA = await r.json();
+  } catch(e) {
+    FINANCE_DATA = {error: e.message};
+  }
+  drawFinance();
+}
+
+function fmtMoney(n) {
+  if(n == null || isNaN(n)) return '—';
+  return fmt(Math.round(n)) + ' ₽';
+}
+
+function drawFinance() {
+  const d = FINANCE_DATA || {};
+  const meta = document.getElementById('finMeta');
+  const cards = document.getElementById('finCards');
+  if(d.error) {
+    if(meta) meta.textContent = 'Ошибка: ' + d.error;
+    return;
+  }
+  const m = d.meta || {};
+  if(meta) {
+    const bits = [];
+    if(m.uploaded_at) bits.push('себестоимость от ' + m.uploaded_at + (m.filename ? ' · ' + m.filename : ''));
+    bits.push((d.costs_count || 0) + ' арт. с ценой');
+    meta.textContent = bits.join(' · ') || 'Загрузи файл себестоимости';
+  }
+  const wb = d.wb || {};
+  const own = d.own || {};
+  if(cards) {
+    cards.innerHTML = [
+      ['Всего в остатках', fmtMoney(d.grand_total), 'color:var(--wb-purple)'],
+      ['Склад WB', fmtMoney(wb.total_value)],
+      ['Наш склад', fmtMoney(own.total_value)],
+      ['Шт на WB', fmt(wb.total_qty || 0)],
+      ['Шт у нас', fmt(own.total_qty || 0)],
+      ['Без себестоимости', fmt((wb.articles_without_cost||0) + (own.articles_without_cost||0)), (wb.articles_without_cost||own.articles_without_cost) ? 'color:var(--amber)' : ''],
+    ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+  }
+  drawFinanceTable();
+}
+
+function setFinTab(t) {
+  FIN_TAB = t;
+  ['Wb','Own','Miss'].forEach(k => {
+    const el = document.getElementById('finTab' + k);
+    if(el) el.classList.toggle('on', ({Wb:'wb',Own:'own',Miss:'miss'})[k] === t);
+  });
+  drawFinanceTable();
+}
+
+function drawFinanceTable() {
+  const root = document.getElementById('finRoot');
+  if(!root) return;
+  const d = FINANCE_DATA || {};
+  if(d.error) {
+    root.innerHTML = `<div class="empty">${escapeHtml(d.error)}</div>`;
+    return;
+  }
+  if(!(d.costs_count > 0)) {
+    root.innerHTML = '<div class="empty">Сначала загрузи файл с себестоимостью (артикул + цена).</div>';
+    return;
+  }
+  const q = ((document.getElementById('finSearch') || {}).value || '').toLowerCase().trim();
+  let rows = [];
+  let title = '';
+  if(FIN_TAB === 'wb') {
+    rows = [...(d.wb && d.wb.rows || [])];
+    title = 'Остатки на складах WB';
+  } else if(FIN_TAB === 'own') {
+    rows = [...(d.own && d.own.rows || [])];
+    title = 'Остатки на нашем складе';
+  } else {
+    const miss = [];
+    (d.wb && d.wb.rows || []).forEach(r => { if(r.cost == null) miss.push({...r, where: 'WB'}); });
+    (d.own && d.own.rows || []).forEach(r => { if(r.cost == null) miss.push({...r, where: 'Наш'}); });
+    rows = miss;
+    title = 'Артикулы без себестоимости';
+  }
+  if(q) rows = rows.filter(r => String(r.vendor_code||'').toLowerCase().includes(q) || String(r.name||'').toLowerCase().includes(q));
+
+  if(!rows.length) {
+    root.innerHTML = `<div class="empty">${FIN_TAB === 'miss' ? 'Все артикулы с остатком имеют себестоимость' : 'Нет строк'}</div>`;
+    return;
+  }
+
+  const body = rows.map((r,i) => {
+    const miss = r.cost == null;
+    return `<tr class="${i%2?'wh-even':''}">
+      <td class="mcol-art" style="text-align:left">
+        <div class="art">${escapeHtml(String(r.vendor_code||''))}</div>
+        <div class="nmid">${escapeHtml(String(r.name||''))}${r.where ? ' · ' + r.where : ''}</div>
+      </td>
+      <td>${fmt(r.qty||0)}</td>
+      <td>${miss ? '<span class="fin-missing">нет</span>' : fmtMoney(r.cost)}</td>
+      <td>${miss ? '—' : fmtMoney(r.value)}</td>
+    </tr>`;
+  }).join('');
+
+  root.innerHTML = `<div style="font-size:12px;color:var(--wb-muted);margin-bottom:8px">${title} · ${fmt(rows.length)} арт.</div>
+    <div class="matrix-wrap"><table class="matrix promo-xls">
+      <thead><tr>
+        <th class="mhead" style="text-align:left">Артикул</th>
+        <th class="mhead">Кол-во</th>
+        <th class="mhead">Себест.</th>
+        <th class="mhead">Сумма</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>`;
+}
+
+function finDzOver(e){ e.preventDefault(); document.getElementById('finDrop').classList.add('over'); }
+function finDzLeave(e){ document.getElementById('finDrop').classList.remove('over'); }
+function finDzDrop(e){
+  e.preventDefault();
+  document.getElementById('finDrop').classList.remove('over');
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if(f) uploadFinanceCosts(f);
+}
+
+async function uploadFinanceCosts(file) {
+  if(!file) return;
+  const meta = document.getElementById('finMeta');
+  if(meta) meta.textContent = 'Загружаем файл…';
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/upload-costs`, { method: 'POST', body: fd });
+    const d = await r.json();
+    if(d.error) {
+      if(meta) meta.textContent = 'Ошибка: ' + d.error;
+      alert(d.error);
+    } else {
+      if(meta) meta.textContent = `Загружено ${d.loaded} арт. (всего в базе ${d.total})`;
+      await loadFinance(true);
+    }
+  } catch(e) {
+    if(meta) meta.textContent = 'Ошибка загрузки';
+  }
+  const inp = document.getElementById('finCostInput');
+  if(inp) inp.value = '';
 }
 
 loadData();
