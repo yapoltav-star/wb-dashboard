@@ -1750,21 +1750,32 @@ function gblock(grp, arts) {
   const tot = {r5:0,r4:0,r3:0,r2:0,r1:0,total:0,excluded:0};
   arts.forEach(a => ['r5','r4','r3','r2','r1','total','excluded'].forEach(k => tot[k]+=(a[k]||0)));
 
-  // Считаем рейтинг группы:
-  // - карточки С разбивкой по звёздам → используем реальные счётчики
-  // - карточки БЕЗ разбивки но С wb_rating → считаем как 1 отзыв с этим рейтингом
+  // Рейтинг склейки как на WB: простое среднее feedbackRating карточек
+  // (не взвешивание по числу отзывов). Карточки без рейтинга не участвуют.
+  let ratingSum = 0, ratingCount = 0;
+  arts.forEach(a => {
+    const r = parseFloat(a.avg_rating);
+    if(!isNaN(r) && r > 0) {
+      ratingSum += r;
+      ratingCount += 1;
+    }
+  });
+  const avg = ratingCount ? Math.round(ratingSum / ratingCount * 100) / 100 : null;
+  // Что видит клиент на WB — обычно 1 знак после запятой
+  const wbShow = avg == null ? null : (Math.round(avg * 10) / 10).toFixed(1);
+  // Для «сколько нужно ★5» используем сумму звёзд, если есть; иначе число карточек
   let weightedSum = 0, weightedTotal = 0;
   arts.forEach(a => {
     const starSum = (a.r5||0)+(a.r4||0)+(a.r3||0)+(a.r2||0)+(a.r1||0);
     if(starSum > 0) {
       weightedSum += (a.r5||0)*5+(a.r4||0)*4+(a.r3||0)*3+(a.r2||0)*2+(a.r1||0);
       weightedTotal += starSum;
-    } else if(a.avg_rating) {
-      weightedSum += parseFloat(a.avg_rating);
-      weightedTotal += 1;
     }
   });
-  const avg = weightedTotal ? Math.round(weightedSum/weightedTotal*100)/100 : null;
+  if(weightedTotal === 0 && ratingCount > 0) {
+    weightedSum = ratingSum;
+    weightedTotal = ratingCount;
+  }
   const y1 = tot.r1;
   const gi = Object.keys(GROUPS).concat(['Без склейки']).indexOf(grp);
   const isOpen = EXP[grp] === true;
@@ -1777,7 +1788,7 @@ function gblock(grp, arts) {
 
   const totRow = `<tr class="total-row">
     <td><span class="total-label">∑ Итого по склейке</span></td>
-    <td class="tc">${avg ? `<span class="rnum" style="color:${rc(avg)}">${avg.toFixed(2)}</span>` : '—'}</td>
+    <td class="tc">${avg ? `<span class="rnum" style="color:${rc(avg)}" title="Точно: ${avg.toFixed(2)} · на WB: ${wbShow}">${wbShow}</span>` : '—'}</td>
     <td class="tr2" style="font-weight:600;color:#12B76A">${fmt(tot.r5)}</td>
     <td class="tr2" style="font-weight:600">${fmt(tot.r4)}</td>
     <td class="tr2" style="font-weight:600">${fmt(tot.r3)}</td>
@@ -1794,20 +1805,19 @@ function gblock(grp, arts) {
   ].join(' ');
 
   let recHtml = '';
-  if(avg !== null && weightedTotal > 0) {
+  if(avg !== null && ratingCount > 0) {
     const S = weightedSum;
-    const N = weightedTotal;
+    const N = weightedTotal || ratingCount;
     if(avg >= 4.95) {
-      recHtml = '<div style="padding:8px 16px;background:#F0FDF4;border-bottom:1px solid #BBF7D0;font-size:12px;color:#065F46;font-weight:500">✓ Рейтинг отображается как <b>5.0 ★</b> — отлично!</div>';
+      recHtml = '<div style="padding:8px 16px;background:#F0FDF4;border-bottom:1px solid #BBF7D0;font-size:12px;color:#065F46;font-weight:500">✓ Рейтинг отображается как <b>5.0 ★</b> — отлично! <span style="font-weight:400;opacity:.85">(среднее карточек ' + avg.toFixed(2) + ')</span></div>';
     } else {
-      const wbShow = avg >= 4.85 ? '4.9' : avg >= 4.75 ? '4.8' : avg >= 4.65 ? '4.7' : avg >= 4.55 ? '4.6' : avg >= 4.45 ? '4.5' : avg.toFixed(1);
       const nextT = avg >= 4.85 ? 4.95 : avg >= 4.75 ? 4.85 : avg >= 4.65 ? 4.75 : avg >= 4.55 ? 4.65 : 4.55;
       const nextLabel = nextT >= 4.95 ? '5.0' : (Math.round(nextT*10)/10).toFixed(1);
       const needNext = Math.ceil((nextT * N - S) / (5 - nextT));
       const need5 = Math.ceil((4.95 * N - S) / 0.05);
-      const srcNote = HAS_OFFICIAL && officialInGroup > 0 ? ' <span style="color:#059669;font-size:11px">✓ официальный рейтинг WB</span>' : '';
+      const srcNote = HAS_OFFICIAL && officialInGroup > 0 ? ' <span style="color:#059669;font-size:11px">✓ среднее рейтингов карточек (как WB)</span>' : '';
       recHtml = `<div style="display:flex;align-items:center;gap:12px;padding:8px 16px;background:#FFFBEB;border-bottom:1px solid #FDE68A;font-size:12px;flex-wrap:wrap">
-        <span style="color:#92400E">Клиент видит: <b>${wbShow} ★</b>${srcNote}</span>
+        <span style="color:#92400E">Клиент видит: <b>${wbShow} ★</b> <span style="opacity:.75">(точн. ${avg.toFixed(2)})</span>${srcNote}</span>
         <span style="color:#6B7280">|</span>
         <span style="color:#92400E">До <b>${nextLabel} ★</b>: нужно <b style="color:#D97706">+${needNext.toLocaleString('ru-RU')} отзывов ★5</b></span>
         ${avg < 4.85 ? `<span style="color:#6B7280">|</span><span style="color:#991B1B">До <b>5.0 ★</b>: нужно <b>+${need5.toLocaleString('ru-RU')} отзывов ★5</b></span>` : ''}
@@ -1820,10 +1830,10 @@ function gblock(grp, arts) {
       <div class="gh-color" style="background:${color}"></div>
       <div class="gh-name">${grp}</div>
       <div class="gh-stats">
-        <span class="gh-stat">${arts.length} арт. · ${wD} с отзывами</span>
+        <span class="gh-stat">${arts.length} арт. · ${ratingCount} с рейтингом</span>
         ${badges}
       </div>
-      ${avg ? `<span class="gh-rating" style="color:${rc(avg)}">${avg.toFixed(2)} ★</span>` : ''}
+      ${avg ? `<span class="gh-rating" style="color:${rc(avg)}" title="Точно: ${avg.toFixed(2)}">${wbShow} ★</span>` : ''}
       <span class="gh-arr">▾</span>
     </div>
     ${recHtml}

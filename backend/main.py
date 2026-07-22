@@ -3055,6 +3055,54 @@ async def save_manual_rating(request: dict):
     except Exception as e:
         return {"error": str(e)}
 
+
+@app.post("/api/update-wb-rating")
+async def update_wb_rating(request: dict):
+    """Обновляет wb_rating артикула (как на карточке WB), сохраняя разбивку звёзд если была."""
+    article = request.get("article")
+    if not article:
+        return {"error": "article required"}
+    try:
+        wb_rating = round(float(request.get("wb_rating")), 2)
+    except (TypeError, ValueError):
+        return {"error": "wb_rating required"}
+    if wb_rating < 0 or wb_rating > 5:
+        return {"error": "wb_rating must be 0..5"}
+    try:
+        from urllib.parse import quote
+        art_q = quote(str(article), safe="")
+        get = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?article=eq.{art_q}&select=*",
+            headers=sb_headers(), timeout=10
+        )
+        prev = get.json() if get.is_success else []
+        base = prev[0] if isinstance(prev, list) and prev else {"article": article}
+        row = {
+            "article": article,
+            "nm_id": request.get("nm_id") if request.get("nm_id") is not None else base.get("nm_id"),
+            "wb_rating": wb_rating,
+            # звёзды из старого xlsx больше не соответствуют новому рейтингу — обнуляем,
+            # чтобы склейка считалась по wb_rating карточек (как на WB)
+            "reviews_total": 0,
+            "r5": 0, "r4": 0, "r3": 0, "r2": 0, "r1": 0,
+            "excluded": 0,
+            "source": "manual",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        httpx.delete(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?article=eq.{art_q}",
+            headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=10
+        )
+        resp = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/ratings_official",
+            json=[row], headers=sb_headers(), timeout=15
+        )
+        if not resp.is_success:
+            return {"error": f"DB error: {resp.status_code} {resp.text[:200]}"}
+        return {"status": "ok", "article": article, "wb_rating": wb_rating}
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.post("/api/sync-stock")
 def trigger_stock_sync():
     import threading
