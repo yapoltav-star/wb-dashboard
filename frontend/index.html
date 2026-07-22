@@ -2655,6 +2655,34 @@ function drawSalesPace() {
     el.classList.toggle('on', map[k] === PACE_PERIOD);
   });
 
+  // Итого по кабинету (все артикулы с заказами, без учёта поиска/фильтра)
+  const tot = {
+    orders_today: all.reduce((s,a) => s + (a.orders_today||0), 0),
+    orders_yesterday: all.reduce((s,a) => s + (a.orders_yesterday||0), 0),
+    opens_today: all.reduce((s,a) => s + (a.opens_today||0), 0),
+    opens_yesterday: all.reduce((s,a) => s + (a.opens_yesterday||0), 0),
+    cart_today: all.reduce((s,a) => s + (a.cart_today||0), 0),
+    cart_yesterday: all.reduce((s,a) => s + (a.cart_yesterday||0), 0),
+  };
+  tot.orders_delta = tot.orders_today - tot.orders_yesterday;
+  const funnelOk = all.some(a => a.opens_delta != null || a.cart_delta != null);
+  tot.opens_delta = funnelOk ? tot.opens_today - tot.opens_yesterday : null;
+  tot.cart_delta = funnelOk ? tot.cart_today - tot.cart_yesterday : null;
+
+  const totalRow = `<tr class="total-row">
+      <td class="mcol-art"><div class="art">Весь кабинет</div><div class="nmid">${fmt(all.length)} арт.</div></td>
+      <td style="text-align:left;max-width:200px;font-size:12px;color:var(--wb-muted)">Сумма по всем артикулам</td>
+      <td>${fmt(tot.orders_today)}</td>
+      <td>${fmt(tot.orders_yesterday)}</td>
+      <td>${paceDeltaHtml(tot.orders_delta)}</td>
+      <td>${fmt(tot.opens_today)}</td>
+      <td>${tot.opens_delta==null?'—':fmt(tot.opens_yesterday)}</td>
+      <td>${paceDeltaHtml(tot.opens_delta)}</td>
+      <td>${fmt(tot.cart_today)}</td>
+      <td>${tot.cart_delta==null?'—':fmt(tot.cart_yesterday)}</td>
+      <td>${paceDeltaHtml(tot.cart_delta)}</td>
+    </tr>`;
+
   const body = arts.map((a,i) => {
     const rowCls = a.isPinned ? 'pinned' : ((a.orders_delta||0) < 0 ? 'promo-row-need' : ((a.orders_delta||0) > 0 ? 'promo-row-in' : ''));
     const safeVc = encodeURIComponent(a.vendor_code || '');
@@ -2697,7 +2725,7 @@ function drawSalesPace() {
         ${paceTh(colPrev, 'cart_yesterday')}
         ${paceTh('Δ', 'cart_delta')}
       </tr></thead>
-      <tbody>${body}</tbody>
+      <tbody>${totalRow}${body}</tbody>
     </table></div>`;
 }
 
