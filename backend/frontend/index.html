@@ -829,6 +829,21 @@ const RAILWAY_URL = (typeof location !== 'undefined' && location.hostname && loc
   ? ''
   : 'https://wb-dashboard-production-baf4.up.railway.app';
 
+// Если сессия истекла — на страницу входа (только same-origin / railway)
+(function () {
+  const _fetch = window.fetch.bind(window);
+  window.fetch = async function (input, init) {
+    const res = await _fetch(input, init);
+    if (res.status === 401) {
+      const url = String(typeof input === 'string' ? input : (input && input.url) || '');
+      if (!url.includes('/api/login') && location.hostname.includes('railway.app') && location.pathname !== '/login') {
+        location.href = '/login';
+      }
+    }
+    return res;
+  };
+})();
+
 var ALL = [], RATINGS = {}, GROUPS = {}, SK = 'avg_rating', SD = -1, EXP = {};
 var HAS_OFFICIAL = false;
 var dragArt = null, dragFrom = null;
