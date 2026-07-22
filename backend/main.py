@@ -3990,12 +3990,6 @@ DEFAULT_CFO_SNAPSHOT = {
     "ozon_receivables": [160244, 514462, 516759, 663734],
     "pnl_wb": 8787716,
     "pnl_ozon": 1222922,
-    "personal": {
-        "rent": 600000,
-        "installment": 1000000,
-        "mortgages": 134000,
-        "living": 600000,
-    },
     "loans": [
         {"id": "sber1", "name": "Сбер бизнес #1", "contract": "722407482466", "balance": 3433463, "rate": 0.38, "payment": 230671, "close": "2028-02", "early_repay": "term", "interest_only": False, "notes": "досрочка → срок↓"},
         {"id": "sber2", "name": "Сбер бизнес #2", "contract": "722407658448", "balance": 3438510, "rate": 0.37, "payment": 220577, "close": "2028-02", "early_repay": "payment", "interest_only": False, "notes": "досрочка → платёж↓"},
@@ -4034,12 +4028,9 @@ def _cfo_interest_month(loan: dict) -> float:
 
 def enrich_cfo_snapshot(raw: dict) -> dict:
     data = {**DEFAULT_CFO_SNAPSHOT, **(raw or {})}
+    data.pop("personal", None)
     if not isinstance(data.get("loans"), list) or not data["loans"]:
         data["loans"] = list(DEFAULT_CFO_SNAPSHOT["loans"])
-    if not isinstance(data.get("personal"), dict):
-        data["personal"] = dict(DEFAULT_CFO_SNAPSHOT["personal"])
-    else:
-        data["personal"] = {**DEFAULT_CFO_SNAPSHOT["personal"], **data["personal"]}
 
     loans = []
     for i, loan in enumerate(data["loans"]):
@@ -4072,8 +4063,6 @@ def enrich_cfo_snapshot(raw: dict) -> dict:
     mp_recv = sum(wb_recv) + sum(oz_recv)
     assets = cash + mp_recv + stock
     liabilities = suppliers + bank
-    pers = data["personal"]
-    personal_total = sum(_cfo_num(pers.get(k)) for k in ("rent", "installment", "mortgages", "living"))
     pnl_wb = _cfo_num(data.get("pnl_wb"))
     pnl_oz = _cfo_num(data.get("pnl_ozon"))
     salary = _cfo_num(data.get("salary_month"))
@@ -4094,7 +4083,6 @@ def enrich_cfo_snapshot(raw: dict) -> dict:
         "bank_payment": round(bank_pay, 2),
         "bank_interest": round(bank_int, 2),
         "bank_principal": round(bank_pay - bank_int, 2),
-        "personal_month": round(personal_total, 2),
         "pnl_channels": round(pnl_channels, 2),
         "pnl_real": round(pnl_real, 2),
         "current_ratio": round(assets / liabilities, 3) if liabilities else None,
@@ -4115,8 +4103,8 @@ def get_finance_cfo():
 async def save_finance_cfo(request: dict):
     if not isinstance(request, dict):
         raise HTTPException(status_code=400, detail="invalid body")
-    # не сохраняем computed totals — пересчитаем при чтении
-    payload = {k: v for k, v in request.items() if k != "totals"}
+    # не сохраняем computed totals и личные платежи
+    payload = {k: v for k, v in request.items() if k not in ("totals", "personal")}
     # нормализация чисел в loans / receivables
     loans_in = payload.get("loans")
     if isinstance(loans_in, list):
@@ -4144,12 +4132,6 @@ async def save_finance_cfo(request: dict):
                 "salary_month", "pnl_wb", "pnl_ozon"):
         if key in payload:
             payload[key] = _cfo_num(payload[key])
-    if isinstance(payload.get("personal"), dict):
-        pers = dict(DEFAULT_CFO_SNAPSHOT["personal"])
-        for k in ("rent", "installment", "mortgages", "living"):
-            if k in payload["personal"]:
-                pers[k] = _cfo_num(payload["personal"][k])
-        payload["personal"] = pers
     payload["as_of"] = str(payload.get("as_of") or datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
     if not save_setting_value(CFO_SNAPSHOT_KEY, payload):

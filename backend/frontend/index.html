@@ -4137,14 +4137,12 @@ function recomputeCfoLocal() {
   const mp = wb.reduce((a, b) => a + b, 0) + oz.reduce((a, b) => a + b, 0);
   const assets = cash + mp + stock;
   const liab = suppliers + bank;
-  const pers = d.personal || {};
-  const personal = cfoNum(pers.rent) + cfoNum(pers.installment) + cfoNum(pers.mortgages) + cfoNum(pers.living);
   const pnlCh = cfoNum(d.pnl_wb) + cfoNum(d.pnl_ozon);
   d.totals = {
     cash, wb_receivable: wb.reduce((a,b)=>a+b,0), ozon_receivable: oz.reduce((a,b)=>a+b,0),
     mp_receivable: mp, inventory: stock, assets, suppliers, bank_debt: bank, liabilities: liab,
     equity: assets - liab, bank_payment: bankPay, bank_interest: bankInt,
-    bank_principal: bankPay - bankInt, personal_month: personal,
+    bank_principal: bankPay - bankInt,
     pnl_channels: pnlCh, pnl_real: pnlCh - cfoNum(d.salary_month) - bankInt,
     current_ratio: liab ? assets / liab : null,
   };
@@ -4201,7 +4199,6 @@ function drawCfo() {
     ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
   }
   if(!root) return;
-  const pers = d.personal || {};
   const loanRows = (d.loans || []).map((l, i) => `
     <tr data-i="${i}">
       <td><input class="cfo-inp" data-f="name" value="${escapeHtml(l.name || '')}" oninput="onCfoLoanEdit(${i},'name',this.value)"></td>
@@ -4247,20 +4244,6 @@ function drawCfo() {
       </div>
     </div>
     <div class="cfo-box">
-      <h3>Личные платежи / мес (не в бизнес-ЧП)</h3>
-      <div class="cfo-grid">
-        <div>
-          ${cfoPersField('rent', 'Аренда квартир', pers.rent)}
-          ${cfoPersField('installment', 'Рассрочка квартиры', pers.installment)}
-        </div>
-        <div>
-          ${cfoPersField('mortgages', 'Ипотеки', pers.mortgages)}
-          ${cfoPersField('living', 'Жизнь / еда', pers.living)}
-        </div>
-      </div>
-      <div class="cfo-hint">Итого личное: <b>${fmtMoney(t.personal_month)}</b></div>
-    </div>
-    <div class="cfo-box">
       <h3>Кредиты</h3>
       <div class="cfo-scroll">
         <table class="cfo-table">
@@ -4281,10 +4264,6 @@ function cfoField(key, label, val, type) {
   return `<div class="cfo-row"><label>${label}</label>
     <input class="cfo-inp" type="${t}"${step} value="${v}" oninput="onCfoField('${key}', this.value)"></div>`;
 }
-function cfoPersField(key, label, val) {
-  return `<div class="cfo-row"><label>${label}</label>
-    <input class="cfo-inp" type="number" step="1" value="${cfoNum(val)}" oninput="onCfoPers('${key}', this.value)"></div>`;
-}
 function cfoRecvHtml(kind, arr) {
   return (arr || []).map((v, i) => `
     <div class="cfo-recv-row">
@@ -4297,13 +4276,6 @@ function onCfoField(key, val) {
   if(!CFO_DATA) return;
   if(key === 'as_of') CFO_DATA.as_of = val;
   else CFO_DATA[key] = cfoNum(val);
-  recomputeCfoLocal();
-  drawCfoCardsOnly();
-}
-function onCfoPers(key, val) {
-  if(!CFO_DATA) return;
-  if(!CFO_DATA.personal) CFO_DATA.personal = {};
-  CFO_DATA.personal[key] = cfoNum(val);
   recomputeCfoLocal();
   drawCfoCardsOnly();
 }
@@ -4388,12 +4360,6 @@ async function saveCfoSnapshot() {
     pnl_ozon: cfoNum(CFO_DATA.pnl_ozon),
     wb_receivables: (CFO_DATA.wb_receivables || []).map(cfoNum),
     ozon_receivables: (CFO_DATA.ozon_receivables || []).map(cfoNum),
-    personal: {
-      rent: cfoNum((CFO_DATA.personal || {}).rent),
-      installment: cfoNum((CFO_DATA.personal || {}).installment),
-      mortgages: cfoNum((CFO_DATA.personal || {}).mortgages),
-      living: cfoNum((CFO_DATA.personal || {}).living),
-    },
     loans: (CFO_DATA.loans || []).map(l => ({
       id: l.id, name: l.name, contract: l.contract || '',
       balance: cfoNum(l.balance), rate: cfoNum(l.rate), payment: cfoNum(l.payment),
