@@ -171,7 +171,8 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .fin-drop:hover,.fin-drop.over{border-color:var(--wb-purple);background:var(--wb-purple-light)}
 .fin-drop .fin-drop-t{font-size:14px;font-weight:500;margin-bottom:4px}
 .fin-drop .fin-drop-s{font-size:12px;color:var(--wb-muted)}
-.fin-tabs{display:flex;gap:6px;margin-bottom:12px}
+.fin-tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.fin-mode{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap}
 .fin-missing{color:var(--amber);font-size:12px}
 .fin-cost-inp{
   width:96px;border:1px solid var(--wb-border);border-radius:6px;padding:5px 8px;
@@ -181,6 +182,35 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .fin-cost-inp.saving{opacity:.6}
 .fin-cost-inp.ok{border-color:var(--green)}
 .fin-cost-inp.err{border-color:var(--red)}
+.cfo-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+@media(max-width:900px){.cfo-grid{grid-template-columns:1fr}}
+.cfo-box{background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+.cfo-box h3{font-size:14px;font-weight:600;margin-bottom:12px;letter-spacing:-.01em}
+.cfo-row{display:grid;grid-template-columns:1fr 140px;gap:8px;align-items:center;margin-bottom:8px}
+.cfo-row label{font-size:12px;color:var(--wb-muted)}
+.cfo-inp{
+  width:100%;padding:6px 8px;border:1px solid var(--wb-border);border-radius:8px;
+  font-size:13px;background:#FAFAF8;font-variant-numeric:tabular-nums;font-family:inherit;color:var(--wb-text)
+}
+.cfo-inp:focus{outline:none;border-color:var(--wb-purple);background:#fff;box-shadow:0 0 0 2px rgba(212,98,42,.12)}
+.cfo-table{width:100%;border-collapse:collapse;font-size:12px;min-width:900px}
+.cfo-table th{text-align:left;font-weight:500;color:var(--wb-muted);padding:6px 6px;border-bottom:1px solid var(--wb-border);white-space:nowrap}
+.cfo-table td{padding:5px 4px;border-bottom:1px solid var(--wb-border);vertical-align:middle}
+.cfo-table input.cfo-inp{padding:4px 6px;font-size:12px;min-width:0}
+.cfo-table .cfo-num{width:100px}
+.cfo-table .cfo-rate{width:72px}
+.cfo-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+.cfo-hint{font-size:12px;color:var(--wb-muted);margin-top:8px;line-height:1.4}
+.cfo-status{font-size:12px;color:var(--wb-muted);min-height:18px}
+.cfo-status.ok{color:var(--green)}
+.cfo-status.err{color:var(--red)}
+.cfo-recv-list{display:flex;flex-direction:column;gap:6px}
+.cfo-recv-row{display:flex;gap:6px;align-items:center}
+.cfo-recv-row .cfo-inp{flex:1}
+.cfo-del{border:none;background:transparent;color:var(--wb-faint);cursor:pointer;font-size:14px;padding:4px 6px}
+.cfo-del:hover{color:var(--red)}
+.cfo-check{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--wb-muted);white-space:nowrap}
+.cfo-scroll{overflow-x:auto}
 
 .group{margin-bottom:12px;border-radius:var(--r);overflow:hidden;border:1px solid var(--wb-border);background:var(--wb-surface)}
 .gh{display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer;user-select:none;border-bottom:1px solid var(--wb-border)}
@@ -693,7 +723,7 @@ td.tc{text-align:center}
     <div class="fin-lock-card" id="finLockCard">
       <div class="fin-lock-icon">🔒</div>
       <div class="fin-lock-title">Финансы</div>
-      <div class="fin-lock-sub">Раздел закрыт. Введи пароль, чтобы открыть<br>себестоимость и стоимость остатков.</div>
+      <div class="fin-lock-sub">Раздел закрыт. Введи пароль, чтобы открыть<br>себестоимость, баланс и кредиты.</div>
       <div class="fin-pin" id="finPin">
         <input type="password" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Цифра 1">
         <input type="password" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Цифра 2">
@@ -709,32 +739,51 @@ td.tc{text-align:center}
     <div class="fin-head">
       <div>
         <h2>Финансы</h2>
-        <p id="finMeta">Себестоимость остатков на WB и на нашем складе</p>
+        <p id="finMeta">Себестоимость остатков · баланс и кредиты</p>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="action-btn" onclick="loadFinance(true)">↻ Пересчитать</button>
+        <button class="action-btn" id="finRefreshBtn" onclick="refreshFinancePanel()">↻ Обновить</button>
         <button class="action-btn" onclick="lockFinance()">Заблокировать</button>
       </div>
     </div>
-    <div class="fin-drop" id="finDrop"
-      onclick="document.getElementById('finCostInput').click()"
-      ondragover="finDzOver(event)" ondragleave="finDzLeave(event)" ondrop="finDzDrop(event)">
-      <input type="file" id="finCostInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="uploadFinanceCosts(this.files[0])">
-      <div class="fin-drop-t">Загрузить файл себестоимости</div>
-      <div class="fin-drop-s">Excel cost_price: «По умолчанию» + колонки дат. Для остатков берётся последняя себестоимость на сегодня</div>
+    <div class="fin-mode">
+      <button class="filter-btn on" id="finModeStock" onclick="setFinMode('stock')">Остатки</button>
+      <button class="filter-btn" id="finModeCfo" onclick="setFinMode('cfo')">Баланс / кредиты</button>
     </div>
-    <div class="cards" id="finCards"></div>
-    <div class="fin-tabs">
-      <button class="filter-btn on" id="finTabWb" onclick="setFinTab('wb')">Склад WB</button>
-      <button class="filter-btn" id="finTabOwn" onclick="setFinTab('own')">Наш склад</button>
-      <button class="filter-btn" id="finTabMiss" onclick="setFinTab('miss')">Без себестоимости</button>
-      <button class="filter-btn" id="finTabAll" onclick="setFinTab('all')">Все цены</button>
+
+    <div id="finStockPanel">
+      <div class="fin-drop" id="finDrop"
+        onclick="document.getElementById('finCostInput').click()"
+        ondragover="finDzOver(event)" ondragleave="finDzLeave(event)" ondrop="finDzDrop(event)">
+        <input type="file" id="finCostInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="uploadFinanceCosts(this.files[0])">
+        <div class="fin-drop-t">Загрузить файл себестоимости</div>
+        <div class="fin-drop-s">Excel cost_price: «По умолчанию» + колонки дат. Для остатков берётся последняя себестоимость на сегодня</div>
+      </div>
+      <div class="cards" id="finCards"></div>
+      <div class="fin-tabs">
+        <button class="filter-btn on" id="finTabWb" onclick="setFinTab('wb')">Склад WB</button>
+        <button class="filter-btn" id="finTabOwn" onclick="setFinTab('own')">Наш склад</button>
+        <button class="filter-btn" id="finTabMiss" onclick="setFinTab('miss')">Без себестоимости</button>
+        <button class="filter-btn" id="finTabAll" onclick="setFinTab('all')">Все цены</button>
+      </div>
+      <div class="search" style="margin-bottom:12px">
+        <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+        <input id="finSearch" placeholder="Поиск по артикулу..." oninput="drawFinanceTable()">
+      </div>
+      <div id="finRoot"></div>
     </div>
-    <div class="search" style="margin-bottom:12px">
-      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
-      <input id="finSearch" placeholder="Поиск по артикулу..." oninput="drawFinanceTable()">
+
+    <div id="finCfoPanel" style="display:none">
+      <div class="cfo-actions">
+        <button class="action-btn primary" onclick="saveCfoSnapshot()">💾 Сохранить</button>
+        <button class="action-btn" onclick="addCfoLoan()">+ Кредит</button>
+        <button class="action-btn" onclick="loadCfo(true)">↺ Сбросить к сохранённому</button>
+        <span class="cfo-status" id="cfoStatus"></span>
+      </div>
+      <div class="cards" id="cfoCards"></div>
+      <div id="cfoRoot"></div>
+      <div class="cfo-hint">В ЧП идут только проценты по кредитам, не весь платёж. ЗП и % вычитаются один раз с суммы WB+Ozon. Правки сохраняются на сервер (Supabase settings).</div>
     </div>
-    <div id="finRoot"></div>
   </div>
 </div>
 
@@ -3705,6 +3754,8 @@ const FINANCE_PIN = '1997';
 let FINANCE_OK = sessionStorage.getItem('wb_finance_ok') === '1';
 let FINANCE_DATA = null;
 let FIN_TAB = 'wb';
+let FIN_MODE = 'stock'; // stock | cfo
+let CFO_DATA = null;
 
 function renderFinance() {
   const gate = document.getElementById('finGate');
@@ -3713,12 +3764,37 @@ function renderFinance() {
   if(FINANCE_OK) {
     gate.style.display = 'none';
     body.style.display = 'block';
-    loadFinance(false);
+    applyFinMode();
+    if(FIN_MODE === 'cfo') loadCfo(false);
+    else loadFinance(false);
     return;
   }
   gate.style.display = 'flex';
   body.style.display = 'none';
   setupFinancePin();
+}
+
+function setFinMode(mode) {
+  FIN_MODE = mode === 'cfo' ? 'cfo' : 'stock';
+  applyFinMode();
+  if(FIN_MODE === 'cfo') loadCfo(false);
+  else loadFinance(false);
+}
+
+function applyFinMode() {
+  const stock = document.getElementById('finStockPanel');
+  const cfo = document.getElementById('finCfoPanel');
+  const btnS = document.getElementById('finModeStock');
+  const btnC = document.getElementById('finModeCfo');
+  if(stock) stock.style.display = FIN_MODE === 'stock' ? 'block' : 'none';
+  if(cfo) cfo.style.display = FIN_MODE === 'cfo' ? 'block' : 'none';
+  if(btnS) btnS.classList.toggle('on', FIN_MODE === 'stock');
+  if(btnC) btnC.classList.toggle('on', FIN_MODE === 'cfo');
+}
+
+function refreshFinancePanel() {
+  if(FIN_MODE === 'cfo') loadCfo(true);
+  else loadFinance(true);
 }
 
 function setupFinancePin() {
@@ -3781,6 +3857,8 @@ function lockFinance() {
   FINANCE_OK = false;
   sessionStorage.removeItem('wb_finance_ok');
   FINANCE_DATA = null;
+  CFO_DATA = null;
+  FIN_MODE = 'stock';
   renderFinance();
 }
 
@@ -4027,6 +4105,319 @@ async function uploadFinanceCosts(file) {
   }
   const inp = document.getElementById('finCostInput');
   if(inp) inp.value = '';
+}
+
+// ─────────── CFO баланс / кредиты ───────────
+function cfoNum(v) {
+  const n = parseFloat(String(v ?? '').replace(/\s/g, '').replace(',', '.'));
+  return isFinite(n) ? n : 0;
+}
+function cfoInterest(loan) {
+  if(loan.interest_only) return cfoNum(loan.payment);
+  if(loan.id === 'vtb_big') return 88000;
+  const rate = cfoNum(loan.rate), bal = cfoNum(loan.balance);
+  return rate > 0 && bal > 0 ? bal * rate / 12 : 0;
+}
+function recomputeCfoLocal() {
+  if(!CFO_DATA) return;
+  const d = CFO_DATA;
+  const loans = d.loans || [];
+  loans.forEach(l => {
+    l.interest_month = Math.round(cfoInterest(l) * 100) / 100;
+    l.principal_month = Math.max(0, cfoNum(l.payment) - l.interest_month);
+  });
+  const wb = (d.wb_receivables || []).map(cfoNum);
+  const oz = (d.ozon_receivables || []).map(cfoNum);
+  const cash = cfoNum(d.cash);
+  const suppliers = cfoNum(d.suppliers);
+  const stock = cfoNum(d.inventory_wb_own) + cfoNum(d.inventory_transit) + cfoNum(d.inventory_ozon);
+  const bank = loans.reduce((s, l) => s + cfoNum(l.balance), 0);
+  const bankPay = loans.reduce((s, l) => s + cfoNum(l.payment), 0);
+  const bankInt = loans.reduce((s, l) => s + cfoNum(l.interest_month), 0);
+  const mp = wb.reduce((a, b) => a + b, 0) + oz.reduce((a, b) => a + b, 0);
+  const assets = cash + mp + stock;
+  const liab = suppliers + bank;
+  const pers = d.personal || {};
+  const personal = cfoNum(pers.rent) + cfoNum(pers.installment) + cfoNum(pers.mortgages) + cfoNum(pers.living);
+  const pnlCh = cfoNum(d.pnl_wb) + cfoNum(d.pnl_ozon);
+  d.totals = {
+    cash, wb_receivable: wb.reduce((a,b)=>a+b,0), ozon_receivable: oz.reduce((a,b)=>a+b,0),
+    mp_receivable: mp, inventory: stock, assets, suppliers, bank_debt: bank, liabilities: liab,
+    equity: assets - liab, bank_payment: bankPay, bank_interest: bankInt,
+    bank_principal: bankPay - bankInt, personal_month: personal,
+    pnl_channels: pnlCh, pnl_real: pnlCh - cfoNum(d.salary_month) - bankInt,
+    current_ratio: liab ? assets / liab : null,
+  };
+}
+
+async function loadCfo(force) {
+  const root = document.getElementById('cfoRoot');
+  const status = document.getElementById('cfoStatus');
+  if(root && (!CFO_DATA || force)) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Загружаем баланс…</span></div>';
+  }
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/finance/cfo`);
+    CFO_DATA = await r.json();
+    if(status) { status.textContent = ''; status.className = 'cfo-status'; }
+  } catch(e) {
+    CFO_DATA = {error: e.message};
+  }
+  drawCfo();
+}
+
+function setCfoStatus(msg, ok) {
+  const el = document.getElementById('cfoStatus');
+  if(!el) return;
+  el.textContent = msg || '';
+  el.className = 'cfo-status' + (ok === true ? ' ok' : ok === false ? ' err' : '');
+}
+
+function drawCfo() {
+  const d = CFO_DATA || {};
+  const cards = document.getElementById('cfoCards');
+  const root = document.getElementById('cfoRoot');
+  const meta = document.getElementById('finMeta');
+  if(d.error) {
+    if(root) root.innerHTML = `<div class="empty">${escapeHtml(d.error)}</div>`;
+    return;
+  }
+  recomputeCfoLocal();
+  const t = d.totals || {};
+  if(meta) {
+    meta.textContent = 'Баланс / кредиты · срез ' + (d.as_of || '—') +
+      (d.updated_at ? ' · сохранено ' + String(d.updated_at).slice(0, 16).replace('T', ' ') : '');
+  }
+  if(cards) {
+    cards.innerHTML = [
+      ['Активы', fmtMoney(t.assets), 'color:var(--wb-purple)'],
+      ['Обязательства', fmtMoney(t.liabilities)],
+      ['Капитал', fmtMoney(t.equity), t.equity >= 0 ? 'color:var(--green)' : 'color:var(--red)'],
+      ['Банки (тело)', fmtMoney(t.bank_debt)],
+      ['Платёж банков / мес', fmtMoney(t.bank_payment)],
+      ['% в ЧП / мес', fmtMoney(t.bank_interest), 'color:var(--amber)'],
+      ['ЧП каналы', fmtMoney(t.pnl_channels)],
+      ['Честная ЧП (−ЗП −%)', fmtMoney(t.pnl_real), 'color:var(--green)'],
+    ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+  }
+  if(!root) return;
+  const pers = d.personal || {};
+  const loanRows = (d.loans || []).map((l, i) => `
+    <tr data-i="${i}">
+      <td><input class="cfo-inp" data-f="name" value="${escapeHtml(l.name || '')}" oninput="onCfoLoanEdit(${i},'name',this.value)"></td>
+      <td><input class="cfo-inp cfo-num" data-f="balance" type="number" step="1" value="${cfoNum(l.balance)}" oninput="onCfoLoanEdit(${i},'balance',this.value)"></td>
+      <td><input class="cfo-inp cfo-rate" data-f="rate" type="number" step="0.001" value="${cfoNum(l.rate)}" oninput="onCfoLoanEdit(${i},'rate',this.value)" title="доля, напр. 0.38 = 38%"></td>
+      <td><input class="cfo-inp cfo-num" data-f="payment" type="number" step="1" value="${cfoNum(l.payment)}" oninput="onCfoLoanEdit(${i},'payment',this.value)"></td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${fmtMoney(l.interest_month)}</td>
+      <td><input class="cfo-inp" style="width:90px" data-f="close" value="${escapeHtml(l.close || '')}" oninput="onCfoLoanEdit(${i},'close',this.value)"></td>
+      <td><label class="cfo-check"><input type="checkbox" ${l.interest_only ? 'checked' : ''} onchange="onCfoLoanEdit(${i},'interest_only',this.checked)"> только %</label></td>
+      <td><input class="cfo-inp" data-f="notes" value="${escapeHtml(l.notes || '')}" oninput="onCfoLoanEdit(${i},'notes',this.value)"></td>
+      <td><button class="cfo-del" onclick="removeCfoLoan(${i})" title="Удалить">✕</button></td>
+    </tr>`).join('');
+
+  root.innerHTML = `
+    <div class="cfo-grid">
+      <div class="cfo-box">
+        <h3>Активы</h3>
+        ${cfoField('cash', 'Деньги на р/с', d.cash)}
+        ${cfoField('inventory_wb_own', 'Товар склады (WB/свой)', d.inventory_wb_own)}
+        ${cfoField('inventory_transit', 'Товар в пути', d.inventory_transit)}
+        ${cfoField('inventory_ozon', 'Товар Ozon (себес)', d.inventory_ozon)}
+        <div class="cfo-hint">Итого товар: <b>${fmtMoney(t.inventory)}</b> · ДЗ МП: <b>${fmtMoney(t.mp_receivable)}</b></div>
+      </div>
+      <div class="cfo-box">
+        <h3>Пассивы и P&amp;L</h3>
+        ${cfoField('suppliers', 'Долг поставщикам', d.suppliers)}
+        ${cfoField('pnl_wb', 'ЧП WB (дашборд)', d.pnl_wb)}
+        ${cfoField('pnl_ozon', 'ЧП Ozon (дашборд)', d.pnl_ozon)}
+        ${cfoField('salary_month', 'ЗП сотрудников / мес', d.salary_month)}
+        ${cfoField('as_of', 'Дата среза', d.as_of || '', 'text')}
+      </div>
+    </div>
+    <div class="cfo-grid">
+      <div class="cfo-box">
+        <h3>Дебиторка WB <button class="action-btn" style="margin-left:8px;padding:2px 8px;font-size:11px" onclick="addCfoRecv('wb')">+</button></h3>
+        <div class="cfo-recv-list" id="cfoWbRecv">${cfoRecvHtml('wb', d.wb_receivables || [])}</div>
+        <div class="cfo-hint">Сумма: <b>${fmtMoney(t.wb_receivable)}</b></div>
+      </div>
+      <div class="cfo-box">
+        <h3>Дебиторка Ozon <button class="action-btn" style="margin-left:8px;padding:2px 8px;font-size:11px" onclick="addCfoRecv('ozon')">+</button></h3>
+        <div class="cfo-recv-list" id="cfoOzRecv">${cfoRecvHtml('ozon', d.ozon_receivables || [])}</div>
+        <div class="cfo-hint">Сумма: <b>${fmtMoney(t.ozon_receivable)}</b></div>
+      </div>
+    </div>
+    <div class="cfo-box">
+      <h3>Личные платежи / мес (не в бизнес-ЧП)</h3>
+      <div class="cfo-grid">
+        <div>
+          ${cfoPersField('rent', 'Аренда квартир', pers.rent)}
+          ${cfoPersField('installment', 'Рассрочка квартиры', pers.installment)}
+        </div>
+        <div>
+          ${cfoPersField('mortgages', 'Ипотеки', pers.mortgages)}
+          ${cfoPersField('living', 'Жизнь / еда', pers.living)}
+        </div>
+      </div>
+      <div class="cfo-hint">Итого личное: <b>${fmtMoney(t.personal_month)}</b></div>
+    </div>
+    <div class="cfo-box">
+      <h3>Кредиты</h3>
+      <div class="cfo-scroll">
+        <table class="cfo-table">
+          <thead><tr>
+            <th>Название</th><th>Тело</th><th>Ставка</th><th>Платёж</th><th>≈ %/мес</th><th>Закрытие</th><th></th><th>Заметка</th><th></th>
+          </tr></thead>
+          <tbody>${loanRows || '<tr><td colspan="9" class="empty">Нет кредитов</td></tr>'}</tbody>
+        </table>
+      </div>
+      <div class="cfo-hint">Ставка как доля: 0.38 = 38%. Current ratio: <b>${t.current_ratio != null ? t.current_ratio.toFixed(2) : '—'}</b></div>
+    </div>`;
+}
+
+function cfoField(key, label, val, type) {
+  const t = type === 'text' ? 'text' : 'number';
+  const step = t === 'number' ? ' step="1"' : '';
+  const v = t === 'number' ? cfoNum(val) : escapeHtml(String(val ?? ''));
+  return `<div class="cfo-row"><label>${label}</label>
+    <input class="cfo-inp" type="${t}"${step} value="${v}" oninput="onCfoField('${key}', this.value)"></div>`;
+}
+function cfoPersField(key, label, val) {
+  return `<div class="cfo-row"><label>${label}</label>
+    <input class="cfo-inp" type="number" step="1" value="${cfoNum(val)}" oninput="onCfoPers('${key}', this.value)"></div>`;
+}
+function cfoRecvHtml(kind, arr) {
+  return (arr || []).map((v, i) => `
+    <div class="cfo-recv-row">
+      <input class="cfo-inp" type="number" step="0.01" value="${cfoNum(v)}" oninput="onCfoRecv('${kind}', ${i}, this.value)">
+      <button class="cfo-del" onclick="removeCfoRecv('${kind}', ${i})">✕</button>
+    </div>`).join('') || '<div class="cfo-hint">Нет траншей</div>';
+}
+
+function onCfoField(key, val) {
+  if(!CFO_DATA) return;
+  if(key === 'as_of') CFO_DATA.as_of = val;
+  else CFO_DATA[key] = cfoNum(val);
+  recomputeCfoLocal();
+  drawCfoCardsOnly();
+}
+function onCfoPers(key, val) {
+  if(!CFO_DATA) return;
+  if(!CFO_DATA.personal) CFO_DATA.personal = {};
+  CFO_DATA.personal[key] = cfoNum(val);
+  recomputeCfoLocal();
+  drawCfoCardsOnly();
+}
+function onCfoRecv(kind, i, val) {
+  if(!CFO_DATA) return;
+  const key = kind === 'ozon' ? 'ozon_receivables' : 'wb_receivables';
+  if(!Array.isArray(CFO_DATA[key])) CFO_DATA[key] = [];
+  CFO_DATA[key][i] = cfoNum(val);
+  recomputeCfoLocal();
+  drawCfoCardsOnly();
+}
+function addCfoRecv(kind) {
+  if(!CFO_DATA) return;
+  const key = kind === 'ozon' ? 'ozon_receivables' : 'wb_receivables';
+  if(!Array.isArray(CFO_DATA[key])) CFO_DATA[key] = [];
+  CFO_DATA[key].push(0);
+  drawCfo();
+}
+function removeCfoRecv(kind, i) {
+  if(!CFO_DATA) return;
+  const key = kind === 'ozon' ? 'ozon_receivables' : 'wb_receivables';
+  CFO_DATA[key].splice(i, 1);
+  drawCfo();
+}
+function onCfoLoanEdit(i, field, val) {
+  if(!CFO_DATA || !CFO_DATA.loans[i]) return;
+  if(field === 'interest_only') CFO_DATA.loans[i].interest_only = !!val;
+  else if(field === 'name' || field === 'close' || field === 'notes') CFO_DATA.loans[i][field] = val;
+  else CFO_DATA.loans[i][field] = cfoNum(val);
+  recomputeCfoLocal();
+  // обновить % в строке без полной перерисовки фокуса
+  const tr = document.querySelector(`#cfoRoot tr[data-i="${i}"]`);
+  if(tr && tr.children[4]) tr.children[4].textContent = fmtMoney(CFO_DATA.loans[i].interest_month);
+  drawCfoCardsOnly();
+}
+function addCfoLoan() {
+  if(!CFO_DATA) return;
+  if(!Array.isArray(CFO_DATA.loans)) CFO_DATA.loans = [];
+  CFO_DATA.loans.push({
+    id: 'loan_' + Date.now(), name: 'Новый кредит', contract: '', balance: 0, rate: 0.2,
+    payment: 0, close: '', early_repay: '', interest_only: false, notes: ''
+  });
+  drawCfo();
+}
+function removeCfoLoan(i) {
+  if(!CFO_DATA) return;
+  CFO_DATA.loans.splice(i, 1);
+  drawCfo();
+}
+function drawCfoCardsOnly() {
+  const d = CFO_DATA || {};
+  const t = d.totals || {};
+  const cards = document.getElementById('cfoCards');
+  if(!cards) return;
+  cards.innerHTML = [
+    ['Активы', fmtMoney(t.assets), 'color:var(--wb-purple)'],
+    ['Обязательства', fmtMoney(t.liabilities)],
+    ['Капитал', fmtMoney(t.equity), t.equity >= 0 ? 'color:var(--green)' : 'color:var(--red)'],
+    ['Банки (тело)', fmtMoney(t.bank_debt)],
+    ['Платёж банков / мес', fmtMoney(t.bank_payment)],
+    ['% в ЧП / мес', fmtMoney(t.bank_interest), 'color:var(--amber)'],
+    ['ЧП каналы', fmtMoney(t.pnl_channels)],
+    ['Честная ЧП (−ЗП −%)', fmtMoney(t.pnl_real), 'color:var(--green)'],
+  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+  // обновить хинты сумм если есть
+  const hints = document.querySelectorAll('#cfoRoot .cfo-hint b');
+  // проще не трогать — полный draw только при структурных изменениях
+}
+
+async function saveCfoSnapshot() {
+  if(!CFO_DATA || CFO_DATA.error) return;
+  setCfoStatus('Сохраняем…');
+  const payload = {
+    as_of: CFO_DATA.as_of,
+    cash: cfoNum(CFO_DATA.cash),
+    suppliers: cfoNum(CFO_DATA.suppliers),
+    inventory_wb_own: cfoNum(CFO_DATA.inventory_wb_own),
+    inventory_transit: cfoNum(CFO_DATA.inventory_transit),
+    inventory_ozon: cfoNum(CFO_DATA.inventory_ozon),
+    salary_month: cfoNum(CFO_DATA.salary_month),
+    pnl_wb: cfoNum(CFO_DATA.pnl_wb),
+    pnl_ozon: cfoNum(CFO_DATA.pnl_ozon),
+    wb_receivables: (CFO_DATA.wb_receivables || []).map(cfoNum),
+    ozon_receivables: (CFO_DATA.ozon_receivables || []).map(cfoNum),
+    personal: {
+      rent: cfoNum((CFO_DATA.personal || {}).rent),
+      installment: cfoNum((CFO_DATA.personal || {}).installment),
+      mortgages: cfoNum((CFO_DATA.personal || {}).mortgages),
+      living: cfoNum((CFO_DATA.personal || {}).living),
+    },
+    loans: (CFO_DATA.loans || []).map(l => ({
+      id: l.id, name: l.name, contract: l.contract || '',
+      balance: cfoNum(l.balance), rate: cfoNum(l.rate), payment: cfoNum(l.payment),
+      close: l.close || '', early_repay: l.early_repay || '',
+      interest_only: !!l.interest_only, notes: l.notes || '',
+    })),
+  };
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/finance/cfo`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if(!r.ok || d.detail) {
+      setCfoStatus('Ошибка: ' + (d.detail || d.error || r.status), false);
+      return;
+    }
+    CFO_DATA = d.snapshot || CFO_DATA;
+    drawCfo();
+    setCfoStatus('Сохранено', true);
+  } catch(e) {
+    setCfoStatus('Ошибка: ' + e.message, false);
+  }
 }
 
 loadData();

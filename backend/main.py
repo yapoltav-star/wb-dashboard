@@ -6,7 +6,7 @@ import time
 import logging
 from datetime import datetime, timedelta, timezone, date
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -3973,6 +3973,189 @@ async def save_finance_cost(request: dict):
         save_setting_value(COST_META_KEY, meta)
 
     return {"status": "ok", "entry": entry}
+
+
+# ---------- Финансы: CFO баланс / кредиты ----------
+CFO_SNAPSHOT_KEY = "cfo_snapshot"
+
+DEFAULT_CFO_SNAPSHOT = {
+    "as_of": "2026-07-22",
+    "cash": 3480000,
+    "suppliers": 22680000,
+    "inventory_wb_own": 14293595,
+    "inventory_transit": 1000000,
+    "inventory_ozon": 1500000,
+    "salary_month": 500000,
+    "wb_receivables": [5400759.27, 5719189.43, 5963238.65, 6034075.99, 2500000],
+    "ozon_receivables": [160244, 514462, 516759, 663734],
+    "pnl_wb": 8787716,
+    "pnl_ozon": 1222922,
+    "personal": {
+        "rent": 600000,
+        "installment": 1000000,
+        "mortgages": 134000,
+        "living": 600000,
+    },
+    "loans": [
+        {"id": "sber1", "name": "Сбер бизнес #1", "contract": "722407482466", "balance": 3433463, "rate": 0.38, "payment": 230671, "close": "2028-02", "early_repay": "term", "interest_only": False, "notes": "досрочка → срок↓"},
+        {"id": "sber2", "name": "Сбер бизнес #2", "contract": "722407658448", "balance": 3438510, "rate": 0.37, "payment": 220577, "close": "2028-02", "early_repay": "payment", "interest_only": False, "notes": "досрочка → платёж↓"},
+        {"id": "vtb_big", "name": "ВТБ крупный", "contract": "", "balance": 4000000, "rate": 0.264, "payment": 162000, "close": "", "early_repay": "", "interest_only": False, "notes": "июнь: 88к% + 74к тело"},
+        {"id": "tbank", "name": "ТБанк", "contract": "", "balance": 2246883, "rate": 0.349, "payment": 92280, "close": "2031-02", "early_repay": "", "interest_only": False, "notes": ""},
+        {"id": "cash", "name": "Займ наличными", "contract": "", "balance": 2000000, "rate": 0.2, "payment": 34000, "close": "", "early_repay": "", "interest_only": True, "notes": "−1 млн погашено"},
+        {"id": "alfa2", "name": "Альфа #2", "contract": "10009587221", "balance": 857544, "rate": 0.259, "payment": 58010, "close": "2027-11", "early_repay": "", "interest_only": False, "notes": ""},
+        {"id": "alfa1", "name": "Альфа #1", "contract": "PILPAQ7SKC", "balance": 911273, "rate": 0.2299, "payment": 64100, "close": "2027-10", "early_repay": "", "interest_only": False, "notes": ""},
+        {"id": "sber3", "name": "Сбер #3", "contract": "", "balance": 1370000, "rate": 0.3, "payment": 75023, "close": "2028-04", "early_repay": "", "interest_only": False, "notes": "ставку уточнить"},
+        {"id": "vtb2", "name": "ВТБ #2", "contract": "V625/0000-0951998", "balance": 541658, "rate": 0.172, "payment": 24334, "close": "2028-09", "early_repay": "", "interest_only": False, "notes": ""},
+    ],
+}
+
+
+def _cfo_num(v, default=0.0):
+    try:
+        if v is None or v == "":
+            return float(default)
+        return float(v)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _cfo_interest_month(loan: dict) -> float:
+    if loan.get("interest_only"):
+        return _cfo_num(loan.get("payment"))
+    # факт по ВТБ крупному из июня
+    if loan.get("id") == "vtb_big":
+        return 88000.0
+    rate = _cfo_num(loan.get("rate"))
+    bal = _cfo_num(loan.get("balance"))
+    if rate <= 0 or bal <= 0:
+        return 0.0
+    return bal * rate / 12.0
+
+
+def enrich_cfo_snapshot(raw: dict) -> dict:
+    data = {**DEFAULT_CFO_SNAPSHOT, **(raw or {})}
+    if not isinstance(data.get("loans"), list) or not data["loans"]:
+        data["loans"] = list(DEFAULT_CFO_SNAPSHOT["loans"])
+    if not isinstance(data.get("personal"), dict):
+        data["personal"] = dict(DEFAULT_CFO_SNAPSHOT["personal"])
+    else:
+        data["personal"] = {**DEFAULT_CFO_SNAPSHOT["personal"], **data["personal"]}
+
+    loans = []
+    for i, loan in enumerate(data["loans"]):
+        if not isinstance(loan, dict):
+            continue
+        item = dict(loan)
+        item["id"] = item.get("id") or f"loan_{i}"
+        item["balance"] = _cfo_num(item.get("balance"))
+        item["rate"] = _cfo_num(item.get("rate"))
+        item["payment"] = _cfo_num(item.get("payment"))
+        item["interest_month"] = round(_cfo_interest_month(item), 2)
+        item["principal_month"] = round(max(0.0, item["payment"] - item["interest_month"]), 2)
+        loans.append(item)
+    data["loans"] = loans
+
+    wb_recv = [_cfo_num(x) for x in (data.get("wb_receivables") or [])]
+    oz_recv = [_cfo_num(x) for x in (data.get("ozon_receivables") or [])]
+    data["wb_receivables"] = wb_recv
+    data["ozon_receivables"] = oz_recv
+
+    cash = _cfo_num(data.get("cash"))
+    suppliers = _cfo_num(data.get("suppliers"))
+    inv_wb = _cfo_num(data.get("inventory_wb_own"))
+    inv_tr = _cfo_num(data.get("inventory_transit"))
+    inv_oz = _cfo_num(data.get("inventory_ozon"))
+    stock = inv_wb + inv_tr + inv_oz
+    bank = sum(_cfo_num(l.get("balance")) for l in loans)
+    bank_pay = sum(_cfo_num(l.get("payment")) for l in loans)
+    bank_int = sum(_cfo_num(l.get("interest_month")) for l in loans)
+    mp_recv = sum(wb_recv) + sum(oz_recv)
+    assets = cash + mp_recv + stock
+    liabilities = suppliers + bank
+    pers = data["personal"]
+    personal_total = sum(_cfo_num(pers.get(k)) for k in ("rent", "installment", "mortgages", "living"))
+    pnl_wb = _cfo_num(data.get("pnl_wb"))
+    pnl_oz = _cfo_num(data.get("pnl_ozon"))
+    salary = _cfo_num(data.get("salary_month"))
+    pnl_channels = pnl_wb + pnl_oz
+    pnl_real = pnl_channels - salary - bank_int
+
+    data["totals"] = {
+        "cash": cash,
+        "wb_receivable": round(sum(wb_recv), 2),
+        "ozon_receivable": round(sum(oz_recv), 2),
+        "mp_receivable": round(mp_recv, 2),
+        "inventory": round(stock, 2),
+        "assets": round(assets, 2),
+        "suppliers": suppliers,
+        "bank_debt": round(bank, 2),
+        "liabilities": round(liabilities, 2),
+        "equity": round(assets - liabilities, 2),
+        "bank_payment": round(bank_pay, 2),
+        "bank_interest": round(bank_int, 2),
+        "bank_principal": round(bank_pay - bank_int, 2),
+        "personal_month": round(personal_total, 2),
+        "pnl_channels": round(pnl_channels, 2),
+        "pnl_real": round(pnl_real, 2),
+        "current_ratio": round(assets / liabilities, 3) if liabilities else None,
+    }
+    return data
+
+
+@app.get("/api/finance/cfo")
+def get_finance_cfo():
+    raw = get_setting_json(CFO_SNAPSHOT_KEY, None)
+    if not raw or not isinstance(raw, dict):
+        raw = dict(DEFAULT_CFO_SNAPSHOT)
+        save_setting_value(CFO_SNAPSHOT_KEY, raw)
+    return enrich_cfo_snapshot(raw)
+
+
+@app.post("/api/finance/cfo")
+async def save_finance_cfo(request: dict):
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    # не сохраняем computed totals — пересчитаем при чтении
+    payload = {k: v for k, v in request.items() if k != "totals"}
+    # нормализация чисел в loans / receivables
+    loans_in = payload.get("loans")
+    if isinstance(loans_in, list):
+        clean_loans = []
+        for i, loan in enumerate(loans_in):
+            if not isinstance(loan, dict):
+                continue
+            clean_loans.append({
+                "id": loan.get("id") or f"loan_{i}",
+                "name": str(loan.get("name") or f"Кредит {i+1}"),
+                "contract": str(loan.get("contract") or ""),
+                "balance": _cfo_num(loan.get("balance")),
+                "rate": _cfo_num(loan.get("rate")),
+                "payment": _cfo_num(loan.get("payment")),
+                "close": str(loan.get("close") or ""),
+                "early_repay": str(loan.get("early_repay") or ""),
+                "interest_only": bool(loan.get("interest_only")),
+                "notes": str(loan.get("notes") or ""),
+            })
+        payload["loans"] = clean_loans
+    for key in ("wb_receivables", "ozon_receivables"):
+        if key in payload and isinstance(payload[key], list):
+            payload[key] = [_cfo_num(x) for x in payload[key]]
+    for key in ("cash", "suppliers", "inventory_wb_own", "inventory_transit", "inventory_ozon",
+                "salary_month", "pnl_wb", "pnl_ozon"):
+        if key in payload:
+            payload[key] = _cfo_num(payload[key])
+    if isinstance(payload.get("personal"), dict):
+        pers = dict(DEFAULT_CFO_SNAPSHOT["personal"])
+        for k in ("rent", "installment", "mortgages", "living"):
+            if k in payload["personal"]:
+                pers[k] = _cfo_num(payload["personal"][k])
+        payload["personal"] = pers
+    payload["as_of"] = str(payload.get("as_of") or datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    if not save_setting_value(CFO_SNAPSHOT_KEY, payload):
+        raise HTTPException(status_code=500, detail="save failed")
+    return {"status": "ok", "snapshot": enrich_cfo_snapshot(payload)}
+
 
 if __name__ == "__main__":
     import uvicorn
