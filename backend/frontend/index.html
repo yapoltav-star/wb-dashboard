@@ -211,6 +211,24 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .cfo-del:hover{color:var(--red)}
 .cfo-check{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--wb-muted);white-space:nowrap}
 .cfo-scroll{overflow-x:auto}
+.cfo-health{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:14px}
+.cfo-hcard{
+  border:1px solid var(--wb-border);border-radius:12px;padding:12px 14px;background:var(--wb-surface)
+}
+.cfo-hcard .hl{font-size:11px;color:var(--wb-muted);margin-bottom:4px}
+.cfo-hcard .hv{font-size:18px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.cfo-hcard .hs{font-size:11px;margin-top:6px}
+.cfo-hcard.ok{border-color:rgba(18,183,106,.35);background:rgba(18,183,106,.06)}
+.cfo-hcard.warn{border-color:rgba(247,144,9,.4);background:rgba(247,144,9,.07)}
+.cfo-hcard.bad{border-color:rgba(240,68,56,.4);background:rgba(240,68,56,.06)}
+.cfo-floors{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+.cfo-floors th{text-align:left;color:var(--wb-muted);font-weight:500;padding:6px;border-bottom:1px solid var(--wb-border)}
+.cfo-floors td{padding:7px 6px;border-bottom:1px solid var(--wb-border);font-variant-numeric:tabular-nums}
+.cfo-pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
+.cfo-pill.ok{background:rgba(18,183,106,.15);color:var(--green)}
+.cfo-pill.warn{background:rgba(247,144,9,.18);color:var(--amber)}
+.cfo-pill.bad{background:rgba(240,68,56,.15);color:var(--red)}
+.cfo-verdict{font-size:13px;line-height:1.45;padding:12px 14px;border-radius:12px;border:1px solid var(--wb-border);margin-bottom:14px;background:var(--wb-surface)}
 
 .group{margin-bottom:12px;border-radius:var(--r);overflow:hidden;border:1px solid var(--wb-border);background:var(--wb-surface)}
 .gh{display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer;user-select:none;border-bottom:1px solid var(--wb-border)}
@@ -780,9 +798,11 @@ td.tc{text-align:center}
         <button class="action-btn" onclick="loadCfo(true)">↺ Сбросить к сохранённому</button>
         <span class="cfo-status" id="cfoStatus"></span>
       </div>
+      <div id="cfoVerdict" class="cfo-verdict" style="display:none"></div>
+      <div class="cfo-health" id="cfoHealth"></div>
       <div class="cards" id="cfoCards"></div>
       <div id="cfoRoot"></div>
-      <div class="cfo-hint">В ЧП идут только проценты по кредитам, не весь платёж. ЗП и % вычитаются один раз с суммы WB+Ozon. Правки сохраняются на сервер (Supabase settings).</div>
+      <div class="cfo-hint">Ситуация сверху считается автоматически. В ЧП — только проценты по кредитам, не весь платёж. Реализацию и целевую маржу правь вручную — от них красные линии.</div>
     </div>
   </div>
 </div>
@@ -4137,14 +4157,52 @@ function recomputeCfoLocal() {
   const mp = wb.reduce((a, b) => a + b, 0) + oz.reduce((a, b) => a + b, 0);
   const assets = cash + mp + stock;
   const liab = suppliers + bank;
+  const equity = assets - liab;
+  const salary = cfoNum(d.salary_month);
   const pnlCh = cfoNum(d.pnl_wb) + cfoNum(d.pnl_ozon);
+  const pnlReal = pnlCh - salary - bankInt;
+  const ebit = pnlCh - salary;
+  const realization = cfoNum(d.realization_month);
+  const targetMargin = cfoNum(d.target_margin) || 0.15;
+  const cashFloor = cfoNum(d.cash_floor) || 4000000;
+  const wbComp = cfoNum(d.wb_compensation_pending);
+  const avgRate = bank > 0 ? loans.reduce((s, l) => s + cfoNum(l.balance) * cfoNum(l.rate), 0) / bank : 0;
+  const marginCh = realization > 0 ? pnlCh / realization : null;
+  const coverage = bankInt > 0 ? ebit / bankInt : null;
+  const levMonths = pnlReal > 0 ? bank / pnlReal : null;
+  const minRealizPct = targetMargin > 0 ? (salary + bankInt) / targetMargin : null;
+  const minRealizCash = targetMargin > 0 ? (salary + bankPay) / targetMargin : null;
+  const cr = liab > 0 ? assets / liab : null;
+  function st(ok, warn) { return ok ? 'ok' : (warn ? 'warn' : 'bad'); }
+  const health = {
+    avg_rate: avgRate,
+    avg_rate_pct: Math.round(avgRate * 10000) / 100,
+    interest_coverage: coverage != null ? Math.round(coverage * 100) / 100 : null,
+    margin_channels_pct: marginCh != null ? Math.round(marginCh * 10000) / 100 : null,
+    leverage_bank_months: levMonths != null ? Math.round(levMonths * 100) / 100 : null,
+    debt_to_assets: assets > 0 ? Math.round((liab / assets) * 1000) / 1000 : null,
+    target_margin_pct: Math.round(targetMargin * 10000) / 100,
+    cash_floor: cashFloor,
+    min_realization_for_salary_interest: minRealizPct,
+    min_realization_for_debt_service: minRealizCash,
+    min_pnl_channels_salary_interest: salary + bankInt,
+    min_pnl_channels_debt_service: salary + bankPay,
+    floors: {
+      cash: { value: cash, floor: cashFloor, status: st(cash >= cashFloor, cash >= cashFloor * 0.75) },
+      coverage: { value: coverage, floor: 3, status: st(coverage != null && coverage >= 3, coverage != null && coverage >= 1.5) },
+      current_ratio: { value: cr, floor: 1.1, status: st(cr != null && cr >= 1.1, cr != null && cr >= 1) },
+      margin: { value: marginCh, floor: targetMargin, status: st(marginCh != null && marginCh >= targetMargin, marginCh != null && marginCh >= targetMargin * 0.85) },
+      avg_rate: { value: avgRate, floor: 0.25, status: st(avgRate <= 0.25, avgRate <= 0.30) },
+      realization: { value: realization, floor: minRealizPct, status: st(minRealizPct != null && realization >= minRealizPct, minRealizPct != null && realization >= minRealizPct * 0.85) },
+    },
+  };
   d.totals = {
     cash, wb_receivable: wb.reduce((a,b)=>a+b,0), ozon_receivable: oz.reduce((a,b)=>a+b,0),
     mp_receivable: mp, inventory: stock, assets, suppliers, bank_debt: bank, liabilities: liab,
-    equity: assets - liab, bank_payment: bankPay, bank_interest: bankInt,
-    bank_principal: bankPay - bankInt,
-    pnl_channels: pnlCh, pnl_real: pnlCh - cfoNum(d.salary_month) - bankInt,
-    current_ratio: liab ? assets / liab : null,
+    equity, bank_payment: bankPay, bank_interest: bankInt, bank_principal: bankPay - bankInt,
+    pnl_channels: pnlCh, pnl_real: pnlReal, ebit_like: ebit, realization, wb_compensation_pending: wbComp,
+    current_ratio: cr != null ? Math.round(cr * 1000) / 1000 : null,
+    health,
   };
 }
 
@@ -4186,6 +4244,7 @@ function drawCfo() {
     meta.textContent = 'Баланс / кредиты · срез ' + (d.as_of || '—') +
       (d.updated_at ? ' · сохранено ' + String(d.updated_at).slice(0, 16).replace('T', ' ') : '');
   }
+  drawCfoSituation();
   if(cards) {
     cards.innerHTML = [
       ['Активы', fmtMoney(t.assets), 'color:var(--wb-purple)'],
@@ -4193,7 +4252,7 @@ function drawCfo() {
       ['Капитал', fmtMoney(t.equity), t.equity >= 0 ? 'color:var(--green)' : 'color:var(--red)'],
       ['Банки (тело)', fmtMoney(t.bank_debt)],
       ['Платёж банков / мес', fmtMoney(t.bank_payment)],
-      ['% в ЧП / мес', fmtMoney(t.bank_interest), 'color:var(--amber)'],
+      ['% по кредитам / мес', fmtMoney(t.bank_interest), 'color:var(--amber)'],
       ['ЧП каналы', fmtMoney(t.pnl_channels)],
       ['Честная ЧП (−ЗП −%)', fmtMoney(t.pnl_real), 'color:var(--green)'],
     ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
@@ -4211,8 +4270,30 @@ function drawCfo() {
       <td><input class="cfo-inp" data-f="notes" value="${escapeHtml(l.notes || '')}" oninput="onCfoLoanEdit(${i},'notes',this.value)"></td>
       <td><button class="cfo-del" onclick="removeCfoLoan(${i})" title="Удалить">✕</button></td>
     </tr>`).join('');
+  const h = t.health || {};
 
   root.innerHTML = `
+    <div class="cfo-box">
+      <h3>Красные линии (нельзя падать ниже)</h3>
+      <table class="cfo-floors">
+        <thead><tr><th>Показатель</th><th>Сейчас</th><th>Пол</th><th>Статус</th></tr></thead>
+        <tbody>
+          <tr><td>Кэш на счёте</td><td>${fmtMoney(t.cash)}</td><td>${fmtMoney(h.cash_floor)}</td><td>${cfoPill((h.floors||{}).cash)}</td></tr>
+          <tr><td>Interest coverage</td><td>${h.interest_coverage != null ? h.interest_coverage + '×' : '—'}</td><td>≥ 3×</td><td>${cfoPill((h.floors||{}).coverage)}</td></tr>
+          <tr><td>Current ratio</td><td>${t.current_ratio != null ? t.current_ratio : '—'}</td><td>≥ 1.1</td><td>${cfoPill((h.floors||{}).current_ratio)}</td></tr>
+          <tr><td>Маржа от реализации</td><td>${h.margin_channels_pct != null ? h.margin_channels_pct + '%' : '—'}</td><td>≥ ${h.target_margin_pct}%</td><td>${cfoPill((h.floors||{}).margin)}</td></tr>
+          <tr><td>Средняя ставка банков</td><td>${h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—'}</td><td>≤ 25%</td><td>${cfoPill((h.floors||{}).avg_rate)}</td></tr>
+          <tr><td>Реализация / мес</td><td>${fmtMoney(t.realization)}</td><td>${fmtMoney(h.min_realization_for_salary_interest)} (ЗП+% при марже ${h.target_margin_pct}%)</td><td>${cfoPill((h.floors||{}).realization)}</td></tr>
+        </tbody>
+      </table>
+      <div class="cfo-hint">
+        При марже ${h.target_margin_pct}% нельзя опускать реализацию ниже <b>${fmtMoney(h.min_realization_for_salary_interest)}</b>
+        (чтобы хватило на ЗП + проценты). Чтобы тянуть ещё полный платёж банкам — ниже
+        <b>${fmtMoney(h.min_realization_for_debt_service)}</b>. ЧП каналов минимум
+        <b>${fmtMoney(h.min_pnl_channels_salary_interest)}</b> (ЗП+%), для кассы с полным платежом —
+        <b>${fmtMoney(h.min_pnl_channels_debt_service)}</b>.
+      </div>
+    </div>
     <div class="cfo-grid">
       <div class="cfo-box">
         <h3>Активы</h3>
@@ -4220,14 +4301,18 @@ function drawCfo() {
         ${cfoField('inventory_wb_own', 'Товар склады (WB/свой)', d.inventory_wb_own)}
         ${cfoField('inventory_transit', 'Товар в пути', d.inventory_transit)}
         ${cfoField('inventory_ozon', 'Товар Ozon (себес)', d.inventory_ozon)}
-        <div class="cfo-hint">Итого товар: <b>${fmtMoney(t.inventory)}</b> · ДЗ МП: <b>${fmtMoney(t.mp_receivable)}</b></div>
+        ${cfoField('wb_compensation_pending', 'Компенсация WB (пожар, ждём)', d.wb_compensation_pending)}
+        <div class="cfo-hint">Итого товар: <b>${fmtMoney(t.inventory)}</b> · ДЗ МП: <b>${fmtMoney(t.mp_receivable)}</b>. Компенсацию в кэш не считаем, пока не пришла.</div>
       </div>
       <div class="cfo-box">
-        <h3>Пассивы и P&amp;L</h3>
+        <h3>Пассивы и P&amp;L периода</h3>
         ${cfoField('suppliers', 'Долг поставщикам', d.suppliers)}
+        ${cfoField('realization_month', 'Реализация / мес (WB+Ozon)', d.realization_month)}
         ${cfoField('pnl_wb', 'ЧП WB (дашборд)', d.pnl_wb)}
         ${cfoField('pnl_ozon', 'ЧП Ozon (дашборд)', d.pnl_ozon)}
         ${cfoField('salary_month', 'ЗП сотрудников / мес', d.salary_month)}
+        ${cfoField('target_margin', 'Целевая маржа (0.15 = 15%)', d.target_margin || 0.15)}
+        ${cfoField('cash_floor', 'Пол по кэшу', d.cash_floor || 4000000)}
         ${cfoField('as_of', 'Дата среза', d.as_of || '', 'text')}
       </div>
     </div>
@@ -4253,13 +4338,54 @@ function drawCfo() {
           <tbody>${loanRows || '<tr><td colspan="9" class="empty">Нет кредитов</td></tr>'}</tbody>
         </table>
       </div>
-      <div class="cfo-hint">Ставка как доля: 0.38 = 38%. Current ratio: <b>${t.current_ratio != null ? t.current_ratio.toFixed(2) : '—'}</b></div>
+      <div class="cfo-hint">Ставка как доля: 0.38 = 38%. Средневзвешенная: <b>${h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—'}</b> · % в месяц суммарно: <b>${fmtMoney(t.bank_interest)}</b></div>
     </div>`;
+}
+
+function cfoPill(floor) {
+  if(!floor || !floor.status) return '<span class="cfo-pill warn">—</span>';
+  const label = floor.status === 'ok' ? 'ОК' : (floor.status === 'warn' ? 'Внимание' : 'Ниже пола');
+  return `<span class="cfo-pill ${floor.status}">${label}</span>`;
+}
+
+function drawCfoSituation() {
+  const d = CFO_DATA || {};
+  const t = d.totals || {};
+  const h = t.health || {};
+  const healthEl = document.getElementById('cfoHealth');
+  const verdEl = document.getElementById('cfoVerdict');
+  if(!healthEl) return;
+  const items = [
+    ['Interest coverage', h.interest_coverage != null ? h.interest_coverage + '×' : '—', (h.floors||{}).coverage],
+    ['Средняя ставка', h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—', (h.floors||{}).avg_rate],
+    ['% по кредитам / мес', fmtMoney(t.bank_interest), null],
+    ['Маржа от реализации', h.margin_channels_pct != null ? h.margin_channels_pct + '%' : '—', (h.floors||{}).margin],
+    ['Leverage банков', h.leverage_bank_months != null ? h.leverage_bank_months + ' мес ЧП' : '—', null],
+    ['Долг / активы', h.debt_to_assets != null ? Math.round(h.debt_to_assets * 100) + '%' : '—', null],
+    ['Current ratio', t.current_ratio != null ? t.current_ratio : '—', (h.floors||{}).current_ratio],
+    ['Кэш vs пол', fmtMoney(t.cash), (h.floors||{}).cash],
+  ];
+  healthEl.innerHTML = items.map(([l,v,f]) => {
+    const st = (f && f.status) || '';
+    return `<div class="cfo-hcard ${st}"><div class="hl">${l}</div><div class="hv">${v}</div>${f ? `<div class="hs">${cfoPill(f)}</div>` : ''}</div>`;
+  }).join('');
+
+  if(verdEl) {
+    const floors = h.floors || {};
+    const bad = Object.values(floors).filter(x => x && x.status === 'bad').length;
+    const warn = Object.values(floors).filter(x => x && x.status === 'warn').length;
+    let text;
+    if(bad === 0 && warn === 0) text = 'Ситуация нормальная: все ключевые полы зелёные. Можно давить на рост и гасить дорогой долг.';
+    else if(bad === 0) text = 'В целом держаться можно, но есть жёлтые зоны — смотри красные линии ниже. Не раздувай дорогой долг.';
+    else text = 'Есть показатели ниже пола (красные). Сначала касса / ставка / coverage, потом уже агрессивный рост.';
+    verdEl.style.display = 'block';
+    verdEl.textContent = text;
+  }
 }
 
 function cfoField(key, label, val, type) {
   const t = type === 'text' ? 'text' : 'number';
-  const step = t === 'number' ? ' step="1"' : '';
+  const step = key === 'target_margin' ? ' step="0.01"' : (t === 'number' ? ' step="1"' : '');
   const v = t === 'number' ? cfoNum(val) : escapeHtml(String(val ?? ''));
   return `<div class="cfo-row"><label>${label}</label>
     <input class="cfo-inp" type="${t}"${step} value="${v}" oninput="onCfoField('${key}', this.value)"></div>`;
@@ -4329,6 +4455,7 @@ function drawCfoCardsOnly() {
   const d = CFO_DATA || {};
   const t = d.totals || {};
   const cards = document.getElementById('cfoCards');
+  drawCfoSituation();
   if(!cards) return;
   cards.innerHTML = [
     ['Активы', fmtMoney(t.assets), 'color:var(--wb-purple)'],
@@ -4336,13 +4463,10 @@ function drawCfoCardsOnly() {
     ['Капитал', fmtMoney(t.equity), t.equity >= 0 ? 'color:var(--green)' : 'color:var(--red)'],
     ['Банки (тело)', fmtMoney(t.bank_debt)],
     ['Платёж банков / мес', fmtMoney(t.bank_payment)],
-    ['% в ЧП / мес', fmtMoney(t.bank_interest), 'color:var(--amber)'],
+    ['% по кредитам / мес', fmtMoney(t.bank_interest), 'color:var(--amber)'],
     ['ЧП каналы', fmtMoney(t.pnl_channels)],
     ['Честная ЧП (−ЗП −%)', fmtMoney(t.pnl_real), 'color:var(--green)'],
   ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
-  // обновить хинты сумм если есть
-  const hints = document.querySelectorAll('#cfoRoot .cfo-hint b');
-  // проще не трогать — полный draw только при структурных изменениях
 }
 
 async function saveCfoSnapshot() {
@@ -4358,6 +4482,10 @@ async function saveCfoSnapshot() {
     salary_month: cfoNum(CFO_DATA.salary_month),
     pnl_wb: cfoNum(CFO_DATA.pnl_wb),
     pnl_ozon: cfoNum(CFO_DATA.pnl_ozon),
+    realization_month: cfoNum(CFO_DATA.realization_month),
+    target_margin: cfoNum(CFO_DATA.target_margin) || 0.15,
+    cash_floor: cfoNum(CFO_DATA.cash_floor) || 4000000,
+    wb_compensation_pending: cfoNum(CFO_DATA.wb_compensation_pending),
     wb_receivables: (CFO_DATA.wb_receivables || []).map(cfoNum),
     ozon_receivables: (CFO_DATA.ozon_receivables || []).map(cfoNum),
     loans: (CFO_DATA.loans || []).map(l => ({

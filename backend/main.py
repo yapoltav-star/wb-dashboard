@@ -3986,6 +3986,10 @@ DEFAULT_CFO_SNAPSHOT = {
     "inventory_transit": 1000000,
     "inventory_ozon": 1500000,
     "salary_month": 500000,
+    "realization_month": 46702379,
+    "target_margin": 0.15,
+    "cash_floor": 4000000,
+    "wb_compensation_pending": 2000000,
     "wb_receivables": [5400759.27, 5719189.43, 5963238.65, 6034075.99, 2500000],
     "ozon_receivables": [160244, 514462, 516759, 663734],
     "pnl_wb": 8787716,
@@ -4066,8 +4070,93 @@ def enrich_cfo_snapshot(raw: dict) -> dict:
     pnl_wb = _cfo_num(data.get("pnl_wb"))
     pnl_oz = _cfo_num(data.get("pnl_ozon"))
     salary = _cfo_num(data.get("salary_month"))
+    realization = _cfo_num(data.get("realization_month"))
+    target_margin = _cfo_num(data.get("target_margin"), 0.15) or 0.15
+    cash_floor = _cfo_num(data.get("cash_floor"), 4000000)
+    wb_comp = _cfo_num(data.get("wb_compensation_pending"))
     pnl_channels = pnl_wb + pnl_oz
     pnl_real = pnl_channels - salary - bank_int
+    # прибыль до процентов (после ЗП) — для coverage
+    ebit_like = pnl_channels - salary
+    avg_rate = (sum(_cfo_num(l.get("balance")) * _cfo_num(l.get("rate")) for l in loans) / bank) if bank else 0.0
+    margin_channels = (pnl_channels / realization) if realization else None
+    margin_real = (pnl_real / realization) if realization else None
+    interest_coverage = (ebit_like / bank_int) if bank_int > 0 else None
+    # рычаги
+    leverage_bank_months = (bank / pnl_real) if pnl_real > 0 else None
+    debt_to_assets = (liabilities / assets) if assets else None
+    equity = assets - liabilities
+    # красные линии при целевой марже
+    min_realiz_cover_pct = (salary + bank_int) / target_margin if target_margin else None
+    min_realiz_cover_cash = (salary + bank_pay) / target_margin if target_margin else None
+    min_pnl_to_interest = salary + bank_int
+    min_pnl_to_debt_service = salary + bank_pay
+
+    def _status(ok: bool, warn: bool = False) -> str:
+        if ok:
+            return "ok"
+        if warn:
+            return "warn"
+        return "bad"
+
+    health = {
+        "avg_rate": round(avg_rate, 4),
+        "avg_rate_pct": round(avg_rate * 100, 2),
+        "interest_coverage": round(interest_coverage, 2) if interest_coverage is not None else None,
+        "margin_channels": round(margin_channels, 4) if margin_channels is not None else None,
+        "margin_channels_pct": round(margin_channels * 100, 2) if margin_channels is not None else None,
+        "margin_real": round(margin_real, 4) if margin_real is not None else None,
+        "margin_real_pct": round(margin_real * 100, 2) if margin_real is not None else None,
+        "leverage_bank_months": round(leverage_bank_months, 2) if leverage_bank_months is not None else None,
+        "debt_to_assets": round(debt_to_assets, 3) if debt_to_assets is not None else None,
+        "target_margin": target_margin,
+        "target_margin_pct": round(target_margin * 100, 2),
+        "cash_floor": cash_floor,
+        "min_realization_for_salary_interest": round(min_realiz_cover_pct, 0) if min_realiz_cover_pct else None,
+        "min_realization_for_debt_service": round(min_realiz_cover_cash, 0) if min_realiz_cover_cash else None,
+        "min_pnl_channels_salary_interest": round(min_pnl_to_interest, 0),
+        "min_pnl_channels_debt_service": round(min_pnl_to_debt_service, 0),
+        "floors": {
+            "cash": {"value": cash, "floor": cash_floor, "status": _status(cash >= cash_floor, cash >= cash_floor * 0.75)},
+            "coverage": {
+                "value": interest_coverage,
+                "floor": 3.0,
+                "status": _status(
+                    interest_coverage is not None and interest_coverage >= 3,
+                    interest_coverage is not None and interest_coverage >= 1.5,
+                ),
+            },
+            "current_ratio": {
+                "value": round(assets / liabilities, 3) if liabilities else None,
+                "floor": 1.1,
+                "status": _status(
+                    liabilities > 0 and assets / liabilities >= 1.1,
+                    liabilities > 0 and assets / liabilities >= 1.0,
+                ),
+            },
+            "margin": {
+                "value": margin_channels,
+                "floor": target_margin,
+                "status": _status(
+                    margin_channels is not None and margin_channels >= target_margin,
+                    margin_channels is not None and margin_channels >= target_margin * 0.85,
+                ),
+            },
+            "avg_rate": {
+                "value": avg_rate,
+                "floor": 0.25,
+                "status": _status(avg_rate <= 0.25, avg_rate <= 0.30),
+            },
+            "realization": {
+                "value": realization,
+                "floor": min_realiz_cover_pct,
+                "status": _status(
+                    min_realiz_cover_pct is not None and realization >= min_realiz_cover_pct,
+                    min_realiz_cover_pct is not None and realization >= min_realiz_cover_pct * 0.85,
+                ),
+            },
+        },
+    }
 
     data["totals"] = {
         "cash": cash,
@@ -4079,13 +4168,17 @@ def enrich_cfo_snapshot(raw: dict) -> dict:
         "suppliers": suppliers,
         "bank_debt": round(bank, 2),
         "liabilities": round(liabilities, 2),
-        "equity": round(assets - liabilities, 2),
+        "equity": round(equity, 2),
         "bank_payment": round(bank_pay, 2),
         "bank_interest": round(bank_int, 2),
         "bank_principal": round(bank_pay - bank_int, 2),
         "pnl_channels": round(pnl_channels, 2),
         "pnl_real": round(pnl_real, 2),
+        "ebit_like": round(ebit_like, 2),
+        "realization": round(realization, 2),
+        "wb_compensation_pending": round(wb_comp, 2),
         "current_ratio": round(assets / liabilities, 3) if liabilities else None,
+        "health": health,
     }
     return data
 
@@ -4129,7 +4222,8 @@ async def save_finance_cfo(request: dict):
         if key in payload and isinstance(payload[key], list):
             payload[key] = [_cfo_num(x) for x in payload[key]]
     for key in ("cash", "suppliers", "inventory_wb_own", "inventory_transit", "inventory_ozon",
-                "salary_month", "pnl_wb", "pnl_ozon"):
+                "salary_month", "pnl_wb", "pnl_ozon", "realization_month", "target_margin",
+                "cash_floor", "wb_compensation_pending"):
         if key in payload:
             payload[key] = _cfo_num(payload[key])
     payload["as_of"] = str(payload.get("as_of") or datetime.now(timezone.utc).strftime("%Y-%m-%d"))
