@@ -171,12 +171,316 @@ def sync_all():
         headers=sb_headers(), timeout=10
     )
     logger.info(f"Sync complete. Total: {total}")
-    # Рейтинги — через xlsx «Оценка товара» (/api/upload-ratings)
+    # Рейтинги — sync_ratings_official() (API «Оценка товара»)
+
+def _rating_metric(val, prefer_total=True):
+    """Число или {current, total?, dynamics?} из WB Analytics."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, dict):
+        if prefer_total and val.get("total") is not None:
+            try:
+                return float(val["total"])
+            except (TypeError, ValueError):
+                pass
+        if val.get("current") is not None:
+            try:
+                return float(val["current"])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _norm_article(v):
+    s = str(v or "").strip()
+    if not s:
+        return ""
+    return s.replace("О", "O").replace("о", "o")
+
+
+def _collect_nm_vendor_map():
+    """nm_id → артикул продавца из наших таблиц."""
+    nm_to_vendor = {}
+    for url in (
+        f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&nm_id=not.is.null&limit=5000",
+        f"{SUPABASE_URL}/rest/v1/ratings_official?select=nm_id,article&nm_id=not.is.null&limit=5000",
+        f"{SUPABASE_URL}/rest/v1/feedbacks?select=nm_id,article&nm_id=not.is.null&limit=5000",
+    ):
+        try:
+            r = httpx.get(url, headers=sb_headers(), timeout=20)
+            if not r.is_success:
+                continue
+            for row in r.json() or []:
+                nm = row.get("nm_id")
+                if nm is None:
+                    continue
+                try:
+                    nm = int(nm)
+                except (TypeError, ValueError):
+                    continue
+                art = _norm_article(row.get("vendor_code") or row.get("article") or "")
+                if art and art != str(nm) and nm not in nm_to_vendor:
+                    nm_to_vendor[nm] = art
+        except Exception as e:
+            logger.warning(f"_collect_nm_vendor_map: {e}")
+    return nm_to_vendor
+
+
+def _fetch_item_rating_report():
+    """POST /api/analytics/v2/item-rating — отчёт «Оценка товара».
+    end нельзя ставить на сегодня. Лимит 3 req/min."""
+    end = datetime.now(timezone.utc).date() - timedelta(days=1)
+    start = end - timedelta(days=29)
+    items = []
+    errors = []
+    used = None
+    offset = 0
+    limit = 1000
+    while True:
+        body = {
+            "currentPeriod": {"start": start.isoformat(), "end": end.isoformat()},
+            "orderBy": {"field": "feedbackCount", "mode": "desc"},
+            "limit": limit,
+            "offset": offset,
+            "isNotIncludeNmsWithoutSales": False,
+        }
+        page = None
+        for path in ("/api/analytics/v2/item-rating", "/api/analytics/v1/item-rating"):
+            req = dict(body)
+            if "v1" in path:
+                req.pop("isNotIncludeNmsWithoutSales", None)
+                req["isNotIncludeNMsWithoutSales"] = False
+            try:
+                resp = httpx.post(
+                    f"{WB_ANALYTICS_URL}{path}",
+                    headers=wb_headers(), json=req, timeout=90,
+                )
+                if resp.status_code in (404, 405):
+                    errors.append(f"{path}→{resp.status_code}")
+                    continue
+                if not resp.is_success:
+                    errors.append(f"{path}→{resp.status_code} {resp.text[:200]}")
+                    continue
+                payload = resp.json() if resp.content else {}
+                data = payload.get("data") if isinstance(payload, dict) else {}
+                if not isinstance(data, dict):
+                    data = {}
+                page = data.get("items") or data.get("cards") or []
+                if not isinstance(page, list):
+                    page = []
+                used = path
+                logger.info(f"item-rating {path} offset={offset} n={len(page)}")
+                break
+            except Exception as e:
+                errors.append(f"{path} ex:{e}")
+        if page is None:
+            return [], used, errors
+        items.extend(page)
+        if len(page) < limit:
+            break
+        offset += limit
+        time.sleep(21)
+    return items, used, errors
+
+
+def _rows_from_item_rating(items, nm_to_vendor, now):
+    rows = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        nm = it.get("nmId") or it.get("nmID")
+        if nm is None:
+            continue
+        try:
+            nm = int(nm)
+        except (TypeError, ValueError):
+            continue
+        vendor = _norm_article(it.get("vendorCode") or "") or nm_to_vendor.get(nm) or str(nm)
+        fb = _rating_metric(it.get("feedbackRating"), prefer_total=False)
+        if fb is None:
+            continue
+        r5 = int(_rating_metric(it.get("fiveStar")) or 0)
+        r4 = int(_rating_metric(it.get("fourStar")) or 0)
+        r3 = int(_rating_metric(it.get("threeStar")) or 0)
+        r2 = int(_rating_metric(it.get("twoStar")) or 0)
+        r1 = int(_rating_metric(it.get("oneStar")) or 0)
+        star_sum = r5 + r4 + r3 + r2 + r1
+        fc = _rating_metric(it.get("feedbackCount"))
+        reviews_total = int(fc) if fc is not None else star_sum
+        excl = it.get("disqualified")
+        try:
+            excluded = int(excl.get("current") if isinstance(excl, dict) else (excl or 0))
+        except (TypeError, ValueError):
+            excluded = 0
+        rows.append({
+            "article": vendor,
+            "nm_id": nm,
+            "wb_rating": round(float(fb), 2),
+            "reviews_total": reviews_total,
+            "r5": r5, "r4": r4, "r3": r3, "r2": r2, "r1": r1,
+            "excluded": excluded,
+            "source": "api",
+            "updated_at": now,
+        })
+    return rows
+
+
+def _rows_from_feedbacks_nmid(nm_to_vendor, now):
+    """Fallback: GET /api/v1/feedbacks/products/rating/nmid — valuation + число отзывов."""
+    rows = []
+    errors = []
+    nm_ids = sorted(nm_to_vendor.keys())
+    if not nm_ids:
+        return rows, errors
+    for i, nm in enumerate(nm_ids):
+        try:
+            resp = httpx.get(
+                f"{WB_FEEDBACKS_URL}/api/v1/feedbacks/products/rating/nmid",
+                headers=wb_headers(),
+                params={"nmId": nm},
+                timeout=20,
+            )
+            if not resp.is_success:
+                if len(errors) < 6:
+                    errors.append(f"{nm}→{resp.status_code}")
+                time.sleep(0.2)
+                continue
+            data = (resp.json() or {}).get("data") or {}
+            try:
+                wb_rating = round(float(data.get("valuation")), 2)
+            except (TypeError, ValueError):
+                continue
+            try:
+                reviews_total = int(data.get("feedbacksCount") or 0)
+            except (TypeError, ValueError):
+                reviews_total = 0
+            rows.append({
+                "article": nm_to_vendor.get(nm) or str(nm),
+                "nm_id": nm,
+                "wb_rating": wb_rating,
+                "reviews_total": reviews_total,
+                "r5": 0, "r4": 0, "r3": 0, "r2": 0, "r1": 0,
+                "excluded": 0,
+                "source": "api",
+                "updated_at": now,
+            })
+        except Exception as e:
+            if len(errors) < 6:
+                errors.append(f"{nm} ex:{e}")
+        if i % 20 == 19:
+            time.sleep(0.5)
+        else:
+            time.sleep(0.12)
+    return rows, errors
+
+
+def _save_ratings_rows(rows):
+    """Полная замена ratings_official данными из API."""
+    for src in ("api", "xlsx", "manual"):
+        try:
+            httpx.delete(
+                f"{SUPABASE_URL}/rest/v1/ratings_official?source=eq.{src}",
+                headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=20,
+            )
+        except Exception as e:
+            logger.warning(f"clear ratings source={src}: {e}")
+    try:
+        httpx.delete(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?updated_at=lt.2099-01-01T00:00:00Z",
+            headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=30,
+        )
+    except Exception as e:
+        logger.warning(f"clear ratings all: {e}")
+
+    saved = 0
+    for i in range(0, len(rows), 100):
+        batch = rows[i:i + 100]
+        r = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/ratings_official",
+            json=batch, headers=sb_headers(), timeout=40,
+        )
+        if r.is_success:
+            saved += len(batch)
+        else:
+            raise RuntimeError(f"insert {r.status_code} {r.text[:200]}")
+    return saved
+
 
 def sync_ratings_official():
-    """Отключено. Рейтинги загружаются через /api/upload-ratings (xlsx «Оценка товара»)."""
-    logger.info("sync_ratings_official: skipped (use xlsx upload)")
-    return {"status": "skipped"}
+    """Тянет «Оценку товара» с WB API и пишет в ratings_official.
+    1) Analytics item-rating (звёзды + feedbackRating)
+    2) fallback: feedbacks .../rating/nmid (valuation + count)
+    """
+    if not WB_TOKEN:
+        return {"status": "error", "error": "WB_TOKEN not set"}
+
+    now = datetime.now(timezone.utc).isoformat()
+    nm_to_vendor = _collect_nm_vendor_map()
+    items, endpoint, errors = _fetch_item_rating_report()
+    rows = _rows_from_item_rating(items, nm_to_vendor, now) if items else []
+
+    if not rows:
+        logger.info("sync_ratings_official: item-rating empty/fail, fallback nmid")
+        rows, err2 = _rows_from_feedbacks_nmid(nm_to_vendor, now)
+        errors.extend(err2)
+        endpoint = "/api/v1/feedbacks/products/rating/nmid"
+
+    if not rows:
+        err = {
+            "status": "error",
+            "error": "no ratings from WB API",
+            "endpoint": endpoint,
+            "errors": errors[:8],
+            "nm_map": len(nm_to_vendor),
+        }
+        logger.error(f"sync_ratings_official: {err}")
+        try:
+            httpx.post(
+                f"{SUPABASE_URL}/rest/v1/settings",
+                json={"key": "last_ratings_sync_error", "value": json.dumps(err, ensure_ascii=False)[:1500], "updated_at": now},
+                headers=sb_headers(), timeout=10,
+            )
+        except Exception:
+            pass
+        return err
+
+    try:
+        saved = _save_ratings_rows(rows)
+    except Exception as e:
+        return {"status": "error", "error": str(e), "endpoint": endpoint}
+
+    now_str = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+    httpx.post(
+        f"{SUPABASE_URL}/rest/v1/settings",
+        json={"key": "last_ratings_sync", "value": now_str, "updated_at": now},
+        headers=sb_headers(), timeout=10,
+    )
+    try:
+        httpx.delete(
+            f"{SUPABASE_URL}/rest/v1/settings?key=eq.last_ratings_sync_error",
+            headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=10,
+        )
+    except Exception:
+        pass
+    try:
+        _DASH_CACHE["ts"] = 0.0
+        _DASH_CACHE["data"] = None
+    except NameError:
+        pass
+
+    sample = next((r for r in rows if "033_hk" in str(r.get("article", ""))), rows[0])
+    out = {
+        "status": "ok",
+        "saved": saved,
+        "endpoint": endpoint,
+        "sample": sample,
+        "errors": errors[:4] if errors else [],
+    }
+    logger.info(f"sync_ratings_official: {out}")
+    return out
+
 
 # ---------- Остатки на складах (WB Analytics: warehouse_remains report) ----------
 
@@ -2952,6 +3256,7 @@ async def trigger_sales_pace_sync(period: str = "day"):
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
+scheduler.add_job(sync_ratings_official, "interval", hours=1, id="sync_ratings")
 scheduler.add_job(sync_stock, "interval", hours=3, id="sync_stock")
 scheduler.add_job(sync_supply, "interval", hours=4, id="sync_supply")
 scheduler.add_job(sync_ads, "interval", hours=4, id="sync_ads")
@@ -3056,6 +3361,18 @@ async def save_manual_rating(request: dict):
         return {"error": str(e)}
 
 
+
+@app.post("/api/sync-ratings")
+def trigger_ratings_sync(wait: bool = True):
+    """Тянет «Оценку товара» с WB. wait=true — дождаться результата."""
+    if wait:
+        try:
+            return sync_ratings_official()
+        except Exception as e:
+            logger.exception("sync-ratings failed")
+            return {"status": "error", "error": str(e)}
+    threading.Thread(target=sync_ratings_official, daemon=True).start()
+    return {"status": "started"}
 
 @app.post("/api/sync-stock")
 def trigger_stock_sync():
