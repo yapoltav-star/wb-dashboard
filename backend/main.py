@@ -196,90 +196,109 @@ def _metric_num(val, prefer_total: bool = True):
 
 def sync_ratings_official():
     """Тянет официальный feedbackRating (= «Рейтинг по отзывам» на WB).
-    1) Analytics item-rating v2/v1 (отчёт «Оценка товара»)
-    2) fallback: sales-funnel v3 (там тоже есть product.feedbackRating)
-    Перезаписывает ratings_official."""
+    Берём nm_id из наших таблиц и запрашиваем item-rating / sales-funnel батчами —
+    полный отчёт у WB часто отдаёт 500."""
     if not WB_TOKEN:
         logger.error("sync_ratings_official: WB_TOKEN not set")
         return {"status": "error", "error": "WB_TOKEN not set"}
 
-    # WB Analytics: end date cannot be today for item-rating
     end = datetime.now(timezone.utc).date() - timedelta(days=1)
-    start = end - timedelta(days=29)
+    start = end - timedelta(days=6)
     logger.info(f"sync_ratings_official: fetching {start}…{end}")
+
+    nm_ids = []
+    seen = set()
+    for url in (
+        f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id&nm_id=not.is.null&limit=5000",
+        f"{SUPABASE_URL}/rest/v1/ratings_official?select=nm_id&nm_id=not.is.null&limit=5000",
+        f"{SUPABASE_URL}/rest/v1/feedbacks?select=nm_id&nm_id=not.is.null&limit=5000",
+    ):
+        try:
+            r = httpx.get(url, headers=sb_headers(), timeout=20)
+            if not r.is_success:
+                continue
+            for row in r.json() or []:
+                nm = row.get("nm_id")
+                if nm is None:
+                    continue
+                try:
+                    nm = int(nm)
+                except (TypeError, ValueError):
+                    continue
+                if nm not in seen:
+                    seen.add(nm)
+                    nm_ids.append(nm)
+        except Exception as e:
+            logger.warning(f"sync_ratings_official: nm list {e}")
+
+    if not nm_ids:
+        return {"status": "error", "error": "no nm_ids in DB"}
 
     items = []
     used_path = None
-    raw_snip = None
     errors = []
+    raw_snip = None
 
-    def _parse_item_rating_page(payload):
-        data = payload.get("data") if isinstance(payload, dict) else {}
-        if not isinstance(data, dict):
-            data = {}
-        page = data.get("items") or data.get("cards") or []
-        return data, page if isinstance(page, list) else []
+    def _chunks(arr, n):
+        for i in range(0, len(arr), n):
+            yield arr[i:i + n]
 
-    # --- 1) item-rating ---
-    offset = 0
-    limit = 1000
-    while True:
+    # --- 1) item-rating батчами по 50 nmIds ---
+    for bi, batch in enumerate(_chunks(nm_ids, 50)):
         body = {
             "currentPeriod": {"start": start.isoformat(), "end": end.isoformat()},
+            "nmIds": batch,
             "orderBy": {"field": "feedbackCount", "mode": "desc"},
-            "limit": limit,
-            "offset": offset,
+            "limit": 1000,
+            "offset": 0,
         }
-        page_items = None
+        ok = False
         for path_api, extra in (
             ("/api/analytics/v2/item-rating", {"isNotIncludeNmsWithoutSales": False}),
             ("/api/analytics/v1/item-rating", {"isNotIncludeNMsWithoutSales": False}),
         ):
             try:
-                req = {**body, **extra}
                 resp = httpx.post(
                     f"{WB_ANALYTICS_URL}{path_api}",
-                    headers=wb_headers(), json=req, timeout=60,
+                    headers=wb_headers(), json={**body, **extra}, timeout=60,
                 )
-                if resp.status_code in (404, 405):
-                    errors.append(f"{path_api}→{resp.status_code}")
-                    continue
                 if not resp.is_success:
-                    errors.append(f"{path_api}→{resp.status_code} {resp.text[:180]}")
+                    if bi == 0:
+                        errors.append(f"{path_api}→{resp.status_code} {resp.text[:160]}")
                     continue
                 payload = resp.json() if resp.content else {}
-                data, page_items = _parse_item_rating_page(payload)
-                used_path = path_api
                 if raw_snip is None:
                     raw_snip = str(payload)[:400]
-                logger.info(
-                    f"sync_ratings_official: {path_api} offset={offset} n={len(page_items)} keys={list(data.keys())[:8]}"
-                )
+                data = payload.get("data") if isinstance(payload, dict) else {}
+                page = []
+                if isinstance(data, dict):
+                    page = data.get("items") or data.get("cards") or []
+                if not isinstance(page, list):
+                    page = []
+                items.extend(page)
+                used_path = path_api
+                ok = True
+                logger.info(f"sync_ratings_official: {path_api} batch={bi} n={len(page)}")
                 break
             except Exception as e:
-                errors.append(f"{path_api} ex:{e}")
-                page_items = None
-        if page_items is None:
-            break
-        items.extend(page_items)
-        if len(page_items) < limit:
-            break
-        offset += limit
-        time.sleep(21)
+                if bi == 0:
+                    errors.append(f"{path_api} ex:{e}")
+        if bi and bi % 2 == 0:
+            time.sleep(21)  # 3 req/min
+        elif not ok:
+            time.sleep(1)
 
-    # --- 2) fallback sales-funnel v3 ---
+    # --- 2) fallback: sales-funnel v3 батчами ---
     if not items:
-        logger.info("sync_ratings_official: item-rating empty, trying sales-funnel v3")
-        offset = 0
-        limit = 100
-        while True:
+        logger.info("sync_ratings_official: item-rating empty, funnel batches")
+        for bi, batch in enumerate(_chunks(nm_ids, 50)):
             body = {
                 "selectedPeriod": {"start": start.isoformat(), "end": end.isoformat()},
-                "nmIds": [],
+                "nmIds": batch,
                 "brandNames": [], "subjectIds": [], "tagIds": [],
                 "orderBy": {"field": "orderSum", "mode": "desc"},
-                "limit": limit,
-                "offset": offset,
+                "limit": max(len(batch), 20),
+                "offset": 0,
             }
             try:
                 resp = httpx.post(
@@ -287,14 +306,13 @@ def sync_ratings_official():
                     headers=wb_headers(), json=body, timeout=60,
                 )
                 if not resp.is_success:
-                    errors.append(f"funnel→{resp.status_code} {resp.text[:180]}")
-                    break
+                    if bi == 0:
+                        errors.append(f"funnel→{resp.status_code} {resp.text[:160]}")
+                    continue
                 payload = resp.json() if resp.content else {}
-                products = (payload.get("data") or {}).get("products") or []
                 if raw_snip is None:
                     raw_snip = str(payload)[:400]
-                if not products:
-                    break
+                products = (payload.get("data") or {}).get("products") or []
                 used_path = "/api/analytics/v3/sales-funnel/products"
                 for p in products:
                     prod = (p.get("product") or {}) if isinstance(p, dict) else {}
@@ -304,19 +322,18 @@ def sync_ratings_official():
                         "nmId": prod.get("nmId"),
                         "vendorCode": prod.get("vendorCode"),
                         "feedbackRating": prod.get("feedbackRating"),
-                        "title": prod.get("title"),
                     })
-                if len(products) < limit:
-                    break
-                offset += limit
-                time.sleep(21)
+                logger.info(f"sync_ratings_official: funnel batch={bi} n={len(products)}")
             except Exception as e:
-                errors.append(f"funnel ex:{e}")
-                break
+                if bi == 0:
+                    errors.append(f"funnel ex:{e}")
+            if bi and bi % 2 == 0:
+                time.sleep(21)
 
     now = datetime.now(timezone.utc).isoformat()
     rows = []
     skipped = 0
+    by_nm = {}
     for it in items:
         if not isinstance(it, dict):
             skipped += 1
@@ -327,6 +344,7 @@ def sync_ratings_official():
         if nm_id is None or fb is None:
             skipped += 1
             continue
+        nm_id = int(nm_id)
         r5 = int(_metric_num(it.get("fiveStar")) or 0)
         r4 = int(_metric_num(it.get("fourStar")) or 0)
         r3 = int(_metric_num(it.get("threeStar")) or 0)
@@ -340,25 +358,27 @@ def sync_ratings_official():
             excluded = int(excl) if excl is not None else 0
         except (TypeError, ValueError):
             excluded = 0
-        rows.append({
+        by_nm[nm_id] = {
             "article": vendor,
-            "nm_id": int(nm_id),
+            "nm_id": nm_id,
             "wb_rating": round(float(fb), 2),
             "reviews_total": reviews_total,
             "r5": r5, "r4": r4, "r3": r3, "r2": r2, "r1": r1,
             "excluded": excluded,
             "source": "api",
             "updated_at": now,
-        })
+        }
+    rows = list(by_nm.values())
 
     if not rows:
         err = {
             "status": "error",
             "error": "no ratings parsed",
+            "nm_ids": len(nm_ids),
             "fetched": len(items),
             "skipped": skipped,
             "endpoint": used_path,
-            "errors": errors[:6],
+            "errors": errors[:8],
             "snip": raw_snip,
         }
         logger.error(f"sync_ratings_official: {err}")
@@ -425,7 +445,13 @@ def sync_ratings_official():
     except NameError:
         pass
 
-    out = {"status": "ok", "saved": saved, "fetched": len(items), "endpoint": used_path}
+    out = {
+        "status": "ok",
+        "saved": saved,
+        "fetched": len(items),
+        "nm_ids": len(nm_ids),
+        "endpoint": used_path,
+    }
     logger.info(f"sync_ratings_official: {out}")
     return out
 
