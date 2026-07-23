@@ -203,8 +203,9 @@ def sync_ratings_official():
         logger.error("sync_ratings_official: WB_TOKEN not set")
         return {"status": "error", "error": "WB_TOKEN not set"}
 
-    end = datetime.now(timezone.utc).date()
-    start = end - timedelta(days=30)
+    # WB Analytics: end date cannot be today for item-rating
+    end = datetime.now(timezone.utc).date() - timedelta(days=1)
+    start = end - timedelta(days=29)
     logger.info(f"sync_ratings_official: fetching {start}…{end}")
 
     items = []
@@ -276,7 +277,7 @@ def sync_ratings_official():
                 "selectedPeriod": {"start": start.isoformat(), "end": end.isoformat()},
                 "nmIds": [],
                 "brandNames": [], "subjectIds": [], "tagIds": [],
-                "orderBy": {"field": "openCount", "mode": "desc"},
+                "orderBy": {"field": "orderSum", "mode": "desc"},
                 "limit": limit,
                 "offset": offset,
             }
