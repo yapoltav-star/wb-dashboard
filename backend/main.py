@@ -4,6 +4,8 @@ import io
 import json
 import time
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone, date
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -169,14 +171,181 @@ def sync_all():
         headers=sb_headers(), timeout=10
     )
     logger.info(f"Sync complete. Total: {total}")
-    # sync_ratings_official временно отключён — ищем правильный эндпоинт WB API для feedbackRating
-    # Рейтинги загружаются вручную через xlsx ("Оценка товара")
+    # Оценки товара — отдельный hourly job + POST /api/sync-ratings
+
+
+def _metric_num(val, prefer_total: bool = True):
+    """WB item-rating отдаёт метрики как число или {current, total?, dynamics?}."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, dict):
+        if prefer_total and val.get("total") is not None:
+            try:
+                return float(val["total"])
+            except (TypeError, ValueError):
+                pass
+        if val.get("current") is not None:
+            try:
+                return float(val["current"])
+            except (TypeError, ValueError):
+                return None
+    return None
+
 
 def sync_ratings_official():
-    """Временно отключена — эндпоинт WB для feedbackRating не найден.
-    Рейтинги берутся из xlsx файла оценок через /api/upload-ratings."""
-    logger.info("sync_ratings_official: skipped (endpoint not configured)")
-    return
+    """Тянет официальный feedbackRating (= «Рейтинг по отзывам» на WB) через
+    Analytics API: POST /api/analytics/v2/item-rating (fallback v1).
+    Это тот же отчёт «Оценка товара», что в кабинете. Перезаписывает ratings_official."""
+    if not WB_TOKEN:
+        logger.error("sync_ratings_official: WB_TOKEN not set")
+        return {"status": "error", "error": "WB_TOKEN not set"}
+
+    end = datetime.now(timezone.utc).date()
+    start = end - timedelta(days=30)
+    logger.info(f"sync_ratings_official: fetching item-rating {start}…{end}")
+
+    items = []
+    offset = 0
+    limit = 1000
+    used_path = None
+    while True:
+        body = {
+            "currentPeriod": {"start": start.isoformat(), "end": end.isoformat()},
+            "orderBy": {"field": "feedbackCount", "mode": "desc"},
+            "limit": limit,
+            "offset": offset,
+            "isNotIncludeNmsWithoutSales": False,
+        }
+        resp = None
+        last_err = None
+        for path in ("/api/analytics/v2/item-rating", "/api/analytics/v1/item-rating"):
+            try:
+                # v1 использует старое имя флага
+                req = dict(body)
+                if "v1" in path:
+                    req.pop("isNotIncludeNmsWithoutSales", None)
+                    req["isNotIncludeNMsWithoutSales"] = False
+                resp = httpx.post(
+                    f"{WB_ANALYTICS_URL}{path}",
+                    headers=wb_headers(), json=req, timeout=60,
+                )
+                if resp.status_code in (404, 405):
+                    last_err = f"{path} → {resp.status_code}"
+                    continue
+                if not resp.is_success:
+                    last_err = f"{path} → {resp.status_code} {resp.text[:300]}"
+                    logger.error(f"sync_ratings_official: {last_err}")
+                    return {"status": "error", "error": last_err}
+                used_path = path
+                break
+            except Exception as e:
+                last_err = str(e)
+                logger.error(f"sync_ratings_official: {path} exception {e}")
+                resp = None
+        if resp is None:
+            return {"status": "error", "error": last_err or "no response"}
+
+        payload = resp.json() if resp.content else {}
+        data = payload.get("data") if isinstance(payload, dict) else {}
+        if not isinstance(data, dict):
+            data = {}
+        page = data.get("items") or data.get("cards") or []
+        if not isinstance(page, list):
+            page = []
+        logger.info(
+            f"sync_ratings_official: {used_path} offset={offset} got={len(page)} "
+            f"keys={list(data.keys())[:8]}"
+        )
+        items.extend(page)
+        if len(page) < limit:
+            break
+        offset += limit
+        # лимит WB: 3 req/min, интервал 20 сек
+        time.sleep(21)
+
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        nm_id = it.get("nmId") or it.get("nmID") or it.get("nm_id")
+        vendor = (it.get("vendorCode") or it.get("vendor_code") or "").strip() or (str(nm_id) if nm_id else "")
+        fb = _metric_num(it.get("feedbackRating"), prefer_total=False)
+        if nm_id is None or fb is None:
+            continue
+        r5 = int(_metric_num(it.get("fiveStar")) or 0)
+        r4 = int(_metric_num(it.get("fourStar")) or 0)
+        r3 = int(_metric_num(it.get("threeStar")) or 0)
+        r2 = int(_metric_num(it.get("twoStar")) or 0)
+        r1 = int(_metric_num(it.get("oneStar")) or 0)
+        star_sum = r5 + r4 + r3 + r2 + r1
+        fc = _metric_num(it.get("feedbackCount"))
+        reviews_total = int(fc) if fc is not None else star_sum
+        excl = it.get("disqualified")
+        try:
+            excluded = int(excl) if excl is not None else 0
+        except (TypeError, ValueError):
+            excluded = 0
+        rows.append({
+            "article": vendor,
+            "nm_id": int(nm_id),
+            "wb_rating": round(float(fb), 2),
+            "reviews_total": reviews_total,
+            "r5": r5, "r4": r4, "r3": r3, "r2": r2, "r1": r1,
+            "excluded": excluded,
+            "source": "api",
+            "updated_at": now,
+        })
+
+    if not rows:
+        logger.info("sync_ratings_official: nothing to save")
+        return {"status": "ok", "saved": 0, "fetched": len(items), "endpoint": used_path}
+
+    # Полная замена: API — источник истины (не оставляем устаревшие xlsx/manual)
+    for src in ("api", "xlsx", "manual"):
+        try:
+            httpx.delete(
+                f"{SUPABASE_URL}/rest/v1/ratings_official?source=eq.{src}",
+                headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=20,
+            )
+        except Exception as e:
+            logger.warning(f"sync_ratings_official: clear source={src}: {e}")
+    try:
+        httpx.delete(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?updated_at=lt.2099-01-01T00:00:00Z",
+            headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=30,
+        )
+    except Exception as e:
+        logger.warning(f"sync_ratings_official: clear all: {e}")
+
+    saved = 0
+    for i in range(0, len(rows), 100):
+        batch = rows[i:i + 100]
+        r = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/ratings_official",
+            json=batch, headers=sb_headers(), timeout=40,
+        )
+        if r.is_success:
+            saved += len(batch)
+        else:
+            logger.error(f"sync_ratings_official insert error: {r.status_code} {r.text[:250]}")
+
+    now_str = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+    httpx.post(
+        f"{SUPABASE_URL}/rest/v1/settings",
+        json={"key": "last_ratings_sync", "value": now_str, "updated_at": now},
+        headers=sb_headers(), timeout=10,
+    )
+    try:
+        _DASH_CACHE["ts"] = 0.0
+        _DASH_CACHE["data"] = None
+    except NameError:
+        pass
+
+    logger.info(f"sync_ratings_official: saved {saved}/{len(rows)} via {used_path}")
+    return {"status": "ok", "saved": saved, "fetched": len(items), "endpoint": used_path}
 
 # ---------- Остатки на складах (WB Analytics: warehouse_remains report) ----------
 
@@ -2952,6 +3121,7 @@ async def trigger_sales_pace_sync(period: str = "day"):
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
+scheduler.add_job(sync_ratings_official, "interval", hours=1, id="sync_ratings")
 scheduler.add_job(sync_stock, "interval", hours=3, id="sync_stock")
 scheduler.add_job(sync_supply, "interval", hours=4, id="sync_supply")
 scheduler.add_job(sync_ads, "interval", hours=4, id="sync_ads")
@@ -3056,52 +3226,17 @@ async def save_manual_rating(request: dict):
         return {"error": str(e)}
 
 
-@app.post("/api/update-wb-rating")
-async def update_wb_rating(request: dict):
-    """Обновляет wb_rating артикула (как на карточке WB), сохраняя разбивку звёзд если была."""
-    article = request.get("article")
-    if not article:
-        return {"error": "article required"}
-    try:
-        wb_rating = round(float(request.get("wb_rating")), 2)
-    except (TypeError, ValueError):
-        return {"error": "wb_rating required"}
-    if wb_rating < 0 or wb_rating > 5:
-        return {"error": "wb_rating must be 0..5"}
-    try:
-        from urllib.parse import quote
-        art_q = quote(str(article), safe="")
-        get = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/ratings_official?article=eq.{art_q}&select=*",
-            headers=sb_headers(), timeout=10
-        )
-        prev = get.json() if get.is_success else []
-        base = prev[0] if isinstance(prev, list) and prev else {"article": article}
-        row = {
-            "article": article,
-            "nm_id": request.get("nm_id") if request.get("nm_id") is not None else base.get("nm_id"),
-            "wb_rating": wb_rating,
-            # звёзды из старого xlsx больше не соответствуют новому рейтингу — обнуляем,
-            # чтобы склейка считалась по wb_rating карточек (как на WB)
-            "reviews_total": 0,
-            "r5": 0, "r4": 0, "r3": 0, "r2": 0, "r1": 0,
-            "excluded": 0,
-            "source": "manual",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        httpx.delete(
-            f"{SUPABASE_URL}/rest/v1/ratings_official?article=eq.{art_q}",
-            headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=10
-        )
-        resp = httpx.post(
-            f"{SUPABASE_URL}/rest/v1/ratings_official",
-            json=[row], headers=sb_headers(), timeout=15
-        )
-        if not resp.is_success:
-            return {"error": f"DB error: {resp.status_code} {resp.text[:200]}"}
-        return {"status": "ok", "article": article, "wb_rating": wb_rating}
-    except Exception as e:
-        return {"error": str(e)}
+@app.post("/api/sync-ratings")
+def trigger_ratings_sync():
+    """Принудительно тянет «Оценку товара» из WB Analytics API."""
+    import threading
+    def _run():
+        try:
+            sync_ratings_official()
+        except Exception as e:
+            logger.error(f"sync-ratings thread: {e}")
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "started"}
 
 @app.post("/api/sync-stock")
 def trigger_stock_sync():
@@ -3157,109 +3292,106 @@ async def save_setting(request: dict):
 # ---------- никогда напрямую к Supabase (для пользователей у которых ----------
 # ---------- Supabase плохо доступен напрямую). Railway сам ходит в Supabase. ----------
 
+_DASH_CACHE = {"ts": 0.0, "data": None}
+_DASH_CACHE_LOCK = threading.Lock()
+_DASH_CACHE_TTL = float(os.getenv("DASHBOARD_CACHE_TTL", "45"))
+
+
+def _dash_get(path: str, timeout: float = 15):
+    return httpx.get(f"{SUPABASE_URL}/rest/v1/{path}", headers=sb_headers(), timeout=timeout)
+
+
+def _dash_rpc(name: str, payload: dict, timeout: float = 20):
+    return httpx.post(
+        f"{SUPABASE_URL}/rest/v1/rpc/{name}",
+        json=payload, headers=sb_headers(), timeout=timeout,
+    )
+
+
 @app.get("/api/dashboard-data")
 def dashboard_data():
-    """Отдаёт все данные нужные дашборду одним запросом: группы + рейтинги + отзывы(агрегат) + негатив за периоды + last sync"""
-    result = {"groups": [], "ratings": [], "feedback_stats": [], "negative_counts": {}, "settings": {}, "stock_totals": [], "stock_warehouses": [], "supply_report": [], "ad_stats": []}
+    """Все данные дашборда одним ответом. Запросы к Supabase — параллельно + короткий кэш."""
+    now = time.time()
+    with _DASH_CACHE_LOCK:
+        cached = _DASH_CACHE["data"]
+        if cached is not None and (now - _DASH_CACHE["ts"]) < _DASH_CACHE_TTL:
+            return cached
 
-    try:
-        gr = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/groups_config?select=name,articles,sort_order&order=sort_order",
-            headers=sb_headers(), timeout=15
-        )
-        if gr.is_success:
-            result["groups"] = gr.json()
-    except Exception as e:
-        logger.error(f"dashboard-data groups error: {e}")
+    result = {
+        "groups": [], "ratings": [], "feedback_stats": [], "negative_counts": {},
+        "settings": {}, "stock_totals": [], "stock_warehouses": [],
+        "supply_report": [], "ad_stats": [],
+    }
+    neg_days = [1, 2, 3, 4, 5, 7, 14, 30]
 
-    try:
-        rr = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/ratings_official?select=*",
-            headers=sb_headers(), timeout=15
-        )
-        if rr.is_success:
-            result["ratings"] = rr.json()
-    except Exception as e:
-        logger.error(f"dashboard-data ratings error: {e}")
+    def load_groups():
+        r = _dash_get("groups_config?select=name,articles,sort_order&order=sort_order", 15)
+        return ("groups", r.json() if r.is_success else [])
 
-    try:
-        fr = httpx.post(
-            f"{SUPABASE_URL}/rest/v1/rpc/get_article_stats",
-            json={}, headers=sb_headers(), timeout=20
-        )
-        if fr.is_success:
-            result["feedback_stats"] = fr.json()
-    except Exception as e:
-        logger.error(f"dashboard-data feedback_stats error: {e}")
+    def load_ratings():
+        r = _dash_get("ratings_official?select=*", 15)
+        return ("ratings", r.json() if r.is_success else [])
 
-    # Негатив за 5/7/30 дней, для звёзд 1-2-3 (фронт сам выберет нужный порог звёзд и период)
-    for days in [1, 2, 3, 4, 5, 7, 14, 30]:
-        try:
-            nr = httpx.post(
-                f"{SUPABASE_URL}/rest/v1/rpc/get_negative_counts",
-                json={"days_back": days, "max_stars": 3},
-                headers=sb_headers(), timeout=20
-            )
-            if nr.is_success:
-                result["negative_counts"][str(days)] = nr.json()
-        except Exception as e:
-            logger.error(f"dashboard-data negative_counts({days}) error: {e}")
+    def load_feedback_stats():
+        r = _dash_rpc("get_article_stats", {}, 20)
+        return ("feedback_stats", r.json() if r.is_success else [])
 
-    try:
-        sr = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/settings?select=key,value",
-            headers=sb_headers(), timeout=10
-        )
-        if sr.is_success:
-            for row in sr.json():
-                result["settings"][row["key"]] = row["value"]
-    except Exception as e:
-        logger.error(f"dashboard-data settings error: {e}")
+    def load_neg(days: int):
+        r = _dash_rpc("get_negative_counts", {"days_back": days, "max_stars": 3}, 20)
+        return ("neg", days, r.json() if r.is_success else [])
 
-    try:
-        st = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/stock_totals?select=*",
-            headers=sb_headers(), timeout=15
-        )
-        if st.is_success:
-            result["stock_totals"] = st.json()
-    except Exception as e:
-        logger.error(f"dashboard-data stock_totals error: {e}")
+    def load_settings():
+        r = _dash_get("settings?select=key,value", 10)
+        out = {}
+        if r.is_success:
+            for row in r.json():
+                out[row["key"]] = row["value"]
+        return ("settings", out)
 
-    try:
-        sw = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/stock_warehouses?select=*",
-            headers=sb_headers(), timeout=15
-        )
-        if sw.is_success:
-            result["stock_warehouses"] = sw.json()
-    except Exception as e:
-        logger.error(f"dashboard-data stock_warehouses error: {e}")
+    def load_stock_totals():
+        r = _dash_get("stock_totals?select=*", 15)
+        return ("stock_totals", r.json() if r.is_success else [])
 
-    try:
-        spr = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/supply_report?select=*",
-            headers=sb_headers(), timeout=20
-        )
-        if spr.is_success:
-            result["supply_report"] = spr.json()
-    except Exception as e:
-        logger.error(f"dashboard-data supply_report error: {e}")
+    def load_stock_warehouses():
+        r = _dash_get("stock_warehouses?select=*", 15)
+        return ("stock_warehouses", r.json() if r.is_success else [])
 
-    try:
+    def load_supply():
+        r = _dash_get("supply_report?select=*", 20)
+        return ("supply_report", r.json() if r.is_success else [])
+
+    def load_ads():
         if ADS_CACHE.get("campaigns"):
-            result["ad_stats"] = ADS_CACHE["campaigns"]
-        else:
-            ads = httpx.get(
-                f"{SUPABASE_URL}/rest/v1/ad_stats?select=*",
-                headers=sb_headers(), timeout=20
-            )
-            if ads.is_success:
-                result["ad_stats"] = ads.json()
-    except Exception as e:
-        logger.error(f"dashboard-data ad_stats error: {e}")
+            return ("ad_stats", ADS_CACHE["campaigns"])
+        r = _dash_get("ad_stats?select=*", 20)
+        return ("ad_stats", r.json() if r.is_success else [])
 
+    jobs = [
+        load_groups, load_ratings, load_feedback_stats, load_settings,
+        load_stock_totals, load_stock_warehouses, load_supply, load_ads,
+    ]
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        futs = [pool.submit(fn) for fn in jobs]
+        futs += [pool.submit(load_neg, d) for d in neg_days]
+        for fut in as_completed(futs):
+            try:
+                item = fut.result()
+                if item[0] == "neg":
+                    _, days, rows = item
+                    result["negative_counts"][str(days)] = rows
+                else:
+                    key, val = item
+                    result[key] = val
+            except Exception as e:
+                logger.error(f"dashboard-data parallel error: {e}")
+
+    logger.info(f"dashboard-data built in {time.time() - t0:.2f}s")
+    with _DASH_CACHE_LOCK:
+        _DASH_CACHE["ts"] = time.time()
+        _DASH_CACHE["data"] = result
     return result
+
 
 @app.get("/api/article-feedbacks")
 def article_feedbacks(article: str, days: int = 30, max_stars: int = 3, limit: int = 50):
@@ -4284,4 +4416,12 @@ async def save_finance_cfo(request: dict):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8080))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    # Один процесс (scheduler), но больше потоков под sync-эндпоинты —
+    # иначе долгий /api/dashboard-data блокирует весь сайт.
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        timeout_keep_alive=30,
+        limit_concurrency=40,
+    )

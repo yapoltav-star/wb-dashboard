@@ -538,8 +538,9 @@ td.tc{text-align:center}
 
 <div class="page" id="page-ratings">
   <div class="upload-banner" id="uploadBanner">
-    <span>⚠️ <b>Рейтинги из файла WB не загружены.</b> Данные рассчитаны приблизительно из истории отзывов.</span>
-    <button class="upload-btn-inner" onclick="openUploadModal()">Загрузить файл оценок</button>
+    <span>⚠️ <b>Рейтинги WB ещё не подтянуты.</b> Нажми «Обновить с WB» — берём feedbackRating из Analytics API (отчёт «Оценка товара»).</span>
+    <button class="upload-btn-inner" onclick="triggerRatingsSync()">↻ Обновить с WB</button>
+    <button class="upload-btn-inner" onclick="openUploadModal()" style="opacity:.85">Файл xlsx</button>
     <span class="upload-last" id="uploadLast"></span>
   </div>
   <div class="cards" id="cards"></div>
@@ -555,6 +556,7 @@ td.tc{text-align:center}
     <button class="filter-btn" id="s_total" onclick="SS('total')">Отзывов</button>
     <button class="filter-btn" id="s_article" onclick="SS('article')">А–Я</button>
     <div class="ml-auto" style="display:flex;gap:8px">
+      <button class="action-btn" id="ratingsSyncBtn" onclick="triggerRatingsSync()">↻ С WB</button>
       <button class="action-btn" onclick="EA(1)">▾ Раскрыть</button>
       <button class="action-btn" onclick="EA(0)">▸ Свернуть</button>
       <button class="action-btn" onclick="EX()">⬇ CSV</button>
@@ -1027,7 +1029,10 @@ async function loadData() {
 
     const settings = data.settings || {};
     let statusText = settings.last_sync ? 'Отзывы: ' + settings.last_sync : 'Данные загружены';
-    if(settings.last_ratings_upload) {
+    if(settings.last_ratings_sync) {
+      statusText += ' · Оценки API: ' + settings.last_ratings_sync;
+      document.getElementById('uploadLast').textContent = 'API: ' + settings.last_ratings_sync;
+    } else if(settings.last_ratings_upload) {
       statusText += ' · Оценки: ' + settings.last_ratings_upload;
       document.getElementById('uploadLast').textContent = 'Оценки загружены: ' + settings.last_ratings_upload;
     }
@@ -1605,6 +1610,24 @@ function dzDrop(e) {
   if(file) handleFile(file);
 }
 
+async function triggerRatingsSync() {
+  const btn = document.getElementById('ratingsSyncBtn');
+  const last = document.getElementById('uploadLast');
+  if(btn) { btn.disabled = true; btn.textContent = '⏳ …'; }
+  if(last) last.textContent = 'Тянем оценки с WB…';
+  try {
+    const resp = await fetch(`${RAILWAY_URL}/api/sync-ratings`, { method: 'POST' });
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    // API обновляется до часа; синк с пагинацией может занять ~20–40с
+    setTimeout(() => loadData(), 8000);
+    setTimeout(() => loadData(), 25000);
+  } catch(e) {
+    alert('Не удалось запустить синк оценок: ' + e.message);
+  } finally {
+    if(btn) { btn.disabled = false; btn.textContent = '↻ С WB'; }
+  }
+}
+
 async function handleFile(file) {
   if(!file || !file.name.endsWith('.xlsx')) {
     alert('Нужен файл .xlsx');
@@ -1750,12 +1773,10 @@ function gblock(grp, arts) {
   const tot = {r5:0,r4:0,r3:0,r2:0,r1:0,total:0,excluded:0};
   arts.forEach(a => ['r5','r4','r3','r2','r1','total','excluded'].forEach(k => tot[k]+=(a[k]||0)));
 
-  // Рейтинг склейки ≈ как на WB: среднее feedbackRating карточек (1 знак).
-  // Бланки/ремешки в операционной склейке часто не в той же imt-склейке WB —
-  // их 5.0 завышают среднее; для рейтинга не учитываем.
-  const ratingArts = arts.filter(a => !/бланк/i.test(String(a.article || '')));
+  // Рейтинг склейки: среднее feedbackRating карточек (как «Рейтинг по отзывам» на WB).
+  // Карточки без рейтинга не участвуют. Клиенту WB обычно показывает 1 знак.
   let ratingSum = 0, ratingCount = 0;
-  ratingArts.forEach(a => {
+  arts.forEach(a => {
     const r = parseFloat(a.avg_rating);
     if(!isNaN(r) && r > 0) {
       ratingSum += r;
@@ -1764,9 +1785,8 @@ function gblock(grp, arts) {
   });
   const avg = ratingCount ? Math.round(ratingSum / ratingCount * 100) / 100 : null;
   const wbShow = avg == null ? null : (Math.round(avg * 10) / 10).toFixed(1);
-  // Для «сколько нужно ★5» — звёзды только по карточкам, участвующим в рейтинге
   let weightedSum = 0, weightedTotal = 0;
-  ratingArts.forEach(a => {
+  arts.forEach(a => {
     const starSum = (a.r5||0)+(a.r4||0)+(a.r3||0)+(a.r2||0)+(a.r1||0);
     if(starSum > 0) {
       weightedSum += (a.r5||0)*5+(a.r4||0)*4+(a.r3||0)*3+(a.r2||0)*2+(a.r1||0);
