@@ -1055,8 +1055,13 @@ async function triggerRatingsSync() {
     if(!resp.ok || result.status === 'error') {
       throw new Error(result.error || ('HTTP ' + resp.status));
     }
-    if(last) last.textContent = `API: ${result.saved || 0} арт.`;
-    await loadData();
+    const before = last ? last.textContent : '';
+    for (let i = 0; i < 12; i++) {
+      await new Promise(r => setTimeout(r, 8000));
+      await loadData();
+      const nowTxt = (document.getElementById('uploadLast') || {}).textContent || '';
+      if(nowTxt.startsWith('API:') && nowTxt !== before && !nowTxt.includes('Тянем')) break;
+    }
   } catch(e) {
     alert('Не удалось синхронизировать оценки: ' + e.message);
     if(last) last.textContent = 'Ошибка синка';

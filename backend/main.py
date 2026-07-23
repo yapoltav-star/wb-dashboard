@@ -255,7 +255,7 @@ def _fetch_item_rating_report():
             try:
                 resp = httpx.post(
                     f"{WB_ANALYTICS_URL}{path}",
-                    headers=wb_headers(), json=req, timeout=90,
+                    headers=wb_headers(), json=req, timeout=25,
                 )
                 if resp.status_code in (404, 405):
                     errors.append(f"{path}→{resp.status_code}")
@@ -334,7 +334,8 @@ def _rows_from_feedbacks_nmid(nm_to_vendor, now):
     nm_ids = sorted(nm_to_vendor.keys())
     if not nm_ids:
         return rows, errors
-    for i, nm in enumerate(nm_ids):
+
+    def one(nm):
         try:
             resp = httpx.get(
                 f"{WB_FEEDBACKS_URL}/api/v1/feedbacks/products/rating/nmid",
@@ -343,20 +344,17 @@ def _rows_from_feedbacks_nmid(nm_to_vendor, now):
                 timeout=20,
             )
             if not resp.is_success:
-                if len(errors) < 6:
-                    errors.append(f"{nm}→{resp.status_code}")
-                time.sleep(0.2)
-                continue
+                return None, f"{nm}→{resp.status_code}"
             data = (resp.json() or {}).get("data") or {}
             try:
                 wb_rating = round(float(data.get("valuation")), 2)
             except (TypeError, ValueError):
-                continue
+                return None, f"{nm}→bad valuation"
             try:
                 reviews_total = int(data.get("feedbacksCount") or 0)
             except (TypeError, ValueError):
                 reviews_total = 0
-            rows.append({
+            return ({
                 "article": nm_to_vendor.get(nm) or str(nm),
                 "nm_id": nm,
                 "wb_rating": wb_rating,
@@ -365,14 +363,18 @@ def _rows_from_feedbacks_nmid(nm_to_vendor, now):
                 "excluded": 0,
                 "source": "api",
                 "updated_at": now,
-            })
+            }, None)
         except Exception as e:
-            if len(errors) < 6:
-                errors.append(f"{nm} ex:{e}")
-        if i % 20 == 19:
-            time.sleep(0.5)
-        else:
-            time.sleep(0.12)
+            return None, f"{nm} ex:{e}"
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futs = [pool.submit(one, nm) for nm in nm_ids]
+        for fut in as_completed(futs):
+            row, err = fut.result()
+            if row:
+                rows.append(row)
+            elif err and len(errors) < 8:
+                errors.append(err)
     return rows, errors
 
 
@@ -3363,8 +3365,8 @@ async def save_manual_rating(request: dict):
 
 
 @app.post("/api/sync-ratings")
-def trigger_ratings_sync(wait: bool = True):
-    """Тянет «Оценку товара» с WB. wait=true — дождаться результата."""
+def trigger_ratings_sync(wait: bool = False):
+    """Тянет «Оценку товара» с WB. По умолчанию в фоне. wait=1 — ждать ответ."""
     if wait:
         try:
             return sync_ratings_official()
