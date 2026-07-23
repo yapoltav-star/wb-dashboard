@@ -538,7 +538,7 @@ td.tc{text-align:center}
 
 <div class="page" id="page-ratings">
   <div class="upload-banner" id="uploadBanner">
-    <span>⚠️ <b>Рейтинги из файла WB не загружены.</b> Склейки считаются по всем отзывам из базы (включая старше года). Файл «Оценка товара» — по желанию.</span>
+    <span>⚠️ <b>Рейтинги из файла WB не загружены.</b> Данные рассчитаны по всем отзывам из базы (включая старше года).</span>
     <button class="upload-btn-inner" onclick="openUploadModal()">Загрузить файл оценок</button>
     <span class="upload-last" id="uploadLast"></span>
   </div>
@@ -938,13 +938,10 @@ async function loadData() {
     (data.groups || []).forEach(g => { GROUPS[g.name] = g.articles || []; });
     Object.keys(GROUPS).concat(['Без склейки']).forEach(g => { if(EXP[g]===undefined) EXP[g]=false; });
 
-    // Official ratings: только xlsx/manual. source=api (item-rating) — прирост за период, ломает склейки.
+    // Official ratings (xlsx/manual). API item-rating не используем.
     RATINGS = {};
-    (data.ratings || []).forEach(r => {
-      if((r.source || '') === 'api') return;
-      RATINGS[r.article] = r;
-    });
-    HAS_OFFICIAL = Object.keys(RATINGS).length > 0;
+    (data.ratings || []).forEach(r => { RATINGS[r.article] = r; });
+    HAS_OFFICIAL = (data.ratings || []).length > 0;
 
     // Feedback stats (already aggregated server-side)
     ALL = (data.feedback_stats || []).map(a => ({...a, is_official: false}));

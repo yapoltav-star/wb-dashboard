@@ -2981,6 +2981,8 @@ scheduler.add_job(lambda: sync_article_daily_stats(30), "interval", hours=6, id=
 scheduler.add_job(sync_promotions, "interval", hours=6, id="sync_promotions")
 scheduler.add_job(lambda: sync_sales_pace("day"), "interval", hours=1, id="sync_sales_pace")
 scheduler.start()
+# Разово чистим ошибочные api-рейтинги после деплоя (item-rating ломал склейки).
+threading.Thread(target=sync_ratings_official, daemon=True).start()
 
 FRONTEND_CANDIDATES = [
     Path(__file__).resolve().parent.parent / "frontend",  # repo/frontend
@@ -3175,7 +3177,13 @@ def dashboard_data():
         return ("groups", r.json() if r.is_success else [])
 
     def load_ratings():
-        r = _dash_get("ratings_official?select=*", 15)
+        # Как неделю назад: только xlsx/manual. source=api — прирост за период, ломает склейки.
+        r = _dash_get("ratings_official?select=*&source=neq.api", 15)
+        if not r.is_success:
+            r = _dash_get("ratings_official?select=*", 15)
+            rows = r.json() if r.is_success else []
+            rows = [x for x in rows if (x.get("source") or "") != "api"]
+            return ("ratings", rows)
         return ("ratings", r.json() if r.is_success else [])
 
     def load_feedback_stats():
