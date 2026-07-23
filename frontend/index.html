@@ -1769,7 +1769,6 @@ function gblock(grp, arts) {
   const y1 = tot.r1;
   const gi = Object.keys(GROUPS).concat(['Без склейки']).indexOf(grp);
   const isOpen = EXP[grp] === true;
-  const officialInGroup = arts.filter(a => a.is_official).length;
 
   const sorted = [...arts].sort((a,b) => {
     if(SK==='article') return SD*String(a.article).localeCompare(String(b.article),'ru');
