@@ -1769,7 +1769,6 @@ function gblock(grp, arts) {
   const y1 = tot.r1;
   const gi = Object.keys(GROUPS).concat(['Без склейки']).indexOf(grp);
   const isOpen = EXP[grp] === true;
-  const officialInGroup = arts.filter(a => a.is_official).length;
 
   const sorted = [...arts].sort((a,b) => {
     if(SK==='article') return SD*String(a.article).localeCompare(String(b.article),'ru');
@@ -1796,24 +1795,15 @@ function gblock(grp, arts) {
 
   let recHtml = '';
   if(avg !== null && weightedTotal > 0) {
-    const S = weightedSum;
-    const N = weightedTotal;
-    if(avg >= 4.95) {
-      recHtml = '<div style="padding:8px 16px;background:#F0FDF4;border-bottom:1px solid #BBF7D0;font-size:12px;color:#065F46;font-weight:500">✓ Рейтинг отображается как <b>5.0 ★</b> — отлично!</div>';
-    } else {
-      const wbShow = avg >= 4.85 ? '4.9' : avg >= 4.75 ? '4.8' : avg >= 4.65 ? '4.7' : avg >= 4.55 ? '4.6' : avg >= 4.45 ? '4.5' : avg.toFixed(1);
-      const nextT = avg >= 4.85 ? 4.95 : avg >= 4.75 ? 4.85 : avg >= 4.65 ? 4.75 : avg >= 4.55 ? 4.65 : 4.55;
-      const nextLabel = nextT >= 4.95 ? '5.0' : (Math.round(nextT*10)/10).toFixed(1);
-      const needNext = Math.ceil((nextT * N - S) / (5 - nextT));
-      const need5 = Math.ceil((4.95 * N - S) / 0.05);
-      const srcNote = HAS_OFFICIAL && officialInGroup > 0 ? ' <span style="color:#059669;font-size:11px">✓ официальный рейтинг WB</span>' : '';
-      recHtml = `<div style="display:flex;align-items:center;gap:12px;padding:8px 16px;background:#FFFBEB;border-bottom:1px solid #FDE68A;font-size:12px;flex-wrap:wrap">
-        <span style="color:#92400E">Клиент видит: <b>${wbShow} ★</b>${srcNote}</span>
-        <span style="color:#6B7280">|</span>
-        <span style="color:#92400E">До <b>${nextLabel} ★</b>: нужно <b style="color:#D97706">+${needNext.toLocaleString('ru-RU')} отзывов ★5</b></span>
-        ${avg < 4.85 ? `<span style="color:#6B7280">|</span><span style="color:#991B1B">До <b>5.0 ★</b>: нужно <b>+${need5.toLocaleString('ru-RU')} отзывов ★5</b></span>` : ''}
-      </div>`;
-    }
+    const wbShow = avg >= 4.95 ? '5.0' : avg >= 4.85 ? '4.9' : avg >= 4.75 ? '4.8' : avg >= 4.65 ? '4.7' : avg >= 4.55 ? '4.6' : avg >= 4.45 ? '4.5' : avg.toFixed(1);
+    const bg = avg >= 4.95 ? '#F0FDF4' : '#FFFBEB';
+    const bd = avg >= 4.95 ? '#BBF7D0' : '#FDE68A';
+    const fg = avg >= 4.95 ? '#065F46' : '#92400E';
+    recHtml = `<div style="display:flex;align-items:center;gap:12px;padding:8px 16px;background:${bg};border-bottom:1px solid ${bd};font-size:12px;color:${fg}">
+      <span>Клиент видит: <b>${wbShow} ★</b></span>
+      <span style="color:#6B7280">·</span>
+      <span>${fmt(tot.total)} отзывов</span>
+    </div>`;
   }
 
   return `<div class="group${isOpen?' open':''}" id="g${gi}">
