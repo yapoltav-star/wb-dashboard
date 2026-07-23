@@ -171,230 +171,12 @@ def sync_all():
         headers=sb_headers(), timeout=10
     )
     logger.info(f"Sync complete. Total: {total}")
-    # Оценки товара — отдельный hourly job + POST /api/sync-ratings
-
-
-def _metric_num(val, prefer_total: bool = True):
-    """WB item-rating отдаёт метрики как число или {current, total?, dynamics?}."""
-    if val is None:
-        return None
-    if isinstance(val, (int, float)):
-        return float(val)
-    if isinstance(val, dict):
-        if prefer_total and val.get("total") is not None:
-            try:
-                return float(val["total"])
-            except (TypeError, ValueError):
-                pass
-        if val.get("current") is not None:
-            try:
-                return float(val["current"])
-            except (TypeError, ValueError):
-                return None
-    return None
-
-
-
-def _sync_norm_vendor(v):
-    s = str(v or "").strip()
-    if not s:
-        return ""
-    return s.replace("О", "O").replace("о", "o")
+    # Рейтинги — через xlsx «Оценка товара» (/api/upload-ratings)
 
 def sync_ratings_official():
-    """Тянет оценку товара с WB Feedbacks API:
-    GET /api/v1/feedbacks/products/rating/nmid?nmId=…
-    Это valuation (= рейтинг по отзывам на карточке). Analytics item-rating сейчас отдаёт 500."""
-    if not WB_TOKEN:
-        logger.error("sync_ratings_official: WB_TOKEN not set")
-        return {"status": "error", "error": "WB_TOKEN not set"}
-
-    # nm_id → vendor_code
-    nm_to_vendor = {}
-    for url in (
-        f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&nm_id=not.is.null&limit=5000",
-        f"{SUPABASE_URL}/rest/v1/ratings_official?select=nm_id,article&nm_id=not.is.null&limit=5000",
-        f"{SUPABASE_URL}/rest/v1/feedbacks?select=nm_id,article&nm_id=not.is.null&limit=5000",
-    ):
-        try:
-            r = httpx.get(url, headers=sb_headers(), timeout=20)
-            if not r.is_success:
-                continue
-            for row in r.json() or []:
-                nm = row.get("nm_id")
-                if nm is None:
-                    continue
-                try:
-                    nm = int(nm)
-                except (TypeError, ValueError):
-                    continue
-                art = _sync_norm_vendor(row.get("vendor_code") or row.get("article") or "")
-                if art and art != str(nm) and nm not in nm_to_vendor:
-                    nm_to_vendor[nm] = art
-        except Exception as e:
-            logger.warning(f"sync_ratings_official: map {e}")
-
-    nm_ids = sorted(nm_to_vendor.keys())
-    if not nm_ids:
-        # даже без артикула — тянем по nm из stock
-        try:
-            r = httpx.get(
-                f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id&nm_id=not.is.null&limit=5000",
-                headers=sb_headers(), timeout=20,
-            )
-            if r.is_success:
-                for row in r.json() or []:
-                    try:
-                        nm_ids.append(int(row["nm_id"]))
-                    except Exception:
-                        pass
-                nm_ids = sorted(set(nm_ids))
-        except Exception:
-            pass
-    if not nm_ids:
-        return {"status": "error", "error": "no nm_ids in DB"}
-
-    logger.info(f"sync_ratings_official: fetching valuation for {len(nm_ids)} nmIds via feedbacks/products/rating/nmid")
-    now = datetime.now(timezone.utc).isoformat()
-    rows = []
-    errors = []
-    ok_n = 0
-    for i, nm in enumerate(nm_ids):
-        try:
-            resp = httpx.get(
-                f"{WB_FEEDBACKS_URL}/api/v1/feedbacks/products/rating/nmid",
-                headers=wb_headers(),
-                params={"nmId": nm},
-                timeout=20,
-            )
-            if not resp.is_success:
-                if len(errors) < 8:
-                    errors.append(f"{nm}→{resp.status_code} {resp.text[:120]}")
-                time.sleep(0.25)
-                continue
-            payload = resp.json() if resp.content else {}
-            data = payload.get("data") if isinstance(payload, dict) else None
-            if not isinstance(data, dict):
-                if len(errors) < 8:
-                    errors.append(f"{nm}→bad payload {str(payload)[:120]}")
-                continue
-            val = data.get("valuation")
-            try:
-                wb_rating = round(float(val), 2)
-            except (TypeError, ValueError):
-                if len(errors) < 8:
-                    errors.append(f"{nm}→bad valuation {val!r}")
-                continue
-            fc = data.get("feedbacksCount")
-            try:
-                reviews_total = int(fc or 0)
-            except (TypeError, ValueError):
-                reviews_total = 0
-            vendor = nm_to_vendor.get(nm) or str(nm)
-            rows.append({
-                "article": vendor,
-                "nm_id": nm,
-                "wb_rating": wb_rating,
-                "reviews_total": reviews_total,
-                "r5": 0, "r4": 0, "r3": 0, "r2": 0, "r1": 0,
-                "excluded": 0,
-                "source": "api",
-                "updated_at": now,
-            })
-            ok_n += 1
-        except Exception as e:
-            if len(errors) < 8:
-                errors.append(f"{nm} ex:{e}")
-        # мягкий троттлинг feedbacks API
-        if i % 20 == 19:
-            time.sleep(0.6)
-        else:
-            time.sleep(0.15)
-
-    if not rows:
-        err = {
-            "status": "error",
-            "error": "no ratings parsed",
-            "nm_ids": len(nm_ids),
-            "ok": ok_n,
-            "endpoint": "/api/v1/feedbacks/products/rating/nmid",
-            "errors": errors,
-        }
-        logger.error(f"sync_ratings_official: {err}")
-        try:
-            httpx.post(
-                f"{SUPABASE_URL}/rest/v1/settings",
-                json={"key": "last_ratings_sync_error", "value": json.dumps(err, ensure_ascii=False)[:1500], "updated_at": now},
-                headers=sb_headers(), timeout=10,
-            )
-        except Exception:
-            pass
-        return err
-
-    for src in ("api", "xlsx", "manual"):
-        try:
-            httpx.delete(
-                f"{SUPABASE_URL}/rest/v1/ratings_official?source=eq.{src}",
-                headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=20,
-            )
-        except Exception as e:
-            logger.warning(f"sync_ratings_official: clear source={src}: {e}")
-    try:
-        httpx.delete(
-            f"{SUPABASE_URL}/rest/v1/ratings_official?updated_at=lt.2099-01-01T00:00:00Z",
-            headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=30,
-        )
-    except Exception as e:
-        logger.warning(f"sync_ratings_official: clear all: {e}")
-
-    saved = 0
-    for i in range(0, len(rows), 100):
-        batch = rows[i:i + 100]
-        r = httpx.post(
-            f"{SUPABASE_URL}/rest/v1/ratings_official",
-            json=batch, headers=sb_headers(), timeout=40,
-        )
-        if r.is_success:
-            saved += len(batch)
-        else:
-            logger.error(f"sync_ratings_official insert error: {r.status_code} {r.text[:250]}")
-            return {
-                "status": "error",
-                "error": f"insert {r.status_code} {r.text[:200]}",
-                "saved": saved,
-            }
-
-    now_str = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
-    httpx.post(
-        f"{SUPABASE_URL}/rest/v1/settings",
-        json={"key": "last_ratings_sync", "value": now_str, "updated_at": now},
-        headers=sb_headers(), timeout=10,
-    )
-    try:
-        httpx.delete(
-            f"{SUPABASE_URL}/rest/v1/settings?key=eq.last_ratings_sync_error",
-            headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=10,
-        )
-    except Exception:
-        pass
-    try:
-        _DASH_CACHE["ts"] = 0.0
-        _DASH_CACHE["data"] = None
-    except NameError:
-        pass
-
-    # sample for logs / response
-    sample = next((r for r in rows if "033_hk" in str(r.get("article"))), rows[0])
-    out = {
-        "status": "ok",
-        "saved": saved,
-        "nm_ids": len(nm_ids),
-        "endpoint": "/api/v1/feedbacks/products/rating/nmid",
-        "sample": sample,
-    }
-    logger.info(f"sync_ratings_official: {out}")
-    return out
-
+    """Отключено. Рейтинги загружаются через /api/upload-ratings (xlsx «Оценка товара»)."""
+    logger.info("sync_ratings_official: skipped (use xlsx upload)")
+    return {"status": "skipped"}
 
 # ---------- Остатки на складах (WB Analytics: warehouse_remains report) ----------
 
@@ -3170,7 +2952,6 @@ async def trigger_sales_pace_sync(period: str = "day"):
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
-scheduler.add_job(sync_ratings_official, "interval", hours=1, id="sync_ratings")
 scheduler.add_job(sync_stock, "interval", hours=3, id="sync_stock")
 scheduler.add_job(sync_supply, "interval", hours=4, id="sync_supply")
 scheduler.add_job(sync_ads, "interval", hours=4, id="sync_ads")
@@ -3275,18 +3056,6 @@ async def save_manual_rating(request: dict):
         return {"error": str(e)}
 
 
-@app.post("/api/sync-ratings")
-def trigger_ratings_sync(wait: bool = True):
-    """Тянет «Оценку товара» из WB. По умолчанию ждёт и возвращает результат."""
-    if wait:
-        try:
-            return sync_ratings_official()
-        except Exception as e:
-            logger.exception("sync-ratings failed")
-            return {"status": "error", "error": str(e)}
-    import threading
-    threading.Thread(target=sync_ratings_official, daemon=True).start()
-    return {"status": "started"}
 
 @app.post("/api/sync-stock")
 def trigger_stock_sync():
