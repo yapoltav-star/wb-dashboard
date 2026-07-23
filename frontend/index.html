@@ -1617,12 +1617,15 @@ async function triggerRatingsSync() {
   if(last) last.textContent = 'Тянем оценки с WB…';
   try {
     const resp = await fetch(`${RAILWAY_URL}/api/sync-ratings`, { method: 'POST' });
-    if(!resp.ok) throw new Error('HTTP ' + resp.status);
-    // API обновляется до часа; синк с пагинацией может занять ~20–40с
-    setTimeout(() => loadData(), 8000);
-    setTimeout(() => loadData(), 25000);
+    const result = await resp.json().catch(() => ({}));
+    if(!resp.ok || result.status === 'error') {
+      throw new Error(result.error || ('HTTP ' + resp.status));
+    }
+    if(last) last.textContent = `API: ${result.saved || 0} арт. · ${result.endpoint || ''}`;
+    await loadData();
   } catch(e) {
-    alert('Не удалось запустить синк оценок: ' + e.message);
+    alert('Не удалось синхронизировать оценки: ' + e.message);
+    if(last) last.textContent = 'Ошибка синка';
   } finally {
     if(btn) { btn.disabled = false; btn.textContent = '↻ С WB'; }
   }

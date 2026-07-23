@@ -195,85 +195,136 @@ def _metric_num(val, prefer_total: bool = True):
 
 
 def sync_ratings_official():
-    """Тянет официальный feedbackRating (= «Рейтинг по отзывам» на WB) через
-    Analytics API: POST /api/analytics/v2/item-rating (fallback v1).
-    Это тот же отчёт «Оценка товара», что в кабинете. Перезаписывает ratings_official."""
+    """Тянет официальный feedbackRating (= «Рейтинг по отзывам» на WB).
+    1) Analytics item-rating v2/v1 (отчёт «Оценка товара»)
+    2) fallback: sales-funnel v3 (там тоже есть product.feedbackRating)
+    Перезаписывает ratings_official."""
     if not WB_TOKEN:
         logger.error("sync_ratings_official: WB_TOKEN not set")
         return {"status": "error", "error": "WB_TOKEN not set"}
 
     end = datetime.now(timezone.utc).date()
     start = end - timedelta(days=30)
-    logger.info(f"sync_ratings_official: fetching item-rating {start}…{end}")
+    logger.info(f"sync_ratings_official: fetching {start}…{end}")
 
     items = []
+    used_path = None
+    raw_snip = None
+    errors = []
+
+    def _parse_item_rating_page(payload):
+        data = payload.get("data") if isinstance(payload, dict) else {}
+        if not isinstance(data, dict):
+            data = {}
+        page = data.get("items") or data.get("cards") or []
+        return data, page if isinstance(page, list) else []
+
+    # --- 1) item-rating ---
     offset = 0
     limit = 1000
-    used_path = None
     while True:
         body = {
             "currentPeriod": {"start": start.isoformat(), "end": end.isoformat()},
             "orderBy": {"field": "feedbackCount", "mode": "desc"},
             "limit": limit,
             "offset": offset,
-            "isNotIncludeNmsWithoutSales": False,
         }
-        resp = None
-        last_err = None
-        for path in ("/api/analytics/v2/item-rating", "/api/analytics/v1/item-rating"):
+        page_items = None
+        for path_api, extra in (
+            ("/api/analytics/v2/item-rating", {"isNotIncludeNmsWithoutSales": False}),
+            ("/api/analytics/v1/item-rating", {"isNotIncludeNMsWithoutSales": False}),
+        ):
             try:
-                # v1 использует старое имя флага
-                req = dict(body)
-                if "v1" in path:
-                    req.pop("isNotIncludeNmsWithoutSales", None)
-                    req["isNotIncludeNMsWithoutSales"] = False
+                req = {**body, **extra}
                 resp = httpx.post(
-                    f"{WB_ANALYTICS_URL}{path}",
+                    f"{WB_ANALYTICS_URL}{path_api}",
                     headers=wb_headers(), json=req, timeout=60,
                 )
                 if resp.status_code in (404, 405):
-                    last_err = f"{path} → {resp.status_code}"
+                    errors.append(f"{path_api}→{resp.status_code}")
                     continue
                 if not resp.is_success:
-                    last_err = f"{path} → {resp.status_code} {resp.text[:300]}"
-                    logger.error(f"sync_ratings_official: {last_err}")
-                    return {"status": "error", "error": last_err}
-                used_path = path
+                    errors.append(f"{path_api}→{resp.status_code} {resp.text[:180]}")
+                    continue
+                payload = resp.json() if resp.content else {}
+                data, page_items = _parse_item_rating_page(payload)
+                used_path = path_api
+                if raw_snip is None:
+                    raw_snip = str(payload)[:400]
+                logger.info(
+                    f"sync_ratings_official: {path_api} offset={offset} n={len(page_items)} keys={list(data.keys())[:8]}"
+                )
                 break
             except Exception as e:
-                last_err = str(e)
-                logger.error(f"sync_ratings_official: {path} exception {e}")
-                resp = None
-        if resp is None:
-            return {"status": "error", "error": last_err or "no response"}
-
-        payload = resp.json() if resp.content else {}
-        data = payload.get("data") if isinstance(payload, dict) else {}
-        if not isinstance(data, dict):
-            data = {}
-        page = data.get("items") or data.get("cards") or []
-        if not isinstance(page, list):
-            page = []
-        logger.info(
-            f"sync_ratings_official: {used_path} offset={offset} got={len(page)} "
-            f"keys={list(data.keys())[:8]}"
-        )
-        items.extend(page)
-        if len(page) < limit:
+                errors.append(f"{path_api} ex:{e}")
+                page_items = None
+        if page_items is None:
+            break
+        items.extend(page_items)
+        if len(page_items) < limit:
             break
         offset += limit
-        # лимит WB: 3 req/min, интервал 20 сек
         time.sleep(21)
+
+    # --- 2) fallback sales-funnel v3 ---
+    if not items:
+        logger.info("sync_ratings_official: item-rating empty, trying sales-funnel v3")
+        offset = 0
+        limit = 100
+        while True:
+            body = {
+                "selectedPeriod": {"start": start.isoformat(), "end": end.isoformat()},
+                "nmIds": [],
+                "brandNames": [], "subjectIds": [], "tagIds": [],
+                "orderBy": {"field": "openCount", "mode": "desc"},
+                "limit": limit,
+                "offset": offset,
+            }
+            try:
+                resp = httpx.post(
+                    f"{WB_ANALYTICS_URL}/api/analytics/v3/sales-funnel/products",
+                    headers=wb_headers(), json=body, timeout=60,
+                )
+                if not resp.is_success:
+                    errors.append(f"funnel→{resp.status_code} {resp.text[:180]}")
+                    break
+                payload = resp.json() if resp.content else {}
+                products = (payload.get("data") or {}).get("products") or []
+                if raw_snip is None:
+                    raw_snip = str(payload)[:400]
+                if not products:
+                    break
+                used_path = "/api/analytics/v3/sales-funnel/products"
+                for p in products:
+                    prod = (p.get("product") or {}) if isinstance(p, dict) else {}
+                    if not prod:
+                        continue
+                    items.append({
+                        "nmId": prod.get("nmId"),
+                        "vendorCode": prod.get("vendorCode"),
+                        "feedbackRating": prod.get("feedbackRating"),
+                        "title": prod.get("title"),
+                    })
+                if len(products) < limit:
+                    break
+                offset += limit
+                time.sleep(21)
+            except Exception as e:
+                errors.append(f"funnel ex:{e}")
+                break
 
     now = datetime.now(timezone.utc).isoformat()
     rows = []
+    skipped = 0
     for it in items:
         if not isinstance(it, dict):
+            skipped += 1
             continue
         nm_id = it.get("nmId") or it.get("nmID") or it.get("nm_id")
         vendor = (it.get("vendorCode") or it.get("vendor_code") or "").strip() or (str(nm_id) if nm_id else "")
         fb = _metric_num(it.get("feedbackRating"), prefer_total=False)
         if nm_id is None or fb is None:
+            skipped += 1
             continue
         r5 = int(_metric_num(it.get("fiveStar")) or 0)
         r4 = int(_metric_num(it.get("fourStar")) or 0)
@@ -300,10 +351,26 @@ def sync_ratings_official():
         })
 
     if not rows:
-        logger.info("sync_ratings_official: nothing to save")
-        return {"status": "ok", "saved": 0, "fetched": len(items), "endpoint": used_path}
+        err = {
+            "status": "error",
+            "error": "no ratings parsed",
+            "fetched": len(items),
+            "skipped": skipped,
+            "endpoint": used_path,
+            "errors": errors[:6],
+            "snip": raw_snip,
+        }
+        logger.error(f"sync_ratings_official: {err}")
+        try:
+            httpx.post(
+                f"{SUPABASE_URL}/rest/v1/settings",
+                json={"key": "last_ratings_sync_error", "value": json.dumps(err, ensure_ascii=False)[:1500], "updated_at": now},
+                headers=sb_headers(), timeout=10,
+            )
+        except Exception:
+            pass
+        return err
 
-    # Полная замена: API — источник истины (не оставляем устаревшие xlsx/manual)
     for src in ("api", "xlsx", "manual"):
         try:
             httpx.delete(
@@ -331,6 +398,12 @@ def sync_ratings_official():
             saved += len(batch)
         else:
             logger.error(f"sync_ratings_official insert error: {r.status_code} {r.text[:250]}")
+            return {
+                "status": "error",
+                "error": f"insert {r.status_code} {r.text[:200]}",
+                "saved": saved,
+                "endpoint": used_path,
+            }
 
     now_str = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
     httpx.post(
@@ -339,13 +412,22 @@ def sync_ratings_official():
         headers=sb_headers(), timeout=10,
     )
     try:
+        httpx.delete(
+            f"{SUPABASE_URL}/rest/v1/settings?key=eq.last_ratings_sync_error",
+            headers={**sb_headers(), "Prefer": "return=minimal"}, timeout=10,
+        )
+    except Exception:
+        pass
+    try:
         _DASH_CACHE["ts"] = 0.0
         _DASH_CACHE["data"] = None
     except NameError:
         pass
 
-    logger.info(f"sync_ratings_official: saved {saved}/{len(rows)} via {used_path}")
-    return {"status": "ok", "saved": saved, "fetched": len(items), "endpoint": used_path}
+    out = {"status": "ok", "saved": saved, "fetched": len(items), "endpoint": used_path}
+    logger.info(f"sync_ratings_official: {out}")
+    return out
+
 
 # ---------- Остатки на складах (WB Analytics: warehouse_remains report) ----------
 
@@ -3227,15 +3309,16 @@ async def save_manual_rating(request: dict):
 
 
 @app.post("/api/sync-ratings")
-def trigger_ratings_sync():
-    """Принудительно тянет «Оценку товара» из WB Analytics API."""
-    import threading
-    def _run():
+def trigger_ratings_sync(wait: bool = True):
+    """Тянет «Оценку товара» из WB. По умолчанию ждёт и возвращает результат."""
+    if wait:
         try:
-            sync_ratings_official()
+            return sync_ratings_official()
         except Exception as e:
-            logger.error(f"sync-ratings thread: {e}")
-    threading.Thread(target=_run, daemon=True).start()
+            logger.exception("sync-ratings failed")
+            return {"status": "error", "error": str(e)}
+    import threading
+    threading.Thread(target=sync_ratings_official, daemon=True).start()
     return {"status": "started"}
 
 @app.post("/api/sync-stock")
