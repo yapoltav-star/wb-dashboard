@@ -8,12 +8,14 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone, date
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 import pandas as pd
 from pathlib import Path
+import base64
+import secrets
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,6 +26,13 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 WB_TOKEN = os.getenv("WB_TOKEN", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+# Защита всего сайта: логин/пароль в браузере (HTTP Basic Auth).
+# Задай в Railway Variables: SITE_USER + SITE_PASSWORD. Без них сайт открыт.
+SITE_USER = os.getenv("SITE_USER", "").strip()
+SITE_PASSWORD = os.getenv("SITE_PASSWORD", "").strip()
+SITE_AUTH_REALM = os.getenv("SITE_AUTH_REALM", "WB Dashboard").strip() or "WB Dashboard"
+# Пути без пароля (healthcheck Railway)
+SITE_AUTH_PUBLIC = {"/api/status", "/health", "/favicon.ico"}
 WB_FEEDBACKS_URL = "https://feedbacks-api.wildberries.ru"
 WB_ANALYTICS_URL = "https://seller-analytics-api.wildberries.ru"
 WB_STATISTICS_URL = "https://statistics-api.wildberries.ru"
@@ -50,6 +59,45 @@ def sb_headers():
 
 def wb_headers():
     return {"Authorization": WB_TOKEN}
+
+def _unauthorized():
+    return Response(
+        content="Unauthorized",
+        status_code=401,
+        headers={"WWW-Authenticate": f'Basic realm="{SITE_AUTH_REALM}", charset="UTF-8"'},
+        media_type="text/plain",
+    )
+
+def _check_basic_auth(header: str) -> bool:
+    if not header or not header.lower().startswith("basic "):
+        return False
+    try:
+        raw = base64.b64decode(header.split(" ", 1)[1].strip()).decode("utf-8")
+    except Exception:
+        return False
+    if ":" not in raw:
+        return False
+    user, pwd = raw.split(":", 1)
+    ok_user = secrets.compare_digest(user, SITE_USER)
+    ok_pwd = secrets.compare_digest(pwd, SITE_PASSWORD)
+    return ok_user and ok_pwd
+
+@app.middleware("http")
+async def site_basic_auth(request: Request, call_next):
+    """Закрывает весь сайт логином/паролем, если заданы SITE_USER и SITE_PASSWORD."""
+    if not SITE_USER or not SITE_PASSWORD:
+        return await call_next(request)
+    path = request.url.path or "/"
+    if path in SITE_AUTH_PUBLIC or path.startswith("/api/status"):
+        return await call_next(request)
+    if _check_basic_auth(request.headers.get("Authorization", "")):
+        return await call_next(request)
+    return _unauthorized()
+
+if SITE_USER and SITE_PASSWORD:
+    logger.info("Site Basic Auth ENABLED (SITE_USER set)")
+else:
+    logger.warning("Site Basic Auth DISABLED — set SITE_USER and SITE_PASSWORD to lock the dashboard")
 
 def upsert_feedbacks(feedbacks: list):
     if not feedbacks:
