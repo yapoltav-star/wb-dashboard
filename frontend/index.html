@@ -825,10 +825,12 @@ td.tc{text-align:center}
 </div>
 
 <script>
+// API всегда на Railway, пока кастомный домен не привязан к сервису.
+// Иначе с wbdashboard.ru (хостинг регру) /api/* отдаёт HTML → «Unexpected token <».
 const RAILWAY_URL = (typeof location !== 'undefined' && location.hostname
-  && (location.hostname === 'localhost' || location.hostname === '127.0.0.1'))
-  ? 'https://wb-dashboard-production-baf4.up.railway.app'
-  : '';
+  && location.hostname.includes('railway.app'))
+  ? ''
+  : 'https://wb-dashboard-production-baf4.up.railway.app';
 
 var ALL = [], RATINGS = {}, GROUPS = {}, SK = 'avg_rating', SD = -1, EXP = {};
 var HAS_OFFICIAL = false;
