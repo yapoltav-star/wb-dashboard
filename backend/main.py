@@ -116,15 +116,21 @@ def process_feedback(f: dict, nm_to_vendor: dict = None) -> dict:
         "updated_at": now.isoformat()
     }
 
-def sync_all():
+def sync_all(full: bool = False):
+    """Подтягивает отзывы с WB.
+    Обычный запуск (каждые 30 мин) — только свежие (~14 дней), без архива.
+    full=True — глубокий проход (редко / вручную).
+    """
     if not WB_TOKEN:
         logger.error("WB_TOKEN not set")
         return
-    logger.info("Starting sync...")
+    logger.info("Starting sync%s...", " FULL" if full else "")
     total = 0
+    now = datetime.now(timezone.utc)
+    # обычный синк не тащит всю историю — иначе Railway виснет на 80k+ отзывах
+    cutoff = now - timedelta(days=400 if full else 14)
+    max_skip = 199990 if full else 20000
 
-    # Строим карту nmId → vendor_code из stock_totals чтобы исправить артикулы
-    # у которых WB не вернул supplierArticle (тогда они попадают как "208715116" вместо "000Braslet1")
     nm_to_vendor = {}
     try:
         st = httpx.get(
@@ -133,36 +139,71 @@ def sync_all():
         )
         if st.is_success:
             nm_to_vendor = {r["nm_id"]: r["vendor_code"] for r in st.json() if r.get("nm_id") and r.get("vendor_code")}
-            logger.info(f"sync_all: nm_to_vendor map built: {len(nm_to_vendor)} entries")
+        # stock_totals часто без vendor_code — добираем из ratings
+        rt = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?select=nm_id,article&nm_id=not.is.null&article=not.is.null&limit=5000",
+            headers=sb_headers(), timeout=20,
+        )
+        if rt.is_success:
+            for r in rt.json() or []:
+                nm, art = r.get("nm_id"), (r.get("article") or "").strip()
+                if nm and art and nm not in nm_to_vendor:
+                    nm_to_vendor[nm] = art
+        logger.info(f"sync_all: nm_to_vendor map built: {len(nm_to_vendor)} entries")
     except Exception as e:
         logger.error(f"sync_all: failed to build nm_to_vendor: {e}")
 
+    def _fb_date(f: dict):
+        date_str = f.get("createdDate") or f.get("updatedDate") or ""
+        try:
+            return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        except Exception:
+            return now
+
     for is_answered in [True, False]:
         skip = 0
-        while skip <= 199990:
+        while skip <= max_skip:
             batch = fetch_feedbacks_page(is_answered, skip)
             if not batch:
                 break
-            processed = [process_feedback(f, nm_to_vendor) for f in batch if f.get("id") and not is_supplemented(f)]
+            processed = []
+            hit_old = False
+            for f in batch:
+                if not f.get("id") or is_supplemented(f):
+                    continue
+                if _fb_date(f) < cutoff:
+                    hit_old = True
+                    continue
+                processed.append(process_feedback(f, nm_to_vendor))
             total += upsert_feedbacks(processed)
             logger.info(f"  answered={is_answered} skip={skip} saved={len(processed)}")
             skip += len(batch)
-            if len(batch) < 5000:
+            if hit_old or len(batch) < 5000:
                 break
             time.sleep(0.3)
 
-    skip = 0
-    while skip <= 199990:
-        batch = fetch_archive_page(skip)
-        if not batch:
-            break
-        processed = [process_feedback(f, nm_to_vendor) for f in batch if f.get("id")]
-        total += upsert_feedbacks(processed)
-        logger.info(f"  archive skip={skip} saved={len(processed)}")
-        skip += len(batch)
-        if len(batch) < 5000:
-            break
-        time.sleep(0.3)
+    # архив — только в полном синке (тяжёлый)
+    if full:
+        skip = 0
+        while skip <= max_skip:
+            batch = fetch_archive_page(skip)
+            if not batch:
+                break
+            processed = []
+            hit_old = False
+            for f in batch:
+                if not f.get("id"):
+                    continue
+                if _fb_date(f) < cutoff:
+                    hit_old = True
+                    continue
+                processed.append(process_feedback(f, nm_to_vendor))
+            total += upsert_feedbacks(processed)
+            logger.info(f"  archive skip={skip} saved={len(processed)}")
+            skip += len(batch)
+            if hit_old or len(batch) < 5000:
+                break
+            time.sleep(0.3)
 
     now_str = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
     httpx.post(
