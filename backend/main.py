@@ -1303,6 +1303,116 @@ def fetch_ad_stats_by_campaign(ids: list, begin_date: str, end_date: str) -> dic
         raise RuntimeError("; ".join(errors[:3]))
     return agg
 
+def _fullstats_nm_day_rows(campaigns) -> list:
+    """Разворачивает fullstats → список {nm_id, day, views, spend, clicks, orders}."""
+    rows = []
+    for camp in campaigns or []:
+        for day in camp.get("days") or []:
+            day_str = str(day.get("date") or "")[:10]
+            if not day_str or len(day_str) < 10:
+                continue
+            nms = list(day.get("nms") or [])
+            for app in day.get("apps") or []:
+                nms.extend(app.get("nms") or [])
+            for nm in nms:
+                if not isinstance(nm, dict):
+                    continue
+                nm_id = nm.get("nmId") or nm.get("nm_id")
+                if not nm_id:
+                    continue
+                rows.append({
+                    "nm_id": int(nm_id),
+                    "day": day_str,
+                    "views": int(nm.get("views") or 0),
+                    "spend": float(nm.get("sum") or 0),
+                    "clicks": int(nm.get("clicks") or 0),
+                    "orders": int(nm.get("orders") or 0),
+                })
+    return rows
+
+def fetch_ad_nm_windows(prev_start: datetime, prev_end: datetime, cur_start: datetime, cur_end: datetime):
+    """Рекламные показы/затраты по nm за два окна (календарные дни).
+    → (cur_by_nm, prev_by_nm) где значение {views, spend, clicks, orders}.
+    Один запрос fullstats на весь диапазон (с батчами кампаний)."""
+    empty = {}
+    if not WB_TOKEN:
+        return empty, empty
+    begin = min(prev_start.date(), cur_start.date())
+    end = max(prev_end.date(), cur_end.date())
+    # лимит WB fullstats — 31 день
+    if (end - begin).days > 30:
+        begin = end - timedelta(days=30)
+    try:
+        campaigns_meta = fetch_campaigns_meta(include_finished=False)
+    except Exception as e:
+        logger.error(f"sales-pace ads meta error: {e}")
+        return empty, empty
+    if not campaigns_meta:
+        return empty, empty
+
+    ids = list(campaigns_meta.keys())
+    all_rows = []
+    for i in range(0, len(ids), 50):
+        batch = ids[i:i + 50]
+        try:
+            resp = httpx.get(
+                f"{WB_PROMOTION_URL}/adv/v3/fullstats",
+                headers=wb_headers(),
+                params={"ids": ",".join(str(x) for x in batch), "beginDate": begin.isoformat(), "endDate": end.isoformat()},
+                timeout=60,
+            )
+            if resp.status_code == 429:
+                logger.warning("sales-pace fullstats 429 — ждём 22с")
+                time.sleep(22)
+                resp = httpx.get(
+                    f"{WB_PROMOTION_URL}/adv/v3/fullstats",
+                    headers=wb_headers(),
+                    params={"ids": ",".join(str(x) for x in batch), "beginDate": begin.isoformat(), "endDate": end.isoformat()},
+                    timeout=60,
+                )
+            if not resp.is_success:
+                logger.error(f"sales-pace fullstats {resp.status_code}: {resp.text[:200]}")
+                break
+            all_rows.extend(_fullstats_nm_day_rows(resp.json()))
+        except Exception as e:
+            logger.error(f"sales-pace fullstats exception: {e}")
+            break
+        if i + 50 < len(ids):
+            time.sleep(20)
+
+    prev_a0, prev_a1 = prev_start.date(), prev_end.date()
+    cur_a0, cur_a1 = cur_start.date(), cur_end.date()
+    cur_by, prev_by = {}, {}
+
+    def _add(bucket, nm_id, row):
+        a = bucket.setdefault(nm_id, {"views": 0, "spend": 0.0, "clicks": 0, "orders": 0})
+        a["views"] += row["views"]
+        a["spend"] += row["spend"]
+        a["clicks"] += row["clicks"]
+        a["orders"] += row["orders"]
+
+    for row in all_rows:
+        try:
+            d = datetime.strptime(row["day"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if cur_a0 <= d <= cur_a1:
+            _add(cur_by, row["nm_id"], row)
+        if prev_a0 <= d <= prev_a1:
+            _add(prev_by, row["nm_id"], row)
+
+    for bucket in (cur_by, prev_by):
+        for a in bucket.values():
+            a["spend"] = round(a["spend"], 2)
+    return cur_by, prev_by
+
+def _cpm(views, spend):
+    views = int(views or 0)
+    spend = float(spend or 0)
+    if views <= 0:
+        return None
+    return round(spend / views * 1000, 1)
+
 def _ads_period_dates():
     """Период статистики рекламы: ads_date_from/to или окно ads_window_days (макс. 31 день)."""
     today = datetime.now(timezone.utc).date()
@@ -2916,6 +3026,14 @@ def sync_sales_pace(period: str = "day"):
         except Exception:
             nm_to_vendor = {}
 
+        # Реклама: показы и CPM по артикулу (календарные дни окон)
+        ads_cur, ads_prev = {}, {}
+        try:
+            ads_cur, ads_prev = fetch_ad_nm_windows(prev_start, prev_end, cur_start, cur_end)
+            logger.info(f"sales-pace ads: cur={len(ads_cur)} nms, prev={len(ads_prev)} nms")
+        except Exception as e:
+            logger.error(f"sales-pace ads error: {e}")
+
         # только артикулы с заказами в текущем или прошлом окне
         all_nms = set(cur_ord) | set(prev_ord)
         articles = []
@@ -2930,6 +3048,17 @@ def sync_sales_pace(period: str = "day"):
             opens_y = int(fy.get("opens") or 0)
             cart_t = int(ft.get("cart") or 0)
             cart_y = int(fy.get("cart") or 0)
+            ad_t = ads_cur.get(nm) or {}
+            ad_y = ads_prev.get(nm) or {}
+            views_t = int(ad_t.get("views") or 0)
+            views_y = int(ad_y.get("views") or 0)
+            spend_t = float(ad_t.get("spend") or 0)
+            spend_y = float(ad_y.get("spend") or 0)
+            cpm_t = _cpm(views_t, spend_t)
+            cpm_y = _cpm(views_y, spend_y)
+            cpm_delta = None
+            if cpm_t is not None and cpm_y is not None:
+                cpm_delta = round(cpm_t - cpm_y, 1)
             articles.append({
                 "nm_id": nm,
                 "vendor_code": ft.get("vendor_code") or fy.get("vendor_code") or nm_to_vendor.get(nm) or vc_from_orders.get(nm) or str(nm),
@@ -2946,6 +3075,14 @@ def sync_sales_pace(period: str = "day"):
                 "cart_today": cart_t,
                 "cart_yesterday": cart_y,
                 "cart_delta": cart_t - cart_y if funnel_ready else None,
+                "views_today": views_t,
+                "views_yesterday": views_y,
+                "views_delta": views_t - views_y,
+                "spend_today": spend_t,
+                "spend_yesterday": spend_y,
+                "cpm_today": cpm_t,
+                "cpm_yesterday": cpm_y,
+                "cpm_delta": cpm_delta,
                 "funnel_compare_ready": funnel_ready,
             })
 
