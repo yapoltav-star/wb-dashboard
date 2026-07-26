@@ -31,6 +31,7 @@ WB_SUPPLIES_URL = "https://supplies-api.wildberries.ru"
 WB_PROMOTION_URL = "https://advert-api.wildberries.ru"
 WB_CALENDAR_URL = "https://dp-calendar-api.wildberries.ru"
 WB_CONTENT_URL = "https://content-api.wildberries.ru"
+WB_PRICES_URL = "https://discounts-prices-api.wildberries.ru"
 
 # Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
 # а агрегаты — переносим их в отдельные поля stock_totals вместо списка складов.
@@ -3238,6 +3239,304 @@ async def trigger_sales_pace_sync(period: str = "day", date_cur: str = None, dat
     ).start()
     return {"status": "started", "period": period, "cache_key": cache_key, "date_cur": date_cur, "date_prev": date_prev}
 
+# ─────────── Цены и СПП ───────────
+SPP_CACHE = {
+    "articles": [],
+    "updated_at": None,
+    "syncing": False,
+    "error": None,
+    "client_source": None,
+}
+
+def _money_to_rub(v, force_kopecks: bool = False):
+    """WB: priceU/basic/product часто в копейках. Кабинет — обычно уже в рублях."""
+    if v is None:
+        return None
+    try:
+        x = float(v)
+    except Exception:
+        return None
+    if x <= 0:
+        return None
+    if force_kopecks or x >= 10000:
+        return round(x / 100.0, 2)
+    return round(x, 2)
+
+def fetch_cabinet_prices() -> list:
+    """Цены из кабинета продавца: /api/v2/list/goods/filter."""
+    if not WB_TOKEN:
+        return []
+    out = []
+    offset = 0
+    limit = 1000
+    for _ in range(50):
+        try:
+            resp = httpx.get(
+                f"{WB_PRICES_URL}/api/v2/list/goods/filter",
+                headers=wb_headers(),
+                params={"limit": limit, "offset": offset},
+                timeout=40,
+            )
+        except Exception as e:
+            logger.error(f"cabinet prices exception: {e}")
+            break
+        if not resp.is_success:
+            logger.error(f"cabinet prices {resp.status_code}: {resp.text[:300]}")
+            break
+        goods = (resp.json().get("data") or {}).get("listGoods") or []
+        if not goods:
+            break
+        for g in goods:
+            nm = g.get("nmID") or g.get("nmId")
+            if not nm:
+                continue
+            sizes = g.get("sizes") or []
+            # берём мин. цену после скидки по размерам (то, что «цена продавца» до СПП)
+            price = None
+            sale = None
+            for s in sizes:
+                p = s.get("price")
+                dp = s.get("discountedPrice")
+                if p is not None:
+                    price = min(price, float(p)) if price is not None else float(p)
+                if dp is not None:
+                    sale = min(sale, float(dp)) if sale is not None else float(dp)
+            if sale is None and g.get("discountedPrice") is not None:
+                sale = float(g.get("discountedPrice"))
+            if price is None and g.get("price") is not None:
+                price = float(g.get("price"))
+            if sale is None and price is not None and g.get("discount") is not None:
+                try:
+                    sale = round(price * (100 - float(g.get("discount"))) / 100.0, 2)
+                except Exception:
+                    sale = price
+            out.append({
+                "nm_id": int(nm),
+                "vendor_code": (g.get("vendorCode") or "").strip() or str(nm),
+                "price": round(price, 2) if price is not None else None,
+                "discount": g.get("discount"),
+                "sale_price": round(sale, 2) if sale is not None else None,
+                "club_discount": g.get("clubDiscount"),
+            })
+        if len(goods) < limit:
+            break
+        offset += limit
+        time.sleep(0.7)
+    return out
+
+def _parse_client_product(p: dict) -> dict:
+    """Достаёт цену покупателя и «базу до СПП» из продукта card/search API."""
+    if not isinstance(p, dict):
+        return {}
+    nm = p.get("id") or p.get("nmId") or p.get("nmID")
+    basic = product = None
+    sizes = p.get("sizes") or []
+    for s in sizes:
+        pr = s.get("price") if isinstance(s, dict) else None
+        if not isinstance(pr, dict):
+            continue
+        b = pr.get("basic")
+        prod = pr.get("product")
+        if b is not None:
+            b_rub = _money_to_rub(b)
+            basic = min(basic, b_rub) if basic is not None and b_rub is not None else (b_rub if basic is None else basic)
+        if prod is not None:
+            p_rub = _money_to_rub(prod)
+            product = min(product, p_rub) if product is not None and p_rub is not None else (p_rub if product is None else product)
+    # legacy fields (копейки)
+    if product is None and p.get("salePriceU") is not None:
+        product = _money_to_rub(p.get("salePriceU"), force_kopecks=True)
+    if basic is None and p.get("priceU") is not None:
+        basic = _money_to_rub(p.get("priceU"), force_kopecks=True)
+    if product is None and p.get("salePrice") is not None:
+        product = _money_to_rub(p.get("salePrice"))
+    spp_hint = p.get("spp")
+    try:
+        spp_hint = float(spp_hint) if spp_hint is not None else None
+    except Exception:
+        spp_hint = None
+    if nm is None:
+        return {}
+    return {
+        "nm_id": int(nm),
+        "client_price": product,
+        "client_basic": basic,
+        "spp_hint": spp_hint,
+        "name": p.get("name") or p.get("title") or "",
+    }
+
+def fetch_client_prices(nm_ids: list) -> tuple:
+    """Цены с витрины WB. Возвращает ({nm_id: info}, source_name)."""
+    ids = [int(x) for x in nm_ids if x]
+    if not ids:
+        return {}, None
+    by_nm = {}
+    source = None
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+    }
+    # батчами по 50
+    for i in range(0, len(ids), 50):
+        batch = ids[i:i + 50]
+        nm_param = ";".join(str(x) for x in batch)
+        # spp не передаём: иначе WB подставит «виртуальную» скидку покупателя и СПП будет фейковым
+        urls = [
+            f"https://card.wb.ru/cards/v4/detail?appType=1&curr=rub&dest=-1257786&nm={nm_param}",
+            f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&nm={nm_param}",
+        ]
+        hdrs = {
+            **headers,
+            "Origin": "https://www.wildberries.ru",
+            "Referer": "https://www.wildberries.ru/",
+        }
+        got = False
+        for url in urls:
+            try:
+                resp = httpx.get(url, headers=hdrs, timeout=30)
+            except Exception as e:
+                logger.warning(f"client prices fetch error: {e}")
+                continue
+            if not resp.is_success:
+                continue
+            try:
+                data = resp.json()
+            except Exception:
+                continue
+            products = data.get("products") or (data.get("data") or {}).get("products") or []
+            if not products:
+                continue
+            for p in products:
+                info = _parse_client_product(p)
+                if info.get("nm_id"):
+                    by_nm[info["nm_id"]] = info
+            got = True
+            source = "card.wb.ru"
+            break
+        if not got:
+            # fallback: search по одному nm (медленнее)
+            for nm in batch:
+                try:
+                    resp = httpx.get(
+                        "https://search.wb.ru/exactmatch/ru/common/v18/search",
+                        headers=hdrs,
+                        params={
+                            "appType": 1, "curr": "rub", "dest": "-1257786",
+                            "query": str(nm), "resultset": "catalog", "lang": "ru",
+                        },
+                        timeout=25,
+                    )
+                    if resp.status_code == 429:
+                        time.sleep(2)
+                        continue
+                    if not resp.is_success:
+                        continue
+                    data = resp.json()
+                    products = data.get("products") or (data.get("data") or {}).get("products") or []
+                    for p in products:
+                        info = _parse_client_product(p)
+                        if info.get("nm_id") == int(nm):
+                            by_nm[int(nm)] = info
+                            source = "search.wb.ru"
+                            break
+                except Exception as e:
+                    logger.warning(f"search client price nm={nm}: {e}")
+                time.sleep(0.35)
+        time.sleep(0.25)
+    return by_nm, source
+
+def _calc_spp(sale_price, client_price):
+    if not sale_price or not client_price or sale_price <= 0 or client_price <= 0:
+        return None
+    # СПП = насколько витрина дешевле цены продавца после его скидки
+    spp = (1.0 - float(client_price) / float(sale_price)) * 100.0
+    if spp < -1:
+        return round(spp, 1)
+    return round(max(0.0, spp), 1)
+
+def sync_spp_prices():
+    if SPP_CACHE.get("syncing"):
+        return
+    SPP_CACHE["syncing"] = True
+    SPP_CACHE["error"] = None
+    try:
+        if not WB_TOKEN:
+            SPP_CACHE["error"] = "WB_TOKEN не задан"
+            return
+        cabinet = fetch_cabinet_prices()
+        if not cabinet:
+            SPP_CACHE["error"] = "Не удалось получить цены из кабинета (проверь токен категории «Цены и скидки»)"
+            SPP_CACHE["articles"] = []
+            return
+        nm_ids = [a["nm_id"] for a in cabinet]
+        client_map, source = fetch_client_prices(nm_ids)
+        articles = []
+        missing_client = 0
+        for a in cabinet:
+            c = client_map.get(a["nm_id"]) or {}
+            client_price = c.get("client_price")
+            sale = a.get("sale_price")
+            spp = _calc_spp(sale, client_price)
+            # если product нет, но WB отдал поле spp — считаем клиентскую цену от кабинета
+            if spp is None and sale and c.get("spp_hint") is not None:
+                try:
+                    hint = float(c["spp_hint"])
+                    if 0 <= hint <= 95:
+                        spp = round(hint, 1)
+                        if client_price is None:
+                            client_price = round(float(sale) * (1.0 - hint / 100.0), 2)
+                except Exception:
+                    pass
+            # запасной путь: basic на витрине ≈ цена до СПП, product — после
+            if spp is None and c.get("client_basic") and c.get("client_price"):
+                spp = _calc_spp(c.get("client_basic"), c.get("client_price"))
+                if client_price is None:
+                    client_price = c.get("client_price")
+            if client_price is None:
+                missing_client += 1
+            articles.append({
+                **a,
+                "client_price": client_price,
+                "client_basic": c.get("client_basic"),
+                "spp": spp,
+                "name": c.get("name") or "",
+            })
+        articles.sort(key=lambda x: (-(x.get("spp") or -1), str(x.get("vendor_code") or "")))
+        SPP_CACHE["articles"] = articles
+        SPP_CACHE["updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+        SPP_CACHE["client_source"] = source
+        if missing_client == len(articles):
+            SPP_CACHE["error"] = "Цены кабинета загружены, но витрину WB не удалось прочитать (блокировка). СПП пока пустой — нажми Обновить позже."
+        elif missing_client:
+            SPP_CACHE["error"] = None
+            logger.warning(f"SPP: no client price for {missing_client}/{len(articles)}")
+        logger.info(f"SPP sync: {len(articles)} arts, client_source={source}, missing={missing_client}")
+    except Exception as e:
+        logger.error(f"sync_spp_prices error: {e}")
+        SPP_CACHE["error"] = str(e)
+    finally:
+        SPP_CACHE["syncing"] = False
+
+@app.get("/api/spp-prices")
+def get_spp_prices(refresh: bool = False):
+    if refresh or not SPP_CACHE.get("articles"):
+        if not SPP_CACHE.get("syncing"):
+            threading.Thread(target=sync_spp_prices, daemon=True).start()
+    return {
+        "articles": SPP_CACHE.get("articles") or [],
+        "updated_at": SPP_CACHE.get("updated_at"),
+        "syncing": SPP_CACHE.get("syncing", False),
+        "error": SPP_CACHE.get("error"),
+        "client_source": SPP_CACHE.get("client_source"),
+    }
+
+@app.post("/api/sync-spp-prices")
+async def trigger_spp_prices_sync():
+    if SPP_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    threading.Thread(target=sync_spp_prices, daemon=True).start()
+    return {"status": "started"}
+
 scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
 scheduler.add_job(sync_stock, "interval", hours=3, id="sync_stock")
@@ -3246,6 +3545,7 @@ scheduler.add_job(sync_ads, "interval", hours=4, id="sync_ads")
 scheduler.add_job(lambda: sync_article_daily_stats(30), "interval", hours=6, id="sync_daily")
 scheduler.add_job(sync_promotions, "interval", hours=6, id="sync_promotions")
 scheduler.add_job(lambda: sync_sales_pace("day"), "interval", hours=1, id="sync_sales_pace")
+scheduler.add_job(sync_spp_prices, "interval", hours=3, id="sync_spp_prices")
 scheduler.start()
 # Разово чистим ошибочные api-рейтинги после деплоя (item-rating ломал склейки).
 threading.Thread(target=sync_ratings_official, daemon=True).start()

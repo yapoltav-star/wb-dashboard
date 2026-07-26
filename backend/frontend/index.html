@@ -468,7 +468,7 @@ td.tc{text-align:center}
   <div class="tb-nav">
     <div class="tb-nav-item" onclick="showSection('growth',this)">Рост продаж</div>
     <div class="tb-nav-item on" onclick="showSection('products',this)">Отзывы и оценки</div>
-    <div class="tb-nav-item" onclick="showSection('promotions',this)">Акции</div>
+    <div class="tb-nav-item" onclick="showSection('promotions',this)">Акции и цены</div>
     <div class="tb-nav-item" onclick="showSection('supplies',this)">Остатки и поставки</div>
     <div class="tb-nav-item" onclick="showSection('analytics',this)">Конкуренты</div>
     <div class="tb-nav-item" onclick="showSection('ads',this)">Продвижение</div>
@@ -490,6 +490,10 @@ td.tc{text-align:center}
 </div>
 <div class="subnav" id="subnav-growth" style="display:none">
   <div class="sn-item on" onclick="showPage('sales-pace',this)">Темп к вчера</div>
+</div>
+<div class="subnav" id="subnav-promotions" style="display:none">
+  <div class="sn-item on" onclick="showPage('promotions',this)">Акции</div>
+  <div class="sn-item" onclick="showPage('prices',this)">Цены и СПП</div>
 </div>
 <div class="subnav" id="subnav-supplies" style="display:none">
   <div class="sn-item on" onclick="showPage('supply-recs',this)">Рекомендации поставок</div>
@@ -725,6 +729,22 @@ td.tc{text-align:center}
   <div id="promoRoot"><div class="empty" style="padding:40px 20px">Загрузи Excel из WB: <b>Цены и скидки → Календарь акций → товары акции → Сформировать → Скачать</b>.<br>Нужные артикулы будут сверху, слабые продажи — снизу.</div></div>
 </div>
 
+<!-- ЦЕНЫ И СПП -->
+<div class="page" id="page-prices">
+  <div class="toolbar">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="sppSearch" placeholder="Поиск по артикулу / nm..." oninput="drawSppPrices()">
+    </div>
+    <span id="sppInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
+    <div class="ml-auto">
+      <button class="action-btn" id="sppSyncBtn" onclick="triggerSppSync()">↻ Обновить</button>
+    </div>
+  </div>
+  <div class="cards" id="sppCards"></div>
+  <div id="sppRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить» — сравним цену из кабинета с ценой на витрине WB и посчитаем СПП.</div></div>
+</div>
+
 <!-- КОНКУРЕНТЫ -->
 <div class="page" id="page-competitors">
   <div class="toolbar">
@@ -885,9 +905,11 @@ function showSection(sec, btn) {
   document.getElementById('subnav-supplies').style.display = sec === 'supplies' ? 'flex' : 'none';
   const sg = document.getElementById('subnav-growth');
   if(sg) sg.style.display = sec === 'growth' ? 'flex' : 'none';
+  const sp = document.getElementById('subnav-promotions');
+  if(sp) sp.style.display = sec === 'promotions' ? 'flex' : 'none';
   if(sec === 'products') showPage('products', document.querySelector('#subnav-products .sn-item'));
   else if(sec === 'growth') showPage('sales-pace', document.querySelector('#subnav-growth .sn-item'));
-  else if(sec === 'promotions') showPage('promotions', null);
+  else if(sec === 'promotions') showPage('promotions', document.querySelector('#subnav-promotions .sn-item'));
   else if(sec === 'supplies') showPage('supply-recs', document.querySelector('#subnav-supplies .sn-item'));
   else if(sec === 'ads') showPage('ads', null);
   else if(sec === 'analytics') showPage('competitors', null);
@@ -911,6 +933,7 @@ function showPage(id, btn) {
   if(id === 'ads') loadAdsPage();
   if(id === 'competitors') renderCompetitors();
   if(id === 'promotions') renderPromotions();
+  if(id === 'prices') renderSppPrices(true);
   if(id === 'sales-pace') renderSalesPace(true);
   if(id === 'finance') renderFinance();
 }
@@ -2960,6 +2983,168 @@ function savePromoSessions() {
 
 function renderPromotions() {
   drawPromoExcel();
+}
+
+// ─────────── Цены и СПП ───────────
+let SPP_DATA = {articles: [], syncing: false};
+let SPP_LOADED = false;
+let sppPoll = null;
+let SPP_SORT = {key: 'spp', dir: -1};
+
+function renderSppPrices(force) {
+  if(force || !SPP_LOADED) {
+    SPP_LOADED = true;
+    loadSppPrices();
+    return;
+  }
+  drawSppPrices();
+}
+
+async function loadSppPrices() {
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/spp-prices`);
+    SPP_DATA = await r.json();
+  } catch(e) {
+    SPP_DATA = {articles: [], error: e.message, syncing: false};
+  }
+  drawSppPrices();
+  clearTimeout(sppPoll);
+  if(SPP_DATA.syncing) sppPoll = setTimeout(loadSppPrices, 3500);
+}
+
+async function triggerSppSync() {
+  const btn = document.getElementById('sppSyncBtn');
+  if(btn) btn.disabled = true;
+  const info = document.getElementById('sppInfo');
+  if(info) info.textContent = 'Обновляем цены…';
+  const root = document.getElementById('sppRoot');
+  if(root && !(SPP_DATA.articles || []).length)
+    root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Тянем цены из кабинета и с витрины WB…</span></div>';
+  try {
+    await fetch(`${RAILWAY_URL}/api/sync-spp-prices`, {method: 'POST'});
+  } catch(e) {}
+  SPP_DATA.syncing = true;
+  setTimeout(loadSppPrices, 1500);
+}
+
+function sppSort(key) {
+  if(SPP_SORT.key === key) SPP_SORT.dir *= -1;
+  else { SPP_SORT.key = key; SPP_SORT.dir = key === 'vendor_code' ? 1 : -1; }
+  drawSppPrices();
+}
+
+function sppSortMark(key) {
+  if(SPP_SORT.key !== key) return '';
+  return SPP_SORT.dir === 1 ? ' ↑' : ' ↓';
+}
+
+function sppMoney(v) {
+  if(v == null || !isFinite(Number(v))) return '—';
+  return Number(v).toLocaleString('ru-RU', {maximumFractionDigits: 0}) + ' ₽';
+}
+
+function sppPctHtml(v) {
+  if(v == null || !isFinite(Number(v))) return '<span style="color:var(--wb-faint)">—</span>';
+  const n = Number(v);
+  const color = n >= 20 ? '#027A48' : (n >= 10 ? '#B54708' : (n > 0 ? 'var(--wb-text)' : '#B42318'));
+  return `<span style="font-weight:700;color:${color}">${n.toLocaleString('ru-RU', {maximumFractionDigits: 1})}%</span>`;
+}
+
+function drawSppPrices() {
+  const info = document.getElementById('sppInfo');
+  const root = document.getElementById('sppRoot');
+  const cards = document.getElementById('sppCards');
+  const btn = document.getElementById('sppSyncBtn');
+  if(!root) return;
+
+  if(SPP_DATA.error && !(SPP_DATA.articles || []).length) {
+    if(info) info.textContent = SPP_DATA.error;
+  } else if(SPP_DATA.syncing) {
+    if(info) info.textContent = 'Обновляем…';
+    if(btn) btn.disabled = true;
+  } else {
+    const bits = [];
+    if(SPP_DATA.updated_at) bits.push('обновлено ' + SPP_DATA.updated_at);
+    if(SPP_DATA.client_source) bits.push('витрина: ' + SPP_DATA.client_source);
+    if(SPP_DATA.error) bits.push(SPP_DATA.error);
+    if(info) info.textContent = bits.join(' · ');
+    if(btn) btn.disabled = false;
+  }
+
+  let arts = [...(SPP_DATA.articles || [])];
+  const q = ((document.getElementById('sppSearch') || {}).value || '').toLowerCase().trim();
+  if(q) arts = arts.filter(a =>
+    String(a.vendor_code||'').toLowerCase().includes(q) ||
+    String(a.nm_id||'').includes(q) ||
+    String(a.name||'').toLowerCase().includes(q)
+  );
+
+  const sk = SPP_SORT.key, sd = SPP_SORT.dir;
+  arts.sort((a, b) => {
+    let va = a[sk], vb = b[sk];
+    if(va == null && vb == null) return 0;
+    if(va == null) return 1;
+    if(vb == null) return -1;
+    if(typeof va === 'string') return String(va).localeCompare(String(vb), 'ru') * (sd === 1 ? 1 : -1);
+    return (va - vb) * sd;
+  });
+
+  const all = SPP_DATA.articles || [];
+  const withSpp = all.filter(a => a.spp != null);
+  const avgSpp = withSpp.length
+    ? withSpp.reduce((s, a) => s + Number(a.spp), 0) / withSpp.length
+    : null;
+  const maxSpp = withSpp.length ? Math.max(...withSpp.map(a => Number(a.spp))) : null;
+  if(cards) {
+    cards.innerHTML = [
+      ['Артикулов', fmt(all.length)],
+      ['Со СПП', fmt(withSpp.length)],
+      ['Средний СПП', avgSpp != null ? (avgSpp.toLocaleString('ru-RU', {maximumFractionDigits: 1}) + '%') : '—', avgSpp != null ? 'color:#027A48' : ''],
+      ['Макс. СПП', maxSpp != null ? (maxSpp.toLocaleString('ru-RU', {maximumFractionDigits: 1}) + '%') : '—'],
+    ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+  }
+
+  if(SPP_DATA.syncing && !all.length) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Тянем цены из кабинета и с витрины WB…</span></div>';
+    return;
+  }
+  if(!arts.length) {
+    root.innerHTML = SPP_DATA.syncing
+      ? '<div class="loading"><div class="spinner"></div><span>Считаем…</span></div>'
+      : '<div class="empty" style="padding:40px 20px">Нет данных. Нажми «Обновить».<br><span style="font-size:12px;color:var(--wb-muted)">Нужен токен с доступом «Цены и скидки».</span></div>';
+    return;
+  }
+
+  const th = (label, key) =>
+    `<th class="mhead" style="cursor:pointer" onclick="sppSort('${key}')">${label}${sppSortMark(key)}</th>`;
+
+  root.innerHTML = `<div class="tbl-wrap"><table class="mtx">
+    <thead><tr>
+      ${th('Артикул', 'vendor_code')}
+      ${th('nmID', 'nm_id')}
+      ${th('Цена до скидки', 'price')}
+      ${th('Цена продавца', 'sale_price')}
+      ${th('Цена на сайте', 'client_price')}
+      ${th('СПП', 'spp')}
+      <th class="mhead">Скидка каб.</th>
+    </tr></thead>
+    <tbody>${arts.map(a => {
+      const wbLink = a.nm_id ? `https://www.wildberries.ru/catalog/${a.nm_id}/detail.aspx` : '#';
+      return `<tr>
+        <td class="sticky-col"><a href="${wbLink}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;font-weight:600">${escapeHtml(String(a.vendor_code||'—'))}</a></td>
+        <td style="color:var(--wb-muted);font-size:12px">${a.nm_id || '—'}</td>
+        <td>${sppMoney(a.price)}</td>
+        <td style="font-weight:600">${sppMoney(a.sale_price)}</td>
+        <td>${sppMoney(a.client_price)}</td>
+        <td>${sppPctHtml(a.spp)}</td>
+        <td style="color:var(--wb-muted)">${a.discount != null ? a.discount + '%' : '—'}</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table></div>
+  <div style="padding:10px 16px;font-size:12px;color:var(--wb-muted);line-height:1.45">
+    СПП = насколько цена на витрине ниже вашей цены продавца после скидки:
+    <code style="background:var(--wb-surface);padding:1px 5px;border-radius:3px">(1 − цена сайта / цена продавца) × 100%</code>
+  </div>`;
 }
 
 function setPromoExcelFilter(f) {
