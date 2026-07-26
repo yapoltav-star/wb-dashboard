@@ -1413,6 +1413,31 @@ def _cpm(views, spend):
         return None
     return round(spend / views * 1000, 1)
 
+def _pick_snap_for_time(snaps: list, day_str: str, target_dt: datetime):
+    """Ближайший снимок за day_str к target_dt (предпочитаем <= часа)."""
+    if not snaps:
+        return None
+    target_hour = target_dt.strftime("%Y-%m-%dT%H")
+    best = None
+    for s in snaps:
+        if s.get("day") != day_str:
+            continue
+        hk = s.get("hour_key") or ""
+        if hk <= target_hour:
+            best = s
+    if best is not None:
+        return best
+    candidates = [s for s in snaps if s.get("day") == day_str]
+    if not candidates:
+        return None
+    target0 = target_dt.replace(minute=0, second=0, microsecond=0)
+    def _dist(s):
+        try:
+            return abs((datetime.strptime(s["hour_key"], "%Y-%m-%dT%H") - target0).total_seconds())
+        except Exception:
+            return 10**9
+    return min(candidates, key=_dist)
+
 def _ads_period_dates():
     """Период статистики рекламы: ads_date_from/to или окно ads_window_days (макс. 31 день)."""
     today = datetime.now(timezone.utc).date()
@@ -2797,6 +2822,7 @@ SALES_PACE_CACHE = {
     "error": None,
 }
 SALES_PACE_SNAPS_KEY = "sales_pace_funnel_snaps"
+SALES_PACE_ADS_SNAPS_KEY = "sales_pace_ads_snaps"  # почасовые показы/расход, храним ~2 дня
 SALES_PACE_PERIODS = ("day", "week", "weeks2", "month")
 
 def _msk_now():
@@ -3026,13 +3052,64 @@ def sync_sales_pace(period: str = "day"):
         except Exception:
             nm_to_vendor = {}
 
-        # Реклама: показы и CPM по артикулу (календарные дни окон)
+        # Реклама: показы / CPM
+        # День — копим почасовые снимки (как воронка), вчера берём из снимка того же часа.
+        # Неделя+ — сравнение полных окон из WB.
         ads_cur, ads_prev = {}, {}
+        ads_compare_ready = True
+        ads_compare_as_of = None
         try:
-            ads_cur, ads_prev = fetch_ad_nm_windows(prev_start, prev_end, cur_start, cur_end)
-            logger.info(f"sales-pace ads: cur={len(ads_cur)} nms, prev={len(ads_prev)} nms")
+            if win.get("use_snaps"):
+                ads_cur, _ = fetch_ad_nm_windows(cur_start, cur_end, cur_start, cur_end)
+                hour_key = now.strftime("%Y-%m-%dT%H")
+                ads_snaps = get_setting_json(SALES_PACE_ADS_SNAPS_KEY, []) or []
+                if not isinstance(ads_snaps, list):
+                    ads_snaps = []
+                ads_snap_payload = {
+                    "hour_key": hour_key,
+                    "as_of": now.strftime("%Y-%m-%d %H:%M"),
+                    "day": cur_s,
+                    "products": {
+                        str(nm): {
+                            "views": int(v.get("views") or 0),
+                            "spend": float(v.get("spend") or 0),
+                        }
+                        for nm, v in ads_cur.items()
+                    },
+                }
+                ads_snaps = [s for s in ads_snaps if s.get("hour_key") != hour_key]
+                ads_snaps.append(ads_snap_payload)
+                # храним ~2 дня, чтобы не раздувать settings
+                cutoff_ads = (cur_start - timedelta(days=2)).strftime("%Y-%m-%d")
+                ads_snaps = [s for s in ads_snaps if (s.get("day") or "") >= cutoff_ads]
+                ads_snaps.sort(key=lambda s: s.get("hour_key") or "")
+                save_setting_value(SALES_PACE_ADS_SNAPS_KEY, ads_snaps)
+
+                yest_ads_snap = _pick_snap_for_time(ads_snaps, prev_s, prev_end)
+                ads_prev_raw = (yest_ads_snap or {}).get("products") or {}
+                ads_prev = {}
+                for k, v in ads_prev_raw.items():
+                    try:
+                        ads_prev[int(k)] = {
+                            "views": int((v or {}).get("views") or 0),
+                            "spend": float((v or {}).get("spend") or 0),
+                        }
+                    except Exception:
+                        pass
+                ads_compare_as_of = (yest_ads_snap or {}).get("as_of")
+                ads_compare_ready = bool(yest_ads_snap)
+                logger.info(
+                    f"sales-pace ads snaps: cur={len(ads_cur)} nms, "
+                    f"yest_snap={'yes' if yest_ads_snap else 'no'}, stored={len(ads_snaps)}"
+                )
+            else:
+                ads_cur, ads_prev = fetch_ad_nm_windows(prev_start, prev_end, cur_start, cur_end)
+                ads_compare_ready = True
+                ads_compare_as_of = f"{prev_s}–{prev_e}"
+                logger.info(f"sales-pace ads: cur={len(ads_cur)} nms, prev={len(ads_prev)} nms")
         except Exception as e:
             logger.error(f"sales-pace ads error: {e}")
+            ads_compare_ready = False
 
         # только артикулы с заказами в текущем или прошлом окне
         all_nms = set(cur_ord) | set(prev_ord)
@@ -3051,14 +3128,15 @@ def sync_sales_pace(period: str = "day"):
             ad_t = ads_cur.get(nm) or {}
             ad_y = ads_prev.get(nm) or {}
             views_t = int(ad_t.get("views") or 0)
-            views_y = int(ad_y.get("views") or 0)
             spend_t = float(ad_t.get("spend") or 0)
-            spend_y = float(ad_y.get("spend") or 0)
+            views_y = int(ad_y.get("views") or 0) if ads_compare_ready else None
+            spend_y = float(ad_y.get("spend") or 0) if ads_compare_ready else None
             cpm_t = _cpm(views_t, spend_t)
-            cpm_y = _cpm(views_y, spend_y)
+            cpm_y = _cpm(views_y, spend_y) if ads_compare_ready else None
             cpm_delta = None
             if cpm_t is not None and cpm_y is not None:
                 cpm_delta = round(cpm_t - cpm_y, 1)
+            views_delta = (views_t - views_y) if ads_compare_ready and views_y is not None else None
             articles.append({
                 "nm_id": nm,
                 "vendor_code": ft.get("vendor_code") or fy.get("vendor_code") or nm_to_vendor.get(nm) or vc_from_orders.get(nm) or str(nm),
@@ -3077,13 +3155,14 @@ def sync_sales_pace(period: str = "day"):
                 "cart_delta": cart_t - cart_y if funnel_ready else None,
                 "views_today": views_t,
                 "views_yesterday": views_y,
-                "views_delta": views_t - views_y,
+                "views_delta": views_delta,
                 "spend_today": spend_t,
                 "spend_yesterday": spend_y,
                 "cpm_today": cpm_t,
                 "cpm_yesterday": cpm_y,
                 "cpm_delta": cpm_delta,
                 "funnel_compare_ready": funnel_ready,
+                "ads_compare_ready": ads_compare_ready,
             })
 
         articles.sort(key=lambda a: (a["orders_delta"], a["orders_today"], str(a["vendor_code"])))
@@ -3093,6 +3172,7 @@ def sync_sales_pace(period: str = "day"):
             "articles": articles,
             "as_of": now.strftime("%d.%m.%Y %H:%M"),
             "compare_as_of": compare_as_of,
+            "ads_compare_as_of": ads_compare_as_of,
             "label_cur": win["label_cur"],
             "label_prev": win["label_prev"],
             "today": cur_s,
@@ -3100,6 +3180,7 @@ def sync_sales_pace(period: str = "day"):
             "now_time": now.strftime("%H:%M"),
             "updated_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
             "funnel_ready": funnel_ready,
+            "ads_compare_ready": ads_compare_ready,
             "error": None,
         }
         SALES_PACE_CACHE.setdefault("by_period", {})[period] = payload
@@ -3137,6 +3218,8 @@ def get_sales_pace(period: str = "day", refresh: bool = False):
         "now_time": cached.get("now_time"),
         "updated_at": cached.get("updated_at"),
         "funnel_ready": cached.get("funnel_ready"),
+        "ads_compare_ready": cached.get("ads_compare_ready"),
+        "ads_compare_as_of": cached.get("ads_compare_as_of"),
         "syncing": SALES_PACE_CACHE.get("syncing", False) and SALES_PACE_CACHE.get("syncing_period") == period,
         "error": SALES_PACE_CACHE.get("error") or cached.get("error"),
     }
