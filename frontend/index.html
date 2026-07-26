@@ -528,11 +528,8 @@ td.tc{text-align:center}
     <button class="filter-btn" id="pacePerWeeks2" onclick="setPacePeriod('weeks2')">2 недели</button>
     <button class="filter-btn" id="pacePerMonth" onclick="setPacePeriod('month')">Месяц</button>
     <span id="paceDatesWrap" style="display:inline-flex;align-items:center;gap:6px;margin-left:4px">
-      <span style="font-size:12px;color:var(--wb-muted)">Даты:</span>
-      <input type="date" id="paceDateCur" style="font:inherit;font-size:12px;border:1px solid var(--wb-border);border-radius:6px;padding:4px 6px;background:#fff;color:var(--wb-text)" title="Основной день">
-      <span style="font-size:12px;color:var(--wb-muted)">vs</span>
-      <input type="date" id="paceDatePrev" style="font:inherit;font-size:12px;border:1px solid var(--wb-border);border-radius:6px;padding:4px 6px;background:#fff;color:var(--wb-text)" title="С чем сравнить">
-      <button class="filter-btn" onclick="applyPaceDates()">Сравнить</button>
+      <span style="font-size:12px;color:var(--wb-muted)">День:</span>
+      <input type="date" id="paceDateCur" onchange="applyPaceDates()" style="font:inherit;font-size:12px;border:1px solid var(--wb-border);border-radius:6px;padding:4px 6px;background:#fff;color:var(--wb-text)" title="Сравнить этот день с предыдущим">
       <button class="filter-btn" onclick="clearPaceDates()" title="Сейчас vs вчера до текущего времени">Сброс</button>
     </span>
     <span style="width:1px;height:20px;background:var(--wb-border);margin:0 4px"></span>
@@ -2589,7 +2586,6 @@ let PACE_DATA = {articles:[], as_of:null, compare_as_of:null, syncing:false, err
 let PACE_FILTER = 'all';
 let PACE_PERIOD = localStorage.getItem('wb_pace_period') || 'day';
 let PACE_DATE_CUR = localStorage.getItem('wb_pace_date_cur') || '';
-let PACE_DATE_PREV = localStorage.getItem('wb_pace_date_prev') || '';
 let PACE_LOADED = false;
 let pacePoll = null;
 let PACE_SORT = {key: 'orders_delta', dir: 1};
@@ -2597,43 +2593,30 @@ let PACE_PINNED = JSON.parse(localStorage.getItem('wb_pace_pinned') || '[]');
 
 function paceDatesQuery() {
   if(PACE_PERIOD !== 'day' || !PACE_DATE_CUR) return '';
-  let q = `&date_cur=${encodeURIComponent(PACE_DATE_CUR)}`;
-  if(PACE_DATE_PREV) q += `&date_prev=${encodeURIComponent(PACE_DATE_PREV)}`;
-  return q;
+  return `&date_cur=${encodeURIComponent(PACE_DATE_CUR)}`;
 }
 
 function syncPaceDateInputs() {
   const wrap = document.getElementById('paceDatesWrap');
   if(wrap) wrap.style.display = PACE_PERIOD === 'day' ? 'inline-flex' : 'none';
   const cur = document.getElementById('paceDateCur');
-  const prev = document.getElementById('paceDatePrev');
   if(cur) cur.value = PACE_DATE_CUR || '';
-  if(prev) prev.value = PACE_DATE_PREV || '';
 }
 
 function applyPaceDates() {
   const cur = document.getElementById('paceDateCur');
-  const prev = document.getElementById('paceDatePrev');
   PACE_DATE_CUR = ((cur && cur.value) || '').trim();
-  PACE_DATE_PREV = ((prev && prev.value) || '').trim();
-  if(PACE_DATE_CUR && !PACE_DATE_PREV) {
-    const d = new Date(PACE_DATE_CUR + 'T12:00:00');
-    d.setDate(d.getDate() - 1);
-    PACE_DATE_PREV = d.toISOString().slice(0, 10);
-    if(prev) prev.value = PACE_DATE_PREV;
-  }
   if(PACE_DATE_CUR) localStorage.setItem('wb_pace_date_cur', PACE_DATE_CUR);
   else localStorage.removeItem('wb_pace_date_cur');
-  if(PACE_DATE_PREV) localStorage.setItem('wb_pace_date_prev', PACE_DATE_PREV);
-  else localStorage.removeItem('wb_pace_date_prev');
+  localStorage.removeItem('wb_pace_date_prev');
+  if(!PACE_DATE_CUR) return;
   const root = document.getElementById('paceRoot');
-  if(root) root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Считаем выбранные даты…</span></div>';
+  if(root) root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Считаем день vs предыдущий…</span></div>';
   triggerSalesPaceSync();
 }
 
 function clearPaceDates() {
   PACE_DATE_CUR = '';
-  PACE_DATE_PREV = '';
   localStorage.removeItem('wb_pace_date_cur');
   localStorage.removeItem('wb_pace_date_prev');
   syncPaceDateInputs();
@@ -2916,7 +2899,7 @@ function drawSalesPace() {
   }).join('');
 
   root.innerHTML = `<div class="pace-hint">Сравнение: <b>${escapeHtml(tLabel)}</b> vs <b>${escapeHtml(yLabel)}</b> (Москва).
-    ${PACE_DATA.custom_dates ? 'Выбранные дни — полные сутки (если выбран сегодня — до текущего времени). ' : 'В режиме «День» без дат — сегодня vs вчера до того же времени. Можно выбрать даты слева. '}
+    ${PACE_DATA.custom_dates ? 'Выбранный день vs предыдущий (полные сутки; если выбран сегодня — до текущего времени). ' : 'Без даты — сегодня vs вчера до того же времени. Можно выбрать день слева. '}
     Заказы — по минутам. <b>Показы / CPM</b> — из рекламы WB. Переходы / корзина — из воронки. 📌 — закрепить.</div>
     <div class="matrix-wrap"><table class="matrix promo-xls">
       <thead><tr>
