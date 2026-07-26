@@ -2806,9 +2806,55 @@ def _msk_now():
     except Exception:
         return datetime.utcnow() + timedelta(hours=3)
 
-def _pace_windows(period: str, now: datetime) -> dict:
-    """Окна текущего и прошлого периода (конец текущего = now, прошлый — той же длины)."""
+def _parse_ymd(s):
+    if not s:
+        return None
+    try:
+        return datetime.strptime(str(s)[:10], "%Y-%m-%d")
+    except Exception:
+        return None
+
+def _pace_cache_key(period: str, date_cur=None, date_prev=None) -> str:
+    if period == "day" and date_cur:
+        prev = date_prev or "auto"
+        return f"day:{str(date_cur)[:10]}:{str(prev)[:10]}"
+    return period
+
+def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> dict:
+    """Окна текущего и прошлого периода.
+    Для day + date_cur/date_prev — выбранные календарные дни (полные сутки;
+    если выбран сегодняшний — до текущего времени)."""
     today0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if period == "day" and date_cur:
+        cur_day = _parse_ymd(date_cur)
+        if cur_day:
+            prev_day = _parse_ymd(date_prev) if date_prev else (cur_day - timedelta(days=1))
+            if not prev_day or prev_day.date() >= cur_day.date():
+                prev_day = cur_day - timedelta(days=1)
+            cur_start = cur_day.replace(hour=0, minute=0, second=0, microsecond=0)
+            prev_start = prev_day.replace(hour=0, minute=0, second=0, microsecond=0)
+            if cur_start.date() == today0.date():
+                cur_end = now
+                label_cur = f"{cur_start.strftime('%d.%m.%Y')} до {now.strftime('%H:%M')}"
+            else:
+                cur_end = cur_start.replace(hour=23, minute=59, second=59)
+                label_cur = cur_start.strftime("%d.%m.%Y")
+            if prev_start.date() == today0.date():
+                prev_end = now
+                label_prev = f"{prev_start.strftime('%d.%m.%Y')} до {now.strftime('%H:%M')}"
+            else:
+                prev_end = prev_start.replace(hour=23, minute=59, second=59)
+                label_prev = prev_start.strftime("%d.%m.%Y")
+            return {
+                "cur_start": cur_start, "cur_end": cur_end,
+                "prev_start": prev_start, "prev_end": prev_end,
+                "label_cur": label_cur,
+                "label_prev": label_prev,
+                "col_cur": cur_start.strftime("%d.%m"),
+                "col_prev": prev_start.strftime("%d.%m"),
+                "use_snaps": False,
+                "custom_dates": True,
+            }
     if period == "day":
         cur_start = today0
         prev_start = today0 - timedelta(days=1)
@@ -2818,7 +2864,10 @@ def _pace_windows(period: str, now: datetime) -> dict:
             "prev_start": prev_start, "prev_end": prev_end,
             "label_cur": f"сегодня до {now.strftime('%H:%M')}",
             "label_prev": f"вчера до {now.strftime('%H:%M')}",
+            "col_cur": "Сегодня",
+            "col_prev": "Вчера",
             "use_snaps": True,
+            "custom_dates": False,
         }
     if period == "week":
         # понедельник текущей недели
@@ -2830,7 +2879,10 @@ def _pace_windows(period: str, now: datetime) -> dict:
             "prev_start": prev_start, "prev_end": prev_end,
             "label_cur": f"эта неделя ({cur_start.strftime('%d.%m')}–{now.strftime('%d.%m %H:%M')})",
             "label_prev": f"прошлая неделя ({prev_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m %H:%M')})",
+            "col_cur": "Текущий",
+            "col_prev": "Прошлый",
             "use_snaps": False,
+            "custom_dates": False,
         }
     if period == "weeks2":
         cur_start = now - timedelta(days=14)
@@ -2841,7 +2893,10 @@ def _pace_windows(period: str, now: datetime) -> dict:
             "prev_start": prev_start, "prev_end": prev_end,
             "label_cur": f"последние 14 дн. ({cur_start.strftime('%d.%m')}–{now.strftime('%d.%m')})",
             "label_prev": f"пред. 14 дн. ({prev_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m')})",
+            "col_cur": "Текущий",
+            "col_prev": "Прошлый",
             "use_snaps": False,
+            "custom_dates": False,
         }
     # month — с 1-го числа до сейчас vs прошлый месяц до того же дня/времени
     cur_start = today0.replace(day=1)
@@ -2864,7 +2919,10 @@ def _pace_windows(period: str, now: datetime) -> dict:
         "prev_start": prev_month_start, "prev_end": prev_end,
         "label_cur": f"этот месяц ({cur_start.strftime('%d.%m')}–{now.strftime('%d.%m %H:%M')})",
         "label_prev": f"прошлый месяц ({prev_month_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m %H:%M')})",
+        "col_cur": "Текущий",
+        "col_prev": "Прошлый",
         "use_snaps": False,
+        "custom_dates": False,
     }
 
 def _funnel_products_range(start_str: str, end_str: str, nm_ids: list = None) -> dict:
@@ -2919,20 +2977,24 @@ def _funnel_products_range(start_str: str, end_str: str, nm_ids: list = None) ->
 def _funnel_products_day(day_str: str, nm_ids: list = None) -> dict:
     return _funnel_products_range(day_str, day_str, nm_ids)
 
-def sync_sales_pace(period: str = "day"):
-    """Считает темп продаж за выбранный период."""
+def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = None):
+    """Считает темп продаж за выбранный период.
+    Для day можно передать date_cur / date_prev (YYYY-MM-DD) — сравнение двух дней."""
     period = period if period in SALES_PACE_PERIODS else "day"
+    if period != "day":
+        date_cur = date_prev = None
+    cache_key = _pace_cache_key(period, date_cur, date_prev)
     if not WB_TOKEN:
         SALES_PACE_CACHE["error"] = "WB_TOKEN не задан"
         return
     if SALES_PACE_CACHE.get("syncing"):
         return
     SALES_PACE_CACHE["syncing"] = True
-    SALES_PACE_CACHE["syncing_period"] = period
+    SALES_PACE_CACHE["syncing_period"] = cache_key
     SALES_PACE_CACHE["error"] = None
     try:
         now = _msk_now()
-        win = _pace_windows(period, now)
+        win = _pace_windows(period, now, date_cur, date_prev)
         cur_start, cur_end = win["cur_start"], win["cur_end"]
         prev_start, prev_end = win["prev_start"], win["prev_end"]
         cur_s = cur_start.strftime("%Y-%m-%d")
@@ -3090,11 +3152,17 @@ def sync_sales_pace(period: str = "day"):
 
         payload = {
             "period": period,
+            "cache_key": cache_key,
             "articles": articles,
             "as_of": now.strftime("%d.%m.%Y %H:%M"),
             "compare_as_of": compare_as_of,
             "label_cur": win["label_cur"],
             "label_prev": win["label_prev"],
+            "col_cur": win.get("col_cur") or ("Сегодня" if period == "day" else "Текущий"),
+            "col_prev": win.get("col_prev") or ("Вчера" if period == "day" else "Прошлый"),
+            "custom_dates": bool(win.get("custom_dates")),
+            "date_cur": cur_s,
+            "date_prev": prev_s,
             "today": cur_s,
             "yesterday": prev_s,
             "now_time": now.strftime("%H:%M"),
@@ -3102,12 +3170,12 @@ def sync_sales_pace(period: str = "day"):
             "funnel_ready": funnel_ready,
             "error": None,
         }
-        SALES_PACE_CACHE.setdefault("by_period", {})[period] = payload
+        SALES_PACE_CACHE.setdefault("by_period", {})[cache_key] = payload
         SALES_PACE_CACHE["syncing"] = False
         SALES_PACE_CACHE["syncing_period"] = None
-        logger.info(f"sales-pace[{period}]: {len(articles)} arts, {win['label_cur']}")
+        logger.info(f"sales-pace[{cache_key}]: {len(articles)} arts, {win['label_cur']} vs {win['label_prev']}")
     except Exception as e:
-        logger.error(f"sync_sales_pace({period}) error: {e}")
+        logger.error(f"sync_sales_pace({cache_key}) error: {e}")
         SALES_PACE_CACHE["error"] = str(e)
         SALES_PACE_CACHE["syncing"] = False
         SALES_PACE_CACHE["syncing_period"] = None
@@ -3116,39 +3184,59 @@ def sync_sales_pace(period: str = "day"):
         SALES_PACE_CACHE["syncing_period"] = None
 
 @app.get("/api/sales-pace")
-def get_sales_pace(period: str = "day", refresh: bool = False):
+def get_sales_pace(period: str = "day", refresh: bool = False, date_cur: str = None, date_prev: str = None):
     period = period if period in SALES_PACE_PERIODS else "day"
+    if period != "day":
+        date_cur = date_prev = None
+    cache_key = _pace_cache_key(period, date_cur, date_prev)
     by = SALES_PACE_CACHE.get("by_period") or {}
-    cached = by.get(period)
+    cached = by.get(cache_key)
     if refresh or not cached:
         if not SALES_PACE_CACHE.get("syncing"):
             import threading
-            threading.Thread(target=sync_sales_pace, args=(period,), daemon=True).start()
-    cached = (SALES_PACE_CACHE.get("by_period") or {}).get(period) or {}
+            threading.Thread(
+                target=sync_sales_pace,
+                kwargs={"period": period, "date_cur": date_cur, "date_prev": date_prev},
+                daemon=True,
+            ).start()
+    cached = (SALES_PACE_CACHE.get("by_period") or {}).get(cache_key) or {}
     return {
         "period": period,
+        "cache_key": cache_key,
         "articles": cached.get("articles") or [],
         "as_of": cached.get("as_of"),
         "compare_as_of": cached.get("compare_as_of"),
         "label_cur": cached.get("label_cur"),
         "label_prev": cached.get("label_prev"),
+        "col_cur": cached.get("col_cur"),
+        "col_prev": cached.get("col_prev"),
+        "custom_dates": cached.get("custom_dates"),
+        "date_cur": cached.get("date_cur") or date_cur,
+        "date_prev": cached.get("date_prev") or date_prev,
         "today": cached.get("today"),
         "yesterday": cached.get("yesterday"),
         "now_time": cached.get("now_time"),
         "updated_at": cached.get("updated_at"),
         "funnel_ready": cached.get("funnel_ready"),
-        "syncing": SALES_PACE_CACHE.get("syncing", False) and SALES_PACE_CACHE.get("syncing_period") == period,
+        "syncing": SALES_PACE_CACHE.get("syncing", False) and SALES_PACE_CACHE.get("syncing_period") == cache_key,
         "error": SALES_PACE_CACHE.get("error") or cached.get("error"),
     }
 
 @app.post("/api/sync-sales-pace")
-async def trigger_sales_pace_sync(period: str = "day"):
+async def trigger_sales_pace_sync(period: str = "day", date_cur: str = None, date_prev: str = None):
     import threading
     period = period if period in SALES_PACE_PERIODS else "day"
+    if period != "day":
+        date_cur = date_prev = None
+    cache_key = _pace_cache_key(period, date_cur, date_prev)
     if SALES_PACE_CACHE.get("syncing"):
         return {"status": "already_running", "period": SALES_PACE_CACHE.get("syncing_period")}
-    threading.Thread(target=sync_sales_pace, args=(period,), daemon=True).start()
-    return {"status": "started", "period": period}
+    threading.Thread(
+        target=sync_sales_pace,
+        kwargs={"period": period, "date_cur": date_cur, "date_prev": date_prev},
+        daemon=True,
+    ).start()
+    return {"status": "started", "period": period, "cache_key": cache_key, "date_cur": date_cur, "date_prev": date_prev}
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
