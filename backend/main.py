@@ -4579,7 +4579,7 @@ async def save_finance_cost(request: dict):
 CFO_SNAPSHOT_KEY = "cfo_snapshot"
 
 DEFAULT_CFO_SNAPSHOT = {
-    "as_of": "2026-07-22",
+    "as_of": "2026-07-30",
     "cash": 3480000,
     "suppliers": 22680000,
     "inventory_wb_own": 14293595,
@@ -4595,15 +4595,16 @@ DEFAULT_CFO_SNAPSHOT = {
     "pnl_wb": 8787716,
     "pnl_ozon": 1222922,
     "loans": [
-        {"id": "sber1", "name": "Сбер бизнес #1", "contract": "722407482466", "balance": 3433463, "rate": 0.38, "payment": 230671, "close": "2028-02", "early_repay": "term", "interest_only": False, "notes": "досрочка → срок↓"},
-        {"id": "sber2", "name": "Сбер бизнес #2", "contract": "722407658448", "balance": 3438510, "rate": 0.37, "payment": 220577, "close": "2028-02", "early_repay": "payment", "interest_only": False, "notes": "досрочка → платёж↓"},
-        {"id": "vtb_big", "name": "ВТБ крупный", "contract": "", "balance": 4000000, "rate": 0.264, "payment": 162000, "close": "", "early_repay": "", "interest_only": False, "notes": "июнь: 88к% + 74к тело"},
-        {"id": "tbank", "name": "ТБанк", "contract": "", "balance": 2246883, "rate": 0.349, "payment": 92280, "close": "2031-02", "early_repay": "", "interest_only": False, "notes": ""},
-        {"id": "cash", "name": "Займ наличными", "contract": "", "balance": 2000000, "rate": 0.2, "payment": 34000, "close": "", "early_repay": "", "interest_only": True, "notes": "−1 млн погашено"},
-        {"id": "alfa2", "name": "Альфа #2", "contract": "10009587221", "balance": 857544, "rate": 0.259, "payment": 58010, "close": "2027-11", "early_repay": "", "interest_only": False, "notes": ""},
-        {"id": "alfa1", "name": "Альфа #1", "contract": "PILPAQ7SKC", "balance": 911273, "rate": 0.2299, "payment": 64100, "close": "2027-10", "early_repay": "", "interest_only": False, "notes": ""},
-        {"id": "sber3", "name": "Сбер #3", "contract": "", "balance": 1370000, "rate": 0.3, "payment": 75023, "close": "2028-04", "early_repay": "", "interest_only": False, "notes": "ставку уточнить"},
-        {"id": "vtb2", "name": "ВТБ #2", "contract": "V625/0000-0951998", "balance": 541658, "rate": 0.172, "payment": 24334, "close": "2028-09", "early_repay": "", "interest_only": False, "notes": ""},
+        # Сбер #1 (~230к/мес) закрыт
+        {"id": "sber2", "name": "Сбер бизнес #2", "contract": "722407658448", "balance": 638510, "rate": 0.37, "payment": 40000, "fee_month": 0, "close": "2028-02", "early_repay": "payment", "interest_only": False, "notes": "после досрочки −2.8 млн, платёж 40к"},
+        {"id": "line6m", "name": "Кредитная линия 6 млн", "contract": "", "balance": 6000000, "rate": 0.189, "payment": 243600, "fee_month": 24000, "close": "2029-07", "early_repay": "", "interest_only": False, "notes": "18.9%/год + 0.4% лимита (24к). 36 мес. Переплата 2.77 млн (46.2%)"},
+        {"id": "vtb_big", "name": "ВТБ крупный", "contract": "", "balance": 4000000, "rate": 0.264, "payment": 162000, "fee_month": 0, "close": "", "early_repay": "", "interest_only": False, "notes": "июнь: 88к% + 74к тело"},
+        {"id": "tbank", "name": "ТБанк", "contract": "", "balance": 2246883, "rate": 0.349, "payment": 92280, "fee_month": 0, "close": "2031-02", "early_repay": "", "interest_only": False, "notes": ""},
+        {"id": "cash", "name": "Займ наличными", "contract": "", "balance": 2000000, "rate": 0.2, "payment": 34000, "fee_month": 0, "close": "", "early_repay": "", "interest_only": True, "notes": "−1 млн погашено"},
+        {"id": "alfa2", "name": "Альфа #2", "contract": "10009587221", "balance": 857544, "rate": 0.259, "payment": 58010, "fee_month": 0, "close": "2027-11", "early_repay": "", "interest_only": False, "notes": ""},
+        {"id": "alfa1", "name": "Альфа #1", "contract": "PILPAQ7SKC", "balance": 911273, "rate": 0.2299, "payment": 64100, "fee_month": 0, "close": "2027-10", "early_repay": "", "interest_only": False, "notes": ""},
+        {"id": "sber3", "name": "Сбер #3", "contract": "", "balance": 1370000, "rate": 0.3, "payment": 75023, "fee_month": 0, "close": "2028-04", "early_repay": "", "interest_only": False, "notes": "ставку уточнить"},
+        {"id": "vtb2", "name": "ВТБ #2", "contract": "V625/0000-0951998", "balance": 541658, "rate": 0.172, "payment": 24334, "fee_month": 0, "close": "2028-09", "early_repay": "", "interest_only": False, "notes": ""},
     ],
 }
 
@@ -4622,19 +4623,70 @@ def _cfo_interest_month(loan: dict) -> float:
         return _cfo_num(loan.get("payment"))
     # факт по ВТБ крупному из июня
     if loan.get("id") == "vtb_big":
-        return 88000.0
+        return 88000.0 + _cfo_num(loan.get("fee_month"))
     rate = _cfo_num(loan.get("rate"))
     bal = _cfo_num(loan.get("balance"))
-    if rate <= 0 or bal <= 0:
-        return 0.0
-    return bal * rate / 12.0
+    fee = _cfo_num(loan.get("fee_month"))
+    interest = (bal * rate / 12.0) if (rate > 0 and bal > 0) else 0.0
+    return interest + fee
+
+
+def _migrate_cfo_loans_jul30(data: dict) -> tuple:
+    """Разово: закрыт Сбер#1, Сбер#2 −2.8млн/платёж 40к, добавлена линия 6 млн.
+    Возвращает (data, changed)."""
+    loans = data.get("loans")
+    if not isinstance(loans, list) or not loans:
+        return data, False
+    ids = {l.get("id") for l in loans if isinstance(l, dict)}
+    if "line6m" in ids and "sber1" not in ids:
+        return data, False
+    sber1 = next((l for l in loans if isinstance(l, dict) and l.get("id") == "sber1"), None)
+    if not sber1 or _cfo_num(sber1.get("payment")) < 150000:
+        return data, False
+
+    new_loans = []
+    for l in loans:
+        if not isinstance(l, dict):
+            continue
+        if l.get("id") == "sber1":
+            continue
+        item = dict(l)
+        if item.get("id") == "sber2":
+            bal = _cfo_num(item.get("balance"))
+            if bal >= 2_500_000:
+                item["balance"] = round(bal - 2_800_000, 2)
+            item["payment"] = 40000
+            item["notes"] = "после досрочки −2.8 млн, платёж 40к"
+        item["fee_month"] = _cfo_num(item.get("fee_month"))
+        new_loans.append(item)
+    if not any(l.get("id") == "line6m" for l in new_loans):
+        line = {
+            "id": "line6m",
+            "name": "Кредитная линия 6 млн",
+            "contract": "",
+            "balance": 6_000_000,
+            "rate": 0.189,
+            "payment": 243600,
+            "fee_month": 24000,
+            "close": "2029-07",
+            "early_repay": "",
+            "interest_only": False,
+            "notes": "18.9%/год + 0.4% лимита (24к). 36 мес. Переплата 2.77 млн (46.2%)",
+        }
+        idx = next((i for i, l in enumerate(new_loans) if l.get("id") == "sber2"), -1)
+        new_loans.insert(idx + 1, line)
+    data["loans"] = new_loans
+    data["as_of"] = "2026-07-30"
+    return data, True
 
 
 def enrich_cfo_snapshot(raw: dict) -> dict:
     data = {**DEFAULT_CFO_SNAPSHOT, **(raw or {})}
     data.pop("personal", None)
     if not isinstance(data.get("loans"), list) or not data["loans"]:
-        data["loans"] = list(DEFAULT_CFO_SNAPSHOT["loans"])
+        data["loans"] = [dict(x) for x in DEFAULT_CFO_SNAPSHOT["loans"]]
+    else:
+        data, _ = _migrate_cfo_loans_jul30(data)
 
     loans = []
     for i, loan in enumerate(data["loans"]):
@@ -4645,6 +4697,7 @@ def enrich_cfo_snapshot(raw: dict) -> dict:
         item["balance"] = _cfo_num(item.get("balance"))
         item["rate"] = _cfo_num(item.get("rate"))
         item["payment"] = _cfo_num(item.get("payment"))
+        item["fee_month"] = _cfo_num(item.get("fee_month"))
         item["interest_month"] = round(_cfo_interest_month(item), 2)
         item["principal_month"] = round(max(0.0, item["payment"] - item["interest_month"]), 2)
         loans.append(item)
@@ -4789,6 +4842,33 @@ def get_finance_cfo():
     if not raw or not isinstance(raw, dict):
         raw = dict(DEFAULT_CFO_SNAPSHOT)
         save_setting_value(CFO_SNAPSHOT_KEY, raw)
+        return enrich_cfo_snapshot(raw)
+    migrated, changed = _migrate_cfo_loans_jul30(dict(raw))
+    if changed:
+        # сохраняем очищенные loans без computed полей
+        clean_loans = []
+        for i, loan in enumerate(migrated.get("loans") or []):
+            if not isinstance(loan, dict):
+                continue
+            clean_loans.append({
+                "id": loan.get("id") or f"loan_{i}",
+                "name": str(loan.get("name") or f"Кредит {i+1}"),
+                "contract": str(loan.get("contract") or ""),
+                "balance": _cfo_num(loan.get("balance")),
+                "rate": _cfo_num(loan.get("rate")),
+                "payment": _cfo_num(loan.get("payment")),
+                "fee_month": _cfo_num(loan.get("fee_month")),
+                "close": str(loan.get("close") or ""),
+                "early_repay": str(loan.get("early_repay") or ""),
+                "interest_only": bool(loan.get("interest_only")),
+                "notes": str(loan.get("notes") or ""),
+            })
+        to_save = {**raw, "loans": clean_loans, "as_of": migrated.get("as_of") or raw.get("as_of")}
+        to_save["updated_at"] = datetime.now(timezone.utc).isoformat()
+        to_save.pop("totals", None)
+        to_save.pop("personal", None)
+        save_setting_value(CFO_SNAPSHOT_KEY, to_save)
+        raw = to_save
     return enrich_cfo_snapshot(raw)
 
 
@@ -4812,6 +4892,7 @@ async def save_finance_cfo(request: dict):
                 "balance": _cfo_num(loan.get("balance")),
                 "rate": _cfo_num(loan.get("rate")),
                 "payment": _cfo_num(loan.get("payment")),
+                "fee_month": _cfo_num(loan.get("fee_month")),
                 "close": str(loan.get("close") or ""),
                 "early_repay": str(loan.get("early_repay") or ""),
                 "interest_only": bool(loan.get("interest_only")),

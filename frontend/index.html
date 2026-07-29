@@ -4493,9 +4493,11 @@ function cfoNum(v) {
 }
 function cfoInterest(loan) {
   if(loan.interest_only) return cfoNum(loan.payment);
-  if(loan.id === 'vtb_big') return 88000;
+  if(loan.id === 'vtb_big') return 88000 + cfoNum(loan.fee_month);
   const rate = cfoNum(loan.rate), bal = cfoNum(loan.balance);
-  return rate > 0 && bal > 0 ? bal * rate / 12 : 0;
+  const fee = cfoNum(loan.fee_month);
+  const interest = (rate > 0 && bal > 0) ? bal * rate / 12 : 0;
+  return interest + fee;
 }
 function recomputeCfoLocal() {
   if(!CFO_DATA) return;
@@ -4621,8 +4623,9 @@ function drawCfo() {
     <tr data-i="${i}">
       <td><input class="cfo-inp" data-f="name" value="${escapeHtml(l.name || '')}" oninput="onCfoLoanEdit(${i},'name',this.value)"></td>
       <td><input class="cfo-inp cfo-num" data-f="balance" type="number" step="1" value="${cfoNum(l.balance)}" oninput="onCfoLoanEdit(${i},'balance',this.value)"></td>
-      <td><input class="cfo-inp cfo-rate" data-f="rate" type="number" step="0.001" value="${cfoNum(l.rate)}" oninput="onCfoLoanEdit(${i},'rate',this.value)" title="доля, напр. 0.38 = 38%"></td>
+      <td><input class="cfo-inp cfo-rate" data-f="rate" type="number" step="0.001" value="${cfoNum(l.rate)}" oninput="onCfoLoanEdit(${i},'rate',this.value)" title="доля, напр. 0.189 = 18.9%"></td>
       <td><input class="cfo-inp cfo-num" data-f="payment" type="number" step="1" value="${cfoNum(l.payment)}" oninput="onCfoLoanEdit(${i},'payment',this.value)"></td>
+      <td><input class="cfo-inp cfo-num" data-f="fee_month" type="number" step="1" value="${cfoNum(l.fee_month)}" oninput="onCfoLoanEdit(${i},'fee_month',this.value)" title="Фикс. комиссия / мес (0.4% лимита и т.п.)"></td>
       <td style="text-align:right;font-variant-numeric:tabular-nums">${fmtMoney(l.interest_month)}</td>
       <td><input class="cfo-inp" style="width:90px" data-f="close" value="${escapeHtml(l.close || '')}" oninput="onCfoLoanEdit(${i},'close',this.value)"></td>
       <td><label class="cfo-check"><input type="checkbox" ${l.interest_only ? 'checked' : ''} onchange="onCfoLoanEdit(${i},'interest_only',this.checked)"> только %</label></td>
@@ -4692,12 +4695,12 @@ function drawCfo() {
       <div class="cfo-scroll">
         <table class="cfo-table">
           <thead><tr>
-            <th>Название</th><th>Тело</th><th>Ставка</th><th>Платёж</th><th>≈ %/мес</th><th>Закрытие</th><th></th><th>Заметка</th><th></th>
+            <th>Название</th><th>Тело</th><th>Ставка</th><th>Платёж</th><th>Комиссия/мес</th><th>≈ %/мес</th><th>Закрытие</th><th></th><th>Заметка</th><th></th>
           </tr></thead>
-          <tbody>${loanRows || '<tr><td colspan="9" class="empty">Нет кредитов</td></tr>'}</tbody>
+          <tbody>${loanRows || '<tr><td colspan="10" class="empty">Нет кредитов</td></tr>'}</tbody>
         </table>
       </div>
-      <div class="cfo-hint">Ставка как доля: 0.38 = 38%. Средневзвешенная: <b>${h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—'}</b> · % в месяц суммарно: <b>${fmtMoney(t.bank_interest)}</b></div>
+      <div class="cfo-hint">Ставка как доля: 0.189 = 18.9%. «Комиссия/мес» — фикс (напр. 0.4% лимита). ≈%/мес = тело×ставка/12 + комиссия. Средневзвешенная: <b>${h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—'}</b> · % в месяц суммарно: <b>${fmtMoney(t.bank_interest)}</b></div>
     </div>`;
 }
 
@@ -4811,7 +4814,7 @@ function onCfoLoanEdit(i, field, val) {
   recomputeCfoLocal();
   // обновить % в строке без полной перерисовки фокуса
   const tr = document.querySelector(`#cfoRoot tr[data-i="${i}"]`);
-  if(tr && tr.children[4]) tr.children[4].textContent = fmtMoney(CFO_DATA.loans[i].interest_month);
+  if(tr && tr.children[5]) tr.children[5].textContent = fmtMoney(CFO_DATA.loans[i].interest_month);
   drawCfoCardsOnly();
 }
 function addCfoLoan() {
@@ -4819,7 +4822,7 @@ function addCfoLoan() {
   if(!Array.isArray(CFO_DATA.loans)) CFO_DATA.loans = [];
   CFO_DATA.loans.push({
     id: 'loan_' + Date.now(), name: 'Новый кредит', contract: '', balance: 0, rate: 0.2,
-    payment: 0, close: '', early_repay: '', interest_only: false, notes: ''
+    payment: 0, fee_month: 0, close: '', early_repay: '', interest_only: false, notes: ''
   });
   drawCfo();
 }
@@ -4868,6 +4871,7 @@ async function saveCfoSnapshot() {
     loans: (CFO_DATA.loans || []).map(l => ({
       id: l.id, name: l.name, contract: l.contract || '',
       balance: cfoNum(l.balance), rate: cfoNum(l.rate), payment: cfoNum(l.payment),
+      fee_month: cfoNum(l.fee_month),
       close: l.close || '', early_repay: l.early_repay || '',
       interest_only: !!l.interest_only, notes: l.notes || '',
     })),
