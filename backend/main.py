@@ -4581,7 +4581,7 @@ CFO_SNAPSHOT_KEY = "cfo_snapshot"
 DEFAULT_CFO_SNAPSHOT = {
     "as_of": "2026-07-30",
     "cash": 3480000,
-    "suppliers": 22680000,
+    "suppliers": 21344400,
     "inventory_wb_own": 14293595,
     "inventory_transit": 1000000,
     "inventory_ozon": 1500000,
@@ -4590,7 +4590,7 @@ DEFAULT_CFO_SNAPSHOT = {
     "target_margin": 0.15,
     "cash_floor": 4000000,
     "wb_compensation_pending": 2000000,
-    "wb_receivables": [5400759.27, 5719189.43, 5963238.65, 6034075.99, 2500000],
+    "wb_receivables": [5719189.43, 30441.68, 5963238.65, 6034075.99, 21484.81, 4382878.38, 31802.27],
     "ozon_receivables": [160244, 514462, 516759, 663734],
     "pnl_wb": 8787716,
     "pnl_ozon": 1222922,
@@ -4632,52 +4632,61 @@ def _cfo_interest_month(loan: dict) -> float:
 
 
 def _migrate_cfo_loans_jul30(data: dict) -> tuple:
-    """Разово: закрыт Сбер#1, Сбер#2 −2.8млн/платёж 40к, добавлена линия 6 млн.
-    Возвращает (data, changed)."""
+    """Разово: закрыт Сбер#1, Сбер#2 −2.8млн/платёж 40к, линия 6 млн,
+    новая дебиторка WB и долг поставщикам 21 344 400."""
+    changed = False
     loans = data.get("loans")
-    if not isinstance(loans, list) or not loans:
-        return data, False
-    ids = {l.get("id") for l in loans if isinstance(l, dict)}
-    if "line6m" in ids and "sber1" not in ids:
-        return data, False
-    sber1 = next((l for l in loans if isinstance(l, dict) and l.get("id") == "sber1"), None)
-    if not sber1 or _cfo_num(sber1.get("payment")) < 150000:
-        return data, False
+    if isinstance(loans, list) and loans:
+        ids = {l.get("id") for l in loans if isinstance(l, dict)}
+        sber1 = next((l for l in loans if isinstance(l, dict) and l.get("id") == "sber1"), None)
+        need_loans = ("line6m" not in ids) and sber1 is not None and _cfo_num(sber1.get("payment")) >= 150000
+        if need_loans:
+            new_loans = []
+            for l in loans:
+                if not isinstance(l, dict):
+                    continue
+                if l.get("id") == "sber1":
+                    continue
+                item = dict(l)
+                if item.get("id") == "sber2":
+                    bal = _cfo_num(item.get("balance"))
+                    if bal >= 2_500_000:
+                        item["balance"] = round(bal - 2_800_000, 2)
+                    item["payment"] = 40000
+                    item["notes"] = "после досрочки −2.8 млн, платёж 40к"
+                item["fee_month"] = _cfo_num(item.get("fee_month"))
+                new_loans.append(item)
+            if not any(l.get("id") == "line6m" for l in new_loans):
+                line = {
+                    "id": "line6m",
+                    "name": "Кредитная линия 6 млн",
+                    "contract": "",
+                    "balance": 6_000_000,
+                    "rate": 0.189,
+                    "payment": 243600,
+                    "fee_month": 24000,
+                    "close": "2029-07",
+                    "early_repay": "",
+                    "interest_only": False,
+                    "notes": "18.9%/год + 0.4% лимита (24к). 36 мес. Переплата 2.77 млн (46.2%)",
+                }
+                idx = next((i for i, l in enumerate(new_loans) if l.get("id") == "sber2"), -1)
+                new_loans.insert(idx + 1, line)
+            data["loans"] = new_loans
+            changed = True
 
-    new_loans = []
-    for l in loans:
-        if not isinstance(l, dict):
-            continue
-        if l.get("id") == "sber1":
-            continue
-        item = dict(l)
-        if item.get("id") == "sber2":
-            bal = _cfo_num(item.get("balance"))
-            if bal >= 2_500_000:
-                item["balance"] = round(bal - 2_800_000, 2)
-            item["payment"] = 40000
-            item["notes"] = "после досрочки −2.8 млн, платёж 40к"
-        item["fee_month"] = _cfo_num(item.get("fee_month"))
-        new_loans.append(item)
-    if not any(l.get("id") == "line6m" for l in new_loans):
-        line = {
-            "id": "line6m",
-            "name": "Кредитная линия 6 млн",
-            "contract": "",
-            "balance": 6_000_000,
-            "rate": 0.189,
-            "payment": 243600,
-            "fee_month": 24000,
-            "close": "2029-07",
-            "early_repay": "",
-            "interest_only": False,
-            "notes": "18.9%/год + 0.4% лимита (24к). 36 мес. Переплата 2.77 млн (46.2%)",
-        }
-        idx = next((i for i, l in enumerate(new_loans) if l.get("id") == "sber2"), -1)
-        new_loans.insert(idx + 1, line)
-    data["loans"] = new_loans
-    data["as_of"] = "2026-07-30"
-    return data, True
+    # дебиторка WB + поставщики (флаг в settings-снимке)
+    new_wb = [5719189.43, 30441.68, 5963238.65, 6034075.99, 21484.81, 4382878.38, 31802.27]
+    new_suppliers = 21344400
+    if data.get("cfo_recv_jul30") != True:
+        data["wb_receivables"] = list(new_wb)
+        data["suppliers"] = new_suppliers
+        data["cfo_recv_jul30"] = True
+        changed = True
+
+    if changed:
+        data["as_of"] = "2026-07-30"
+    return data, changed
 
 
 def enrich_cfo_snapshot(raw: dict) -> dict:
@@ -4864,6 +4873,12 @@ def get_finance_cfo():
                 "notes": str(loan.get("notes") or ""),
             })
         to_save = {**raw, "loans": clean_loans, "as_of": migrated.get("as_of") or raw.get("as_of")}
+        if "wb_receivables" in migrated:
+            to_save["wb_receivables"] = [_cfo_num(x) for x in (migrated.get("wb_receivables") or [])]
+        if "suppliers" in migrated:
+            to_save["suppliers"] = _cfo_num(migrated.get("suppliers"))
+        if migrated.get("cfo_recv_jul30"):
+            to_save["cfo_recv_jul30"] = True
         to_save["updated_at"] = datetime.now(timezone.utc).isoformat()
         to_save.pop("totals", None)
         to_save.pop("personal", None)
