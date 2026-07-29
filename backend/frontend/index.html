@@ -288,6 +288,9 @@ td.tc{text-align:center}
 .matrix thead th.wh-block{border-left:3px solid #7A8699!important}
 .matrix td.m-stock,.matrix th.m-stock{background:#E4EBF2!important}
 .matrix td.m-stock.wh-even,.matrix th.m-stock.wh-even{background:#DDE5EE!important}
+.matrix .wh-off,.matrix .wh-off td,.matrix thead th.wh-off{opacity:.42;filter:grayscale(.35)}
+.matrix thead th.wh-off{text-decoration:line-through;text-decoration-thickness:1px}
+.wh-en-cb{margin-right:6px;vertical-align:middle;cursor:pointer;accent-color:var(--wb-purple)}
 .wh-dl-btn{font-size:10px;padding:2px 6px;background:transparent;color:var(--wb-purple);border:1px solid var(--wb-purple);border-radius:3px;cursor:pointer;margin-left:6px;opacity:.7;font-family:inherit;vertical-align:middle}
 .wh-dl-btn:hover{opacity:1;background:var(--wb-purple-light)}
 .matrix thead th{position:sticky;top:0;background:#FAFAFA;font-size:10px;color:var(--wb-muted);font-weight:600;text-transform:uppercase;letter-spacing:.3px;z-index:2}
@@ -2214,6 +2217,7 @@ function renderProducts() {
 
 // ---------- Рекомендации по поставкам ----------
 var WH_ORDER = JSON.parse(localStorage.getItem('wb_supply_wh_order') || 'null') || [];
+var WH_DISABLED = JSON.parse(localStorage.getItem('wb_supply_wh_disabled') || 'null') || [];
 var SUPPLY_PINNED = JSON.parse(localStorage.getItem('wb_supply_pinned') || 'null') || [];
 var SHOW_BARCODE = JSON.parse(localStorage.getItem('wb_supply_show_barcode') || 'true');
 var dragWh = null, dragSupplyArt = null;
@@ -2225,6 +2229,20 @@ function reconcileWhOrder(allWarehouses, defaultSorted) {
   return WH_ORDER;
 }
 
+function isWhEnabled(w) {
+  return !WH_DISABLED.includes(w);
+}
+
+function toggleWhEnabled(encodedName, e) {
+  if(e) e.stopPropagation();
+  const name = decodeURIComponent(encodedName);
+  const i = WH_DISABLED.indexOf(name);
+  if(i > -1) WH_DISABLED.splice(i, 1);
+  else WH_DISABLED.push(name);
+  localStorage.setItem('wb_supply_wh_disabled', JSON.stringify(WH_DISABLED));
+  renderSupplyRecs();
+}
+
 function buildSupplyMatrix() {
   const q = (document.getElementById('srSearch').value||'').toLowerCase();
 
@@ -2232,6 +2250,9 @@ function buildSupplyMatrix() {
   SUPPLY_REPORT.forEach(r => { whTotals[r.warehouse_name] = (whTotals[r.warehouse_name]||0) + (r.ordered_qty||0); });
   const defaultSorted = Object.keys(whTotals).sort((a,b) => whTotals[b]-whTotals[a]);
   const warehouses = reconcileWhOrder(Object.keys(whTotals), defaultSorted);
+  // убрать из disabled склады, которых больше нет
+  WH_DISABLED = WH_DISABLED.filter(w => warehouses.includes(w));
+  localStorage.setItem('wb_supply_wh_disabled', JSON.stringify(WH_DISABLED));
 
   const byArticle = {};
   SUPPLY_REPORT.forEach(r => {
@@ -2246,23 +2267,28 @@ function buildSupplyMatrix() {
   let articles = Object.keys(byArticle).map(vc => {
     const a = byArticle[vc];
     let rawRecommend = 0;
+    let wbStock = 0;
     const cells = {};
     warehouses.forEach(w => {
       const r = a.byWh[w];
+      const enabled = isWhEnabled(w);
       if(!r) { cells[w] = null; return; }
       // Как в твоей таблице: считаем по «Заказы», не по «Выкупили»
       const dailyRate = r.period_days ? (r.ordered_qty||0) / r.period_days : 0;
       const daysLeft = dailyRate > 0 ? (r.current_stock||0) / dailyRate : null;
       const recommend = dailyRate > 0 ? Math.max(0, Math.round(dailyRate * TARGET_DAYS - (r.current_stock||0))) : 0;
-      cells[w] = {...r, dailyRate, daysLeft, recommend};
-      rawRecommend += recommend;
+      cells[w] = {...r, dailyRate, daysLeft, recommend, enabled};
+      if(enabled) {
+        rawRecommend += recommend;
+        wbStock += (r.current_stock || 0);
+      }
     });
     const plannedQty = a.plannedQty || 0;
     const totalRecommend = Math.max(0, rawRecommend - plannedQty);
     const ow = OWN_WH_BY_VENDOR[vc] || {};
     return {
       vendor_code: vc, nm_id: a.nm_id, barcode: a.barcode, cells,
-      plannedQty, totalRecommend,
+      plannedQty, totalRecommend, wbStock,
       ownStock: ow.family_stock != null ? ow.family_stock : (ow.stock || 0),
       ownFamily: ow.family || [vc],
       isPinned: SUPPLY_PINNED.includes(vc)
@@ -2302,11 +2328,17 @@ function ownStockCoverClass(stock, need) {
 
 function renderSupplyCards(matrix) {
   const totalRecommend = matrix.articles.reduce((s,a) => s+a.totalRecommend, 0);
+  const totalWbStock = matrix.articles.reduce((s,a) => s+(a.wbStock||0), 0);
+  const enabledN = matrix.warehouses.filter(isWhEnabled).length;
   let critical = 0;
-  matrix.articles.forEach(a => Object.values(a.cells).forEach(c => { if(c && c.daysLeft!=null && c.daysLeft < TARGET_DAYS) critical++; }));
+  matrix.articles.forEach(a => Object.entries(a.cells).forEach(([w,c]) => {
+    if(!isWhEnabled(w)) return;
+    if(c && c.daysLeft!=null && c.daysLeft < TARGET_DAYS) critical++;
+  }));
   document.getElementById('supplyCards').innerHTML = [
     ['Артикулов', fmt(matrix.articles.length)],
-    ['Складов', fmt(matrix.warehouses.length)],
+    ['Складов', enabledN === matrix.warehouses.length ? fmt(matrix.warehouses.length) : `${enabledN}/${matrix.warehouses.length}`],
+    ['Остаток на WB, шт', fmt(totalWbStock)],
     ['Рекомендовано поставить, шт', fmt(totalRecommend), 'color:var(--wb-purple)'],
     [`Критичных позиций (<${TARGET_DAYS} дн.)`, fmt(critical), critical>0?'color:var(--red)':''],
   ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
@@ -2362,24 +2394,33 @@ function renderSupplyMatrixTable(matrix) {
   const { warehouses, articles } = matrix;
   if(!articles.length) return '<div class="empty">Ничего не найдено</div>';
 
-  const whHead1 = warehouses.map((w,i) => `<th colspan="4" class="wh-block${i%2?' wh-even':''}" draggable="true" title="Перетащи чтобы поменять порядок складов"
-      ondragstart="whDS(event,'${encodeURIComponent(w)}')" ondragover="event.preventDefault()" ondrop="whDrop(event,'${encodeURIComponent(w)}')">⠿ ${w} <button class="wh-dl-btn" onclick="downloadWarehouseXlsx(event,'${encodeURIComponent(w)}')" title="Скачать Excel для склада ${w}">⬇ xlsx</button></th>`).join('');
-  const sub = (i) => `<th class="mhead wh-start m-stock${i%2?' wh-even':''}">Остаток</th><th class="mhead${i%2?' wh-even':''}">Заказы</th><th class="mhead${i%2?' wh-even':''}">Дн.</th><th class="mhead${i%2?' wh-even':''}">Поставить</th>`;
-  const whHead2 = warehouses.map((w,i) => sub(i)).join('');
+  const whHead1 = warehouses.map((w,i) => {
+    const on = isWhEnabled(w);
+    const enc = encodeURIComponent(w);
+    return `<th colspan="4" class="wh-block${i%2?' wh-even':''}${on?'':' wh-off'}" draggable="true" title="${on?'Перетащи чтобы поменять порядок. Сними галочку — склад не участвует в расчётах':'Склад отключён — остатки и поставки не считаются'}"
+      ondragstart="whDS(event,'${enc}')" ondragover="event.preventDefault()" ondrop="whDrop(event,'${enc}')">
+      <input type="checkbox" class="wh-en-cb" ${on?'checked':''} onclick="event.stopPropagation()" onchange="toggleWhEnabled('${enc}',event)" title="${on?'Отключить склад':'Включить склад'}">
+      ⠿ ${w}
+      <button class="wh-dl-btn" onclick="downloadWarehouseXlsx(event,'${enc}')" title="Скачать Excel для склада ${w}">⬇ xlsx</button>
+    </th>`;
+  }).join('');
+  const sub = (i, on) => `<th class="mhead wh-start m-stock${i%2?' wh-even':''}${on?'':' wh-off'}">Остаток</th><th class="mhead${i%2?' wh-even':''}${on?'':' wh-off'}">Заказы</th><th class="mhead${i%2?' wh-even':''}${on?'':' wh-off'}">Дн.</th><th class="mhead${i%2?' wh-even':''}${on?'':' wh-off'}">Поставить</th>`;
+  const whHead2 = warehouses.map((w,i) => sub(i, isWhEnabled(w))).join('');
 
   const bodyRows = articles.map(a => {
     const safeVc = encodeURIComponent(a.vendor_code);
     const cells = warehouses.map((w,i) => {
       const c = a.cells[w];
-      const cls = i%2 ? 'wh-even' : '';
-      if(!c) return `<td class="wh-start m-stock${i%2?' wh-even':''}">—</td><td class="${i%2?'wh-even':''}">—</td><td class="${i%2?'wh-even':''}">—</td><td class="${i%2?'wh-even':''}">—</td>`;
+      const on = isWhEnabled(w);
+      const off = on ? '' : ' wh-off';
+      if(!c) return `<td class="wh-start m-stock${i%2?' wh-even':''}${off}">—</td><td class="${i%2?'wh-even':''}${off}">—</td><td class="${i%2?'wh-even':''}${off}">—</td><td class="${i%2?'wh-even':''}${off}">—</td>`;
       const rc2 = c.recommend>0 ? `<span class="m-recommend">+${fmt(c.recommend)}</span>` : `<span class="m-recommend zero">—</span>`;
-      let dlCls = (i%2?'wh-even':''), dl = '—';
+      let dlCls = `${i%2?'wh-even':''}${off}`, dl = '—';
       if(c.daysLeft != null) {
         dl = Math.round(c.daysLeft);
-        dlCls += (c.daysLeft < TARGET_DAYS) ? ' m-urgent' : ' m-ok';
+        if(on) dlCls += (c.daysLeft < TARGET_DAYS) ? ' m-urgent' : ' m-ok';
       }
-      return `<td class="wh-start m-stock${i%2?' wh-even':''}">${fmt(c.current_stock)}</td><td class="${i%2?'wh-even':''}">${fmt(c.ordered_qty)}</td><td class="${dlCls}">${dl}</td><td class="${i%2?'wh-even':''}">${rc2}</td>`;
+      return `<td class="wh-start m-stock${i%2?' wh-even':''}${off}">${fmt(c.current_stock)}</td><td class="${i%2?'wh-even':''}${off}">${fmt(c.ordered_qty)}</td><td class="${dlCls}">${dl}</td><td class="${i%2?'wh-even':''}${off}">${rc2}</td>`;
     }).join('');
     const fam = (a.ownFamily || []).filter(v => v && v !== a.vendor_code);
     const famTip = fam.length
@@ -2395,6 +2436,7 @@ function renderSupplyMatrixTable(matrix) {
         <div class="art" style="display:inline">${a.vendor_code}</div><div class="nmid">${a.nm_id||'—'}${SHOW_BARCODE && a.barcode ? ' · '+a.barcode : ''}</div>
       </td>
       <td class="m-info">${a.plannedQty>0?fmt(a.plannedQty):'—'}</td>
+      <td class="m-info" title="Сумма остатков по включённым складам WB">${fmt(a.wbStock||0)}</td>
       <td class="m-info ${ownCls}" title="${famTip}"><span class="${a.totalRecommend>0?'m-recommend':'m-recommend zero'}">${a.totalRecommend>0?'+'+fmt(a.totalRecommend):'—'}</span></td>
       <td class="m-info ${ownCls}" title="${famTip}">${ownVal}</td>
       ${cells}
@@ -2411,22 +2453,25 @@ function renderSupplyMatrixTable(matrix) {
       orders += c.ordered_qty || 0;
       recommend += c.recommend || 0;
     });
-    return { stock, orders, recommend };
+    return { stock, orders, recommend, enabled: isWhEnabled(w) };
   });
   const totPlanned = articles.reduce((s,a) => s + (a.plannedQty||0), 0);
   const totRecommend = articles.reduce((s,a) => s + (a.totalRecommend||0), 0);
+  const totWbStock = articles.reduce((s,a) => s + (a.wbStock||0), 0);
   const totWhCells = whSums.map((t,i) => {
+    const off = t.enabled ? '' : ' wh-off';
     const rc2 = t.recommend > 0
       ? `<span class="m-recommend">+${fmt(t.recommend)}</span>`
       : `<span class="m-recommend zero">—</span>`;
-    return `<td class="wh-start m-stock${i%2?' wh-even':''}">${fmt(t.stock)}</td>`
-      + `<td class="${i%2?'wh-even':''}">${fmt(t.orders)}</td>`
-      + `<td class="${i%2?'wh-even':''}">—</td>`
-      + `<td class="${i%2?'wh-even':''}">${rc2}</td>`;
+    return `<td class="wh-start m-stock${i%2?' wh-even':''}${off}">${fmt(t.stock)}</td>`
+      + `<td class="${i%2?'wh-even':''}${off}">${fmt(t.orders)}</td>`
+      + `<td class="${i%2?'wh-even':''}${off}">—</td>`
+      + `<td class="${i%2?'wh-even':''}${off}">${rc2}</td>`;
   }).join('');
   const totalRow = `<tr class="total-row">
       <td class="mcol-art"><div class="art">Итого</div><div class="nmid">${fmt(articles.length)} арт.</div></td>
       <td class="m-info">${totPlanned>0?fmt(totPlanned):'—'}</td>
+      <td class="m-info" title="Сумма остатков по включённым складам WB">${fmt(totWbStock)}</td>
       <td class="m-info"><span class="${totRecommend>0?'m-recommend':'m-recommend zero'}">${totRecommend>0?'+'+fmt(totRecommend):'—'}</span></td>
       <td class="m-info" title="Сумма по нашему складу не считается — остатки семей дублируются">—</td>
       ${totWhCells}
@@ -2436,11 +2481,12 @@ function renderSupplyMatrixTable(matrix) {
     <thead>
       <tr>
         <th class="mcol-art" rowspan="2">Артикул продавца${SHOW_BARCODE ? ' / Баркод' : ''}</th>
-        <th colspan="3" class="m-info">Общая информация</th>
+        <th colspan="4" class="m-info">Общая информация</th>
         ${whHead1}
       </tr>
       <tr>
         <th class="mhead m-info">Уже запланировано в поставке</th>
+        <th class="mhead m-info">Остаток WB</th>
         <th class="mhead m-info">Поставить всего</th>
         <th class="mhead m-info">Наш склад</th>
         ${whHead2}
@@ -3118,7 +3164,7 @@ function drawSppPrices() {
   const th = (label, key) =>
     `<th class="mhead" style="cursor:pointer" onclick="sppSort('${key}')">${label}${sppSortMark(key)}</th>`;
 
-  root.innerHTML = `<div class="tbl-wrap"><table class="mtx">
+  root.innerHTML = `<div class="matrix-wrap"><table class="matrix promo-xls">
     <thead><tr>
       ${th('Артикул', 'vendor_code')}
       ${th('nmID', 'nm_id')}
@@ -3128,10 +3174,10 @@ function drawSppPrices() {
       ${th('СПП', 'spp')}
       <th class="mhead">Скидка каб.</th>
     </tr></thead>
-    <tbody>${arts.map(a => {
+    <tbody>${arts.map((a, i) => {
       const wbLink = a.nm_id ? `https://www.wildberries.ru/catalog/${a.nm_id}/detail.aspx` : '#';
-      return `<tr>
-        <td class="sticky-col"><a href="${wbLink}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;font-weight:600">${escapeHtml(String(a.vendor_code||'—'))}</a></td>
+      return `<tr class="${i%2?'wh-even':''}">
+        <td class="mcol-art"><div class="art"><a href="${wbLink}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${escapeHtml(String(a.vendor_code||'—'))}</a></div></td>
         <td style="color:var(--wb-muted);font-size:12px">${a.nm_id || '—'}</td>
         <td>${sppMoney(a.price)}</td>
         <td style="font-weight:600">${sppMoney(a.sale_price)}</td>
@@ -3141,10 +3187,8 @@ function drawSppPrices() {
       </tr>`;
     }).join('')}</tbody>
   </table></div>
-  <div style="padding:10px 16px;font-size:12px;color:var(--wb-muted);line-height:1.45">
-    СПП = насколько цена на витрине ниже вашей цены продавца после скидки:
-    <code style="background:var(--wb-surface);padding:1px 5px;border-radius:3px">(1 − цена сайта / цена продавца) × 100%</code>
-  </div>`;
+  <div class="pace-hint">СПП = насколько цена на витрине ниже вашей цены продавца после скидки:
+    <b>(1 − цена сайта / цена продавца) × 100%</b>. Нужен токен с категорией «Цены и скидки».</div>`;
 }
 
 function setPromoExcelFilter(f) {
