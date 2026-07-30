@@ -362,11 +362,8 @@ def sync_stock():
     logger.info(f"Stock sync complete. Articles: {saved}, warehouse rows: {len(warehouses)}")
 
 # ---------- Остатки нашего склада (Google Sheets) ----------
-OWN_WAREHOUSE_SHEET_ID = os.getenv(
-    "OWN_WAREHOUSE_SHEET_ID",
-    "1Lhoy4s_KX0pWndsd3Y5oCOjTFCtfEfVUM4AgtBv4Crc",
-)
-OWN_WAREHOUSE_GID = os.getenv("OWN_WAREHOUSE_GID", "1829622647")
+OWN_WAREHOUSE_SHEET_ID = os.getenv("OWN_WAREHOUSE_SHEET_ID", "")
+OWN_WAREHOUSE_GID = os.getenv("OWN_WAREHOUSE_GID", "")
 OWN_WAREHOUSE_CACHE = {
     "title": None,
     "as_of": None,
@@ -389,11 +386,14 @@ def fetch_own_warehouse_stock() -> dict:
     """Тянет CSV из Google Sheets «Остатки на складе».
     Берём только 1-ю таблицу (до ИТОГО / «Принято на склад»), без блоков принято/обмен.
     Строим семьи артикулов: пустые строки-артикулы под основным (044→037) делят остаток."""
+    if not OWN_WAREHOUSE_SHEET_ID:
+        raise RuntimeError("OWN_WAREHOUSE_SHEET_ID не задан — вкладка «Наш склад» опциональна")
     import csv as _csv
     import re as _re
+    gid = OWN_WAREHOUSE_GID or "0"
     url = (
         f"https://docs.google.com/spreadsheets/d/{OWN_WAREHOUSE_SHEET_ID}"
-        f"/export?format=csv&gid={OWN_WAREHOUSE_GID}"
+        f"/export?format=csv&gid={gid}"
     )
     resp = httpx.get(url, timeout=30, follow_redirects=True)
     if not resp.is_success:
@@ -4579,33 +4579,22 @@ async def save_finance_cost(request: dict):
 CFO_SNAPSHOT_KEY = "cfo_snapshot"
 
 DEFAULT_CFO_SNAPSHOT = {
-    "as_of": "2026-07-30",
-    "cash": 3480000,
-    "suppliers": 21344400,
-    "inventory_wb_own": 14293595,
-    "inventory_transit": 1000000,
-    "inventory_ozon": 1500000,
-    "salary_month": 500000,
-    "realization_month": 46702379,
+    "as_of": "",
+    "cash": 0,
+    "suppliers": 0,
+    "inventory_wb_own": 0,
+    "inventory_transit": 0,
+    "inventory_ozon": 0,
+    "salary_month": 0,
+    "realization_month": 0,
     "target_margin": 0.15,
-    "cash_floor": 4000000,
-    "wb_compensation_pending": 2000000,
-    "wb_receivables": [5719189.43, 30441.68, 5963238.65, 6034075.99, 21484.81, 4382878.38, 31802.27],
-    "ozon_receivables": [160244, 514462, 516759, 663734],
-    "pnl_wb": 8787716,
-    "pnl_ozon": 1222922,
-    "loans": [
-        # Сбер #1 (~230к/мес) закрыт
-        {"id": "sber2", "name": "Сбер бизнес #2", "contract": "722407658448", "balance": 638510, "rate": 0.37, "payment": 40000, "fee_month": 0, "close": "2028-02", "early_repay": "payment", "interest_only": False, "notes": "после досрочки −2.8 млн, платёж 40к"},
-        {"id": "line6m", "name": "Кредитная линия 6 млн", "contract": "", "balance": 6000000, "rate": 0.189, "payment": 243600, "fee_month": 24000, "close": "2029-07", "early_repay": "", "interest_only": False, "notes": "18.9%/год + 0.4% лимита (24к). 36 мес. Переплата 2.77 млн (46.2%)"},
-        {"id": "vtb_big", "name": "ВТБ крупный", "contract": "", "balance": 4000000, "rate": 0.264, "payment": 162000, "fee_month": 0, "close": "", "early_repay": "", "interest_only": False, "notes": "июнь: 88к% + 74к тело"},
-        {"id": "tbank", "name": "ТБанк", "contract": "", "balance": 2246883, "rate": 0.349, "payment": 92280, "fee_month": 0, "close": "2031-02", "early_repay": "", "interest_only": False, "notes": ""},
-        {"id": "cash", "name": "Займ наличными", "contract": "", "balance": 2000000, "rate": 0.2, "payment": 34000, "fee_month": 0, "close": "", "early_repay": "", "interest_only": True, "notes": "−1 млн погашено"},
-        {"id": "alfa2", "name": "Альфа #2", "contract": "10009587221", "balance": 857544, "rate": 0.259, "payment": 58010, "fee_month": 0, "close": "2027-11", "early_repay": "", "interest_only": False, "notes": ""},
-        {"id": "alfa1", "name": "Альфа #1", "contract": "PILPAQ7SKC", "balance": 911273, "rate": 0.2299, "payment": 64100, "fee_month": 0, "close": "2027-10", "early_repay": "", "interest_only": False, "notes": ""},
-        {"id": "sber3", "name": "Сбер #3", "contract": "", "balance": 1370000, "rate": 0.3, "payment": 75023, "fee_month": 0, "close": "2028-04", "early_repay": "", "interest_only": False, "notes": "ставку уточнить"},
-        {"id": "vtb2", "name": "ВТБ #2", "contract": "V625/0000-0951998", "balance": 541658, "rate": 0.172, "payment": 24334, "fee_month": 0, "close": "2028-09", "early_repay": "", "interest_only": False, "notes": ""},
-    ],
+    "cash_floor": 0,
+    "wb_compensation_pending": 0,
+    "wb_receivables": [],
+    "ozon_receivables": [],
+    "pnl_wb": 0,
+    "pnl_ozon": 0,
+    "loans": [],
 }
 
 
@@ -4675,17 +4664,27 @@ def _migrate_cfo_loans_jul30(data: dict) -> tuple:
             data["loans"] = new_loans
             changed = True
 
-    # дебиторка WB + поставщики (флаг в settings-снимке)
+    # дебиторка/поставщики — только для уже существующего среза Ярослава (старые значения)
     new_wb = [5719189.43, 30441.68, 5963238.65, 6034075.99, 21484.81, 4382878.38, 31802.27]
     new_suppliers = 21344400
-    if data.get("cfo_recv_jul30") != True:
+    old_suppliers = _cfo_num(data.get("suppliers"))
+    old_wb = data.get("wb_receivables") or []
+    looks_like_legacy = (
+        data.get("cfo_recv_jul30") != True
+        and (
+            abs(old_suppliers - 22_680_000) < 1
+            or (isinstance(old_wb, list) and any(abs(_cfo_num(x) - 5_400_759.27) < 1 for x in old_wb))
+            or (isinstance(loans, list) and any(isinstance(l, dict) and l.get("id") == "sber1" for l in loans))
+        )
+    )
+    if looks_like_legacy:
         data["wb_receivables"] = list(new_wb)
         data["suppliers"] = new_suppliers
         data["cfo_recv_jul30"] = True
         changed = True
 
     if changed:
-        data["as_of"] = "2026-07-30"
+        data["as_of"] = data.get("as_of") or "2026-07-30"
     return data, changed
 
 
