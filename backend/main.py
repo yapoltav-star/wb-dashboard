@@ -7,6 +7,7 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone, date
+from urllib.parse import quote
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -5024,7 +5025,8 @@ def find_nm_in_wb_search(nm_id: int, query: str, dest: int, max_pages: int = 3):
         "Accept": "*/*",
         "Accept-Language": "ru-RU,ru;q=0.9",
         "Origin": "https://www.wildberries.ru",
-        "Referer": f"https://www.wildberries.ru/catalog/0/search.aspx?search={query}",
+        # Referer только ASCII — иначе httpx падает на кириллице
+        "Referer": f"https://www.wildberries.ru/catalog/0/search.aspx?search={quote(query)}",
     }
     last_total = None
     last_err = None
