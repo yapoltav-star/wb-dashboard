@@ -829,6 +829,15 @@ td.tc{text-align:center}
       </div>
 
       <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Пол</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button type="button" class="filter-btn" id="posGenderAll" onclick="setPosGender('all')">Все</button>
+          <button type="button" class="filter-btn" id="posGenderMen" onclick="setPosGender('men')">Мужские</button>
+          <button type="button" class="filter-btn" id="posGenderWomen" onclick="setPosGender('women')">Женские</button>
+        </div>
+      </div>
+
+      <div>
         <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Фильтр / сортировка</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <input id="posKeySearch" placeholder="Поиск по ключу…" oninput="drawPosTable()"
@@ -4217,7 +4226,36 @@ let POS_LOADED = false;
 let POS_SORT = JSON.parse(localStorage.getItem('pos_sort') || '{"key":"rating","dir":"desc"}');
 let POS_PINNED = JSON.parse(localStorage.getItem('pos_pinned') || '[]'); // queryLower[]
 let POS_ORDER = JSON.parse(localStorage.getItem('pos_order') || '[]'); // queryLower[] manual
+let POS_GENDER = localStorage.getItem('pos_gender') || 'all'; // all | men | women
 let POS_DRAG_KEY = null;
+
+// маркеры пола в ключе — нейтральные (умные часы, apple watch, детские без пола) остаются везде
+const POS_FEMALE_RE = /женск|для женщин|женщин|девушк|девоч|девочк|для девоч|леди|ladies|woman|women|female/i;
+const POS_MALE_RE = /мужск|для мужчин|мужчин|мальчик|для мальчик|парень|gentleman|man\b|men\b|male/i;
+
+function posQueryGender(query) {
+  const q = String(query || '').toLowerCase();
+  const f = POS_FEMALE_RE.test(q);
+  const m = POS_MALE_RE.test(q);
+  if(f && !m) return 'women';
+  if(m && !f) return 'men';
+  return 'neutral'; // оба маркера или ни одного
+}
+
+function setPosGender(g) {
+  POS_GENDER = (g === 'men' || g === 'women') ? g : 'all';
+  localStorage.setItem('pos_gender', POS_GENDER);
+  updatePosGenderBtns();
+  drawPosTable();
+}
+
+function updatePosGenderBtns() {
+  const map = {all: 'posGenderAll', men: 'posGenderMen', women: 'posGenderWomen'};
+  Object.entries(map).forEach(([g, id]) => {
+    const el = document.getElementById(id);
+    if(el) el.classList.toggle('on', POS_GENDER === g);
+  });
+}
 
 function posKey(k) { return String((k && k.query) || k || '').toLowerCase(); }
 function savePosPins() { localStorage.setItem('pos_pinned', JSON.stringify(POS_PINNED)); }
@@ -4227,6 +4265,7 @@ function savePosSort() { localStorage.setItem('pos_sort', JSON.stringify(POS_SOR
 async function renderPositionsPage() {
   updatePosArtChip();
   updatePosCheckBtn();
+  updatePosGenderBtns();
   if(!POS_LOADED) await loadPosKeywords();
   else drawPosTable();
 }
@@ -4261,6 +4300,7 @@ async function loadPosKeywords() {
       ).join('');
     }
     if(meta) meta.textContent = `${POS_KEYWORDS.length} ключей из аналитики` + (d.updated ? ` · ${d.updated}` : '');
+    updatePosGenderBtns();
     drawPosTable();
   } catch(e) {
     if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка загрузки ключей: ${e.message}</div>`;
@@ -4396,7 +4436,13 @@ function posCellVal(k, key) {
 
 function filteredPosKeywords() {
   const q = ((document.getElementById('posKeySearch')||{}).value || '').trim().toLowerCase();
-  let rows = POS_KEYWORDS.filter(k => !q || (k.query||'').toLowerCase().includes(q));
+  let rows = POS_KEYWORDS.filter(k => {
+    const text = (k.query || '').toLowerCase();
+    if(q && !text.includes(q)) return false;
+    if(POS_GENDER === 'men' && posQueryGender(text) === 'women') return false;
+    if(POS_GENDER === 'women' && posQueryGender(text) === 'men') return false;
+    return true;
+  });
 
   if(POS_SORT.key === 'manual') {
     const idx = new Map(POS_ORDER.map((k,i) => [k, i]));
