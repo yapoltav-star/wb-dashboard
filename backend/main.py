@@ -3679,78 +3679,6 @@ def _wb_product_search_texts(body: dict) -> dict:
         raise RuntimeError(f"product/search-texts {resp.status_code}: {resp.text[:300]}")
     return resp.json()
 
-def _json_shape(obj, depth: int = 0, max_depth: int = 3):
-    """Компактная схема ответа для отладки парсера."""
-    if depth >= max_depth:
-        return type(obj).__name__
-    if isinstance(obj, dict):
-        out = {}
-        for i, (k, v) in enumerate(obj.items()):
-            if i >= 18:
-                out["…"] = f"+{len(obj) - 18}"
-                break
-            out[k] = _json_shape(v, depth + 1, max_depth)
-        return out
-    if isinstance(obj, list):
-        if not obj:
-            return []
-        return [_json_shape(obj[0], depth + 1, max_depth), f"len={len(obj)}"]
-    return type(obj).__name__
-
-def _parse_product_search_texts_payload(data: dict) -> list:
-    """Достаёт ключи из product/search-texts в известных формах ответа WB."""
-    rows = []
-    payload = data.get("data") if isinstance(data.get("data"), dict) else data
-    if not isinstance(payload, dict):
-        _extract_search_text_rows(data, rows)
-        return rows
-
-    # Вариант A: data.items[] — сами тексты
-    items = payload.get("items") or payload.get("searchTexts") or []
-    if isinstance(items, list) and items and isinstance(items[0], dict):
-        # если это тексты
-        if any(k in items[0] for k in ("text", "searchText", "query")):
-            for it in items:
-                _extract_search_text_rows(it, rows)
-            return rows
-        # если это товары с вложенными текстами
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            nm = it.get("nmId") or it.get("nmID")
-            nested = (
-                it.get("searchTexts")
-                or it.get("texts")
-                or it.get("items")
-                or it.get("queries")
-                or []
-            )
-            if isinstance(nested, list) and nested:
-                for t in nested:
-                    if isinstance(t, dict):
-                        t = {**t, "nmId": nm or t.get("nmId") or t.get("nmID")}
-                        _extract_search_text_rows(t, rows)
-            else:
-                # метрики на товаре — не ключ; но иногда text лежит прямо тут
-                _extract_search_text_rows(it, rows)
-
-    # Вариант B: data.products[]
-    products = payload.get("products") or []
-    if isinstance(products, list):
-        for it in products:
-            if not isinstance(it, dict):
-                continue
-            nm = it.get("nmId") or it.get("nmID")
-            nested = it.get("searchTexts") or it.get("texts") or it.get("items") or []
-            for t in nested if isinstance(nested, list) else []:
-                if isinstance(t, dict):
-                    t = {**t, "nmId": nm or t.get("nmId")}
-                    _extract_search_text_rows(t, rows)
-
-    if not rows:
-        _extract_search_text_rows(data, rows)
-    return rows
-
 def _collect_nm_ids_for_search(limit: int = 40) -> list:
     """Топ артикулов по заказам за период из article_daily_stats / stock."""
     nms = []
@@ -3819,25 +3747,8 @@ def sync_search_keywords(days: int = 90):
                     "limit": 50,
                     "offset": 0,
                 })
-                if "report_shape" not in meta:
-                    meta["report_shape"] = _json_shape(data)
-                    # кусок сырого JSON для отладки (без огромных массивов)
-                    try:
-                        snippet = json.dumps(data, ensure_ascii=False)[:1200]
-                        meta["report_snippet"] = snippet
-                    except Exception:
-                        pass
                 before = len(rows)
                 _extract_search_text_rows(data, rows)
-                # из групп/товаров тоже берём вложенные searchTexts, если есть
-                payload = data.get("data") if isinstance(data.get("data"), dict) else data
-                for group in (payload.get("groups") or []) if isinstance(payload, dict) else []:
-                    if not isinstance(group, dict):
-                        continue
-                    for key in ("searchTexts", "texts", "queries", "topSearchTexts"):
-                        for t in group.get(key) or []:
-                            if isinstance(t, dict):
-                                _extract_search_text_rows(t, rows)
                 meta["sources"].append(f"report/{field}+{len(rows) - before}")
                 time.sleep(21)  # лимит analytics ~3/мин
         except Exception as e:
@@ -3850,7 +3761,7 @@ def sync_search_keywords(days: int = 90):
         meta["nm_count"] = len(nms)
         for top_by in ("orders", "addToCart"):
             # батчами по 5 nm — меньше запросов
-            for i in range(0, min(len(nms), 15), 5):
+            for i in range(0, min(len(nms), 20), 5):
                 batch = nms[i:i + 5]
                 try:
                     data = _wb_product_search_texts({
@@ -3862,21 +3773,34 @@ def sync_search_keywords(days: int = 90):
                         "includeSubstitutedSKUs": False,
                         "limit": 30,
                     })
-                    if "product_shape" not in meta:
-                        meta["product_shape"] = _json_shape(data)
-                        try:
-                            meta["product_snippet"] = json.dumps(data, ensure_ascii=False)[:1500]
-                        except Exception:
-                            pass
                     before = len(rows)
-                    rows.extend(_parse_product_search_texts_payload(data))
+                    # items часто лежат в data.items / data.data.items
+                    payload = data.get("data") or data
+                    items = payload.get("items") or payload.get("products") or []
+                    if isinstance(items, list):
+                        for it in items:
+                            if not isinstance(it, dict):
+                                continue
+                            nm = it.get("nmId") or it.get("nmID")
+                            texts = it.get("searchTexts") or it.get("texts") or it.get("items") or []
+                            # иногда сам item — это текст
+                            if not texts and (it.get("text") or it.get("searchText")):
+                                texts = [it]
+                            if isinstance(texts, list):
+                                for t in texts:
+                                    if isinstance(t, dict):
+                                        t = {**t, "nmId": nm or t.get("nmId")}
+                                        _extract_search_text_rows(t, rows)
+                            else:
+                                _extract_search_text_rows(it, rows)
+                    else:
+                        _extract_search_text_rows(data, rows)
                     meta["sources"].append(f"product/{top_by}/{batch[0]}+{len(rows) - before}")
                 except Exception as e:
                     meta["warnings"].append(f"product/{top_by}: {e}")
                     logger.warning(f"search-kw product texts: {e}")
                     # если нет Джема — дальше не долбим
-                    err_l = str(e).lower()
-                    if "400" in err_l and ("jam" in err_l or "подпис" in err_l or "джем" in err_l or "subscription" in err_l):
+                    if "400" in str(e) and ("jam" in str(e).lower() or "подпис" in str(e).lower() or "Джем" in str(e)):
                         break
                 time.sleep(21)
 
@@ -3933,51 +3857,6 @@ async def trigger_search_keywords_sync(days: int = 90):
         return {"status": "already_running"}
     threading.Thread(target=lambda: sync_search_keywords(days), daemon=True).start()
     return {"status": "started", "days": days}
-
-@app.get("/api/search-keywords/debug")
-def debug_search_keywords(nm_id: int = 0, days: int = 90):
-    """Один пробный запрос к WB — сырая форма ответа (для отладки парсера)."""
-    if not WB_TOKEN:
-        return {"error": "WB_TOKEN не задан"}
-    end = datetime.now(timezone.utc).date()
-    start = end - timedelta(days=max(7, min(days, 90)) - 1)
-    period = {"start": start.isoformat(), "end": end.isoformat()}
-    nms = [nm_id] if nm_id else _collect_nm_ids_for_search(3)
-    out = {"period": period, "nm_ids": nms}
-    try:
-        report = _wb_search_report({
-            "currentPeriod": period,
-            "positionCluster": "all",
-            "orderBy": {"field": "orders", "mode": "desc"},
-            "includeSearchTexts": True,
-            "includeSubstitutedSKUs": False,
-            "limit": 5,
-            "offset": 0,
-        })
-        out["report_shape"] = _json_shape(report)
-        out["report_snippet"] = json.dumps(report, ensure_ascii=False)[:2500]
-    except Exception as e:
-        out["report_error"] = str(e)
-    if nms:
-        try:
-            time.sleep(21)
-            prod = _wb_product_search_texts({
-                "currentPeriod": period,
-                "nmIds": nms[:3],
-                "topOrderBy": "orders",
-                "orderBy": {"field": "orders", "mode": "desc"},
-                "includeSearchTexts": True,
-                "includeSubstitutedSKUs": False,
-                "limit": 30,
-            })
-            out["product_shape"] = _json_shape(prod)
-            out["product_snippet"] = json.dumps(prod, ensure_ascii=False)[:2500]
-            parsed = _parse_product_search_texts_payload(prod)
-            out["parsed_n"] = len(parsed)
-            out["parsed_sample"] = parsed[:5]
-        except Exception as e:
-            out["product_error"] = str(e)
-    return out
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
