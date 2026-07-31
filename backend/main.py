@@ -4946,6 +4946,225 @@ async def save_finance_cfo(request: dict):
     return {"status": "ok", "snapshot": enrich_cfo_snapshot(payload)}
 
 
+# ── Позиции в клиентском поиске WB ──────────────────────────────────────────
+SEARCH_KEYWORDS_PATH = Path(__file__).resolve().parent / "data" / "search_keywords.json"
+
+# dest — регион выдачи витрины WB (как у покупателя). Москва по умолчанию.
+WB_SEARCH_CITIES = [
+    {"id": "moscow", "name": "Москва", "dest": -1257786},
+    {"id": "spb", "name": "Санкт-Петербург", "dest": -1124448},
+    {"id": "kazan", "name": "Казань", "dest": -2133462},
+    {"id": "ekb", "name": "Екатеринбург", "dest": -1113276},
+    {"id": "nsk", "name": "Новосибирск", "dest": -140294},
+    {"id": "nn", "name": "Нижний Новгород", "dest": -1190344},
+    {"id": "krasnodar", "name": "Краснодар", "dest": -1221148},
+    {"id": "rostov", "name": "Ростов-на-Дону", "dest": -1197210},
+    {"id": "samara", "name": "Самара", "dest": -1235864},
+    {"id": "chelyabinsk", "name": "Челябинск", "dest": -1382589},
+]
+
+_wb_search_lock = threading.Lock()
+_wb_search_last_ts = 0.0
+
+
+def _load_search_keywords():
+    try:
+        with open(SEARCH_KEYWORDS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        keys = data.get("keywords") or []
+        return {
+            "source": data.get("source") or "",
+            "updated": data.get("updated") or "",
+            "keywords": keys,
+            "count": len(keys),
+        }
+    except Exception as e:
+        logger.error(f"search_keywords load: {e}")
+        return {"source": "", "updated": "", "keywords": [], "count": 0, "error": str(e)}
+
+
+def _wb_search_throttle(min_interval: float = 0.35):
+    """Не долбим search.wb.ru — иначе 429."""
+    global _wb_search_last_ts
+    with _wb_search_lock:
+        now = time.time()
+        wait = min_interval - (now - _wb_search_last_ts)
+        if wait > 0:
+            time.sleep(wait)
+        _wb_search_last_ts = time.time()
+
+
+def find_nm_in_wb_search(nm_id: int, query: str, dest: int, max_pages: int = 3):
+    """Ищет nm_id в клиентской выдаче WB по запросу. Позиция с 1, None = не в топ max_pages*100."""
+    query = (query or "").strip()
+    if not query or not nm_id:
+        return {"query": query, "position": None, "page": None, "total": None, "error": "bad input"}
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+        "Origin": "https://www.wildberries.ru",
+        "Referer": f"https://www.wildberries.ru/catalog/0/search.aspx?search={query}",
+    }
+    # v9 стабильнее v18 (меньше 429)
+    base = "https://search.wb.ru/exactmatch/ru/common/v9/search"
+    last_total = None
+    last_err = None
+    max_pages = max(1, min(int(max_pages or 3), 10))
+
+    with httpx.Client(timeout=25, headers=headers) as client:
+        for page in range(1, max_pages + 1):
+            for attempt in range(3):
+                _wb_search_throttle()
+                try:
+                    resp = client.get(
+                        base,
+                        params={
+                            "appType": 1,
+                            "curr": "rub",
+                            "dest": dest,
+                            "query": query,
+                            "resultset": "catalog",
+                            "sort": "popular",
+                            "spp": 30,
+                            "page": page,
+                        },
+                    )
+                except Exception as e:
+                    last_err = str(e)
+                    time.sleep(0.6 * (attempt + 1))
+                    continue
+
+                if resp.status_code == 429:
+                    last_err = "429"
+                    time.sleep(1.2 * (attempt + 1))
+                    continue
+                if not resp.is_success:
+                    last_err = f"http {resp.status_code}"
+                    time.sleep(0.4)
+                    continue
+
+                try:
+                    data = resp.json()
+                except Exception as e:
+                    last_err = f"json {e}"
+                    break
+
+                products = data.get("products") or (data.get("data") or {}).get("products") or []
+                last_total = data.get("total")
+                if last_total is None:
+                    last_total = (data.get("data") or {}).get("total")
+
+                for i, p in enumerate(products):
+                    pid = p.get("id") or p.get("nmId") or p.get("nmID")
+                    if pid == nm_id or str(pid) == str(nm_id):
+                        return {
+                            "query": query,
+                            "position": (page - 1) * 100 + i + 1,
+                            "page": page,
+                            "total": last_total,
+                            "error": None,
+                        }
+
+                # пустая страница — дальше смысла нет
+                if not products:
+                    return {
+                        "query": query,
+                        "position": None,
+                        "page": None,
+                        "total": last_total,
+                        "error": None,
+                        "not_found": True,
+                    }
+                break
+            else:
+                # все попытки страницы провалились
+                continue
+
+    return {
+        "query": query,
+        "position": None,
+        "page": None,
+        "total": last_total,
+        "error": last_err,
+        "not_found": last_err is None,
+    }
+
+
+@app.get("/api/search-keywords")
+def get_search_keywords():
+    """Уникальные ключи из отчёта поиска (без nmID-дублей) + список городов."""
+    data = _load_search_keywords()
+    return {
+        **data,
+        "cities": WB_SEARCH_CITIES,
+        "default_city": "moscow",
+        "default_dest": -1257786,
+    }
+
+
+@app.post("/api/search-positions")
+async def search_positions(request: dict):
+    """Позиции nm_id в клиентском поиске WB по списку запросов.
+    Body: {nm_id, dest?, queries: [str], max_pages?}
+    dest по умолчанию Москва (-1257786).
+    """
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    try:
+        nm_id = int(request.get("nm_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="nm_id required")
+
+    try:
+        dest = int(request.get("dest") if request.get("dest") is not None else -1257786)
+    except (TypeError, ValueError):
+        dest = -1257786
+
+    max_pages = request.get("max_pages", 3)
+    try:
+        max_pages = int(max_pages)
+    except (TypeError, ValueError):
+        max_pages = 3
+
+    queries = request.get("queries")
+    if not isinstance(queries, list) or not queries:
+        raise HTTPException(status_code=400, detail="queries required (non-empty list)")
+    # защита от слишком больших пачек за один запрос
+    clean = []
+    seen = set()
+    for q in queries:
+        s = str(q or "").strip()
+        if not s:
+            continue
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        clean.append(s)
+        if len(clean) >= 40:
+            break
+
+    results = []
+    # последовательно — throttle внутри find_* уже есть; параллель ловит 429
+    for q in clean:
+        results.append(find_nm_in_wb_search(nm_id, q, dest, max_pages=max_pages))
+
+    city_name = next((c["name"] for c in WB_SEARCH_CITIES if c["dest"] == dest), str(dest))
+    return {
+        "nm_id": nm_id,
+        "dest": dest,
+        "city": city_name,
+        "max_pages": max_pages,
+        "checked": len(results),
+        "results": results,
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8080))

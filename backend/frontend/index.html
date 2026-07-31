@@ -474,6 +474,7 @@ td.tc{text-align:center}
     <div class="tb-nav-item" onclick="showSection('promotions',this)">Акции и цены</div>
     <div class="tb-nav-item" onclick="showSection('supplies',this)">Остатки и поставки</div>
     <div class="tb-nav-item" onclick="showSection('analytics',this)">Конкуренты</div>
+    <div class="tb-nav-item" onclick="showSection('positions',this)">Позиции</div>
     <div class="tb-nav-item" onclick="showSection('ads',this)">Продвижение</div>
     <div class="tb-nav-item" onclick="showSection('finance',this)">Финансы</div>
   </div>
@@ -785,6 +786,67 @@ td.tc{text-align:center}
   <div id="compRoot"><div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners</div></div>
 </div>
 
+<!-- ПОЗИЦИИ В ПОИСКЕ -->
+<div class="page" id="page-positions">
+  <div class="toolbar">
+    <span style="font-size:13px;font-weight:600">Позиции в поиске WB</span>
+    <span style="font-size:12px;color:var(--wb-muted);margin-left:10px" id="posMeta"></span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="action-btn" id="posCheckBtn" onclick="runPositionCheck()" disabled>Проверить позиции</button>
+      <button class="action-btn" id="posStopBtn" onclick="stopPositionCheck()" style="display:none;background:#FEF3C7;border-color:#F59E0B;color:#92400E">Стоп</button>
+    </div>
+  </div>
+
+  <div style="padding:12px 20px 10px;border-bottom:1px solid var(--wb-border);background:var(--wb-surface)">
+    <div style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap">
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Мой артикул</div>
+        <div style="position:relative">
+          <input id="posArtSearch" placeholder="Артикул продавца, напр. 034…" autocomplete="off"
+            style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:260px"
+            oninput="searchPosArticles(this.value)" onfocus="searchPosArticles(this.value)">
+          <div id="posArtDropdown" style="display:none;position:absolute;top:100%;left:0;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--rs);z-index:100;min-width:260px;max-height:280px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.1)"></div>
+        </div>
+        <div id="posArtChip" style="margin-top:8px;min-height:28px"></div>
+      </div>
+
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Город</div>
+        <select id="posCity" onchange="onPosCityChange()"
+          style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;min-width:200px;background:#fff">
+          <option value="-1257786">Москва</option>
+        </select>
+      </div>
+
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Глубина поиска</div>
+        <select id="posMaxPages"
+          style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;background:#fff">
+          <option value="1">Топ-100</option>
+          <option value="3" selected>Топ-300</option>
+          <option value="5">Топ-500</option>
+        </select>
+      </div>
+
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Фильтр ключей</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="posKeySearch" placeholder="Поиск по ключу…" oninput="drawPosTable()"
+            style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:200px">
+          <label style="font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--wb-text)">
+            <input type="checkbox" id="posOnlyActive" checked onchange="drawPosTable()"> с заказами/корзиной
+          </label>
+        </div>
+      </div>
+    </div>
+    <div id="posStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)"></div>
+  </div>
+
+  <div id="posRoot" style="overflow:auto">
+    <div class="empty" style="padding:40px 20px">Загрузка ключей…</div>
+  </div>
+</div>
+
 <!-- ФИНАНСЫ -->
 <div class="page" id="page-finance">
   <div id="finGate" class="fin-lock">
@@ -916,6 +978,7 @@ function showSection(sec, btn) {
   else if(sec === 'supplies') showPage('supply-recs', document.querySelector('#subnav-supplies .sn-item'));
   else if(sec === 'ads') showPage('ads', null);
   else if(sec === 'analytics') showPage('competitors', null);
+  else if(sec === 'positions') showPage('positions', null);
   else if(sec === 'finance') showPage('finance', null);
 }
 
@@ -938,6 +1001,7 @@ function showPage(id, btn) {
   if(id === 'promotions') renderPromotions();
   if(id === 'prices') renderSppPrices(true);
   if(id === 'sales-pace') renderSalesPace(true);
+  if(id === 'positions') renderPositionsPage();
   if(id === 'finance') renderFinance();
 }
 
@@ -4142,6 +4206,275 @@ async function uploadCompetitorReport(file) {
     status.textContent = '❌ Ошибка: ' + e.message;
   }
   document.getElementById('compFileInput').value = '';
+}
+
+// ─────────── Позиции в клиентском поиске WB ───────────
+let POS_KEYWORDS = [];
+let POS_CITIES = [];
+let POS_ARTICLE = JSON.parse(localStorage.getItem('pos_article') || 'null');
+let POS_RESULTS = {}; // queryLower -> {position, page, total, error, not_found}
+let POS_RUNNING = false;
+let POS_STOP = false;
+let POS_LOADED = false;
+
+async function renderPositionsPage() {
+  updatePosArtChip();
+  updatePosCheckBtn();
+  if(!POS_LOADED) {
+    await loadPosKeywords();
+  } else {
+    drawPosTable();
+  }
+}
+
+async function loadPosKeywords() {
+  const root = document.getElementById('posRoot');
+  const meta = document.getElementById('posMeta');
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/search-keywords`);
+    const d = await r.json();
+    POS_KEYWORDS = Array.isArray(d.keywords) ? d.keywords : [];
+    POS_CITIES = Array.isArray(d.cities) ? d.cities : [];
+    POS_LOADED = true;
+
+    const sel = document.getElementById('posCity');
+    if(sel && POS_CITIES.length) {
+      const saved = localStorage.getItem('pos_dest') || String(d.default_dest || -1257786);
+      sel.innerHTML = POS_CITIES.map(c =>
+        `<option value="${c.dest}"${String(c.dest)===String(saved)?' selected':''}>${c.name}</option>`
+      ).join('');
+    }
+    if(meta) {
+      const active = POS_KEYWORDS.filter(k => (k.orders||0)>0 || (k.cart||0)>0).length;
+      meta.textContent = `${POS_KEYWORDS.length} уникальных ключей · ${active} с заказами/корзиной` +
+        (d.updated ? ` · отчёт ${d.updated}` : '');
+    }
+    drawPosTable();
+  } catch(e) {
+    if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка загрузки ключей: ${e.message}</div>`;
+  }
+}
+
+function onPosCityChange() {
+  const sel = document.getElementById('posCity');
+  if(sel) localStorage.setItem('pos_dest', sel.value);
+}
+
+function updatePosArtChip() {
+  const el = document.getElementById('posArtChip');
+  if(!el) return;
+  if(!POS_ARTICLE) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--wb-faint)">Выбери артикул из списка</span>';
+    return;
+  }
+  el.innerHTML = `<div style="display:inline-flex;align-items:center;gap:5px;padding:4px 8px;background:var(--wb-purple-light);border:1px solid var(--wb-purple);border-radius:6px;font-size:12px">
+    <b>${escapeHtml(POS_ARTICLE.vendor_code || '')}</b>
+    <span style="color:var(--wb-faint)">${POS_ARTICLE.nm_id}</span>
+    <span style="cursor:pointer;color:var(--wb-faint);margin-left:2px" onclick="clearPosArticle()">✕</span>
+  </div>`;
+}
+
+function updatePosCheckBtn() {
+  const btn = document.getElementById('posCheckBtn');
+  if(btn) btn.disabled = !POS_ARTICLE || POS_RUNNING;
+}
+
+function clearPosArticle() {
+  POS_ARTICLE = null;
+  localStorage.removeItem('pos_article');
+  updatePosArtChip();
+  updatePosCheckBtn();
+}
+
+async function searchPosArticles(q) {
+  const dd = document.getElementById('posArtDropdown');
+  if(!dd) return;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/search-own-articles?q=${encodeURIComponent((q||'').trim())}`);
+    const results = await r.json();
+    if(!Array.isArray(results) || !results.length) {
+      dd.style.display = (q||'').trim() ? 'block' : 'none';
+      dd.innerHTML = (q||'').trim()
+        ? `<div style="padding:10px 12px;font-size:12px;color:var(--wb-muted)">Ничего не найдено</div>`
+        : '';
+      return;
+    }
+    const prefix = (q||'').trim().replace(/\.+$/,'').toLowerCase();
+    dd.style.display = 'block';
+    dd.innerHTML = results.map(a => {
+      const vc = String(a.vendor_code || '');
+      let label = vc;
+      if(prefix && vc.toLowerCase().startsWith(prefix)) {
+        label = `<span style="color:var(--wb-purple)">${vc.slice(0, prefix.length)}</span>${vc.slice(prefix.length)}`;
+      } else {
+        label = `<b>${escapeHtml(vc)}</b>`;
+      }
+      const safeVc = vc.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      return `<div style="padding:8px 12px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--wb-border)"
+        onmousedown="selectPosArticle(${a.nm_id},'${safeVc}')"
+        onmouseover="this.style.background='var(--wb-bg)'" onmouseout="this.style.background=''">
+        <b>${label}</b> <span style="color:var(--wb-faint)">${a.nm_id}</span>
+      </div>`;
+    }).join('');
+  } catch(e) { dd.style.display='none'; }
+}
+
+function selectPosArticle(nmId, vendorCode) {
+  const dd = document.getElementById('posArtDropdown');
+  if(dd) dd.style.display = 'none';
+  const inp = document.getElementById('posArtSearch');
+  if(inp) inp.value = '';
+  POS_ARTICLE = {nm_id: nmId, vendor_code: vendorCode};
+  localStorage.setItem('pos_article', JSON.stringify(POS_ARTICLE));
+  POS_RESULTS = {};
+  updatePosArtChip();
+  updatePosCheckBtn();
+  drawPosTable();
+}
+
+document.addEventListener('click', e => {
+  const dd = document.getElementById('posArtDropdown');
+  if(dd && !e.target.closest('#posArtSearch') && !e.target.closest('#posArtDropdown'))
+    dd.style.display = 'none';
+});
+
+function filteredPosKeywords() {
+  const q = ((document.getElementById('posKeySearch')||{}).value || '').trim().toLowerCase();
+  const onlyActive = !!(document.getElementById('posOnlyActive')||{}).checked;
+  return POS_KEYWORDS.filter(k => {
+    if(onlyActive && !(k.orders>0 || k.cart>0)) return false;
+    if(q && !(k.query||'').toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
+function fmtPos(res) {
+  if(!res) return '<span style="color:var(--wb-faint)">—</span>';
+  if(res.error && res.position == null) return `<span style="color:var(--amber)" title="${escapeHtml(String(res.error))}">ошибка</span>`;
+  if(res.position != null) {
+    const p = res.position;
+    const color = p<=50 ? 'var(--green,#16A34A)' : p<=150 ? 'var(--wb-text)' : 'var(--amber)';
+    return `<b style="color:${color}">${p}</b>`;
+  }
+  if(res.not_found) return '<span style="color:var(--wb-faint)">нет в топе</span>';
+  return '<span style="color:var(--wb-faint)">—</span>';
+}
+
+function drawPosTable() {
+  const root = document.getElementById('posRoot');
+  if(!root) return;
+  const rows = filteredPosKeywords();
+  if(!POS_KEYWORDS.length) {
+    root.innerHTML = '<div class="empty" style="padding:40px 20px">Ключи ещё не загружены</div>';
+    return;
+  }
+  if(!rows.length) {
+    root.innerHTML = '<div class="empty" style="padding:40px 20px">Нет ключей по фильтру</div>';
+    return;
+  }
+  const found = rows.filter(k => POS_RESULTS[(k.query||'').toLowerCase()]?.position != null).length;
+  const checked = rows.filter(k => POS_RESULTS[(k.query||'').toLowerCase()]).length;
+
+  root.innerHTML = `
+    <div style="padding:8px 20px;font-size:12px;color:var(--wb-muted);border-bottom:1px solid var(--wb-border)">
+      Показано ${rows.length} ключей${checked?` · проверено ${checked}`:''}${found?` · найдено ${found}`:''}
+    </div>
+    <table class="comp-tbl" style="width:100%">
+      <thead><tr>
+        <th style="width:40px">#</th>
+        <th>Ключ</th>
+        <th style="text-align:right;width:90px">Заказы</th>
+        <th style="text-align:right;width:90px">Корзина</th>
+        <th style="text-align:right;width:90px">Открытия</th>
+        <th style="text-align:right;width:110px">Позиция</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map((k,i) => {
+          const key = (k.query||'').toLowerCase();
+          const res = POS_RESULTS[key];
+          return `<tr>
+            <td style="color:var(--wb-faint)">${i+1}</td>
+            <td>${escapeHtml(k.query||'')}</td>
+            <td style="text-align:right">${k.orders||0}</td>
+            <td style="text-align:right">${k.cart||0}</td>
+            <td style="text-align:right">${k.opens||0}</td>
+            <td style="text-align:right" id="posCell_${i}">${fmtPos(res)}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+}
+
+function stopPositionCheck() {
+  POS_STOP = true;
+}
+
+async function runPositionCheck() {
+  if(!POS_ARTICLE || POS_RUNNING) return;
+  const rows = filteredPosKeywords();
+  if(!rows.length) {
+    alert('Нет ключей по текущему фильтру');
+    return;
+  }
+  const dest = Number((document.getElementById('posCity')||{}).value || -1257786);
+  const maxPages = Number((document.getElementById('posMaxPages')||{}).value || 3);
+  const status = document.getElementById('posStatus');
+  const stopBtn = document.getElementById('posStopBtn');
+  const checkBtn = document.getElementById('posCheckBtn');
+
+  POS_RUNNING = true;
+  POS_STOP = false;
+  updatePosCheckBtn();
+  if(stopBtn) stopBtn.style.display = '';
+  if(checkBtn) checkBtn.textContent = 'Проверяю…';
+
+  const batchSize = 12;
+  let done = 0;
+  const total = rows.length;
+
+  try {
+    for(let i = 0; i < rows.length; i += batchSize) {
+      if(POS_STOP) break;
+      const batch = rows.slice(i, i + batchSize);
+      const queries = batch.map(k => k.query);
+      if(status) status.textContent = `Проверяю ${done + 1}–${Math.min(done + batch.length, total)} из ${total}… (клиентский поиск WB)`;
+      try {
+        const r = await fetch(`${RAILWAY_URL}/api/search-positions`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            nm_id: POS_ARTICLE.nm_id,
+            dest,
+            queries,
+            max_pages: maxPages,
+          }),
+        });
+        const d = await r.json();
+        if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+        for(const res of (d.results || [])) {
+          POS_RESULTS[(res.query || '').toLowerCase()] = res;
+        }
+      } catch(e) {
+        for(const k of batch) {
+          const key = (k.query||'').toLowerCase();
+          if(!POS_RESULTS[key]) POS_RESULTS[key] = {query: k.query, position: null, error: String(e.message||e)};
+        }
+      }
+      done += batch.length;
+      drawPosTable();
+    }
+    if(status) {
+      status.textContent = POS_STOP
+        ? `Остановлено: ${done} из ${total}`
+        : `Готово: проверено ${done} ключей · ${Object.values(POS_RESULTS).filter(x=>x&&x.position!=null).length} с позицией`;
+    }
+  } finally {
+    POS_RUNNING = false;
+    POS_STOP = false;
+    if(stopBtn) stopBtn.style.display = 'none';
+    if(checkBtn) checkBtn.textContent = 'Проверить позиции';
+    updatePosCheckBtn();
+  }
 }
 
 // ─────────── Финансы ───────────
