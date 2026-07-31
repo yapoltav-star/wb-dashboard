@@ -503,6 +503,10 @@ td.tc{text-align:center}
   <div class="sn-item on" onclick="showPage('supply-recs',this)">Рекомендации поставок</div>
   <div class="sn-item" onclick="showPage('own-warehouse',this)">Наш склад</div>
 </div>
+<div class="subnav" id="subnav-positions" style="display:none">
+  <div class="sn-item on" onclick="showPage('positions',this)">Позиции в поиске</div>
+  <div class="sn-item" onclick="showPage('shelves',this)">Полки у конкурентов</div>
+</div>
 
 <!-- Upload modal -->
 <div class="modal-overlay" id="uploadModal">
@@ -854,6 +858,47 @@ td.tc{text-align:center}
   </div>
 </div>
 
+<!-- ПОЛКИ У КОНКУРЕНТОВ -->
+<div class="page" id="page-shelves">
+  <div class="toolbar">
+    <span style="font-size:13px;font-weight:600">Полки у конкурентов</span>
+    <span style="font-size:12px;color:var(--wb-muted);margin-left:10px">«Смотрите также» · топ-15</span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="action-btn" id="shelfRefreshBtn" onclick="refreshActiveShelf()" disabled>↻ Обновить полку</button>
+    </div>
+  </div>
+
+  <div style="padding:12px 20px 10px;border-bottom:1px solid var(--wb-border);background:var(--wb-surface)">
+    <div style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap">
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Добавить конкурента</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input id="shelfNmInput" placeholder="Артикул WB, напр. 960039726" inputmode="numeric"
+            style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:220px"
+            onkeydown="if(event.key==='Enter') addShelfCompetitor()">
+          <button class="action-btn" onclick="addShelfCompetitor()">Добавить</button>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Город</div>
+        <select id="shelfCity" onchange="onShelfCityChange()"
+          style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;min-width:180px;background:#fff">
+          <option value="-1257786">Москва</option>
+        </select>
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Сохранённые конкуренты</div>
+      <div id="shelfCompChips" style="display:flex;gap:8px;flex-wrap:wrap;min-height:32px"></div>
+    </div>
+    <div id="shelfStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Впиши nmID конкурента — сайт запомнит и покажет топ-15 полки «Смотрите также»</div>
+  </div>
+
+  <div id="shelfRoot" style="overflow:auto">
+    <div class="empty" style="padding:40px 20px">Добавь конкурента, чтобы увидеть его полку</div>
+  </div>
+</div>
+
 <!-- ФИНАНСЫ -->
 <div class="page" id="page-finance">
   <div id="finGate" class="fin-lock">
@@ -979,13 +1024,15 @@ function showSection(sec, btn) {
   if(sg) sg.style.display = sec === 'growth' ? 'flex' : 'none';
   const sp = document.getElementById('subnav-promotions');
   if(sp) sp.style.display = sec === 'promotions' ? 'flex' : 'none';
+  const spos = document.getElementById('subnav-positions');
+  if(spos) spos.style.display = sec === 'positions' ? 'flex' : 'none';
   if(sec === 'products') showPage('products', document.querySelector('#subnav-products .sn-item'));
   else if(sec === 'growth') showPage('sales-pace', document.querySelector('#subnav-growth .sn-item'));
   else if(sec === 'promotions') showPage('promotions', document.querySelector('#subnav-promotions .sn-item'));
   else if(sec === 'supplies') showPage('supply-recs', document.querySelector('#subnav-supplies .sn-item'));
   else if(sec === 'ads') showPage('ads', null);
   else if(sec === 'analytics') showPage('competitors', null);
-  else if(sec === 'positions') showPage('positions', null);
+  else if(sec === 'positions') showPage('positions', document.querySelector('#subnav-positions .sn-item'));
   else if(sec === 'finance') showPage('finance', null);
 }
 
@@ -1009,6 +1056,7 @@ function showPage(id, btn) {
   if(id === 'prices') renderSppPrices(true);
   if(id === 'sales-pace') renderSalesPace(true);
   if(id === 'positions') renderPositionsPage();
+  if(id === 'shelves') renderShelvesPage();
   if(id === 'finance') renderFinance();
 }
 
@@ -4698,13 +4746,247 @@ async function runPositionCheck() {
   }
 }
 
-// ─────────── Финансы ───────────
-const FINANCE_PIN = '1997';
-let FINANCE_OK = sessionStorage.getItem('wb_finance_ok') === '1';
-let FINANCE_DATA = null;
-let FIN_TAB = 'wb';
-let FIN_MODE = 'stock'; // stock | cfo
-let CFO_DATA = null;
+// ─────────── Полки у конкурентов («Смотрите также») ───────────
+let SHELF_COMPETITORS = JSON.parse(localStorage.getItem('shelf_competitors') || '[]'); // [{nm_id, brand, name, thumb}]
+let SHELF_ACTIVE = Number(localStorage.getItem('shelf_active_nm') || 0) || null;
+let SHELF_CACHE = {}; // nm_id -> {items, competitor, loaded_at, error}
+let SHELF_LOADING = false;
+
+function saveShelfCompetitors() {
+  localStorage.setItem('shelf_competitors', JSON.stringify(SHELF_COMPETITORS));
+  if(SHELF_ACTIVE) localStorage.setItem('shelf_active_nm', String(SHELF_ACTIVE));
+  else localStorage.removeItem('shelf_active_nm');
+}
+
+function shelfDest() {
+  return Number((document.getElementById('shelfCity')||{}).value || -1257786);
+}
+
+function onShelfCityChange() {
+  const sel = document.getElementById('shelfCity');
+  if(sel) localStorage.setItem('shelf_dest', sel.value);
+  SHELF_CACHE = {};
+  if(SHELF_ACTIVE) loadShelfFor(SHELF_ACTIVE, true);
+}
+
+function renderShelvesPage() {
+  // города — те же, что у позиций (если уже грузили)
+  const sel = document.getElementById('shelfCity');
+  if(sel && POS_CITIES && POS_CITIES.length && sel.options.length <= 1) {
+    const saved = localStorage.getItem('shelf_dest') || '-1257786';
+    sel.innerHTML = POS_CITIES.map(c =>
+      `<option value="${c.dest}"${String(c.dest)===String(saved)?' selected':''}>${c.name}</option>`
+    ).join('');
+  } else if(sel && !POS_CITIES.length) {
+    // подтянем список городов с бэка, если позиции ещё не открывали
+    fetch(`${RAILWAY_URL}/api/search-keywords`).then(r=>r.json()).then(d => {
+      POS_CITIES = Array.isArray(d.cities) ? d.cities : POS_CITIES;
+      const s = document.getElementById('shelfCity');
+      if(s && POS_CITIES.length) {
+        const saved = localStorage.getItem('shelf_dest') || String(d.default_dest || -1257786);
+        s.innerHTML = POS_CITIES.map(c =>
+          `<option value="${c.dest}"${String(c.dest)===String(saved)?' selected':''}>${c.name}</option>`
+        ).join('');
+      }
+    }).catch(()=>{});
+  }
+  buildShelfChips();
+  const btn = document.getElementById('shelfRefreshBtn');
+  if(btn) btn.disabled = !SHELF_ACTIVE || SHELF_LOADING;
+  if(SHELF_ACTIVE) loadShelfFor(SHELF_ACTIVE, false);
+  else {
+    const root = document.getElementById('shelfRoot');
+    if(root) root.innerHTML = '<div class="empty" style="padding:40px 20px">Добавь конкурента, чтобы увидеть его полку</div>';
+  }
+}
+
+function buildShelfChips() {
+  const el = document.getElementById('shelfCompChips');
+  if(!el) return;
+  if(!SHELF_COMPETITORS.length) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--wb-faint)">Пока пусто — добавь nmID конкурента</span>';
+    return;
+  }
+  el.innerHTML = SHELF_COMPETITORS.map(c => {
+    const on = Number(c.nm_id) === Number(SHELF_ACTIVE);
+    const label = c.brand ? `${escapeHtml(c.brand)} · ${c.nm_id}` : String(c.nm_id);
+    const thumb = c.thumb || wbThumbUrl(c.nm_id);
+    return `<div onclick="selectShelfCompetitor(${c.nm_id})"
+      style="display:inline-flex;align-items:center;gap:7px;padding:5px 10px 5px 5px;border-radius:8px;cursor:pointer;font-size:12px;
+        border:1px solid ${on?'var(--wb-purple)':'var(--wb-border)'};background:${on?'var(--wb-purple-light)':'var(--wb-surface)'}">
+      <img src="${thumb}" alt="" width="28" height="28" style="border-radius:4px;object-fit:cover;background:#f3f3f3"
+        onerror="this.style.display='none'">
+      <span><b>${label}</b></span>
+      <span style="color:var(--wb-faint);margin-left:2px" onclick="event.stopPropagation();removeShelfCompetitor(${c.nm_id})" title="Удалить">✕</span>
+    </div>`;
+  }).join('');
+}
+
+async function addShelfCompetitor() {
+  const inp = document.getElementById('shelfNmInput');
+  const raw = ((inp && inp.value) || '').trim().replace(/\D/g, '');
+  if(!raw) { alert('Введи артикул WB (nmID)'); return; }
+  const nmId = Number(raw);
+  if(!nmId) { alert('Некорректный артикул'); return; }
+  if(SHELF_COMPETITORS.some(c => Number(c.nm_id) === nmId)) {
+    selectShelfCompetitor(nmId);
+    if(inp) inp.value = '';
+    return;
+  }
+  const status = document.getElementById('shelfStatus');
+  if(status) status.textContent = `Загружаю конкурента ${nmId}…`;
+  try {
+    const d = await fetchShelfData(nmId);
+    const comp = d.competitor || {nm_id: nmId};
+    SHELF_COMPETITORS.unshift({
+      nm_id: nmId,
+      brand: comp.brand || '',
+      name: comp.name || '',
+      thumb: comp.thumb || wbThumbUrl(nmId),
+    });
+    SHELF_ACTIVE = nmId;
+    SHELF_CACHE[nmId] = d;
+    saveShelfCompetitors();
+    if(inp) inp.value = '';
+    buildShelfChips();
+    drawShelfTable(d);
+    if(status) status.textContent = `Сохранён: ${comp.brand || ''} ${nmId} · топ-${(d.items||[]).length}`;
+  } catch(e) {
+    if(status) status.textContent = `Ошибка: ${e.message}`;
+  }
+}
+
+function selectShelfCompetitor(nmId) {
+  SHELF_ACTIVE = Number(nmId);
+  saveShelfCompetitors();
+  buildShelfChips();
+  loadShelfFor(SHELF_ACTIVE, false);
+}
+
+function removeShelfCompetitor(nmId) {
+  SHELF_COMPETITORS = SHELF_COMPETITORS.filter(c => Number(c.nm_id) !== Number(nmId));
+  delete SHELF_CACHE[nmId];
+  if(Number(SHELF_ACTIVE) === Number(nmId)) {
+    SHELF_ACTIVE = SHELF_COMPETITORS[0] ? SHELF_COMPETITORS[0].nm_id : null;
+  }
+  saveShelfCompetitors();
+  buildShelfChips();
+  if(SHELF_ACTIVE) loadShelfFor(SHELF_ACTIVE, false);
+  else {
+    const root = document.getElementById('shelfRoot');
+    if(root) root.innerHTML = '<div class="empty" style="padding:40px 20px">Добавь конкурента, чтобы увидеть его полку</div>';
+    const btn = document.getElementById('shelfRefreshBtn');
+    if(btn) btn.disabled = true;
+  }
+}
+
+function refreshActiveShelf() {
+  if(SHELF_ACTIVE) loadShelfFor(SHELF_ACTIVE, true);
+}
+
+async function fetchShelfData(nmId) {
+  const dest = shelfDest();
+  const r = await fetch(`${RAILWAY_URL}/api/competitor-shelf?nm_id=${nmId}&dest=${dest}&limit=15`);
+  const d = await r.json().catch(() => ({}));
+  if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+  if(d.error && !(d.items||[]).length) throw new Error(d.error);
+  return d;
+}
+
+async function loadShelfFor(nmId, force) {
+  const btn = document.getElementById('shelfRefreshBtn');
+  const status = document.getElementById('shelfStatus');
+  const root = document.getElementById('shelfRoot');
+  if(!force && SHELF_CACHE[nmId] && SHELF_CACHE[nmId].items) {
+    drawShelfTable(SHELF_CACHE[nmId]);
+    if(btn) btn.disabled = false;
+    return;
+  }
+  SHELF_LOADING = true;
+  if(btn) btn.disabled = true;
+  if(status) status.textContent = `Загружаю полку ${nmId}…`;
+  if(root) root.innerHTML = '<div class="empty" style="padding:40px 20px">Загрузка полки…</div>';
+  try {
+    const d = await fetchShelfData(nmId);
+    SHELF_CACHE[nmId] = d;
+    // обновим бренд/имя в сохранённом списке
+    const i = SHELF_COMPETITORS.findIndex(c => Number(c.nm_id) === Number(nmId));
+    if(i >= 0 && d.competitor) {
+      SHELF_COMPETITORS[i] = {
+        ...SHELF_COMPETITORS[i],
+        brand: d.competitor.brand || SHELF_COMPETITORS[i].brand,
+        name: d.competitor.name || SHELF_COMPETITORS[i].name,
+        thumb: d.competitor.thumb || SHELF_COMPETITORS[i].thumb,
+      };
+      saveShelfCompetitors();
+      buildShelfChips();
+    }
+    drawShelfTable(d);
+    if(status) {
+      const c = d.competitor || {};
+      status.textContent = `${c.brand || ''} ${nmId}` + (c.name ? ` · ${c.name}` : '') +
+        ` · топ-${(d.items||[]).length}` + (d.city ? ` · ${d.city}` : '');
+    }
+  } catch(e) {
+    if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка: ${escapeHtml(e.message)}</div>`;
+    if(status) status.textContent = `Ошибка: ${e.message}`;
+  } finally {
+    SHELF_LOADING = false;
+    if(btn) btn.disabled = !SHELF_ACTIVE;
+  }
+}
+
+function drawShelfTable(data) {
+  const root = document.getElementById('shelfRoot');
+  if(!root) return;
+  const items = data.items || [];
+  const comp = data.competitor || {};
+  if(!items.length) {
+    root.innerHTML = `<div class="empty" style="padding:40px 20px">Полка пуста${data.error?': '+escapeHtml(String(data.error)):''}</div>`;
+    return;
+  }
+  const ownSet = new Set((COMP_OWN_ARTICLES||[]).map(a => Number(a.nm_id)));
+  if(POS_ARTICLE && POS_ARTICLE.nm_id) ownSet.add(Number(POS_ARTICLE.nm_id));
+  root.innerHTML = `
+    <div style="padding:10px 20px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--wb-border);background:#FAFAFA">
+      <img src="${comp.thumb || wbThumbUrl(comp.nm_id || data.nm_id)}" width="48" height="48"
+        style="border-radius:6px;object-fit:cover;background:#eee"
+        onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(comp.nm_id||data.nm_id,'jpg')}';}else{this.style.display='none'}">
+      <div>
+        <div style="font-size:14px;font-weight:600">${escapeHtml(comp.brand || 'Конкурент')} · ${comp.nm_id || data.nm_id}</div>
+        <div style="font-size:12px;color:var(--wb-muted)">${escapeHtml(comp.name || '')}</div>
+        <a href="${comp.url || ('https://www.wildberries.ru/catalog/'+(comp.nm_id||data.nm_id)+'/detail.aspx')}" target="_blank" rel="noopener"
+          style="font-size:12px;color:var(--wb-purple)">Открыть карточку на WB ↗</a>
+      </div>
+    </div>
+    <table class="comp-tbl" style="width:100%">
+      <thead><tr>
+        <th style="width:56px">#</th>
+        <th style="width:56px">Фото</th>
+        <th style="width:110px">Артикул</th>
+        <th style="width:140px">Бренд</th>
+        <th>Название</th>
+        <th style="width:70px"></th>
+      </tr></thead>
+      <tbody>
+        ${items.map(it => {
+          const mine = ownSet.has(Number(it.nm_id)) || String(it.brand||'').toUpperCase() === 'PVS';
+          const thumb = it.thumb || wbThumbUrl(it.nm_id);
+          return `<tr style="${mine?'background:rgba(155,81,224,.07)':''}">
+            <td style="font-weight:700;font-variant-numeric:tabular-nums">${it.position}</td>
+            <td><img src="${thumb}" alt="" width="40" height="40" loading="lazy"
+              style="border-radius:4px;object-fit:cover;background:#f3f3f3"
+              onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(it.nm_id,'jpg')}';}else{this.style.display='none'}"></td>
+            <td style="font-variant-numeric:tabular-nums"><b>${it.nm_id}</b>${mine?' <span style="color:var(--wb-purple);font-size:11px">мой</span>':''}</td>
+            <td>${escapeHtml(it.brand || '—')}</td>
+            <td style="font-size:12px">${escapeHtml(it.name || '')}</td>
+            <td><a href="${it.url || ('https://www.wildberries.ru/catalog/'+it.nm_id+'/detail.aspx')}" target="_blank" rel="noopener"
+              style="font-size:12px;color:var(--wb-purple)">WB ↗</a></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+}
 
 function renderFinance() {
   const gate = document.getElementById('finGate');

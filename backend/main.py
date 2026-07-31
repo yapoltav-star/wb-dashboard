@@ -5198,6 +5198,158 @@ def search_positions(request: dict):
     }
 
 
+def wb_product_thumb_url(nm_id: int) -> str:
+    """Публичный CDN превью карточки WB."""
+    try:
+        nm_id = int(nm_id)
+    except (TypeError, ValueError):
+        return ""
+    vol = nm_id // 100000
+    part = nm_id // 1000
+    ranges = [
+        143, 287, 431, 719, 1007, 1061, 1115, 1169, 1313, 1601, 1655, 1919,
+        2045, 2189, 2405, 2621, 2837, 3053, 3269, 3485, 3701, 3917, 4133,
+        4349, 4565, 4877, 5189, 5501, 5813, 6125, 6437, 6749, 7061, 7373,
+        7685, 7997, 8309, 8741, 9173, 9605, 10373, 11141, 11909, 12677,
+        13445, 14213,
+    ]
+    basket = 47
+    for i, r in enumerate(ranges):
+        if vol <= r:
+            basket = i + 1
+            break
+    return f"https://basket-{basket:02d}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/images/tm/1.webp"
+
+
+def fetch_wb_card_brief(nm_id: int, dest: int = -1257786):
+    """Краткие данные карточки (бренд/название) через клиентский card API."""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+        "Origin": "https://www.wildberries.ru",
+        "Referer": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
+    }
+    try:
+        with httpx.Client(timeout=20, headers=headers, follow_redirects=True) as client:
+            resp = client.get(
+                "https://card.wb.ru/cards/v4/detail",
+                params={"appType": 1, "curr": "rub", "dest": dest, "nm": nm_id},
+            )
+            if not resp.is_success:
+                return None
+            products = resp.json().get("products") or []
+            if not products:
+                return None
+            p = products[0]
+            return {
+                "nm_id": p.get("id") or nm_id,
+                "brand": p.get("brand") or "",
+                "name": p.get("name") or "",
+                "supplier": p.get("supplier") or "",
+                "thumb": wb_product_thumb_url(p.get("id") or nm_id),
+                "url": f"https://www.wildberries.ru/catalog/{p.get('id') or nm_id}/detail.aspx",
+            }
+    except Exception as e:
+        logger.warning(f"fetch_wb_card_brief {nm_id}: {e}")
+        return None
+
+
+def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
+    """Полка «Смотрите также» у карточки (клиентский recom.wb.ru)."""
+    limit = max(1, min(int(limit or 15), 30))
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+        "Origin": "https://www.wildberries.ru",
+        "Referer": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
+    }
+    # query=<nm> даёт полку see-also для этой карточки
+    url = "https://recom.wb.ru/recom/ru/common/v8/search"
+    params = {
+        "appType": 1,
+        "curr": "rub",
+        "dest": dest,
+        "spp": 30,
+        "resultset": "catalog",
+        "query": str(nm_id),
+        "suppressSpellcheck": "false",
+    }
+    last_err = None
+    for attempt in range(4):
+        try:
+            with httpx.Client(timeout=25, headers=headers, follow_redirects=True) as client:
+                resp = client.get(url, params=params)
+            if resp.status_code == 429:
+                last_err = "429"
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            if not resp.is_success:
+                last_err = f"http {resp.status_code}"
+                time.sleep(0.5)
+                continue
+            data = resp.json()
+            products = data.get("products") or (data.get("data") or {}).get("products") or []
+            items = []
+            for i, p in enumerate(products[:limit], 1):
+                pid = p.get("id") or p.get("nmId") or p.get("nmID")
+                if not pid:
+                    continue
+                items.append({
+                    "position": i,
+                    "nm_id": pid,
+                    "brand": p.get("brand") or "",
+                    "name": p.get("name") or "",
+                    "supplier": p.get("supplier") or "",
+                    "rating": p.get("reviewRating") or p.get("rating"),
+                    "feedbacks": p.get("feedbacks"),
+                    "thumb": wb_product_thumb_url(pid),
+                    "url": f"https://www.wildberries.ru/catalog/{pid}/detail.aspx",
+                })
+            return {"items": items, "total": len(products), "error": None}
+        except Exception as e:
+            last_err = str(e)[:160]
+            time.sleep(0.6 * (attempt + 1))
+    return {"items": [], "total": 0, "error": last_err or "unknown"}
+
+
+@app.get("/api/competitor-shelf")
+def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
+    """Топ полки «Смотрите также» у конкурента + краткая карточка конкурента."""
+    if not nm_id or nm_id < 1:
+        raise HTTPException(status_code=400, detail="nm_id required")
+    limit = max(1, min(int(limit or 15), 30))
+    try:
+        dest = int(dest)
+    except (TypeError, ValueError):
+        dest = -1257786
+
+    card = fetch_wb_card_brief(nm_id, dest=dest)
+    shelf = fetch_wb_see_also_shelf(nm_id, dest=dest, limit=limit)
+    city_name = next((c["name"] for c in WB_SEARCH_CITIES if c["dest"] == dest), str(dest))
+    return {
+        "nm_id": nm_id,
+        "dest": dest,
+        "city": city_name,
+        "limit": limit,
+        "competitor": card or {
+            "nm_id": nm_id,
+            "brand": "",
+            "name": "",
+            "thumb": wb_product_thumb_url(nm_id),
+            "url": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
+        },
+        "items": shelf.get("items") or [],
+        "shelf_total": shelf.get("total") or 0,
+        "error": shelf.get("error"),
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8080))
