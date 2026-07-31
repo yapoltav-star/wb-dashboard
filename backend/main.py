@@ -3555,6 +3555,309 @@ async def trigger_spp_prices_sync():
     threading.Thread(target=sync_spp_prices, daemon=True).start()
     return {"status": "started"}
 
+# ─── Поисковые запросы (корзина / заказы) ───
+SEARCH_KW_CACHE = {
+    "syncing": False,
+    "updated_at": None,
+    "error": None,
+    "period": None,
+    "queries": [],
+    "by_orders": [],
+    "by_cart": [],
+    "meta": {},
+}
+
+def _metric_current(v):
+    if v is None:
+        return 0
+    if isinstance(v, dict):
+        for k in ("current", "value", "count"):
+            if v.get(k) is not None:
+                try:
+                    return float(v[k])
+                except Exception:
+                    pass
+        return 0
+    try:
+        return float(v)
+    except Exception:
+        return 0
+
+def _extract_search_text_rows(obj, acc: list, path: str = ""):
+    """Рекурсивно достаёт строки поисковых запросов из ответа search-report."""
+    if isinstance(obj, dict):
+        text = obj.get("text") or obj.get("searchText") or obj.get("query")
+        metrics = obj.get("metrics") if isinstance(obj.get("metrics"), dict) else obj
+        has_metric = isinstance(metrics, dict) and any(
+            k in metrics for k in ("addToCart", "orders", "openCard", "cartToOrder", "openToCart", "frequency")
+        )
+        # карточка товара (не ключ): есть vendorCode/brand + nmId
+        is_product = bool(obj.get("vendorCode") or obj.get("brandName") or obj.get("subjectName"))
+        if text and isinstance(text, str) and has_metric and not is_product:
+            acc.append({
+                "text": text.strip(),
+                "frequency": int(_metric_current(metrics.get("frequency"))),
+                "avg_position": _metric_current(metrics.get("avgPosition")),
+                "open_card": int(_metric_current(metrics.get("openCard"))),
+                "add_to_cart": int(_metric_current(metrics.get("addToCart"))),
+                "orders": int(_metric_current(metrics.get("orders"))),
+                "open_to_cart": _metric_current(metrics.get("openToCart")),
+                "cart_to_order": _metric_current(metrics.get("cartToOrder")),
+                "visibility": _metric_current(metrics.get("visibility")),
+                "nm_id": obj.get("nmId") or obj.get("nmID"),
+                "vendor_code": obj.get("vendorCode"),
+            })
+        for v in obj.values():
+            _extract_search_text_rows(v, acc, path)
+    elif isinstance(obj, list):
+        for it in obj:
+            _extract_search_text_rows(it, acc, path)
+
+def _aggregate_queries(rows: list) -> list:
+    by_text = {}
+    for r in rows:
+        t = (r.get("text") or "").strip().lower()
+        if not t:
+            continue
+        cur = by_text.get(t)
+        if not cur:
+            by_text[t] = {
+                "text": r.get("text").strip(),
+                "frequency": 0,
+                "open_card": 0,
+                "add_to_cart": 0,
+                "orders": 0,
+                "avg_position_sum": 0.0,
+                "avg_position_n": 0,
+                "nm_ids": set(),
+            }
+            cur = by_text[t]
+        cur["frequency"] = max(cur["frequency"], int(r.get("frequency") or 0))
+        cur["open_card"] += int(r.get("open_card") or 0)
+        cur["add_to_cart"] += int(r.get("add_to_cart") or 0)
+        cur["orders"] += int(r.get("orders") or 0)
+        ap = r.get("avg_position")
+        if ap and float(ap) > 0:
+            cur["avg_position_sum"] += float(ap)
+            cur["avg_position_n"] += 1
+        nm = r.get("nm_id")
+        if nm:
+            cur["nm_ids"].add(int(nm))
+    out = []
+    for cur in by_text.values():
+        n = cur.pop("avg_position_n")
+        s = cur.pop("avg_position_sum")
+        cur["avg_position"] = round(s / n, 1) if n else None
+        cur["nm_ids"] = sorted(cur["nm_ids"])
+        cur["cart_conv"] = round(cur["add_to_cart"] / cur["open_card"] * 100, 1) if cur["open_card"] else None
+        cur["order_conv"] = round(cur["orders"] / cur["add_to_cart"] * 100, 1) if cur["add_to_cart"] else None
+        out.append(cur)
+    return out
+
+def _wb_search_report(body: dict) -> dict:
+    resp = httpx.post(
+        f"{WB_ANALYTICS_URL}/api/v2/search-report/report",
+        headers=wb_headers(),
+        json=body,
+        timeout=60,
+    )
+    if not resp.is_success:
+        raise RuntimeError(f"search-report {resp.status_code}: {resp.text[:300]}")
+    return resp.json()
+
+def _wb_product_search_texts(body: dict) -> dict:
+    resp = httpx.post(
+        f"{WB_ANALYTICS_URL}/api/v2/search-report/product/search-texts",
+        headers=wb_headers(),
+        json=body,
+        timeout=60,
+    )
+    if resp.status_code == 400:
+        # часто «нет Джема» или слишком большой limit
+        raise RuntimeError(f"product/search-texts 400: {resp.text[:300]}")
+    if not resp.is_success:
+        raise RuntimeError(f"product/search-texts {resp.status_code}: {resp.text[:300]}")
+    return resp.json()
+
+def _collect_nm_ids_for_search(limit: int = 40) -> list:
+    """Топ артикулов по заказам за период из article_daily_stats / stock."""
+    nms = []
+    try:
+        # последние ~90 дней заказов
+        since = (datetime.now(timezone.utc) - timedelta(days=95)).strftime("%Y-%m-%d")
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/article_daily_stats"
+            f"?dt=gte.{since}&select=nm_id,orders&order=orders.desc&limit=5000",
+            headers=sb_headers(),
+            timeout=30,
+        )
+        if resp.is_success:
+            agg = {}
+            for r in resp.json() or []:
+                nm = r.get("nm_id")
+                if nm is None:
+                    continue
+                agg[int(nm)] = agg.get(int(nm), 0) + int(r.get("orders") or 0)
+            nms = [nm for nm, _ in sorted(agg.items(), key=lambda x: -x[1])[:limit]]
+    except Exception as e:
+        logger.warning(f"search-kw nm from daily_stats: {e}")
+    if len(nms) < 10:
+        try:
+            st = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id&limit=200",
+                headers=sb_headers(),
+                timeout=20,
+            )
+            if st.is_success:
+                for r in st.json() or []:
+                    nm = r.get("nm_id")
+                    if nm is not None and int(nm) not in nms:
+                        nms.append(int(nm))
+                    if len(nms) >= limit:
+                        break
+        except Exception as e:
+            logger.warning(f"search-kw nm from stock: {e}")
+    return nms[:limit]
+
+def sync_search_keywords(days: int = 90):
+    if SEARCH_KW_CACHE.get("syncing"):
+        return
+    SEARCH_KW_CACHE["syncing"] = True
+    SEARCH_KW_CACHE["error"] = None
+    try:
+        if not WB_TOKEN:
+            SEARCH_KW_CACHE["error"] = "WB_TOKEN не задан"
+            return
+        days = max(7, min(int(days or 90), 180))
+        end = datetime.now(timezone.utc).date()
+        start = end - timedelta(days=days - 1)
+        period = {"start": start.isoformat(), "end": end.isoformat()}
+        rows = []
+        meta = {"days": days, "period": period, "sources": [], "warnings": []}
+
+        # 1) Сводный отчёт (без обязательного Джема)
+        try:
+            for field in ("orders", "addToCart"):
+                data = _wb_search_report({
+                    "currentPeriod": period,
+                    "positionCluster": "all",
+                    "orderBy": {"field": field, "mode": "desc"},
+                    "includeSearchTexts": True,
+                    "includeSubstitutedSKUs": False,
+                    "limit": 50,
+                    "offset": 0,
+                })
+                before = len(rows)
+                _extract_search_text_rows(data, rows)
+                meta["sources"].append(f"report/{field}+{len(rows) - before}")
+                time.sleep(21)  # лимит analytics ~3/мин
+        except Exception as e:
+            meta["warnings"].append(f"report: {e}")
+            logger.warning(f"search-kw report: {e}")
+
+        # 2) Топ-ключи по артикулам (нужен Джем)
+        nms = _collect_nm_ids_for_search(30)
+        meta["nm_sample"] = nms[:10]
+        meta["nm_count"] = len(nms)
+        for top_by in ("orders", "addToCart"):
+            # батчами по 5 nm — меньше запросов
+            for i in range(0, min(len(nms), 20), 5):
+                batch = nms[i:i + 5]
+                try:
+                    data = _wb_product_search_texts({
+                        "currentPeriod": period,
+                        "nmIds": batch,
+                        "topOrderBy": top_by,
+                        "orderBy": {"field": top_by, "mode": "desc"},
+                        "includeSearchTexts": True,
+                        "includeSubstitutedSKUs": False,
+                        "limit": 30,
+                    })
+                    before = len(rows)
+                    # items часто лежат в data.items / data.data.items
+                    payload = data.get("data") or data
+                    items = payload.get("items") or payload.get("products") or []
+                    if isinstance(items, list):
+                        for it in items:
+                            if not isinstance(it, dict):
+                                continue
+                            nm = it.get("nmId") or it.get("nmID")
+                            texts = it.get("searchTexts") or it.get("texts") or it.get("items") or []
+                            # иногда сам item — это текст
+                            if not texts and (it.get("text") or it.get("searchText")):
+                                texts = [it]
+                            if isinstance(texts, list):
+                                for t in texts:
+                                    if isinstance(t, dict):
+                                        t = {**t, "nmId": nm or t.get("nmId")}
+                                        _extract_search_text_rows(t, rows)
+                            else:
+                                _extract_search_text_rows(it, rows)
+                    else:
+                        _extract_search_text_rows(data, rows)
+                    meta["sources"].append(f"product/{top_by}/{batch[0]}+{len(rows) - before}")
+                except Exception as e:
+                    meta["warnings"].append(f"product/{top_by}: {e}")
+                    logger.warning(f"search-kw product texts: {e}")
+                    # если нет Джема — дальше не долбим
+                    if "400" in str(e) and ("jam" in str(e).lower() or "подпис" in str(e).lower() or "Джем" in str(e)):
+                        break
+                time.sleep(21)
+
+        agg = _aggregate_queries(rows)
+        by_orders = sorted(
+            [q for q in agg if q.get("orders", 0) > 0],
+            key=lambda x: (-x["orders"], -x["add_to_cart"]),
+        )
+        by_cart = sorted(
+            [q for q in agg if q.get("add_to_cart", 0) > 0],
+            key=lambda x: (-x["add_to_cart"], -x["orders"]),
+        )
+        SEARCH_KW_CACHE["queries"] = agg
+        SEARCH_KW_CACHE["by_orders"] = by_orders
+        SEARCH_KW_CACHE["by_cart"] = by_cart
+        SEARCH_KW_CACHE["period"] = period
+        SEARCH_KW_CACHE["meta"] = meta
+        SEARCH_KW_CACHE["updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+        if not agg and meta.get("warnings"):
+            SEARCH_KW_CACHE["error"] = "; ".join(meta["warnings"][:3])
+        logger.info(
+            f"search-kw sync: queries={len(agg)} with_orders={len(by_orders)} "
+            f"with_cart={len(by_cart)} days={days}"
+        )
+    except Exception as e:
+        logger.error(f"sync_search_keywords error: {e}")
+        SEARCH_KW_CACHE["error"] = str(e)
+    finally:
+        SEARCH_KW_CACHE["syncing"] = False
+
+@app.get("/api/search-keywords")
+def get_search_keywords(days: int = 90, refresh: bool = False, top: int = 100):
+    """Агрегат поисковых запросов с корзинами и заказами за период."""
+    if refresh or (not SEARCH_KW_CACHE.get("queries") and not SEARCH_KW_CACHE.get("syncing")):
+        if not SEARCH_KW_CACHE.get("syncing"):
+            threading.Thread(target=lambda: sync_search_keywords(days), daemon=True).start()
+    top = max(10, min(int(top or 100), 300))
+    return {
+        "period": SEARCH_KW_CACHE.get("period"),
+        "updated_at": SEARCH_KW_CACHE.get("updated_at"),
+        "syncing": SEARCH_KW_CACHE.get("syncing", False),
+        "error": SEARCH_KW_CACHE.get("error"),
+        "meta": SEARCH_KW_CACHE.get("meta") or {},
+        "by_orders": (SEARCH_KW_CACHE.get("by_orders") or [])[:top],
+        "by_cart": (SEARCH_KW_CACHE.get("by_cart") or [])[:top],
+        "total_queries": len(SEARCH_KW_CACHE.get("queries") or []),
+        "total_with_orders": len(SEARCH_KW_CACHE.get("by_orders") or []),
+        "total_with_cart": len(SEARCH_KW_CACHE.get("by_cart") or []),
+    }
+
+@app.post("/api/sync-search-keywords")
+async def trigger_search_keywords_sync(days: int = 90):
+    if SEARCH_KW_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    threading.Thread(target=lambda: sync_search_keywords(days), daemon=True).start()
+    return {"status": "started", "days": days}
+
 scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
 scheduler.add_job(sync_stock, "interval", hours=3, id="sync_stock")
