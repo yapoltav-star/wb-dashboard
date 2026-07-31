@@ -15,30 +15,6 @@
       "opens": 2162
     },
     {
-      "query": "смарт часы детские для мальчика",
-      "freq": 6103,
-      "cart_cr": 10.87,
-      "from_cart_cr": 19.51,
-      "cr": 2.12,
-      "sok": 3.17,
-      "rating": 6.72,
-      "orders": 0,
-      "cart": 0,
-      "opens": 0
-    },
-    {
-      "query": "часы детские с сим картой и gps",
-      "freq": 5013,
-      "cart_cr": 10.12,
-      "from_cart_cr": 16.13,
-      "cr": 1.63,
-      "sok": 4.01,
-      "rating": 6.54,
-      "orders": 0,
-      "cart": 0,
-      "opens": 0
-    },
-    {
       "query": "смарт часы женские для андроид",
       "freq": 26609,
       "cart_cr": 9.43,
@@ -49,18 +25,6 @@
       "orders": 134,
       "cart": 914,
       "opens": 9582
-    },
-    {
-      "query": "фитнес браслет для мужчин",
-      "freq": 5555,
-      "cart_cr": 9.3,
-      "from_cart_cr": 22.22,
-      "cr": 2.07,
-      "sok": 2.54,
-      "rating": 5.26,
-      "orders": 0,
-      "cart": 0,
-      "opens": 0
     },
     {
       "query": "смарт часы мужские водонепроницаемый",
@@ -123,18 +87,6 @@
       "opens": 2783
     },
     {
-      "query": "фитнес браслет женский",
-      "freq": 8997,
-      "cart_cr": 8.8,
-      "from_cart_cr": 15.68,
-      "cr": 1.38,
-      "sok": 3.34,
-      "rating": 4.61,
-      "orders": 0,
-      "cart": 0,
-      "opens": 0
-    },
-    {
       "query": "смарт часы для девочек",
       "freq": 8865,
       "cart_cr": 11.21,
@@ -181,18 +133,6 @@
       "orders": 9,
       "cart": 53,
       "opens": 509
-    },
-    {
-      "query": "женский фитнес час",
-      "freq": 7257,
-      "cart_cr": 8.65,
-      "from_cart_cr": 13.19,
-      "cr": 1.14,
-      "sok": 3.23,
-      "rating": 3.68,
-      "orders": 0,
-      "cart": 0,
-      "opens": 0
     },
     {
       "query": "умные часы для детей",
@@ -303,18 +243,6 @@
       "opens": 0
     },
     {
-      "query": "фитнес час",
-      "freq": 8783,
-      "cart_cr": 9.95,
-      "from_cart_cr": 14.96,
-      "cr": 1.49,
-      "sok": 1.43,
-      "rating": 2.13,
-      "orders": 0,
-      "cart": 0,
-      "opens": 0
-    },
-    {
       "query": "часы айфоновские женские",
       "freq": 5982,
       "cart_cr": 8.28,
@@ -349,18 +277,6 @@
       "orders": 26,
       "cart": 175,
       "opens": 1991
-    },
-    {
-      "query": "apple watch se",
-      "freq": 6413,
-      "cart_cr": 7.75,
-      "from_cart_cr": 12.08,
-      "cr": 0.94,
-      "sok": 1.48,
-      "rating": 1.39,
-      "orders": 0,
-      "cart": 0,
-      "opens": 0
     },
     {
       "query": "умные часы",
