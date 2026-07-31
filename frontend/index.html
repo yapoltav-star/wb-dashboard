@@ -3107,22 +3107,6 @@ function sppCashbackHtml(a) {
   return `<span style="font-weight:700;color:#027A48">${pct.toLocaleString('ru-RU', {maximumFractionDigits: 0})}%${rub}</span>`;
 }
 
-function sppReviewPointsHtml(a) {
-  if(a == null || a.review_points_active == null)
-    return '<span style="color:var(--wb-faint)" title="Нет доступа к API «Баллы за отзывы» (нужна сессия кабинета)">—</span>';
-  if(!a.review_points_active)
-    return '<span style="color:var(--wb-faint)">нет</span>';
-  const parts = [];
-  if(a.review_points_text != null) parts.push(`текст ${a.review_points_text}`);
-  if(a.review_points_photo != null) parts.push(`фото ${a.review_points_photo}`);
-  if(a.review_points_video != null) parts.push(`видео ${a.review_points_video}`);
-  if(a.review_points_max != null) parts.push(`до ${a.review_points_max}`);
-  const detail = parts.length
-    ? `<div style="font-size:11px;color:var(--wb-muted);font-weight:400;margin-top:2px">${parts.join(' · ')}</div>`
-    : '';
-  return `<span style="font-weight:700;color:#027A48">да</span>${detail}`;
-}
-
 function drawSppPrices() {
   const info = document.getElementById('sppInfo');
   const root = document.getElementById('sppRoot');
@@ -3140,7 +3124,6 @@ function drawSppPrices() {
     if(SPP_DATA.updated_at) bits.push('обновлено ' + SPP_DATA.updated_at);
     if(SPP_DATA.client_source) bits.push('витрина: ' + SPP_DATA.client_source);
     if(SPP_DATA.error) bits.push(SPP_DATA.error);
-    if(SPP_DATA.review_points_error) bits.push('баллы за отзывы: нет доступа из API-токена');
     if(info) info.textContent = bits.join(' · ');
     if(btn) btn.disabled = false;
   }
@@ -3170,14 +3153,12 @@ function drawSppPrices() {
     : null;
   const maxSpp = withSpp.length ? Math.max(...withSpp.map(a => Number(a.spp))) : null;
   const withCb = all.filter(a => a.cashback_pct != null && Number(a.cashback_pct) > 0);
-  const withRp = all.filter(a => a.review_points_active === true);
   if(cards) {
     cards.innerHTML = [
       ['Артикулов', fmt(all.length)],
       ['Со СПП', fmt(withSpp.length)],
       ['Средний СПП', avgSpp != null ? (avgSpp.toLocaleString('ru-RU', {maximumFractionDigits: 1}) + '%') : '—', avgSpp != null ? 'color:#027A48' : ''],
       ['С кэшбеком', fmt(withCb.length), withCb.length ? 'color:#027A48' : ''],
-      ['Баллы за отзывы', fmt(withRp.length), withRp.length ? 'color:#027A48' : ''],
     ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
   }
 
@@ -3204,7 +3185,6 @@ function drawSppPrices() {
       ${th('Цена на сайте', 'client_price')}
       ${th('СПП', 'spp')}
       ${th('Кэшбек', 'cashback_pct')}
-      ${th('Баллы за отзывы', 'review_points_active')}
       <th class="mhead">Скидка каб.</th>
     </tr></thead>
     <tbody>${arts.map((a, i) => {
@@ -3217,7 +3197,6 @@ function drawSppPrices() {
         <td>${sppMoney(a.client_price)}</td>
         <td>${sppPctHtml(a.spp)}</td>
         <td>${sppCashbackHtml(a)}</td>
-        <td>${sppReviewPointsHtml(a)}</td>
         <td style="color:var(--wb-muted)">${a.discount != null ? a.discount + '%' : '—'}</td>
       </tr>`;
     }).join('')}</tbody>
@@ -3225,7 +3204,6 @@ function drawSppPrices() {
   <div class="pace-hint">СПП = насколько цена на витрине ниже вашей цены продавца после скидки:
     <b>(1 − цена сайта / цена продавца) × 100%</b>.
     Кэшбек — % с витрины WB (оплата кошельком / «ягодки»).
-    Баллы за отзывы — из раздела кабинета (если API-токен их не отдаёт, будет «—»).
     Нужен токен с категорией «Цены и скидки».</div>`;
 }
 

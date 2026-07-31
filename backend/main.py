@@ -32,7 +32,6 @@ WB_PROMOTION_URL = "https://advert-api.wildberries.ru"
 WB_CALENDAR_URL = "https://dp-calendar-api.wildberries.ru"
 WB_CONTENT_URL = "https://content-api.wildberries.ru"
 WB_PRICES_URL = "https://discounts-prices-api.wildberries.ru"
-WB_POINTS_URL = "https://seller-reviews.wildberries.ru/ns/points-seller-api/reviews-ext-points"
 
 # Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
 # а агрегаты — переносим их в отдельные поля stock_totals вместо списка складов.
@@ -3247,7 +3246,6 @@ SPP_CACHE = {
     "syncing": False,
     "error": None,
     "client_source": None,
-    "review_points_error": None,
 }
 
 def _money_to_rub(v, force_kopecks: bool = False):
@@ -3376,212 +3374,6 @@ def _parse_client_product(p: dict) -> dict:
         "name": p.get("name") or p.get("title") or "",
     }
 
-def _wb_auth_header_variants():
-    """Варианты заголовков: публичный API-токен и формы, которые иногда принимает кабинет."""
-    if not WB_TOKEN:
-        return []
-    tok = WB_TOKEN.strip()
-    base = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "wb-dashboard/1.0"}
-    variants = [
-        {**base, "Authorization": tok},
-        {**base, "Authorization": f"Bearer {tok}" if not tok.lower().startswith("bearer ") else tok},
-        {**base, "AuthorizeV3": tok},
-        {**base, "authorizev3": tok},
-    ]
-    # убрать дубли
-    seen, out = set(), []
-    for h in variants:
-        key = tuple(sorted((k, h[k]) for k in ("Authorization", "AuthorizeV3", "authorizev3") if k in h))
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(h)
-    return out
-
-def fetch_review_points_map(nm_ids: list) -> tuple:
-    """
-    Баллы за отзывы из кабинета (seller-reviews).
-    Возвращает ({nm_id: info}, error_or_None).
-    info: {active, promotion_id, item_status, text_points, photo_points, video_points, max_points}
-    """
-    ids = [int(x) for x in nm_ids if x]
-    if not ids or not WB_TOKEN:
-        return {}, "no_token" if not WB_TOKEN else None
-    url = f"{WB_POINTS_URL}/api/v2/seller/items"
-    by_nm = {}
-    last_err = None
-    headers_list = _wb_auth_header_variants()
-    # пробуем варианты auth + тела запроса
-    bodies = [
-        lambda batch: {"filter": {"nmIDs": batch}, "pagination": {"limit": len(batch), "offset": 0}},
-        lambda batch: {"filter": {"nmIDs": batch}, "pagination": {"pgLimit": len(batch), "pgToken": ""}},
-        lambda batch: {"filter": {"nmIDs": batch}},
-    ]
-    working = None  # (headers, body_builder)
-    for i in range(0, len(ids), 50):
-        batch = ids[i:i + 50]
-        got = False
-        attempts = [(working[0], working[1])] if working else [
-            (h, b) for h in headers_list for b in bodies
-        ]
-        for headers, body_fn in attempts:
-            try:
-                resp = httpx.post(url, headers=headers, json=body_fn(batch), timeout=25)
-            except Exception as e:
-                last_err = str(e)
-                continue
-            if resp.status_code in (401, 403):
-                last_err = f"auth {resp.status_code}"
-                continue
-            if not resp.is_success:
-                last_err = f"{resp.status_code}: {resp.text[:160]}"
-                continue
-            try:
-                data = resp.json()
-            except Exception as e:
-                last_err = str(e)
-                continue
-            items = data.get("items") or (data.get("data") or {}).get("items") or []
-            if not isinstance(items, list):
-                last_err = "unexpected response"
-                continue
-            working = (headers, body_fn)
-            for it in items:
-                if not isinstance(it, dict):
-                    continue
-                nm = it.get("id") or it.get("nmID") or it.get("nmId")
-                if nm is None:
-                    continue
-                promo = it.get("currentPromotion") or it.get("current_promotion") or {}
-                if not isinstance(promo, dict):
-                    promo = {}
-                promo_id = promo.get("id")
-                item_status = (promo.get("itemStatus") or promo.get("status") or "").strip()
-                active = bool(promo_id) and str(item_status).lower() not in ("", "archived", "draft", "hidden")
-                # ставки баллов — если кабинет отдал на уровне товара/акции
-                def _pt(*keys):
-                    for k in keys:
-                        if it.get(k) is not None:
-                            try:
-                                return int(float(it.get(k)))
-                            except Exception:
-                                pass
-                        if isinstance(promo, dict) and promo.get(k) is not None:
-                            try:
-                                return int(float(promo.get(k)))
-                            except Exception:
-                                pass
-                    return None
-                by_nm[int(nm)] = {
-                    "active": active,
-                    "promotion_id": promo_id,
-                    "item_status": item_status or None,
-                    "text_points": _pt("textPoints", "text_points"),
-                    "photo_points": _pt("photoPoints", "photo_points"),
-                    "video_points": _pt("videoPoints", "video_points"),
-                    "max_points": _pt("maxTotalPointsCount", "max_total_points_count", "maxPoints"),
-                }
-            got = True
-            break
-        if not got and i == 0:
-            # первый батч не прошёл — дальше нет смысла
-            break
-        time.sleep(0.25)
-    if not by_nm and last_err:
-        return {}, last_err
-    # товары без ответа считаем без активной акции
-    for nm in ids:
-        if nm not in by_nm:
-            by_nm[nm] = {
-                "active": False,
-                "promotion_id": None,
-                "item_status": None,
-                "text_points": None,
-                "photo_points": None,
-                "video_points": None,
-                "max_points": None,
-            }
-    return by_nm, None
-
-def fetch_active_review_promotions() -> tuple:
-    """Активные акции «баллы за отзывы» → map nm_id → ставки. Fallback, если seller/items недоступен."""
-    if not WB_TOKEN:
-        return {}, "no_token"
-    urls = [
-        f"{WB_POINTS_URL}/api/v3/promotions",
-        f"{WB_POINTS_URL}/api/v2/promotions",
-        f"{WB_POINTS_URL}/api/v1/promotions",
-    ]
-    last_err = None
-    for headers in _wb_auth_header_variants():
-        for url in urls:
-            for params in (
-                {"status": "active"},
-                {"statuses": "active"},
-                None,
-            ):
-                try:
-                    resp = httpx.get(url, headers=headers, params=params, timeout=25)
-                except Exception as e:
-                    last_err = str(e)
-                    continue
-                if resp.status_code in (401, 403):
-                    last_err = f"auth {resp.status_code}"
-                    continue
-                if not resp.is_success:
-                    last_err = f"{resp.status_code}"
-                    continue
-                try:
-                    data = resp.json()
-                except Exception as e:
-                    last_err = str(e)
-                    continue
-                promos = (
-                    data.get("promotions")
-                    or (data.get("data") or {}).get("promotions")
-                    or data.get("items")
-                    or (data if isinstance(data, list) else [])
-                )
-                if not isinstance(promos, list):
-                    continue
-                by_nm = {}
-                for promo in promos:
-                    if not isinstance(promo, dict):
-                        continue
-                    status = str(promo.get("status") or "").lower()
-                    if status and status not in ("active", "planned", ""):
-                        continue
-                    text_p = promo.get("textPoints") or promo.get("text_points")
-                    photo_p = promo.get("photoPoints") or promo.get("photo_points")
-                    video_p = promo.get("videoPoints") or promo.get("video_points")
-                    max_p = promo.get("maxTotalPointsCount") or promo.get("max_total_points_count")
-                    nms = promo.get("nmIDs") or promo.get("nmIds") or promo.get("nms") or []
-                    goods = promo.get("goods") or promo.get("items") or []
-                    if isinstance(goods, list):
-                        for g in goods:
-                            if isinstance(g, dict):
-                                nid = g.get("id") or g.get("nmID") or g.get("nmId")
-                                if nid is not None:
-                                    nms.append(nid)
-                    for nm in nms:
-                        try:
-                            nm_i = int(nm)
-                        except Exception:
-                            continue
-                        by_nm[nm_i] = {
-                            "active": status in ("active", "") or not status,
-                            "promotion_id": promo.get("id"),
-                            "item_status": status or "active",
-                            "text_points": int(text_p) if text_p is not None else None,
-                            "photo_points": int(photo_p) if photo_p is not None else None,
-                            "video_points": int(video_p) if video_p is not None else None,
-                            "max_points": int(max_p) if max_p is not None else None,
-                        }
-                if by_nm:
-                    return by_nm, None
-                last_err = "empty promotions"
-    return {}, last_err
-
 def fetch_client_prices(nm_ids: list) -> tuple:
     """Цены с витрины WB. Возвращает ({nm_id: info}, source_name)."""
     ids = [int(x) for x in nm_ids if x]
@@ -3687,16 +3479,6 @@ def sync_spp_prices():
             return
         nm_ids = [a["nm_id"] for a in cabinet]
         client_map, source = fetch_client_prices(nm_ids)
-        points_map, points_err = fetch_review_points_map(nm_ids)
-        if points_err and not points_map:
-            # запасной путь — список акций
-            promo_map, promo_err = fetch_active_review_promotions()
-            if promo_map:
-                points_map = promo_map
-                points_err = None
-            else:
-                points_err = points_err or promo_err
-                logger.warning(f"SPP review-points unavailable: {points_err}")
         articles = []
         missing_client = 0
         for a in cabinet:
@@ -3728,7 +3510,6 @@ def sync_spp_prices():
                     cashback_rub = round(float(client_price) * float(cashback_pct) / 100.0, 0)
                 except Exception:
                     cashback_rub = None
-            rp = points_map.get(a["nm_id"]) or {}
             articles.append({
                 **a,
                 "client_price": client_price,
@@ -3737,27 +3518,17 @@ def sync_spp_prices():
                 "name": c.get("name") or "",
                 "cashback_pct": cashback_pct,
                 "cashback_rub": cashback_rub,
-                "review_points_active": rp.get("active") if rp else None,
-                "review_points_text": rp.get("text_points"),
-                "review_points_photo": rp.get("photo_points"),
-                "review_points_video": rp.get("video_points"),
-                "review_points_max": rp.get("max_points"),
-                "review_promotion_id": rp.get("promotion_id"),
             })
         articles.sort(key=lambda x: (-(x.get("spp") or -1), str(x.get("vendor_code") or "")))
         SPP_CACHE["articles"] = articles
         SPP_CACHE["updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
         SPP_CACHE["client_source"] = source
-        SPP_CACHE["review_points_error"] = points_err
         if missing_client == len(articles):
             SPP_CACHE["error"] = "Цены кабинета загружены, но витрину WB не удалось прочитать (блокировка). СПП пока пустой — нажми Обновить позже."
         elif missing_client:
             SPP_CACHE["error"] = None
             logger.warning(f"SPP: no client price for {missing_client}/{len(articles)}")
-        logger.info(
-            f"SPP sync: {len(articles)} arts, client_source={source}, missing={missing_client}, "
-            f"review_points={'ok' if not points_err else points_err}"
-        )
+        logger.info(f"SPP sync: {len(articles)} arts, client_source={source}, missing={missing_client}")
     except Exception as e:
         logger.error(f"sync_spp_prices error: {e}")
         SPP_CACHE["error"] = str(e)
@@ -3775,7 +3546,6 @@ def get_spp_prices(refresh: bool = False):
         "syncing": SPP_CACHE.get("syncing", False),
         "error": SPP_CACHE.get("error"),
         "client_source": SPP_CACHE.get("client_source"),
-        "review_points_error": SPP_CACHE.get("review_points_error"),
     }
 
 @app.post("/api/sync-spp-prices")
