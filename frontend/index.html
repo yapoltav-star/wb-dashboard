@@ -4107,8 +4107,134 @@ function renderCompetitorView() {
       <div class="comp-tab${COMP_TAB==='metrics'?' on':''}" onclick="switchCompTab('metrics')">Показатели</div>
     </div>
     <div id="compTabMetrics">
+      ${buildCompTopAnalysis(compMetrics)}
       <div style="overflow-x:auto">${buildCompMetricsTable(allMetrics, ownMetrics[0]?.nm_id)}</div>
     </div>`;
+}
+
+function compMetricVal(m, fields) {
+  for(const f of fields) {
+    if(m[f] !== null && m[f] !== undefined && m[f] !== '') {
+      const n = parseFloat(m[f]);
+      if(!Number.isNaN(n)) return n;
+    }
+  }
+  return 0;
+}
+
+function getTopCompetitors(compMetrics, fields, limit = 8) {
+  return [...(compMetrics || [])]
+    .filter(m => m && m.nm_id && !m.is_own)
+    .map(m => ({...m, _score: compMetricVal(m, fields)}))
+    .filter(m => m._score > 0)
+    .sort((a, b) => b._score - a._score)
+    .slice(0, limit);
+}
+
+function isOnShelves(nmId) {
+  return (typeof SHELF_COMPETITORS !== 'undefined') &&
+    SHELF_COMPETITORS.some(c => Number(c.nm_id) === Number(nmId));
+}
+
+function addToShelfFromComp(nmId, brand, name) {
+  nmId = Number(nmId);
+  if(!nmId) return;
+  if(typeof SHELF_COMPETITORS === 'undefined' || typeof saveShelfCompetitors !== 'function') {
+    alert('Раздел полок ещё не готов — обнови страницу');
+    return;
+  }
+  const existing = SHELF_COMPETITORS.find(c => Number(c.nm_id) === nmId);
+  if(!existing) {
+    SHELF_COMPETITORS.unshift({
+      nm_id: nmId,
+      brand: brand || '',
+      name: name || '',
+      thumb: wbThumbUrl(nmId),
+    });
+  }
+  SHELF_ACTIVE = nmId;
+  saveShelfCompetitors();
+  if(typeof buildShelfChips === 'function') buildShelfChips();
+  // обновим кнопки в топах, если блок на экране
+  document.querySelectorAll(`[data-shelf-btn="${nmId}"]`).forEach(btn => {
+    btn.textContent = '✓ в полках';
+    btn.disabled = true;
+    btn.style.opacity = '.7';
+  });
+  const st = document.getElementById('compTopStatus');
+  if(st) st.textContent = `Добавлен в полки: ${brand || ''} ${nmId}`;
+}
+
+function addTopCompetitorsToShelves(kind) {
+  const map = {
+    views: ['views'],
+    cart: ['cart_adds', 'add_to_cart'],
+    orders: ['orders'],
+  };
+  const fields = map[kind];
+  if(!fields) return;
+  const comps = COMP_ALL_METRICS
+    .filter(m => !COMP_OWN_ARTICLES.find(a => Number(a.nm_id) === Number(m.nm_id)))
+    .map(m => ({...m, is_own: false}));
+  const top = getTopCompetitors(comps, fields, 5);
+  top.forEach(m => addToShelfFromComp(m.nm_id, m.brand || '', m.name || ''));
+  const st = document.getElementById('compTopStatus');
+  const label = kind === 'views' ? 'показам' : kind === 'cart' ? 'корзине' : 'заказам';
+  if(st) st.textContent = `В полки добавлен топ-5 по ${label}`;
+}
+
+function buildCompTopAnalysis(compMetrics) {
+  if(!compMetrics || !compMetrics.length) return '';
+  const blocks = [
+    {kind: 'views', title: 'Топ по показам', fields: ['views'], color: '#2563EB'},
+    {kind: 'cart', title: 'Топ по корзине', fields: ['cart_adds', 'add_to_cart'], color: '#059669'},
+    {kind: 'orders', title: 'Топ по заказам', fields: ['orders'], color: '#EA580C'},
+  ];
+  const cols = blocks.map(b => {
+    const top = getTopCompetitors(compMetrics, b.fields, 8);
+    if(!top.length) {
+      return `<div style="flex:1;min-width:240px;border:1px solid var(--wb-border);border-radius:8px;padding:12px;background:var(--wb-surface)">
+        <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:${b.color}">${b.title}</div>
+        <div style="font-size:12px;color:var(--wb-faint)">Нет данных</div>
+      </div>`;
+    }
+    const rows = top.map((m, i) => {
+      const on = isOnShelves(m.nm_id);
+      const safeBrand = String(m.brand || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      const safeName = String(m.name || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--wb-border)">
+        <div style="width:18px;font-size:12px;font-weight:700;color:var(--wb-faint)">${i+1}</div>
+        <img src="${wbThumbUrl(m.nm_id)}" width="32" height="32" alt="" loading="lazy"
+          style="border-radius:4px;object-fit:cover;background:#f3f3f3;flex-shrink:0"
+          onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(m.nm_id,'jpg')}';}else{this.style.display='none'}">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(m.brand || '—')}</div>
+          <div style="font-size:10px;color:var(--wb-faint)">${m.nm_id} · ${fmt(m._score)}</div>
+        </div>
+        <button data-shelf-btn="${m.nm_id}" class="filter-btn" ${on?'disabled':''}
+          onclick="addToShelfFromComp(${m.nm_id},'${safeBrand}','${safeName}')"
+          style="padding:4px 8px;font-size:11px;${on?'opacity:.7':''}">${on?'✓ в полках':'+ в полки'}</button>
+      </div>`;
+    }).join('');
+    return `<div style="flex:1;min-width:260px;border:1px solid var(--wb-border);border-radius:8px;padding:12px;background:var(--wb-surface)">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:600;color:${b.color}">${b.title}</div>
+        <button class="filter-btn" onclick="addTopCompetitorsToShelves('${b.kind}')" style="padding:4px 8px;font-size:11px">Топ-5 → полки</button>
+      </div>
+      ${rows}
+    </div>`;
+  }).join('');
+
+  return `<div style="padding:14px 16px 6px;border-bottom:1px solid var(--wb-border);background:#FAFAFA">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+      <div>
+        <div style="font-size:13px;font-weight:600">Автоанализ конкурентов</div>
+        <div style="font-size:12px;color:var(--wb-muted)">После загрузки отчёта — топы по воронке. Одной кнопкой добавь в «Полки у конкурентов»</div>
+      </div>
+      <div id="compTopStatus" style="font-size:12px;color:var(--wb-muted)"></div>
+    </div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px">${cols}</div>
+  </div>`;
 }
 
 function switchCompTab(tab) {
@@ -4146,6 +4272,7 @@ function buildCompMetricsTable(metrics, ownNm) {
       ['Позиция в поиске',['avg_position'],true],
     ],
     'Воронка продаж': [
+      ['Показы',['views'],false],
       ['Переходы в карточку',['card_opens','open_card'],false],
       ['CTR, %',['ctr'],false],
       ['Корзина, шт',['cart_adds','add_to_cart'],false],
