@@ -303,18 +303,6 @@
       "opens": 0
     },
     {
-      "query": "apple watch ultra",
-      "freq": 8760,
-      "cart_cr": 5.21,
-      "from_cart_cr": 17.42,
-      "cr": 0.91,
-      "sok": 1.02,
-      "rating": 0.93,
-      "orders": 22,
-      "cart": 100,
-      "opens": 1243
-    },
-    {
       "query": "смарт часы детские",
       "freq": 193463,
       "cart_cr": 4.03,
@@ -327,16 +315,16 @@
       "opens": 1219
     },
     {
-      "query": "apple watch ultra 2",
-      "freq": 5588,
-      "cart_cr": 4.99,
-      "from_cart_cr": 12.41,
-      "cr": 0.62,
-      "sok": 1.45,
-      "rating": 0.9,
-      "orders": 0,
-      "cart": 0,
-      "opens": 0
+      "query": "apple watch ultra",
+      "freq": 8760,
+      "cart_cr": 5.21,
+      "from_cart_cr": 17.42,
+      "cr": 0.91,
+      "sok": 1.02,
+      "rating": 0.93,
+      "orders": 22,
+      "cart": 100,
+      "opens": 1243
     },
     {
       "query": "смарт часы мужские",
@@ -349,6 +337,18 @@
       "orders": 607,
       "cart": 3184,
       "opens": 31082
+    },
+    {
+      "query": "apple watch ultra 2",
+      "freq": 5588,
+      "cart_cr": 4.99,
+      "from_cart_cr": 12.41,
+      "cr": 0.62,
+      "sok": 1.45,
+      "rating": 0.9,
+      "orders": 0,
+      "cart": 0,
+      "opens": 0
     },
     {
       "query": "apple watch",
@@ -373,6 +373,42 @@
       "orders": 0,
       "cart": 0,
       "opens": 0
+    },
+    {
+      "query": "часы женские наручные",
+      "freq": 968754,
+      "cart_cr": null,
+      "from_cart_cr": null,
+      "cr": null,
+      "sok": null,
+      "rating": null,
+      "orders": 21,
+      "cart": 274,
+      "opens": 3947
+    },
+    {
+      "query": "часы мужские наручные",
+      "freq": 464058,
+      "cart_cr": null,
+      "from_cart_cr": null,
+      "cr": null,
+      "sok": null,
+      "rating": null,
+      "orders": 10,
+      "cart": 58,
+      "opens": 651
+    },
+    {
+      "query": "часы смарт женские",
+      "freq": 20345,
+      "cart_cr": null,
+      "from_cart_cr": null,
+      "cr": null,
+      "sok": null,
+      "rating": null,
+      "orders": 96,
+      "cart": 581,
+      "opens": 5520
     }
   ]
 }
