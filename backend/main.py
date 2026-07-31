@@ -4965,6 +4965,14 @@ WB_SEARCH_CITIES = [
 
 _wb_search_lock = threading.Lock()
 _wb_search_last_ts = 0.0
+_wb_search_host_i = 0
+
+WB_SEARCH_HOSTS = [
+    "https://search.wb.ru/exactmatch/ru/common/v9/search",
+    "https://u-search.wb.ru/exactmatch/ru/common/v9/search",
+    "https://search.wb.ru/exactmatch/ru/common/v14/search",
+    "https://u-search.wb.ru/exactmatch/ru/common/v18/search",
+]
 
 
 def _load_search_keywords():
@@ -4983,7 +4991,7 @@ def _load_search_keywords():
         return {"source": "", "updated": "", "keywords": [], "count": 0, "error": str(e)}
 
 
-def _wb_search_throttle(min_interval: float = 0.35):
+def _wb_search_throttle(min_interval: float = 0.9):
     """Не долбим search.wb.ru — иначе 429."""
     global _wb_search_last_ts
     with _wb_search_lock:
@@ -4992,6 +5000,14 @@ def _wb_search_throttle(min_interval: float = 0.35):
         if wait > 0:
             time.sleep(wait)
         _wb_search_last_ts = time.time()
+
+
+def _wb_search_next_host():
+    global _wb_search_host_i
+    with _wb_search_lock:
+        host = WB_SEARCH_HOSTS[_wb_search_host_i % len(WB_SEARCH_HOSTS)]
+        _wb_search_host_i += 1
+        return host
 
 
 def find_nm_in_wb_search(nm_id: int, query: str, dest: int, max_pages: int = 3):
@@ -5010,94 +5026,107 @@ def find_nm_in_wb_search(nm_id: int, query: str, dest: int, max_pages: int = 3):
         "Origin": "https://www.wildberries.ru",
         "Referer": f"https://www.wildberries.ru/catalog/0/search.aspx?search={query}",
     }
-    # v9 стабильнее v18 (меньше 429)
-    base = "https://search.wb.ru/exactmatch/ru/common/v9/search"
     last_total = None
     last_err = None
     max_pages = max(1, min(int(max_pages or 3), 10))
 
-    with httpx.Client(timeout=25, headers=headers) as client:
-        for page in range(1, max_pages + 1):
-            for attempt in range(3):
-                _wb_search_throttle()
-                try:
-                    resp = client.get(
-                        base,
-                        params={
-                            "appType": 1,
-                            "curr": "rub",
-                            "dest": dest,
-                            "query": query,
-                            "resultset": "catalog",
-                            "sort": "popular",
-                            "spp": 30,
-                            "page": page,
-                        },
-                    )
-                except Exception as e:
-                    last_err = str(e)
-                    time.sleep(0.6 * (attempt + 1))
-                    continue
+    try:
+        with httpx.Client(timeout=30, headers=headers, follow_redirects=True) as client:
+            for page in range(1, max_pages + 1):
+                page_ok = False
+                for attempt in range(5):
+                    base = _wb_search_next_host()
+                    _wb_search_throttle(0.85 + 0.15 * attempt)
+                    try:
+                        resp = client.get(
+                            base,
+                            params={
+                                "appType": 1,
+                                "curr": "rub",
+                                "dest": dest,
+                                "query": query,
+                                "resultset": "catalog",
+                                "sort": "popular",
+                                "spp": 30,
+                                "page": page,
+                            },
+                        )
+                    except Exception as e:
+                        last_err = str(e)[:120]
+                        time.sleep(0.8 * (attempt + 1))
+                        continue
 
-                if resp.status_code == 429:
-                    last_err = "429"
-                    time.sleep(1.2 * (attempt + 1))
-                    continue
-                if not resp.is_success:
-                    last_err = f"http {resp.status_code}"
-                    time.sleep(0.4)
-                    continue
+                    if resp.status_code == 429:
+                        last_err = "429"
+                        time.sleep(2.0 * (attempt + 1))
+                        continue
+                    if not resp.is_success:
+                        last_err = f"http {resp.status_code}"
+                        time.sleep(0.5 * (attempt + 1))
+                        continue
 
-                try:
-                    data = resp.json()
-                except Exception as e:
-                    last_err = f"json {e}"
-                    break
+                    try:
+                        data = resp.json()
+                    except Exception as e:
+                        last_err = f"json {e}"
+                        time.sleep(0.4)
+                        continue
 
-                products = data.get("products") or (data.get("data") or {}).get("products") or []
-                last_total = data.get("total")
-                if last_total is None:
-                    last_total = (data.get("data") or {}).get("total")
+                    products = data.get("products") or (data.get("data") or {}).get("products") or []
+                    last_total = data.get("total")
+                    if last_total is None:
+                        last_total = (data.get("data") or {}).get("total")
+                    page_ok = True
+                    last_err = None
 
-                for i, p in enumerate(products):
-                    pid = p.get("id") or p.get("nmId") or p.get("nmID")
-                    if pid == nm_id or str(pid) == str(nm_id):
+                    for i, p in enumerate(products):
+                        pid = p.get("id") or p.get("nmId") or p.get("nmID")
+                        if pid == nm_id or str(pid) == str(nm_id):
+                            return {
+                                "query": query,
+                                "position": (page - 1) * 100 + i + 1,
+                                "page": page,
+                                "total": last_total,
+                                "error": None,
+                            }
+
+                    if not products:
                         return {
                             "query": query,
-                            "position": (page - 1) * 100 + i + 1,
-                            "page": page,
+                            "position": None,
+                            "page": None,
                             "total": last_total,
                             "error": None,
+                            "not_found": True,
                         }
+                    break
 
-                # пустая страница — дальше смысла нет
-                if not products:
-                    return {
-                        "query": query,
-                        "position": None,
-                        "page": None,
-                        "total": last_total,
-                        "error": None,
-                        "not_found": True,
-                    }
-                break
-            else:
-                # все попытки страницы провалились
-                continue
+                if not page_ok:
+                    # не смогли получить страницу — дальше нет смысла
+                    break
 
-    return {
-        "query": query,
-        "position": None,
-        "page": None,
-        "total": last_total,
-        "error": last_err,
-        "not_found": last_err is None,
-    }
+        return {
+            "query": query,
+            "position": None,
+            "page": None,
+            "total": last_total,
+            "error": last_err,
+            "not_found": last_err is None,
+        }
+    except Exception as e:
+        logger.exception(f"find_nm_in_wb_search: {e}")
+        return {
+            "query": query,
+            "position": None,
+            "page": None,
+            "total": None,
+            "error": str(e)[:160],
+        }
 
 
 @app.get("/api/search-keywords")
 def get_search_keywords():
-    """Уникальные ключи из отчёта поиска (без nmID-дублей) + список городов."""
+    """Кураторский список ключей (аналитика) + города для dest."""
     data = _load_search_keywords()
     return {
         **data,
@@ -5108,10 +5137,11 @@ def get_search_keywords():
 
 
 @app.post("/api/search-positions")
-async def search_positions(request: dict):
+def search_positions(request: dict):
     """Позиции nm_id в клиентском поиске WB по списку запросов.
     Body: {nm_id, dest?, queries: [str], max_pages?}
     dest по умолчанию Москва (-1257786).
+    Пачки маленькие — иначе WB отвечает 429.
     """
     if not isinstance(request, dict):
         raise HTTPException(status_code=400, detail="invalid body")
@@ -5134,7 +5164,6 @@ async def search_positions(request: dict):
     queries = request.get("queries")
     if not isinstance(queries, list) or not queries:
         raise HTTPException(status_code=400, detail="queries required (non-empty list)")
-    # защита от слишком больших пачек за один запрос
     clean = []
     seen = set()
     for q in queries:
@@ -5146,13 +5175,16 @@ async def search_positions(request: dict):
             continue
         seen.add(k)
         clean.append(s)
-        if len(clean) >= 40:
+        if len(clean) >= 8:
             break
 
     results = []
-    # последовательно — throttle внутри find_* уже есть; параллель ловит 429
     for q in clean:
-        results.append(find_nm_in_wb_search(nm_id, q, dest, max_pages=max_pages))
+        try:
+            results.append(find_nm_in_wb_search(nm_id, q, dest, max_pages=max_pages))
+        except Exception as e:
+            logger.exception(f"search-positions query={q}: {e}")
+            results.append({"query": q, "position": None, "page": None, "total": None, "error": str(e)[:160]})
 
     city_name = next((c["name"] for c in WB_SEARCH_CITIES if c["dest"] == dest), str(dest))
     return {

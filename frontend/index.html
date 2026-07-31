@@ -829,17 +829,15 @@ td.tc{text-align:center}
       </div>
 
       <div>
-        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Фильтр ключей</div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Фильтр / сортировка</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <input id="posKeySearch" placeholder="Поиск по ключу…" oninput="drawPosTable()"
             style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:200px">
-          <label style="font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--wb-text)">
-            <input type="checkbox" id="posOnlyActive" checked onchange="drawPosTable()"> с заказами/корзиной
-          </label>
+          <button class="filter-btn" id="posSortManualBtn" onclick="setPosSortManual()">Ручной порядок</button>
         </div>
       </div>
     </div>
-    <div id="posStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)"></div>
+    <div id="posStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Клиентский поиск WB · закреплённые сверху · тяни строки за ⋮⋮ для ручного порядка</div>
   </div>
 
   <div id="posRoot" style="overflow:auto">
@@ -4216,15 +4214,21 @@ let POS_RESULTS = {}; // queryLower -> {position, page, total, error, not_found}
 let POS_RUNNING = false;
 let POS_STOP = false;
 let POS_LOADED = false;
+let POS_SORT = JSON.parse(localStorage.getItem('pos_sort') || '{"key":"rating","dir":"desc"}');
+let POS_PINNED = JSON.parse(localStorage.getItem('pos_pinned') || '[]'); // queryLower[]
+let POS_ORDER = JSON.parse(localStorage.getItem('pos_order') || '[]'); // queryLower[] manual
+let POS_DRAG_KEY = null;
+
+function posKey(k) { return String((k && k.query) || k || '').toLowerCase(); }
+function savePosPins() { localStorage.setItem('pos_pinned', JSON.stringify(POS_PINNED)); }
+function savePosOrder() { localStorage.setItem('pos_order', JSON.stringify(POS_ORDER)); }
+function savePosSort() { localStorage.setItem('pos_sort', JSON.stringify(POS_SORT)); }
 
 async function renderPositionsPage() {
   updatePosArtChip();
   updatePosCheckBtn();
-  if(!POS_LOADED) {
-    await loadPosKeywords();
-  } else {
-    drawPosTable();
-  }
+  if(!POS_LOADED) await loadPosKeywords();
+  else drawPosTable();
 }
 
 async function loadPosKeywords() {
@@ -4237,6 +4241,18 @@ async function loadPosKeywords() {
     POS_CITIES = Array.isArray(d.cities) ? d.cities : [];
     POS_LOADED = true;
 
+    // синхронизируем ручной порядок с актуальным списком
+    const allKeys = POS_KEYWORDS.map(posKey);
+    if(!POS_ORDER.length) POS_ORDER = allKeys.slice();
+    else {
+      const seen = new Set();
+      POS_ORDER = POS_ORDER.filter(k => allKeys.includes(k) && !seen.has(k) && seen.add(k));
+      allKeys.forEach(k => { if(!seen.has(k)) POS_ORDER.push(k); });
+      savePosOrder();
+    }
+    POS_PINNED = POS_PINNED.filter(k => allKeys.includes(k));
+    savePosPins();
+
     const sel = document.getElementById('posCity');
     if(sel && POS_CITIES.length) {
       const saved = localStorage.getItem('pos_dest') || String(d.default_dest || -1257786);
@@ -4244,11 +4260,7 @@ async function loadPosKeywords() {
         `<option value="${c.dest}"${String(c.dest)===String(saved)?' selected':''}>${c.name}</option>`
       ).join('');
     }
-    if(meta) {
-      const active = POS_KEYWORDS.filter(k => (k.orders||0)>0 || (k.cart||0)>0).length;
-      meta.textContent = `${POS_KEYWORDS.length} уникальных ключей · ${active} с заказами/корзиной` +
-        (d.updated ? ` · отчёт ${d.updated}` : '');
-    }
+    if(meta) meta.textContent = `${POS_KEYWORDS.length} ключей из аналитики` + (d.updated ? ` · ${d.updated}` : '');
     drawPosTable();
   } catch(e) {
     if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка загрузки ключей: ${e.message}</div>`;
@@ -4338,30 +4350,111 @@ document.addEventListener('click', e => {
     dd.style.display = 'none';
 });
 
+function togglePosPin(query) {
+  const k = String(query||'').toLowerCase();
+  const i = POS_PINNED.indexOf(k);
+  if(i >= 0) POS_PINNED.splice(i, 1);
+  else POS_PINNED.unshift(k);
+  savePosPins();
+  drawPosTable();
+}
+
+function setPosSort(key) {
+  if(POS_SORT.key === key && POS_SORT.key !== 'manual') {
+    POS_SORT.dir = POS_SORT.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    POS_SORT = {key, dir: key === 'query' ? 'asc' : 'desc'};
+  }
+  savePosSort();
+  drawPosTable();
+}
+
+function setPosSortManual() {
+  POS_SORT = {key: 'manual', dir: 'asc'};
+  savePosSort();
+  drawPosTable();
+}
+
+function posSortArrow(key) {
+  if(POS_SORT.key !== key) return '';
+  return POS_SORT.dir === 'asc' ? ' ↑' : ' ↓';
+}
+
+function posCellVal(k, key) {
+  if(key === 'position') {
+    const res = POS_RESULTS[posKey(k)];
+    if(!res) return null;
+    if(res.position != null) return res.position;
+    if(res.not_found) return 99999;
+    if(res.error) return 99998;
+    return null;
+  }
+  if(key === 'query') return (k.query || '').toLowerCase();
+  const v = k[key];
+  return v == null ? null : v;
+}
+
 function filteredPosKeywords() {
   const q = ((document.getElementById('posKeySearch')||{}).value || '').trim().toLowerCase();
-  const onlyActive = !!(document.getElementById('posOnlyActive')||{}).checked;
-  return POS_KEYWORDS.filter(k => {
-    if(onlyActive && !(k.orders>0 || k.cart>0)) return false;
-    if(q && !(k.query||'').toLowerCase().includes(q)) return false;
-    return true;
-  });
+  let rows = POS_KEYWORDS.filter(k => !q || (k.query||'').toLowerCase().includes(q));
+
+  if(POS_SORT.key === 'manual') {
+    const idx = new Map(POS_ORDER.map((k,i) => [k, i]));
+    rows.sort((a,b) => (idx.get(posKey(a)) ?? 1e9) - (idx.get(posKey(b)) ?? 1e9));
+  } else {
+    const dir = POS_SORT.dir === 'asc' ? 1 : -1;
+    const sk = POS_SORT.key || 'rating';
+    rows.sort((a,b) => {
+      const av = posCellVal(a, sk), bv = posCellVal(b, sk);
+      if(av == null && bv == null) return 0;
+      if(av == null) return 1;
+      if(bv == null) return -1;
+      if(typeof av === 'string') return av.localeCompare(bv, 'ru') * dir;
+      return (av - bv) * dir;
+    });
+  }
+
+  // закреплённые всегда сверху (в своём порядке пинов)
+  const pinned = [], rest = [];
+  const pinSet = new Set(POS_PINNED);
+  const byKey = new Map(rows.map(r => [posKey(r), r]));
+  POS_PINNED.forEach(k => { if(byKey.has(k)) pinned.push(byKey.get(k)); });
+  rows.forEach(r => { if(!pinSet.has(posKey(r))) rest.push(r); });
+  return pinned.concat(rest);
 }
 
 function fmtPos(res) {
   if(!res) return '<span style="color:var(--wb-faint)">—</span>';
-  if(res.error && res.position == null) return `<span style="color:var(--amber)" title="${escapeHtml(String(res.error))}">ошибка</span>`;
+  if(res.error && res.position == null) {
+    const label = String(res.error) === '429' ? 'лимит WB' : 'ошибка';
+    return `<span style="color:var(--amber)" title="${escapeHtml(String(res.error))}">${label}</span>`;
+  }
   if(res.position != null) {
     const p = res.position;
-    const color = p<=50 ? 'var(--green,#16A34A)' : p<=150 ? 'var(--wb-text)' : 'var(--amber)';
+    const color = p<=50 ? 'var(--green)' : p<=150 ? 'var(--wb-text)' : 'var(--amber)';
     return `<b style="color:${color}">${p}</b>`;
   }
   if(res.not_found) return '<span style="color:var(--wb-faint)">нет в топе</span>';
   return '<span style="color:var(--wb-faint)">—</span>';
 }
 
+function fmtNum(n) {
+  const x = Number(n)||0;
+  return x.toLocaleString('ru-RU');
+}
+function fmtPct(n) {
+  if(n == null || n === '') return '—';
+  return `${Number(n).toFixed(2)}%`;
+}
+function fmtSok(n) {
+  if(n == null || n === '') return '—';
+  return Number(n).toFixed(2);
+}
+
 function drawPosTable() {
   const root = document.getElementById('posRoot');
+  const manBtn = document.getElementById('posSortManualBtn');
+  if(manBtn) manBtn.classList.toggle('on', POS_SORT.key === 'manual');
   if(!root) return;
   const rows = filteredPosKeywords();
   if(!POS_KEYWORDS.length) {
@@ -4372,42 +4465,108 @@ function drawPosTable() {
     root.innerHTML = '<div class="empty" style="padding:40px 20px">Нет ключей по фильтру</div>';
     return;
   }
-  const found = rows.filter(k => POS_RESULTS[(k.query||'').toLowerCase()]?.position != null).length;
-  const checked = rows.filter(k => POS_RESULTS[(k.query||'').toLowerCase()]).length;
+  const found = rows.filter(k => POS_RESULTS[posKey(k)]?.position != null).length;
+  const checked = rows.filter(k => POS_RESULTS[posKey(k)]).length;
+  const th = (key, label, align='right') =>
+    `<th style="text-align:${align};cursor:pointer;user-select:none;white-space:nowrap" onclick="setPosSort('${key}')">${label}${posSortArrow(key)}</th>`;
 
   root.innerHTML = `
     <div style="padding:8px 20px;font-size:12px;color:var(--wb-muted);border-bottom:1px solid var(--wb-border)">
-      Показано ${rows.length} ключей${checked?` · проверено ${checked}`:''}${found?` · найдено ${found}`:''}
+      Показано ${rows.length} · сортировка: ${POS_SORT.key === 'manual' ? 'ручная' : POS_SORT.key}${checked?` · проверено ${checked}`:''}${found?` · найдено ${found}`:''}
+      ${POS_PINNED.length ? ` · закреплено ${POS_PINNED.length}` : ''}
     </div>
     <table class="comp-tbl" style="width:100%">
       <thead><tr>
-        <th style="width:40px">#</th>
-        <th>Ключ</th>
-        <th style="text-align:right;width:90px">Заказы</th>
-        <th style="text-align:right;width:90px">Корзина</th>
-        <th style="text-align:right;width:90px">Открытия</th>
-        <th style="text-align:right;width:110px">Позиция</th>
+        <th style="width:36px"></th>
+        ${th('position','Позиция','left')}
+        <th style="width:36px" title="Закрепить">📌</th>
+        ${th('query','Ключ','left')}
+        ${th('freq','Частотность')}
+        ${th('cart_cr','→ корзину')}
+        ${th('from_cart_cr','из корзины')}
+        ${th('cr','CR')}
+        ${th('sok','СОК')}
+        ${th('rating','Рейтинг')}
+        ${th('orders','Заказы')}
       </tr></thead>
-      <tbody>
+      <tbody id="posTbody">
         ${rows.map((k,i) => {
-          const key = (k.query||'').toLowerCase();
+          const key = posKey(k);
           const res = POS_RESULTS[key];
-          return `<tr>
-            <td style="color:var(--wb-faint)">${i+1}</td>
+          const pinned = POS_PINNED.includes(key);
+          const safeQ = String(k.query||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+          return `<tr draggable="true" data-pos-key="${escapeHtml(key)}"
+            ondragstart="posDragStart(event)" ondragover="posDragOver(event)" ondrop="posDrop(event)" ondragend="posDragEnd(event)"
+            style="${pinned?'background:rgba(155,81,224,.06)':''}">
+            <td style="color:var(--wb-faint);cursor:grab;text-align:center" title="Тяни для ручного порядка">⋮⋮</td>
+            <td style="font-variant-numeric:tabular-nums">${fmtPos(res)}</td>
+            <td style="text-align:center;cursor:pointer" onclick="togglePosPin('${safeQ}')" title="${pinned?'Открепить':'Закрепить'}">${pinned?'📌':'○'}</td>
             <td>${escapeHtml(k.query||'')}</td>
-            <td style="text-align:right">${k.orders||0}</td>
-            <td style="text-align:right">${k.cart||0}</td>
-            <td style="text-align:right">${k.opens||0}</td>
-            <td style="text-align:right" id="posCell_${i}">${fmtPos(res)}</td>
+            <td style="text-align:right;font-variant-numeric:tabular-nums">${fmtNum(k.freq)}</td>
+            <td style="text-align:right">${fmtPct(k.cart_cr)}</td>
+            <td style="text-align:right">${fmtPct(k.from_cart_cr)}</td>
+            <td style="text-align:right">${fmtPct(k.cr)}</td>
+            <td style="text-align:right">${fmtSok(k.sok)}</td>
+            <td style="text-align:right;font-weight:600">${fmtSok(k.rating)}</td>
+            <td style="text-align:right;color:var(--wb-muted)">${k.orders||0}</td>
           </tr>`;
         }).join('')}
       </tbody>
     </table>`;
 }
 
+function posDragStart(e) {
+  const tr = e.target.closest('tr[data-pos-key]');
+  if(!tr) return;
+  POS_DRAG_KEY = tr.getAttribute('data-pos-key');
+  e.dataTransfer.effectAllowed = 'move';
+  tr.style.opacity = '.5';
+}
+function posDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+}
+function posDrop(e) {
+  e.preventDefault();
+  const tr = e.target.closest('tr[data-pos-key]');
+  if(!tr || !POS_DRAG_KEY) return;
+  const target = tr.getAttribute('data-pos-key');
+  if(target === POS_DRAG_KEY) return;
+
+  // переставляем в POS_ORDER
+  const from = POS_ORDER.indexOf(POS_DRAG_KEY);
+  let to = POS_ORDER.indexOf(target);
+  if(from < 0 || to < 0) return;
+  POS_ORDER.splice(from, 1);
+  to = POS_ORDER.indexOf(target);
+  POS_ORDER.splice(to, 0, POS_DRAG_KEY);
+  savePosOrder();
+
+  // если тянем закреплённый — меняем порядок пинов
+  if(POS_PINNED.includes(POS_DRAG_KEY) && POS_PINNED.includes(target)) {
+    const pf = POS_PINNED.indexOf(POS_DRAG_KEY);
+    let pt = POS_PINNED.indexOf(target);
+    POS_PINNED.splice(pf, 1);
+    pt = POS_PINNED.indexOf(target);
+    POS_PINNED.splice(pt, 0, POS_DRAG_KEY);
+    savePosPins();
+  }
+
+  POS_SORT = {key: 'manual', dir: 'asc'};
+  savePosSort();
+  drawPosTable();
+}
+function posDragEnd(e) {
+  const tr = e.target.closest('tr');
+  if(tr) tr.style.opacity = '';
+  POS_DRAG_KEY = null;
+}
+
 function stopPositionCheck() {
   POS_STOP = true;
 }
+
+function sleepPos(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function runPositionCheck() {
   if(!POS_ARTICLE || POS_RUNNING) return;
@@ -4428,16 +4587,19 @@ async function runPositionCheck() {
   if(stopBtn) stopBtn.style.display = '';
   if(checkBtn) checkBtn.textContent = 'Проверяю…';
 
-  const batchSize = 12;
-  let done = 0;
+  // маленькие пачки + пауза — иначе WB отвечает 429 («ошибка» / «лимит WB»)
+  const batchSize = 2;
   const total = rows.length;
+  const retries = {};
+  const queue = rows.map(k => ({query: k.query}));
+  let processed = 0;
 
   try {
-    for(let i = 0; i < rows.length; i += batchSize) {
-      if(POS_STOP) break;
-      const batch = rows.slice(i, i + batchSize);
+    while(queue.length && !POS_STOP) {
+      const batch = queue.splice(0, batchSize);
       const queries = batch.map(k => k.query);
-      if(status) status.textContent = `Проверяю ${done + 1}–${Math.min(done + batch.length, total)} из ${total}… (клиентский поиск WB)`;
+      processed += batch.length;
+      if(status) status.textContent = `Проверяю… осталось ${queue.length} · всего ${total} (паузы против лимита WB)`;
       try {
         const r = await fetch(`${RAILWAY_URL}/api/search-positions`, {
           method: 'POST',
@@ -4449,24 +4611,37 @@ async function runPositionCheck() {
             max_pages: maxPages,
           }),
         });
-        const d = await r.json();
+        const d = await r.json().catch(() => ({}));
         if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
         for(const res of (d.results || [])) {
-          POS_RESULTS[(res.query || '').toLowerCase()] = res;
+          const key = (res.query || '').toLowerCase();
+          POS_RESULTS[key] = res;
+          if(res.error === '429' && res.position == null) {
+            retries[key] = (retries[key] || 0) + 1;
+            if(retries[key] <= 2) {
+              queue.push({query: res.query});
+              await sleepPos(3000);
+            }
+          }
         }
       } catch(e) {
         for(const k of batch) {
-          const key = (k.query||'').toLowerCase();
-          if(!POS_RESULTS[key]) POS_RESULTS[key] = {query: k.query, position: null, error: String(e.message||e)};
+          const key = posKey(k);
+          POS_RESULTS[key] = {query: k.query, position: null, error: String(e.message||e)};
+          retries[key] = (retries[key] || 0) + 1;
+          if(retries[key] <= 2) queue.push(k);
         }
+        await sleepPos(3000);
       }
-      done += batch.length;
       drawPosTable();
+      if(queue.length && !POS_STOP) await sleepPos(1500);
     }
+    const withPos = Object.values(POS_RESULTS).filter(x => x && x.position != null).length;
+    const lim = Object.values(POS_RESULTS).filter(x => x && x.error === '429' && x.position == null).length;
     if(status) {
       status.textContent = POS_STOP
-        ? `Остановлено: ${done} из ${total}`
-        : `Готово: проверено ${done} ключей · ${Object.values(POS_RESULTS).filter(x=>x&&x.position!=null).length} с позицией`;
+        ? `Остановлено · с позицией ${withPos}`
+        : `Готово · с позицией ${withPos}` + (lim ? ` · ещё лимит WB: ${lim} (нажми ещё раз для повтора)` : '');
     }
   } finally {
     POS_RUNNING = false;
