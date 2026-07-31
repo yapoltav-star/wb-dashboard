@@ -7,7 +7,6 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone, date
-from urllib.parse import quote
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
