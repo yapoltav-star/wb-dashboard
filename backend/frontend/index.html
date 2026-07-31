@@ -4936,6 +4936,43 @@ async function loadShelfFor(nmId, force) {
   }
 }
 
+function isShelfMine(it, ownSet) {
+  return ownSet.has(Number(it.nm_id)) || String(it.brand || '').toUpperCase() === 'PVS';
+}
+
+function shelfBrandShares(items, ownSet) {
+  const total = items.length || 1;
+  const byBrand = {};
+  let mineCount = 0;
+  items.forEach(it => {
+    const mine = isShelfMine(it, ownSet);
+    if(mine) mineCount += 1;
+    const brand = mine ? 'Я (PVS)' : (String(it.brand || '').trim() || 'Без бренда');
+    const key = mine ? '__mine__' : brand.toLowerCase();
+    if(!byBrand[key]) byBrand[key] = {key, brand, count: 0, mine, positions: []};
+    byBrand[key].count += 1;
+    byBrand[key].positions.push(it.position);
+  });
+  const rows = Object.values(byBrand).map(r => ({
+    ...r,
+    pct: Math.round((r.count / total) * 1000) / 10,
+  })).sort((a, b) => {
+    if(a.mine !== b.mine) return a.mine ? -1 : 1;
+    return b.count - a.count || a.brand.localeCompare(b.brand, 'ru');
+  });
+  const othersCount = total - mineCount;
+  return {
+    total,
+    mineCount,
+    othersCount,
+    minePct: Math.round((mineCount / total) * 1000) / 10,
+    othersPct: Math.round((othersCount / total) * 1000) / 10,
+    rows,
+  };
+}
+
+const SHELF_SHARE_COLORS = ['#7C3AED','#2563EB','#0891B2','#059669','#CA8A04','#EA580C','#DC2626','#DB2777','#4F46E5','#0D9488'];
+
 function drawShelfTable(data) {
   const root = document.getElementById('shelfRoot');
   if(!root) return;
@@ -4947,6 +4984,23 @@ function drawShelfTable(data) {
   }
   const ownSet = new Set((COMP_OWN_ARTICLES||[]).map(a => Number(a.nm_id)));
   if(POS_ARTICLE && POS_ARTICLE.nm_id) ownSet.add(Number(POS_ARTICLE.nm_id));
+  const shares = shelfBrandShares(items, ownSet);
+  const barHtml = shares.rows.map((r, i) => {
+    const color = r.mine ? 'var(--wb-purple)' : SHELF_SHARE_COLORS[i % SHELF_SHARE_COLORS.length];
+    return `<div title="${escapeHtml(r.brand)}: ${r.count} шт · ${r.pct}%" style="width:${r.pct}%;background:${color};height:100%;min-width:${r.pct>0?2:0}px"></div>`;
+  }).join('');
+  const shareCards = shares.rows.map((r, i) => {
+    const color = r.mine ? 'var(--wb-purple)' : SHELF_SHARE_COLORS[i % SHELF_SHARE_COLORS.length];
+    return `<div style="min-width:140px;flex:1;padding:10px 12px;border:1px solid ${r.mine?'var(--wb-purple)':'var(--wb-border)'};border-radius:8px;background:${r.mine?'var(--wb-purple-light)':'var(--wb-surface)'}">
+      <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--wb-muted);margin-bottom:4px">
+        <span style="width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0"></span>
+        ${escapeHtml(r.brand)}
+      </div>
+      <div style="font-size:20px;font-weight:700;font-variant-numeric:tabular-nums">${r.pct}%</div>
+      <div style="font-size:11px;color:var(--wb-muted)">${r.count} из ${shares.total} · места ${r.positions.join(', ')}</div>
+    </div>`;
+  }).join('');
+
   root.innerHTML = `
     <div style="padding:10px 20px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--wb-border);background:#FAFAFA">
       <img src="${comp.thumb || wbThumbUrl(comp.nm_id || data.nm_id)}" width="48" height="48"
@@ -4959,6 +5013,19 @@ function drawShelfTable(data) {
           style="font-size:12px;color:var(--wb-purple)">Открыть карточку на WB ↗</a>
       </div>
     </div>
+
+    <div style="padding:14px 20px;border-bottom:1px solid var(--wb-border)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+        <div style="font-size:13px;font-weight:600">Доля в топ-${shares.total}</div>
+        <div style="font-size:12px;color:var(--wb-muted)">
+          <b style="color:var(--wb-purple)">Я: ${shares.minePct}%</b> (${shares.mineCount})
+          · конкуренты: <b>${shares.othersPct}%</b> (${shares.othersCount})
+        </div>
+      </div>
+      <div style="display:flex;height:14px;border-radius:7px;overflow:hidden;background:#EEE;margin-bottom:12px">${barHtml}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${shareCards}</div>
+    </div>
+
     <table class="comp-tbl" style="width:100%">
       <thead><tr>
         <th style="width:56px">#</th>
@@ -4970,7 +5037,7 @@ function drawShelfTable(data) {
       </tr></thead>
       <tbody>
         ${items.map(it => {
-          const mine = ownSet.has(Number(it.nm_id)) || String(it.brand||'').toUpperCase() === 'PVS';
+          const mine = isShelfMine(it, ownSet);
           const thumb = it.thumb || wbThumbUrl(it.nm_id);
           return `<tr style="${mine?'background:rgba(155,81,224,.07)':''}">
             <td style="font-weight:700;font-variant-numeric:tabular-nums">${it.position}</td>
