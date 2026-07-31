@@ -5017,6 +5017,7 @@ def find_nm_in_wb_search(nm_id: int, query: str, dest: int, max_pages: int = 3):
     if not query or not nm_id:
         return {"query": query, "position": None, "page": None, "total": None, "error": "bad input"}
 
+    # Важно: значения заголовков должны быть latin-1/ascii — кириллица в Referer валит httpx
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -5025,8 +5026,7 @@ def find_nm_in_wb_search(nm_id: int, query: str, dest: int, max_pages: int = 3):
         "Accept": "*/*",
         "Accept-Language": "ru-RU,ru;q=0.9",
         "Origin": "https://www.wildberries.ru",
-        # Referer только ASCII — иначе httpx падает на кириллице
-        "Referer": f"https://www.wildberries.ru/catalog/0/search.aspx?search={quote(query)}",
+        "Referer": "https://www.wildberries.ru/",
     }
     last_total = None
     last_err = None
