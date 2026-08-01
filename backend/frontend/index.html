@@ -156,6 +156,7 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
   border:1.5px solid var(--wb-border);border-radius:12px;background:#FAFAF8;color:var(--wb-text);
   outline:none;transition:border-color .15s, box-shadow .15s, background .15s;
   caret-color:var(--wb-purple);
+  -webkit-text-security:disc;text-security:disc;
 }
 .fin-pin input:focus{border-color:var(--wb-purple);background:#fff;box-shadow:0 0 0 3px rgba(212,98,42,.15)}
 .fin-lock-err{font-size:12px;color:var(--red);min-height:18px;margin-bottom:10px;opacity:0;transition:opacity .2s}
@@ -938,10 +939,10 @@ td.tc{text-align:center}
       <div class="fin-lock-title">Финансы</div>
       <div class="fin-lock-sub">Раздел закрыт. Введи пароль, чтобы открыть<br>себестоимость, баланс и кредиты.</div>
       <div class="fin-pin" id="finPin">
-        <input type="password" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Цифра 1">
-        <input type="password" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Цифра 2">
-        <input type="password" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Цифра 3">
-        <input type="password" inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Цифра 4">
+        <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="Цифра 1">
+        <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="Цифра 2">
+        <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="Цифра 3">
+        <input type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="1" autocomplete="one-time-code" aria-label="Цифра 4">
       </div>
       <div class="fin-lock-err" id="finLockErr">Неверный пароль</div>
       <button class="action-btn primary" style="width:100%;padding:10px 14px;font-size:13px" onclick="submitFinancePin()">Открыть</button>
@@ -5357,6 +5358,14 @@ function drawShelfTable(data) {
     </table>`;
 }
 
+const FINANCE_PIN = '1997';
+let FINANCE_OK = sessionStorage.getItem('wb_finance_ok') === '1';
+let FINANCE_DATA = null;
+let FIN_TAB = 'wb';
+let FIN_MODE = 'stock'; // stock | cfo
+let CFO_DATA = null;
+let _finPinBound = false;
+
 function renderFinance() {
   const gate = document.getElementById('finGate');
   const body = document.getElementById('finBody');
@@ -5400,30 +5409,55 @@ function refreshFinancePanel() {
 function setupFinancePin() {
   const inputs = [...document.querySelectorAll('#finPin input')];
   if(!inputs.length) return;
-  inputs.forEach((inp, i) => {
-    inp.value = '';
-    inp.oninput = () => {
-      const v = inp.value.replace(/\D/g, '').slice(-1);
-      inp.value = v;
-      document.getElementById('finLockErr').classList.remove('on');
-      if(v && i < inputs.length - 1) inputs[i + 1].focus();
-      if(inputs.every(x => x.value)) submitFinancePin();
-    };
-    inp.onkeydown = (e) => {
-      if(e.key === 'Backspace' && !inp.value && i > 0) {
-        inputs[i - 1].focus();
-        inputs[i - 1].value = '';
-      }
-      if(e.key === 'Enter') submitFinancePin();
-    };
-    inp.onpaste = (e) => {
-      e.preventDefault();
-      const text = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, 4);
-      text.split('').forEach((ch, j) => { if(inputs[j]) inputs[j].value = ch; });
-      if(text.length === 4) submitFinancePin();
-      else if(inputs[text.length]) inputs[text.length].focus();
-    };
-  });
+  const clearErr = () => {
+    const err = document.getElementById('finLockErr');
+    if(err) err.classList.remove('on');
+  };
+  if(!_finPinBound) {
+    _finPinBound = true;
+    inputs.forEach((inp, i) => {
+      inp.addEventListener('keydown', (e) => {
+        if(e.key >= '0' && e.key <= '9') {
+          e.preventDefault();
+          inp.value = e.key;
+          clearErr();
+          if(i < inputs.length - 1) inputs[i + 1].focus();
+          else if(inputs.every(x => x.value)) submitFinancePin();
+          return;
+        }
+        if(e.key === 'Backspace') {
+          e.preventDefault();
+          if(inp.value) inp.value = '';
+          else if(i > 0) {
+            inputs[i - 1].value = '';
+            inputs[i - 1].focus();
+          }
+          return;
+        }
+        if(e.key === 'Enter') {
+          e.preventDefault();
+          submitFinancePin();
+        }
+      });
+      inp.addEventListener('input', () => {
+        const v = String(inp.value || '').replace(/\D/g, '').slice(-1);
+        inp.value = v;
+        clearErr();
+        if(v && i < inputs.length - 1) inputs[i + 1].focus();
+        if(inputs.every(x => x.value)) submitFinancePin();
+      });
+      inp.addEventListener('paste', (e) => {
+        e.preventDefault();
+        const text = ((e.clipboardData || window.clipboardData).getData('text') || '')
+          .replace(/\D/g, '').slice(0, 4);
+        text.split('').forEach((ch, j) => { if(inputs[j]) inputs[j].value = ch; });
+        clearErr();
+        if(text.length === 4) submitFinancePin();
+        else if(inputs[text.length]) inputs[text.length].focus();
+      });
+    });
+  }
+  inputs.forEach(inp => { inp.value = ''; });
   setTimeout(() => inputs[0].focus(), 50);
 }
 
