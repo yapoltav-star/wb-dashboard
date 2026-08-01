@@ -3085,12 +3085,22 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
 
         try:
             st = httpx.get(
-                f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code",
+                f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code,quantity_warehouses_full,in_way_to_client,in_way_from_client",
                 headers=sb_headers(), timeout=15
             )
-            nm_to_vendor = {r["nm_id"]: r["vendor_code"] for r in st.json()} if st.is_success else {}
+            stock_rows = st.json() if st.is_success else []
+            nm_to_vendor = {r["nm_id"]: r["vendor_code"] for r in (stock_rows or []) if r.get("nm_id") is not None}
+            stock_by_nm = {
+                int(r["nm_id"]): {
+                    "stock": int(r.get("quantity_warehouses_full") or 0),
+                    "in_way": int(r.get("in_way_to_client") or 0) + int(r.get("in_way_from_client") or 0),
+                }
+                for r in (stock_rows or [])
+                if r.get("nm_id") is not None
+            }
         except Exception:
             nm_to_vendor = {}
+            stock_by_nm = {}
 
         # Реклама: показы и CPM по артикулу (календарные дни окон WB)
         ads_cur, ads_prev = {}, {}
@@ -3099,6 +3109,13 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             logger.info(f"sales-pace ads: cur={len(ads_cur)} nms, prev={len(ads_prev)} nms")
         except Exception as e:
             logger.error(f"sales-pace ads error: {e}")
+
+        period_days = {"day": 1, "week": 7, "weeks2": 14, "month": 30}.get(period, 1)
+
+        def _cr_pct(num, den):
+            if not den:
+                return None
+            return round(100.0 * float(num) / float(den), 1)
 
         # только артикулы с заказами в текущем или прошлом окне
         all_nms = set(cur_ord) | set(prev_ord)
@@ -3125,6 +3142,33 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             cpm_delta = None
             if cpm_t is not None and cpm_y is not None:
                 cpm_delta = round(cpm_t - cpm_y, 1)
+            cart_cr_t = _cr_pct(cart_t, opens_t)
+            cart_cr_y = _cr_pct(cart_y, opens_y)
+            cart_cr_delta = (
+                round(cart_cr_t - cart_cr_y, 1)
+                if cart_cr_t is not None and cart_cr_y is not None else None
+            )
+            st_info = stock_by_nm.get(int(nm)) or {}
+            stock_qty = int(st_info.get("stock") or 0)
+            in_way = int(st_info.get("in_way") or 0)
+            # дней запаса ≈ остаток / среднесут. заказам в окне
+            daily_orders = max(o_t, o_y, 0) / float(period_days or 1)
+            days_left = round(stock_qty / daily_orders, 1) if daily_orders > 0 else None
+            if stock_qty <= 0:
+                stock_flag = "oos"
+            elif days_left is not None and days_left < 5:
+                stock_flag = "low"
+            else:
+                stock_flag = "ok"
+            opens_delta = opens_t - opens_y if funnel_ready else None
+            cart_delta = cart_t - cart_y if funnel_ready else None
+            funnel_down = (
+                (opens_delta is not None and opens_delta < 0)
+                or (cart_delta is not None and cart_delta < 0)
+                or (cart_cr_delta is not None and cart_cr_delta <= -1)
+            )
+            orders_down = (o_t - o_y) < 0
+            stock_linked = bool((funnel_down or orders_down) and stock_flag in ("oos", "low"))
             articles.append({
                 "nm_id": nm,
                 "vendor_code": ft.get("vendor_code") or fy.get("vendor_code") or nm_to_vendor.get(nm) or vc_from_orders.get(nm) or str(nm),
@@ -3134,13 +3178,16 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 "orders_delta": o_t - o_y,
                 "opens_today": opens_t,
                 "opens_yesterday": opens_y,
-                "opens_delta": opens_t - opens_y if funnel_ready else None,
+                "opens_delta": opens_delta,
                 "clicks_today": opens_t,
                 "clicks_yesterday": opens_y,
-                "clicks_delta": opens_t - opens_y if funnel_ready else None,
+                "clicks_delta": opens_delta,
                 "cart_today": cart_t,
                 "cart_yesterday": cart_y,
-                "cart_delta": cart_t - cart_y if funnel_ready else None,
+                "cart_delta": cart_delta,
+                "cart_cr_today": cart_cr_t,
+                "cart_cr_yesterday": cart_cr_y,
+                "cart_cr_delta": cart_cr_delta,
                 "views_today": views_t,
                 "views_yesterday": views_y,
                 "views_delta": views_t - views_y,
@@ -3149,6 +3196,12 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 "cpm_today": cpm_t,
                 "cpm_yesterday": cpm_y,
                 "cpm_delta": cpm_delta,
+                "stock": stock_qty,
+                "in_way": in_way,
+                "days_left": days_left,
+                "stock_flag": stock_flag,
+                "funnel_down": funnel_down,
+                "stock_linked": stock_linked,
                 "funnel_compare_ready": funnel_ready,
             })
 
@@ -3187,6 +3240,89 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
         SALES_PACE_CACHE["syncing"] = False
         SALES_PACE_CACHE["syncing_period"] = None
 
+def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
+    """Докидывает текущий остаток/флаги к кэшу темпа (без полного пересчёта WB)."""
+    if not articles:
+        return articles
+    if all(isinstance(a, dict) and a.get("stock") is not None for a in articles):
+        return articles
+    stock_by_nm = {}
+    try:
+        st = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,quantity_warehouses_full,in_way_to_client,in_way_from_client",
+            headers=sb_headers(), timeout=15,
+        )
+        if st.is_success:
+            for r in st.json() or []:
+                if r.get("nm_id") is None:
+                    continue
+                stock_by_nm[int(r["nm_id"])] = {
+                    "stock": int(r.get("quantity_warehouses_full") or 0),
+                    "in_way": int(r.get("in_way_to_client") or 0) + int(r.get("in_way_from_client") or 0),
+                }
+    except Exception as e:
+        logger.warning(f"enrich pace stock: {e}")
+        return articles
+    period_days = {"day": 1, "week": 7, "weeks2": 14, "month": 30}.get(period, 1)
+    out = []
+    for a in articles:
+        item = dict(a)
+        try:
+            nm = int(item.get("nm_id"))
+        except Exception:
+            out.append(item)
+            continue
+        st_info = stock_by_nm.get(nm) or {}
+        stock_qty = int(st_info.get("stock") or 0)
+        in_way = int(st_info.get("in_way") or 0)
+        o_t = int(item.get("orders_today") or 0)
+        o_y = int(item.get("orders_yesterday") or 0)
+        daily_orders = max(o_t, o_y, 0) / float(period_days or 1)
+        days_left = round(stock_qty / daily_orders, 1) if daily_orders > 0 else None
+        if stock_qty <= 0:
+            stock_flag = "oos"
+        elif days_left is not None and days_left < 5:
+            stock_flag = "low"
+        else:
+            stock_flag = "ok"
+        opens_d = item.get("opens_delta")
+        cart_d = item.get("cart_delta")
+        cr_t = item.get("cart_cr_today")
+        cr_y = item.get("cart_cr_yesterday")
+        if cr_t is None and item.get("opens_today"):
+            try:
+                cr_t = round(100.0 * float(item.get("cart_today") or 0) / float(item["opens_today"]), 1)
+            except Exception:
+                cr_t = None
+        if cr_y is None and item.get("opens_yesterday"):
+            try:
+                cr_y = round(100.0 * float(item.get("cart_yesterday") or 0) / float(item["opens_yesterday"]), 1)
+            except Exception:
+                cr_y = None
+        cr_d = item.get("cart_cr_delta")
+        if cr_d is None and cr_t is not None and cr_y is not None:
+            cr_d = round(cr_t - cr_y, 1)
+        funnel_down = (
+            (opens_d is not None and opens_d < 0)
+            or (cart_d is not None and cart_d < 0)
+            or (cr_d is not None and cr_d <= -1)
+        )
+        orders_down = (item.get("orders_delta") or 0) < 0
+        item.update({
+            "stock": stock_qty,
+            "in_way": in_way,
+            "days_left": days_left,
+            "stock_flag": stock_flag,
+            "cart_cr_today": cr_t,
+            "cart_cr_yesterday": cr_y,
+            "cart_cr_delta": cr_d,
+            "funnel_down": funnel_down,
+            "stock_linked": bool((funnel_down or orders_down) and stock_flag in ("oos", "low")),
+        })
+        out.append(item)
+    return out
+
+
 @app.get("/api/sales-pace")
 def get_sales_pace(period: str = "day", refresh: bool = False, date_cur: str = None, date_prev: str = None):
     period = period if period in SALES_PACE_PERIODS else "day"
@@ -3204,10 +3340,11 @@ def get_sales_pace(period: str = "day", refresh: bool = False, date_cur: str = N
                 daemon=True,
             ).start()
     cached = (SALES_PACE_CACHE.get("by_period") or {}).get(cache_key) or {}
+    articles = _enrich_pace_articles_stock(cached.get("articles") or [], period)
     return {
         "period": period,
         "cache_key": cache_key,
-        "articles": cached.get("articles") or [],
+        "articles": articles,
         "as_of": cached.get("as_of"),
         "compare_as_of": cached.get("compare_as_of"),
         "label_cur": cached.get("label_cur"),

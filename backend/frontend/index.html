@@ -561,6 +561,7 @@ td.tc{text-align:center}
     <span style="width:1px;height:20px;background:var(--wb-border);margin:0 4px"></span>
     <button class="filter-btn on" id="paceFltAll" onclick="setPaceFilter('all')">Все</button>
     <button class="filter-btn" id="paceFltDown" onclick="setPaceFilter('down')">Падают</button>
+    <button class="filter-btn" id="paceFltStock" onclick="setPaceFilter('stock')">Падение + сток</button>
     <button class="filter-btn" id="paceFltUp" onclick="setPaceFilter('up')">Растут</button>
     <button class="filter-btn" id="paceFltFlat" onclick="setPaceFilter('flat')">Без изменений</button>
     <span id="paceInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
@@ -2907,13 +2908,38 @@ function setPacePeriod(p) {
 
 function setPaceFilter(f) {
   PACE_FILTER = f;
-  ['All','Down','Up','Flat'].forEach(k => {
+  ['All','Down','Stock','Up','Flat'].forEach(k => {
     const el = document.getElementById('paceFlt' + k);
     if(!el) return;
-    const map = {All:'all', Down:'down', Up:'up', Flat:'flat'};
+    const map = {All:'all', Down:'down', Stock:'stock', Up:'up', Flat:'flat'};
     el.classList.toggle('on', map[k] === f);
   });
   drawSalesPace();
+}
+
+function paceStockHtml(a) {
+  const stock = a.stock;
+  if(stock == null) return '<span style="color:var(--wb-faint)">—</span>';
+  const flag = a.stock_flag || (stock <= 0 ? 'oos' : 'ok');
+  const color = flag === 'oos' ? '#B42318' : (flag === 'low' ? '#B54708' : 'var(--wb-text)');
+  const days = a.days_left != null ? ` · ~${Number(a.days_left).toLocaleString('ru-RU', {maximumFractionDigits: 1})}д` : '';
+  const tip = flag === 'oos' ? 'Нет на складах WB' : (flag === 'low' ? 'Мало дней запаса' : 'Остаток ок');
+  return `<span style="font-weight:600;color:${color}" title="${tip}">${fmt(stock)}${days}</span>`;
+}
+
+function paceCrDeltaHtml(d) {
+  if(d == null || !isFinite(Number(d))) return '<span class="pace-delta-flat">—</span>';
+  const n = Number(d);
+  const s = Math.abs(n).toLocaleString('ru-RU', {maximumFractionDigits: 1}) + 'п.п.';
+  if(n > 0) return `<span class="pace-delta-up">+${s}</span>`;
+  if(n < 0) return `<span class="pace-delta-down">−${s}</span>`;
+  return `<span class="pace-delta-flat">0</span>`;
+}
+
+function paceStockBadge(a) {
+  if(!a.stock_linked) return '';
+  const label = a.stock_flag === 'oos' ? 'OOS' : 'мало стока';
+  return ` <span class="cfo-pill bad" title="Падение заказов/воронки при низком остатке">${label}</span>`;
 }
 
 function paceSort(key) {
@@ -2996,6 +3022,7 @@ function drawSalesPace() {
   const q = ((document.getElementById('paceSearch') || {}).value || '').toLowerCase().trim();
   if(q) arts = arts.filter(a => String(a.vendor_code||'').toLowerCase().includes(q) || String(a.nm_id||'').includes(q) || String(a.name||'').toLowerCase().includes(q));
   if(PACE_FILTER === 'down') arts = arts.filter(a => (a.orders_delta||0) < 0);
+  else if(PACE_FILTER === 'stock') arts = arts.filter(a => a.stock_linked);
   else if(PACE_FILTER === 'up') arts = arts.filter(a => (a.orders_delta||0) > 0);
   else if(PACE_FILTER === 'flat') arts = arts.filter(a => (a.orders_delta||0) === 0);
 
@@ -3036,13 +3063,16 @@ function drawSalesPace() {
   const all = (PACE_DATA.articles || []).filter(a => (a.orders_today||0) > 0 || (a.orders_yesterday||0) > 0);
   const downN = all.filter(a => (a.orders_delta||0) < 0).length;
   const upN = all.filter(a => (a.orders_delta||0) > 0).length;
+  const stockLinkN = all.filter(a => a.stock_linked).length;
+  const oosDownN = all.filter(a => a.stock_linked && a.stock_flag === 'oos').length;
   const sumDelta = all.reduce((s,a) => s + (a.orders_delta||0), 0);
   if(cards) {
     cards.innerHTML = [
       ['Сейчас (МСК)', PACE_DATA.now_time || '—'],
       ['Артикулов', fmt(all.length)],
       ['Падают по заказам', fmt(downN), 'color:#B42318'],
-      ['Растут по заказам', fmt(upN), 'color:#027A48'],
+      ['Падение + сток', fmt(stockLinkN), stockLinkN ? 'color:#B42318' : ''],
+      ['Из них OOS', fmt(oosDownN), oosDownN ? 'color:#B42318' : ''],
       ['Δ заказов всего', (sumDelta>0?'+':'') + fmt(sumDelta), sumDelta<0?'color:#B42318':(sumDelta>0?'color:#027A48':'')],
     ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
   }
@@ -3096,6 +3126,7 @@ function drawSalesPace() {
 
   const totalRow = `<tr class="total-row">
       <td class="mcol-art"><div class="art">Весь кабинет</div><div class="nmid">${fmt(all.length)} арт.</div></td>
+      <td style="color:var(--wb-faint)">—</td>
       <td>${fmt(tot.orders_today)}</td>
       <td>${fmt(tot.orders_yesterday)}</td>
       <td>${paceDeltaHtml(tot.orders_delta)}</td>
@@ -3111,17 +3142,19 @@ function drawSalesPace() {
       <td>${fmt(tot.cart_today)}</td>
       <td>${tot.cart_delta==null?'—':fmt(tot.cart_yesterday)}</td>
       <td>${paceDeltaHtml(tot.cart_delta)}</td>
+      <td colspan="2" style="color:var(--wb-faint)">—</td>
     </tr>`;
 
   const body = arts.map((a,i) => {
-    const rowCls = a.isPinned ? 'pinned' : ((a.orders_delta||0) < 0 ? 'promo-row-need' : ((a.orders_delta||0) > 0 ? 'promo-row-in' : ''));
+    const rowCls = a.isPinned ? 'pinned' : (a.stock_linked ? 'promo-row-need' : ((a.orders_delta||0) < 0 ? 'promo-row-need' : ((a.orders_delta||0) > 0 ? 'promo-row-in' : '')));
     const safeVc = encodeURIComponent(a.vendor_code || '');
     return `<tr class="${rowCls}${i%2 && !a.isPinned?' wh-even':''}">
       <td class="mcol-art">
         <span class="prod-pin${a.isPinned?' on':''}" onclick="togglePacePin('${safeVc}', event)" title="${a.isPinned?'Открепить':'Закрепить'}">📌</span>
-        <div class="art" style="display:inline">${escapeHtml(String(a.vendor_code||''))}</div>
+        <div class="art" style="display:inline">${escapeHtml(String(a.vendor_code||''))}${paceStockBadge(a)}</div>
         <div class="nmid">${a.nm_id||''}</div>
       </td>
+      <td>${paceStockHtml(a)}</td>
       <td>${fmt(a.orders_today||0)}</td>
       <td>${fmt(a.orders_yesterday||0)}</td>
       <td>${paceDeltaHtml(a.orders_delta)}</td>
@@ -3137,20 +3170,25 @@ function drawSalesPace() {
       <td>${fmt(a.cart_today||0)}</td>
       <td>${a.cart_delta==null?'—':fmt(a.cart_yesterday||0)}</td>
       <td>${paceDeltaHtml(a.cart_delta)}</td>
+      <td>${a.cart_cr_today!=null ? a.cart_cr_today.toLocaleString('ru-RU',{maximumFractionDigits:1})+'%' : '—'}</td>
+      <td>${paceCrDeltaHtml(a.cart_cr_delta)}</td>
     </tr>`;
   }).join('');
 
   root.innerHTML = `<div class="pace-hint">Сравнение: <b>${escapeHtml(tLabel)}</b> vs <b>${escapeHtml(yLabel)}</b> (Москва).
     ${PACE_DATA.custom_dates ? 'Выбранный день vs предыдущий (полные сутки; если выбран сегодня — до текущего времени). ' : 'Без даты — сегодня vs вчера до того же времени. Можно выбрать день слева. '}
-    Заказы — по минутам. <b>Показы / CPM</b> — из рекламы WB. Переходы / корзина — из воронки. 📌 — закрепить.</div>
+    <b>Остаток</b> — текущий на складах WB; <b>Падение + сток</b> — падают заказы/переходы/корзина при OOS или &lt;5 дней запаса.
+    Показы / CPM — реклама. CR корзины = корзина ÷ переходы. 📌 — закрепить.</div>
     <div class="matrix-wrap"><table class="matrix promo-xls">
       <thead><tr>
         ${paceTh('Артикул продавца', 'vendor_code', 2)}
+        ${paceTh('Остаток', 'stock', 2)}
         <th colspan="3">Заказы</th>
         <th colspan="3">Показы (реклама)</th>
         <th colspan="3">CPM, ₽</th>
         <th colspan="3">Переходы в карточку</th>
         <th colspan="3">В корзину</th>
+        <th colspan="2">CR в корзину</th>
       </tr><tr>
         ${paceTh(colCur, 'orders_today')}
         ${paceTh(colPrev, 'orders_yesterday')}
@@ -3167,6 +3205,8 @@ function drawSalesPace() {
         ${paceTh(colCur, 'cart_today')}
         ${paceTh(colPrev, 'cart_yesterday')}
         ${paceTh('Δ', 'cart_delta')}
+        ${paceTh(colCur, 'cart_cr_today')}
+        ${paceTh('Δ', 'cart_cr_delta')}
       </tr></thead>
       <tbody>${totalRow}${body}</tbody>
     </table></div>`;
