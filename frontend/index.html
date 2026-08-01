@@ -654,6 +654,7 @@ td.tc{text-align:center}
     <span style="font-size:12px;color:var(--wb-muted)">дней</span>
     <button class="action-btn" id="barcodeToggleBtn" onclick="toggleBarcodeCol()">Баркод</button>
     <span id="supplyUploadInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
+    <span id="supplyOwnWhDate" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
     <div class="ml-auto">
       <button class="action-btn" id="supplySyncBtn" onclick="triggerSupplySync()">↻ Обновить</button>
     </div>
@@ -1338,9 +1339,10 @@ function drawOwnWarehouse() {
     if(info) info.textContent = 'Обновляем…';
   } else {
     const bits = [];
-    if(OWN_WH.as_of) bits.push('на ' + OWN_WH.as_of);
+    if(OWN_WH.as_of) bits.push('остатки на ' + OWN_WH.as_of);
+    else if(OWN_WH.title) bits.push(OWN_WH.title);
     if(OWN_WH.updated_at) bits.push('подтянуто ' + OWN_WH.updated_at);
-    if(info) info.textContent = bits.join(' · ');
+    if(info) info.textContent = bits.join(' · ') || '';
   }
 
   let rows = OWN_WH.rows || [];
@@ -2610,7 +2612,7 @@ function renderSupplyMatrixTable(matrix) {
         <th class="mhead m-info">Уже запланировано в поставке</th>
         <th class="mhead m-info">Остаток WB</th>
         <th class="mhead m-info">Поставить всего</th>
-        <th class="mhead m-info">Наш склад</th>
+        <th class="mhead m-info">Наш склад${OWN_WH && OWN_WH.as_of ? `<div style="font-size:9px;font-weight:500;color:var(--wb-muted);text-transform:none;letter-spacing:0;margin-top:2px">на ${OWN_WH.as_of}</div>` : ''}</th>
         ${whHead2}
       </tr>
     </thead>
@@ -2619,15 +2621,28 @@ function renderSupplyMatrixTable(matrix) {
 }
 
 async function ensureOwnWarehouseForSupply() {
-  if(OWN_WH_BY_VENDOR && Object.keys(OWN_WH_BY_VENDOR).length) return;
+  const hasData = OWN_WH_BY_VENDOR && Object.keys(OWN_WH_BY_VENDOR).length;
+  if(hasData && OWN_WH && OWN_WH.as_of) return;
   try {
-    const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-stock?refresh=true`);
+    const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-stock?refresh=${hasData ? 'false' : 'true'}`);
     const data = await r.json();
-    OWN_WH_BY_VENDOR = data.by_vendor || {};
+    OWN_WH_BY_VENDOR = data.by_vendor || OWN_WH_BY_VENDOR || {};
     OWN_WH = data;
     OWN_WH_LOADED = true;
   } catch(e) {
-    OWN_WH_BY_VENDOR = {};
+    if(!hasData) OWN_WH_BY_VENDOR = {};
+  }
+}
+
+function updateSupplyOwnWhDateLabel() {
+  const el = document.getElementById('supplyOwnWhDate');
+  if(!el) return;
+  if(OWN_WH && OWN_WH.as_of) {
+    el.innerHTML = `· <b style="color:var(--wb-text)">Наш склад: остатки на ${OWN_WH.as_of}</b>`;
+  } else if(OWN_WH && OWN_WH.error) {
+    el.textContent = '· наш склад: ошибка загрузки';
+  } else {
+    el.textContent = '';
   }
 }
 
@@ -2635,16 +2650,22 @@ async function renderSupplyRecs() {
   if(!SUPPLY_REPORT.length) {
     document.getElementById('supplyCards').innerHTML = '';
     document.getElementById('supplyRoot').innerHTML = '<div class="empty">Данных пока нет. Нажми «Обновить» — соберём заказы и остатки с WB (2–3 минуты).</div>';
+    updateSupplyOwnWhDateLabel();
     return;
   }
   document.getElementById('barcodeToggleBtn').classList.toggle('primary', SHOW_BARCODE);
   document.getElementById('supplyRoot').innerHTML = '<div class="loading"><div class="spinner"></div><span>Сверяем с нашим складом...</span></div>';
   await ensureOwnWarehouseForSupply();
+  updateSupplyOwnWhDateLabel();
   const matrix = buildSupplyMatrix();
   renderSupplyCards(matrix);
   let note = '';
   if(!Object.keys(OWN_WH_BY_VENDOR).length) {
     note = '<div class="empty" style="margin-bottom:10px">Колонка «Наш склад» пустая — не удалось подтянуть Google Sheets. Открой вкладку «Наш склад» и нажми Обновить.</div>';
+  } else if(OWN_WH && OWN_WH.as_of) {
+    note = `<div style="margin-bottom:10px;padding:8px 12px;background:#FFF0E8;border:1px solid #F5D0B5;border-radius:var(--rs);font-size:12px;color:var(--wb-text)">
+      Колонка «Наш склад» — остатки из Google Sheets <b>на ${OWN_WH.as_of}</b>${OWN_WH.updated_at ? ` <span style="color:var(--wb-muted)">(подтянуто ${OWN_WH.updated_at})</span>` : ''}
+    </div>`;
   }
   document.getElementById('supplyRoot').innerHTML = note + renderSupplyMatrixTable(matrix);
 }
