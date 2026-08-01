@@ -990,7 +990,6 @@ td.tc{text-align:center}
     <div id="finCfoPanel" style="display:none">
       <div class="cfo-actions">
         <button class="action-btn primary" onclick="saveCfoSnapshot()">💾 Сохранить</button>
-        <button class="action-btn" id="cfoSyncWbBtn" onclick="syncCfoFromWb()">↻ Из WB</button>
         <button class="action-btn" onclick="addCfoLoan()">+ Кредит</button>
         <button class="action-btn" onclick="loadCfo(true)">↺ Сбросить к сохранённому</button>
         <span class="cfo-status" id="cfoStatus"></span>
@@ -5747,14 +5746,6 @@ function cfoNum(v) {
   const n = parseFloat(String(v ?? '').replace(/\s/g, '').replace(',', '.'));
   return isFinite(n) ? n : 0;
 }
-function cfoRecvAmount(v) {
-  if(v && typeof v === 'object') return cfoNum(v.amount);
-  return cfoNum(v);
-}
-function cfoRecvLabel(v, i) {
-  if(v && typeof v === 'object' && v.label) return String(v.label);
-  return 'Транш ' + (i + 1);
-}
 function cfoInterest(loan) {
   if(loan.interest_only) return cfoNum(loan.payment);
   if(loan.id === 'vtb_big') return 88000 + cfoNum(loan.fee_month);
@@ -5771,8 +5762,8 @@ function recomputeCfoLocal() {
     l.interest_month = Math.round(cfoInterest(l) * 100) / 100;
     l.principal_month = Math.max(0, cfoNum(l.payment) - l.interest_month);
   });
-  const wb = (d.wb_receivables || []).map(cfoRecvAmount);
-  const oz = (d.ozon_receivables || []).map(cfoRecvAmount);
+  const wb = (d.wb_receivables || []).map(cfoNum);
+  const oz = (d.ozon_receivables || []).map(cfoNum);
   const cash = cfoNum(d.cash);
   const suppliers = cfoNum(d.suppliers);
   const stock = cfoNum(d.inventory_wb_own) + cfoNum(d.inventory_transit) + cfoNum(d.inventory_ozon);
@@ -5866,10 +5857,8 @@ function drawCfo() {
   recomputeCfoLocal();
   const t = d.totals || {};
   if(meta) {
-    const syncAt = d.wb_synced_at ? String(d.wb_synced_at).slice(0, 16).replace('T', ' ') : '';
     meta.textContent = 'Баланс / кредиты · срез ' + (d.as_of || '—') +
-      (d.updated_at ? ' · сохранено ' + String(d.updated_at).slice(0, 16).replace('T', ' ') : '') +
-      (syncAt ? ' · WB ' + syncAt : '');
+      (d.updated_at ? ' · сохранено ' + String(d.updated_at).slice(0, 16).replace('T', ' ') : '');
   }
   drawCfoSituation();
   if(cards) {
@@ -5930,10 +5919,7 @@ function drawCfo() {
         ${cfoField('inventory_transit', 'Товар в пути', d.inventory_transit)}
         ${cfoField('inventory_ozon', 'Товар Ozon (себес)', d.inventory_ozon)}
         ${cfoField('wb_compensation_pending', 'Компенсация WB (пожар, ждём)', d.wb_compensation_pending)}
-        ${cfoWbBalanceHtml(d.wb_balance)}
-        <div class="cfo-hint">Итого товар: <b>${fmtMoney(t.inventory)}</b> · ДЗ МП: <b>${fmtMoney(t.mp_receivable)}</b>.
-          Кнопка «Из WB» подтягивает невыплаченные отчёты, баланс кабинета и пересчитывает остатки по себесу.
-          Компенсацию в кэш не считаем, пока не пришла.</div>
+        <div class="cfo-hint">Итого товар: <b>${fmtMoney(t.inventory)}</b> · ДЗ МП: <b>${fmtMoney(t.mp_receivable)}</b>. Компенсацию в кэш не считаем, пока не пришла.</div>
       </div>
       <div class="cfo-box">
         <h3>Пассивы и P&amp;L периода</h3>
@@ -5951,8 +5937,7 @@ function drawCfo() {
       <div class="cfo-box">
         <h3>Дебиторка WB <button class="action-btn" style="margin-left:8px;padding:2px 8px;font-size:11px" onclick="addCfoRecv('wb')">+</button></h3>
         <div class="cfo-recv-list" id="cfoWbRecv">${cfoRecvHtml('wb', d.wb_receivables || [])}</div>
-        <div class="cfo-hint">Сумма: <b>${fmtMoney(t.wb_receivable)}</b> · невыплаченные отчёты подтягиваются кнопкой «Из WB»</div>
-        ${cfoWbReportsHtml(d.wb_open_reports || [])}
+        <div class="cfo-hint">Сумма: <b>${fmtMoney(t.wb_receivable)}</b></div>
       </div>
       <div class="cfo-box">
         <h3>Дебиторка Ozon <button class="action-btn" style="margin-left:8px;padding:2px 8px;font-size:11px" onclick="addCfoRecv('ozon')">+</button></h3>
@@ -6040,39 +6025,10 @@ function cfoField(key, label, val, type) {
   return `<div class="cfo-row"><label>${label}</label>
     <input class="cfo-inp" type="${t}"${step} value="${v}" oninput="onCfoField('${key}', this.value)"></div>`;
 }
-function cfoWbBalanceHtml(bal) {
-  if(!bal || typeof bal !== 'object') return '';
-  return `<div class="cfo-hint" style="margin-top:10px;padding:8px 10px;background:#FAFAF8;border-radius:8px;border:1px solid var(--wb-border)">
-    Баланс WB: <b>${fmtMoney(bal.current)}</b> · к выводу: <b>${fmtMoney(bal.for_withdraw)}</b>
-    <span style="color:var(--wb-faint)"> (виджет кабинета, не р/с)</span>
-  </div>`;
-}
-function cfoWbReportsHtml(reports) {
-  const rows = (reports || []).slice(0, 12);
-  if(!rows.length) return '';
-  const body = rows.map(r => {
-    const st = r.unpaid
-      ? '<span class="cfo-pill bad">ждём перевод</span>'
-      : '<span class="cfo-pill ok">оплачен/в банке</span>';
-    return `<tr>
-      <td style="white-space:nowrap">${escapeHtml(r.label || ((r.date_from||'') + ' — ' + (r.date_to||'')))}</td>
-      <td style="text-align:right;font-variant-numeric:tabular-nums">${fmtMoney(r.for_pay)}</td>
-      <td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--wb-muted)">${fmtMoney(r.bank_payment)}</td>
-      <td>${st}</td>
-    </tr>`;
-  }).join('');
-  return `<div class="cfo-scroll" style="margin-top:10px">
-    <table class="cfo-table" style="min-width:0">
-      <thead><tr><th>Отчёт</th><th>К перечислению</th><th>Банк. платёж</th><th></th></tr></thead>
-      <tbody>${body}</tbody>
-    </table>
-  </div>`;
-}
 function cfoRecvHtml(kind, arr) {
   return (arr || []).map((v, i) => `
     <div class="cfo-recv-row">
-      <span style="font-size:11px;color:var(--wb-muted);min-width:110px;flex:0 1 140px">${escapeHtml(cfoRecvLabel(v, i))}</span>
-      <input class="cfo-inp" type="number" step="0.01" value="${cfoRecvAmount(v)}" oninput="onCfoRecv('${kind}', ${i}, this.value)">
+      <input class="cfo-inp" type="number" step="0.01" value="${cfoNum(v)}" oninput="onCfoRecv('${kind}', ${i}, this.value)">
       <button class="cfo-del" onclick="removeCfoRecv('${kind}', ${i})">✕</button>
     </div>`).join('') || '<div class="cfo-hint">Нет траншей</div>';
 }
@@ -6088,9 +6044,7 @@ function onCfoRecv(kind, i, val) {
   if(!CFO_DATA) return;
   const key = kind === 'ozon' ? 'ozon_receivables' : 'wb_receivables';
   if(!Array.isArray(CFO_DATA[key])) CFO_DATA[key] = [];
-  const prev = CFO_DATA[key][i];
-  if(prev && typeof prev === 'object') CFO_DATA[key][i] = {...prev, amount: cfoNum(val)};
-  else CFO_DATA[key][i] = cfoNum(val);
+  CFO_DATA[key][i] = cfoNum(val);
   recomputeCfoLocal();
   drawCfoCardsOnly();
 }
@@ -6098,32 +6052,8 @@ function addCfoRecv(kind) {
   if(!CFO_DATA) return;
   const key = kind === 'ozon' ? 'ozon_receivables' : 'wb_receivables';
   if(!Array.isArray(CFO_DATA[key])) CFO_DATA[key] = [];
-  CFO_DATA[key].push({amount: 0, label: 'Вручную', source: 'manual'});
+  CFO_DATA[key].push(0);
   drawCfo();
-}
-async function syncCfoFromWb() {
-  const btn = document.getElementById('cfoSyncWbBtn');
-  if(btn) btn.disabled = true;
-  setCfoStatus('Тянем баланс и отчёты из WB…');
-  try {
-    const r = await fetch(`${RAILWAY_URL}/api/finance/cfo/sync-wb`, {method: 'POST'});
-    const d = await r.json();
-    if(!r.ok || d.error || d.detail) {
-      setCfoStatus(d.detail || d.error || 'Ошибка синка WB', false);
-      return;
-    }
-    CFO_DATA = d.snapshot || d;
-    const sync = d.wb_sync || (CFO_DATA && CFO_DATA.wb_sync) || {};
-    const notes = (sync.notes || []).join(' · ');
-    const errs = (sync.errors || []).join(' · ');
-    if(errs) setCfoStatus((notes ? notes + ' · ' : '') + errs, false);
-    else setCfoStatus(notes || 'Обновлено из WB', true);
-    drawCfo();
-  } catch(e) {
-    setCfoStatus(e.message || 'Ошибка сети', false);
-  } finally {
-    if(btn) btn.disabled = false;
-  }
 }
 function removeCfoRecv(kind, i) {
   if(!CFO_DATA) return;
@@ -6191,20 +6121,8 @@ async function saveCfoSnapshot() {
     target_margin: cfoNum(CFO_DATA.target_margin) || 0.15,
     cash_floor: cfoNum(CFO_DATA.cash_floor) || 4000000,
     wb_compensation_pending: cfoNum(CFO_DATA.wb_compensation_pending),
-    wb_receivables: (CFO_DATA.wb_receivables || []).map(v => {
-      if(v && typeof v === 'object') return {
-        amount: cfoNum(v.amount), label: v.label || '', report_id: v.report_id,
-        date_from: v.date_from || '', date_to: v.date_to || '', source: v.source || '',
-      };
-      return cfoNum(v);
-    }),
-    ozon_receivables: (CFO_DATA.ozon_receivables || []).map(v => {
-      if(v && typeof v === 'object') return {amount: cfoNum(v.amount), label: v.label || '', source: v.source || ''};
-      return cfoNum(v);
-    }),
-    wb_balance: CFO_DATA.wb_balance || null,
-    wb_open_reports: CFO_DATA.wb_open_reports || [],
-    wb_synced_at: CFO_DATA.wb_synced_at || null,
+    wb_receivables: (CFO_DATA.wb_receivables || []).map(cfoNum),
+    ozon_receivables: (CFO_DATA.ozon_receivables || []).map(cfoNum),
     loans: (CFO_DATA.loans || []).map(l => ({
       id: l.id, name: l.name, contract: l.contract || '',
       balance: cfoNum(l.balance), rate: cfoNum(l.rate), payment: cfoNum(l.payment),
