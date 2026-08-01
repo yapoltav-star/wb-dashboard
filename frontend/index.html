@@ -2,7 +2,9 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- Фиксированная «десктопная» ширина: на телефоне Safari сразу умещает всю страницу,
+     pinch-zoom отдаляет/приближает вместе с таблицами — видны все столбцы. -->
+<meta name="viewport" content="width=1400, initial-scale=1, minimum-scale=0.15, maximum-scale=4, user-scalable=yes">
 <title>WB Partners — Отзывы и рейтинги</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -15,7 +17,8 @@
   --green:#12B76A;--red:#F04438;--amber:#F79009;--blue:#2E90FA;
   --r:8px;--rs:6px;
 }
-body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text);min-height:100vh}
+html{-webkit-text-size-adjust:100%}
+body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text);min-height:100vh;min-width:1400px;overflow-x:auto}
 .topbar{background:#4A4540;padding:0 24px;display:flex;align-items:center;height:52px;gap:0;border-bottom:3px solid #D4622A}
 .tb-logo{display:flex;align-items:center;gap:8px;margin-right:32px}
 .tb-logo-text{color:#fff;font-size:13px;font-weight:600;letter-spacing:.5px}
