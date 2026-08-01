@@ -3014,6 +3014,8 @@ function drawSalesPace() {
     if(PACE_DATA.as_of) bits.push('обновлено ' + PACE_DATA.as_of);
     if(PACE_PERIOD === 'day' && !PACE_DATA.compare_as_of && !PACE_DATA.funnel_ready)
       bits.push('воронка за вчера ещё копится');
+    if(PACE_PERIOD === 'day' && PACE_DATA.ads_ready === false)
+      bits.push('показы «вчера до часа» ещё копится (снимки раз в час)');
     if(info) info.textContent = bits.join(' · ');
     if(btn) btn.disabled = false;
   }
@@ -3119,10 +3121,11 @@ function drawSalesPace() {
   const funnelOk = all.some(a => a.opens_delta != null || a.cart_delta != null);
   tot.opens_delta = funnelOk ? tot.opens_today - tot.opens_yesterday : null;
   tot.cart_delta = funnelOk ? tot.cart_today - tot.cart_yesterday : null;
-  tot.views_delta = tot.views_today - tot.views_yesterday;
+  const adsOk = PACE_PERIOD !== 'day' || PACE_DATA.ads_ready !== false;
+  tot.views_delta = adsOk ? tot.views_today - tot.views_yesterday : null;
   tot.cpm_today = tot.views_today > 0 ? Math.round(tot.spend_today / tot.views_today * 1000 * 10) / 10 : null;
-  tot.cpm_yesterday = tot.views_yesterday > 0 ? Math.round(tot.spend_yesterday / tot.views_yesterday * 1000 * 10) / 10 : null;
-  tot.cpm_delta = (tot.cpm_today != null && tot.cpm_yesterday != null) ? Math.round((tot.cpm_today - tot.cpm_yesterday) * 10) / 10 : null;
+  tot.cpm_yesterday = adsOk && tot.views_yesterday > 0 ? Math.round(tot.spend_yesterday / tot.views_yesterday * 1000 * 10) / 10 : null;
+  tot.cpm_delta = (adsOk && tot.cpm_today != null && tot.cpm_yesterday != null) ? Math.round((tot.cpm_today - tot.cpm_yesterday) * 10) / 10 : null;
 
   const totalRow = `<tr class="total-row">
       <td class="mcol-art"><div class="art">Весь кабинет</div><div class="nmid">${fmt(all.length)} арт.</div></td>
@@ -3131,10 +3134,10 @@ function drawSalesPace() {
       <td>${fmt(tot.orders_yesterday)}</td>
       <td>${paceDeltaHtml(tot.orders_delta)}</td>
       <td>${fmt(tot.views_today)}</td>
-      <td>${fmt(tot.views_yesterday)}</td>
+      <td>${tot.views_delta==null?'—':fmt(tot.views_yesterday)}</td>
       <td>${paceDeltaHtml(tot.views_delta)}</td>
       <td>${paceCpmFmt(tot.cpm_today)}</td>
-      <td>${paceCpmFmt(tot.cpm_yesterday)}</td>
+      <td>${tot.cpm_delta==null && !adsOk?'—':paceCpmFmt(tot.cpm_yesterday)}</td>
       <td>${paceCpmDeltaHtml(tot.cpm_delta)}</td>
       <td>${fmt(tot.opens_today)}</td>
       <td>${tot.opens_delta==null?'—':fmt(tot.opens_yesterday)}</td>
@@ -3159,10 +3162,10 @@ function drawSalesPace() {
       <td>${fmt(a.orders_yesterday||0)}</td>
       <td>${paceDeltaHtml(a.orders_delta)}</td>
       <td>${fmt(a.views_today||0)}</td>
-      <td>${fmt(a.views_yesterday||0)}</td>
+      <td>${a.views_delta==null?'—':fmt(a.views_yesterday||0)}</td>
       <td>${paceDeltaHtml(a.views_delta)}</td>
       <td>${paceCpmFmt(a.cpm_today)}</td>
-      <td>${paceCpmFmt(a.cpm_yesterday)}</td>
+      <td>${a.cpm_delta==null && a.ads_compare_ready===false?'—':paceCpmFmt(a.cpm_yesterday)}</td>
       <td>${paceCpmDeltaHtml(a.cpm_delta)}</td>
       <td>${fmt(a.clicks_today||0)}</td>
       <td>${a.clicks_delta==null?'—':fmt(a.clicks_yesterday||0)}</td>
@@ -3178,7 +3181,8 @@ function drawSalesPace() {
   root.innerHTML = `<div class="pace-hint">Сравнение: <b>${escapeHtml(tLabel)}</b> vs <b>${escapeHtml(yLabel)}</b> (Москва).
     ${PACE_DATA.custom_dates ? 'Выбранный день vs предыдущий (полные сутки; если выбран сегодня — до текущего времени). ' : 'Без даты — сегодня vs вчера до того же времени. Можно выбрать день слева. '}
     <b>Остаток</b> — текущий на складах WB; <b>Падение + сток</b> — падают заказы/переходы/корзина при OOS или &lt;5 дней запаса.
-    Показы / CPM — реклама. CR корзины = корзина ÷ переходы. 📌 — закрепить.</div>
+    <b>Показы / CPM</b> за день: сегодня до сейчас vs вчера до того же часа (почасовые снимки; WB отдаёт показы только целым днём).
+    CR корзины = корзина ÷ переходы. 📌 — закрепить.</div>
     <div class="matrix-wrap"><table class="matrix promo-xls">
       <thead><tr>
         ${paceTh('Артикул продавца', 'vendor_code', 2)}

@@ -3027,22 +3027,45 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
         funnel_cur, funnel_prev = {}, {}
         compare_as_of = None
         funnel_ready = True
+        ads_ready = True
+        ads_cur, ads_prev = {}, {}
+
+        # Реклама: fullstats только по дням — для «день» кладём показы в почасовые снимки
+        try:
+            ads_cur_api, ads_prev_api = fetch_ad_nm_windows(prev_start, prev_end, cur_start, cur_end)
+            logger.info(f"sales-pace ads: cur={len(ads_cur_api)} nms, prev_api={len(ads_prev_api)} nms")
+        except Exception as e:
+            logger.error(f"sales-pace ads error: {e}")
+            ads_cur_api, ads_prev_api = {}, {}
 
         if win.get("use_snaps"):
-            # день: снимок воронки
+            # день: снимок воронки + показов (сегодня накопленно; вчера — из снимка на тот же час)
             funnel_cur = _funnel_products_day(cur_s)
+            ads_cur = ads_cur_api or {}
             hour_key = now.strftime("%Y-%m-%dT%H")
             snaps = get_setting_json(SALES_PACE_SNAPS_KEY, []) or []
             if not isinstance(snaps, list):
                 snaps = []
+            products_snap = {}
+            for nm, v in (funnel_cur or {}).items():
+                products_snap[str(nm)] = {
+                    "opens": int(v.get("opens") or 0),
+                    "cart": int(v.get("cart") or 0),
+                    "orders": int(v.get("orders") or 0),
+                    "views": 0,
+                    "spend": 0.0,
+                }
+            for nm, v in (ads_cur or {}).items():
+                key = str(nm)
+                if key not in products_snap:
+                    products_snap[key] = {"opens": 0, "cart": 0, "orders": 0, "views": 0, "spend": 0.0}
+                products_snap[key]["views"] = int(v.get("views") or 0)
+                products_snap[key]["spend"] = float(v.get("spend") or 0)
             snap_payload = {
                 "hour_key": hour_key,
                 "as_of": now.strftime("%Y-%m-%d %H:%M"),
                 "day": cur_s,
-                "products": {
-                    str(nm): {"opens": v["opens"], "cart": v["cart"], "orders": v["orders"]}
-                    for nm, v in funnel_cur.items()
-                },
+                "products": products_snap,
             }
             snaps = [s for s in snaps if s.get("hour_key") != hour_key]
             snaps.append(snap_payload)
@@ -3068,13 +3091,28 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                     )
             funnel_prev_raw = (yest_snap or {}).get("products") or {}
             funnel_prev = {}
+            ads_prev = {}
+            ads_from_snap = False
             for k, v in funnel_prev_raw.items():
                 try:
-                    funnel_prev[int(k)] = v
+                    nm_i = int(k)
                 except Exception:
-                    pass
+                    continue
+                funnel_prev[nm_i] = v
+                if isinstance(v, dict) and ("views" in v or "spend" in v):
+                    ads_from_snap = True
+                    ads_prev[nm_i] = {
+                        "views": int(v.get("views") or 0),
+                        "spend": float(v.get("spend") or 0),
+                        "clicks": int(v.get("clicks") or 0),
+                        "orders": int(v.get("orders") or 0),
+                    }
             compare_as_of = (yest_snap or {}).get("as_of")
             funnel_ready = bool(yest_snap)
+            # показы «вчера до этого часа» только из снимка (API отдаёт весь день)
+            ads_ready = bool(yest_snap) and ads_from_snap
+            if not ads_ready:
+                ads_prev = {}
         else:
             # неделя / 2 недели / месяц — два запроса воронки по диапазонам дат
             funnel_cur = _funnel_products_range(cur_s, cur_e)
@@ -3082,6 +3120,9 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             funnel_prev = _funnel_products_range(prev_s, prev_e)
             compare_as_of = f"{prev_s}–{prev_e}"
             funnel_ready = True
+            ads_cur = ads_cur_api or {}
+            ads_prev = ads_prev_api or {}
+            ads_ready = True
 
         try:
             st = httpx.get(
@@ -3101,14 +3142,6 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
         except Exception:
             nm_to_vendor = {}
             stock_by_nm = {}
-
-        # Реклама: показы и CPM по артикулу (календарные дни окон WB)
-        ads_cur, ads_prev = {}, {}
-        try:
-            ads_cur, ads_prev = fetch_ad_nm_windows(prev_start, prev_end, cur_start, cur_end)
-            logger.info(f"sales-pace ads: cur={len(ads_cur)} nms, prev={len(ads_prev)} nms")
-        except Exception as e:
-            logger.error(f"sales-pace ads error: {e}")
 
         period_days = {"day": 1, "week": 7, "weeks2": 14, "month": 30}.get(period, 1)
 
@@ -3134,14 +3167,15 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             ad_t = ads_cur.get(nm) or {}
             ad_y = ads_prev.get(nm) or {}
             views_t = int(ad_t.get("views") or 0)
-            views_y = int(ad_y.get("views") or 0)
+            views_y = int(ad_y.get("views") or 0) if ads_ready else None
             spend_t = float(ad_t.get("spend") or 0)
-            spend_y = float(ad_y.get("spend") or 0)
+            spend_y = float(ad_y.get("spend") or 0) if ads_ready else None
             cpm_t = _cpm(views_t, spend_t)
-            cpm_y = _cpm(views_y, spend_y)
+            cpm_y = _cpm(views_y, spend_y) if ads_ready else None
             cpm_delta = None
-            if cpm_t is not None and cpm_y is not None:
+            if ads_ready and cpm_t is not None and cpm_y is not None:
                 cpm_delta = round(cpm_t - cpm_y, 1)
+            views_delta = (views_t - views_y) if ads_ready and views_y is not None else None
             cart_cr_t = _cr_pct(cart_t, opens_t)
             cart_cr_y = _cr_pct(cart_y, opens_y)
             cart_cr_delta = (
@@ -3190,7 +3224,7 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 "cart_cr_delta": cart_cr_delta,
                 "views_today": views_t,
                 "views_yesterday": views_y,
-                "views_delta": views_t - views_y,
+                "views_delta": views_delta,
                 "spend_today": spend_t,
                 "spend_yesterday": spend_y,
                 "cpm_today": cpm_t,
@@ -3203,6 +3237,7 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 "funnel_down": funnel_down,
                 "stock_linked": stock_linked,
                 "funnel_compare_ready": funnel_ready,
+                "ads_compare_ready": ads_ready,
             })
 
         articles.sort(key=lambda a: (a["orders_delta"], a["orders_today"], str(a["vendor_code"])))
@@ -3225,6 +3260,7 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             "now_time": now.strftime("%H:%M"),
             "updated_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
             "funnel_ready": funnel_ready,
+            "ads_ready": ads_ready,
             "error": None,
         }
         SALES_PACE_CACHE.setdefault("by_period", {})[cache_key] = payload
@@ -3359,6 +3395,7 @@ def get_sales_pace(period: str = "day", refresh: bool = False, date_cur: str = N
         "now_time": cached.get("now_time"),
         "updated_at": cached.get("updated_at"),
         "funnel_ready": cached.get("funnel_ready"),
+        "ads_ready": cached.get("ads_ready"),
         "syncing": SALES_PACE_CACHE.get("syncing", False) and SALES_PACE_CACHE.get("syncing_period") == cache_key,
         "error": SALES_PACE_CACHE.get("error") or cached.get("error"),
     }
