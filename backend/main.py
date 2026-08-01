@@ -362,8 +362,11 @@ def sync_stock():
     logger.info(f"Stock sync complete. Articles: {saved}, warehouse rows: {len(warehouses)}")
 
 # ---------- Остатки нашего склада (Google Sheets) ----------
-OWN_WAREHOUSE_SHEET_ID = os.getenv("OWN_WAREHOUSE_SHEET_ID", "")
-OWN_WAREHOUSE_GID = os.getenv("OWN_WAREHOUSE_GID", "")
+OWN_WAREHOUSE_SHEET_ID = os.getenv(
+    "OWN_WAREHOUSE_SHEET_ID",
+    "1Lhoy4s_KX0pWndsd3Y5oCOjTFCtfEfVUM4AgtBv4Crc",
+)
+OWN_WAREHOUSE_GID = os.getenv("OWN_WAREHOUSE_GID", "1829622647")
 OWN_WAREHOUSE_CACHE = {
     "title": None,
     "as_of": None,
