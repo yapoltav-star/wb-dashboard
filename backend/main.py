@@ -32,6 +32,7 @@ WB_PROMOTION_URL = "https://advert-api.wildberries.ru"
 WB_CALENDAR_URL = "https://dp-calendar-api.wildberries.ru"
 WB_CONTENT_URL = "https://content-api.wildberries.ru"
 WB_PRICES_URL = "https://discounts-prices-api.wildberries.ru"
+WB_FINANCE_URL = "https://finance-api.wildberries.ru"
 
 # Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
 # а агрегаты — переносим их в отдельные поля stock_totals вместо списка складов.
@@ -4896,6 +4897,240 @@ def _migrate_cfo_loans_jul30(data: dict) -> tuple:
     return data, changed
 
 
+def _cfo_recv_amount(x) -> float:
+    if isinstance(x, dict):
+        return _cfo_num(x.get("amount"))
+    return _cfo_num(x)
+
+
+def _parse_wb_money(v) -> float:
+    if v is None or v == "":
+        return 0.0
+    try:
+        return float(str(v).replace(" ", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def fetch_wb_account_balance() -> dict:
+    """Виджет баланса кабинета: current / for_withdraw."""
+    if not WB_TOKEN:
+        return {"error": "WB_TOKEN не задан"}
+    try:
+        resp = httpx.get(
+            f"{WB_FINANCE_URL}/api/v1/account/balance",
+            headers=wb_headers(),
+            timeout=30,
+        )
+    except Exception as e:
+        return {"error": str(e)}
+    if not resp.is_success:
+        return {"error": f"balance {resp.status_code}: {resp.text[:200]}"}
+    data = resp.json() or {}
+    return {
+        "currency": data.get("currency") or "RUB",
+        "current": _parse_wb_money(data.get("current")),
+        "for_withdraw": _parse_wb_money(data.get("for_withdraw")),
+    }
+
+
+def fetch_wb_sales_reports_list(days: int = 70) -> dict:
+    """Список отчётов реализации (нужен токен категории «Финансы»)."""
+    if not WB_TOKEN:
+        return {"error": "WB_TOKEN не задан", "reports": []}
+    days = max(14, min(int(days or 70), 120))
+    date_to = datetime.now(timezone.utc).date()
+    date_from = date_to - timedelta(days=days)
+    body = {
+        "dateFrom": date_from.isoformat(),
+        "dateTo": date_to.isoformat(),
+        "limit": 100,
+        "offset": 0,
+        "period": "weekly",
+    }
+    try:
+        resp = httpx.post(
+            f"{WB_FINANCE_URL}/api/finance/v1/sales-reports/list",
+            headers=wb_headers(),
+            json=body,
+            timeout=60,
+        )
+    except Exception as e:
+        return {"error": str(e), "reports": []}
+    if not resp.is_success:
+        # fallback без period — у части кабинетов weekly иначе падает
+        try:
+            body2 = {k: v for k, v in body.items() if k != "period"}
+            resp = httpx.post(
+                f"{WB_FINANCE_URL}/api/finance/v1/sales-reports/list",
+                headers=wb_headers(),
+                json=body2,
+                timeout=60,
+            )
+        except Exception as e:
+            return {"error": str(e), "reports": []}
+    if not resp.is_success:
+        return {"error": f"sales-reports/list {resp.status_code}: {resp.text[:240]}", "reports": []}
+    raw = resp.json()
+    rows = raw if isinstance(raw, list) else (raw.get("reports") or raw.get("data") or [])
+    reports = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        for_pay = _parse_wb_money(r.get("forPaySum") if r.get("forPaySum") is not None else r.get("for_pay_sum"))
+        bank_pay = _parse_wb_money(
+            r.get("bankPaymentSum") if r.get("bankPaymentSum") is not None else r.get("bank_payment_sum")
+        )
+        # «ещё не перевели»: есть сумма к перечислению, а банковский платёж пустой/0
+        unpaid = abs(for_pay) >= 0.01 and abs(bank_pay) < 0.01
+        df = str(r.get("dateFrom") or r.get("date_from") or "")[:10]
+        dt = str(r.get("dateTo") or r.get("date_to") or "")[:10]
+        rid = r.get("reportId") if r.get("reportId") is not None else r.get("report_id")
+        label = f"{df} — {dt}" if df or dt else (f"Отчёт {rid}" if rid else "Отчёт WB")
+        reports.append({
+            "report_id": rid,
+            "date_from": df,
+            "date_to": dt,
+            "create_date": str(r.get("createDate") or r.get("create_date") or "")[:10],
+            "for_pay": round(for_pay, 2),
+            "bank_payment": round(bank_pay, 2),
+            "unpaid": unpaid,
+            "label": label,
+            "currency": r.get("currency") or "RUB",
+        })
+    reports.sort(key=lambda x: (x.get("date_to") or "", str(x.get("report_id") or "")), reverse=True)
+    return {"reports": reports, "date_from": date_from.isoformat(), "date_to": date_to.isoformat()}
+
+
+def _finance_inventory_totals() -> dict:
+    """Себестоимость остатков WB+свой склад + товар в пути."""
+    try:
+        fin = get_finance()
+    except Exception as e:
+        return {"error": str(e), "inventory_wb_own": 0.0, "inventory_transit": 0.0}
+    if not isinstance(fin, dict):
+        return {"inventory_wb_own": 0.0, "inventory_transit": 0.0}
+    wb_val = _cfo_num((fin.get("wb") or {}).get("total_value"))
+    own_val = _cfo_num((fin.get("own") or {}).get("total_value"))
+    transit = 0.0
+    for row in (fin.get("wb") or {}).get("rows") or []:
+        qty_way = _cfo_num(row.get("in_way"))
+        cost = row.get("cost")
+        if qty_way > 0 and cost is not None:
+            transit += qty_way * _cfo_num(cost)
+    return {
+        "inventory_wb_own": round(wb_val + own_val, 2),
+        "inventory_transit": round(transit, 2),
+        "wb_stock_value": round(wb_val, 2),
+        "own_stock_value": round(own_val, 2),
+        "costs_count": fin.get("costs_count"),
+        "as_of_own": (fin.get("own") or {}).get("as_of"),
+    }
+
+
+def sync_cfo_from_wb(refresh_stock: bool = True) -> dict:
+    """
+    Подтянуть из WB: баланс, невыплаченные отчёты реализации → дебиторка,
+    остатки по себестоимости → inventory_*.
+    """
+    notes = []
+    errors = []
+
+    if refresh_stock:
+        try:
+            refresh_own_warehouse_stock()
+        except Exception as e:
+            errors.append(f"own-wh: {e}")
+            logger.warning(f"sync_cfo_from_wb own-wh: {e}")
+        # полный sync WB-остатков долгий — в фоне; в срез идёт текущий кэш stock_totals
+        try:
+            threading.Thread(target=sync_stock, daemon=True).start()
+            notes.append("остатки WB: пересчёт из кэша, фоновый sync склада запущен")
+        except Exception as e:
+            errors.append(f"stock: {e}")
+
+    balance = fetch_wb_account_balance()
+    if balance.get("error"):
+        errors.append(f"balance: {balance['error']}")
+        balance = {}
+
+    # лимит finance API ~1 req/min — небольшая пауза между balance и reports
+    time.sleep(1.2)
+    reports_pack = fetch_wb_sales_reports_list(70)
+    if reports_pack.get("error"):
+        errors.append(f"reports: {reports_pack['error']}")
+    reports = reports_pack.get("reports") or []
+    unpaid = [r for r in reports if r.get("unpaid") and abs(_cfo_num(r.get("for_pay"))) >= 0.01]
+
+    inv = _finance_inventory_totals()
+    if inv.get("error"):
+        errors.append(f"inventory: {inv['error']}")
+
+    raw = get_setting_json(CFO_SNAPSHOT_KEY, None)
+    if not raw or not isinstance(raw, dict):
+        raw = dict(DEFAULT_CFO_SNAPSHOT)
+
+    # дебиторка: невыплаченные отчёты; если пусто — for_withdraw с баланса
+    if unpaid:
+        raw["wb_receivables"] = [
+            {
+                "amount": round(_cfo_num(r.get("for_pay")), 2),
+                "label": r.get("label") or "Отчёт WB",
+                "report_id": r.get("report_id"),
+                "date_from": r.get("date_from"),
+                "date_to": r.get("date_to"),
+                "source": "wb_report",
+            }
+            for r in unpaid
+        ]
+        notes.append(f"дебиторка: {len(unpaid)} невыплаченных отчётов")
+    elif balance.get("for_withdraw") and abs(_cfo_num(balance.get("for_withdraw"))) >= 0.01:
+        raw["wb_receivables"] = [{
+            "amount": round(_cfo_num(balance.get("for_withdraw")), 2),
+            "label": "К выводу (баланс WB)",
+            "source": "wb_balance",
+        }]
+        notes.append("дебиторка: for_withdraw с баланса (отчёты без unpaid)")
+    else:
+        notes.append("дебиторка: невыплаченных отчётов не найдено")
+
+    if not inv.get("error"):
+        raw["inventory_wb_own"] = inv.get("inventory_wb_own", 0)
+        raw["inventory_transit"] = inv.get("inventory_transit", 0)
+        notes.append(
+            f"остатки: склады {inv.get('inventory_wb_own'):,.0f} ₽, "
+            f"в пути {inv.get('inventory_transit'):,.0f} ₽".replace(",", " ")
+        )
+
+    raw["wb_balance"] = {
+        "currency": balance.get("currency") or "RUB",
+        "current": round(_cfo_num(balance.get("current")), 2),
+        "for_withdraw": round(_cfo_num(balance.get("for_withdraw")), 2),
+    }
+    raw["wb_open_reports"] = reports[:40]
+    raw["wb_synced_at"] = datetime.now(timezone.utc).isoformat()
+    raw["as_of"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    raw["updated_at"] = raw["wb_synced_at"]
+    raw.pop("totals", None)
+    raw.pop("personal", None)
+
+    if not save_setting_value(CFO_SNAPSHOT_KEY, raw):
+        errors.append("не удалось сохранить снимок в Supabase")
+
+    out = enrich_cfo_snapshot(raw)
+    out["wb_sync"] = {
+        "ok": not errors,
+        "notes": notes,
+        "errors": errors,
+        "unpaid_count": len(unpaid),
+        "reports_count": len(reports),
+        "inventory": {k: inv.get(k) for k in (
+            "inventory_wb_own", "inventory_transit", "wb_stock_value", "own_stock_value", "as_of_own"
+        )},
+    }
+    return out
+
+
 def enrich_cfo_snapshot(raw: dict) -> dict:
     data = {**DEFAULT_CFO_SNAPSHOT, **(raw or {})}
     data.pop("personal", None)
@@ -4919,10 +5154,29 @@ def enrich_cfo_snapshot(raw: dict) -> dict:
         loans.append(item)
     data["loans"] = loans
 
-    wb_recv = [_cfo_num(x) for x in (data.get("wb_receivables") or [])]
-    oz_recv = [_cfo_num(x) for x in (data.get("ozon_receivables") or [])]
+    # дебиторка: число или {amount, label, ...}
+    wb_recv_raw = data.get("wb_receivables") or []
+    oz_recv_raw = data.get("ozon_receivables") or []
+    wb_recv = []
+    for x in wb_recv_raw:
+        if isinstance(x, dict):
+            item = dict(x)
+            item["amount"] = _cfo_recv_amount(x)
+            wb_recv.append(item)
+        else:
+            wb_recv.append(_cfo_num(x))
+    oz_recv = []
+    for x in oz_recv_raw:
+        if isinstance(x, dict):
+            item = dict(x)
+            item["amount"] = _cfo_recv_amount(x)
+            oz_recv.append(item)
+        else:
+            oz_recv.append(_cfo_num(x))
     data["wb_receivables"] = wb_recv
     data["ozon_receivables"] = oz_recv
+    wb_recv_nums = [_cfo_recv_amount(x) for x in wb_recv]
+    oz_recv_nums = [_cfo_recv_amount(x) for x in oz_recv]
 
     cash = _cfo_num(data.get("cash"))
     suppliers = _cfo_num(data.get("suppliers"))
@@ -4933,7 +5187,7 @@ def enrich_cfo_snapshot(raw: dict) -> dict:
     bank = sum(_cfo_num(l.get("balance")) for l in loans)
     bank_pay = sum(_cfo_num(l.get("payment")) for l in loans)
     bank_int = sum(_cfo_num(l.get("interest_month")) for l in loans)
-    mp_recv = sum(wb_recv) + sum(oz_recv)
+    mp_recv = sum(wb_recv_nums) + sum(oz_recv_nums)
     assets = cash + mp_recv + stock
     liabilities = suppliers + bank
     pnl_wb = _cfo_num(data.get("pnl_wb"))
@@ -5029,8 +5283,8 @@ def enrich_cfo_snapshot(raw: dict) -> dict:
 
     data["totals"] = {
         "cash": cash,
-        "wb_receivable": round(sum(wb_recv), 2),
-        "ozon_receivable": round(sum(oz_recv), 2),
+        "wb_receivable": round(sum(wb_recv_nums), 2),
+        "ozon_receivable": round(sum(oz_recv_nums), 2),
         "mp_receivable": round(mp_recv, 2),
         "inventory": round(stock, 2),
         "assets": round(assets, 2),
@@ -5099,7 +5353,7 @@ async def save_finance_cfo(request: dict):
     if not isinstance(request, dict):
         raise HTTPException(status_code=400, detail="invalid body")
     # не сохраняем computed totals и личные платежи
-    payload = {k: v for k, v in request.items() if k not in ("totals", "personal")}
+    payload = {k: v for k, v in request.items() if k not in ("totals", "personal", "wb_sync")}
     # нормализация чисел в loans / receivables
     loans_in = payload.get("loans")
     if isinstance(loans_in, list):
@@ -5121,19 +5375,52 @@ async def save_finance_cfo(request: dict):
                 "notes": str(loan.get("notes") or ""),
             })
         payload["loans"] = clean_loans
+
+    def _clean_recv_list(items):
+        out = []
+        for x in items or []:
+            if isinstance(x, dict):
+                out.append({
+                    "amount": _cfo_recv_amount(x),
+                    "label": str(x.get("label") or ""),
+                    "report_id": x.get("report_id"),
+                    "date_from": str(x.get("date_from") or "")[:10],
+                    "date_to": str(x.get("date_to") or "")[:10],
+                    "source": str(x.get("source") or ""),
+                })
+            else:
+                out.append(_cfo_num(x))
+        return out
+
     for key in ("wb_receivables", "ozon_receivables"):
         if key in payload and isinstance(payload[key], list):
-            payload[key] = [_cfo_num(x) for x in payload[key]]
+            payload[key] = _clean_recv_list(payload[key])
     for key in ("cash", "suppliers", "inventory_wb_own", "inventory_transit", "inventory_ozon",
                 "salary_month", "pnl_wb", "pnl_ozon", "realization_month", "target_margin",
                 "cash_floor", "wb_compensation_pending"):
         if key in payload:
             payload[key] = _cfo_num(payload[key])
+    # метаданные синка с WB сохраняем как есть (если пришли)
+    if "wb_balance" in payload and not isinstance(payload.get("wb_balance"), dict):
+        payload.pop("wb_balance", None)
+    if "wb_open_reports" in payload and not isinstance(payload.get("wb_open_reports"), list):
+        payload.pop("wb_open_reports", None)
     payload["as_of"] = str(payload.get("as_of") or datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
     if not save_setting_value(CFO_SNAPSHOT_KEY, payload):
         raise HTTPException(status_code=500, detail="save failed")
     return {"status": "ok", "snapshot": enrich_cfo_snapshot(payload)}
+
+
+@app.post("/api/finance/cfo/sync-wb")
+async def sync_finance_cfo_from_wb(refresh_stock: bool = True):
+    """Баланс WB + невыплаченные отчёты + остатки по себестоимости → CFO-снимок."""
+    try:
+        snap = sync_cfo_from_wb(refresh_stock=refresh_stock)
+        return {"status": "ok", "snapshot": snap, "wb_sync": snap.get("wb_sync")}
+    except Exception as e:
+        logger.error(f"sync_finance_cfo_from_wb: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── Позиции в клиентском поиске WB ──────────────────────────────────────────
