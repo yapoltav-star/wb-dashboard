@@ -3166,12 +3166,17 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             cart_y = int(fy.get("cart") or 0)
             ad_t = ads_cur.get(nm) or {}
             ad_y = ads_prev.get(nm) or {}
+            # полный вчерашний день из API (даже в режиме снимков «до часа»)
+            ad_y_full = (ads_prev_api or {}).get(nm) or {}
             views_t = int(ad_t.get("views") or 0)
             views_y = int(ad_y.get("views") or 0) if ads_ready else None
+            views_y_full = int(ad_y_full.get("views") or 0)
             spend_t = float(ad_t.get("spend") or 0)
             spend_y = float(ad_y.get("spend") or 0) if ads_ready else None
+            spend_y_full = float(ad_y_full.get("spend") or 0)
             cpm_t = _cpm(views_t, spend_t)
             cpm_y = _cpm(views_y, spend_y) if ads_ready else None
+            cpm_y_full = _cpm(views_y_full, spend_y_full)
             cpm_delta = None
             if ads_ready and cpm_t is not None and cpm_y is not None:
                 cpm_delta = round(cpm_t - cpm_y, 1)
@@ -3224,11 +3229,14 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 "cart_cr_delta": cart_cr_delta,
                 "views_today": views_t,
                 "views_yesterday": views_y,
+                "views_yesterday_full": views_y_full,
                 "views_delta": views_delta,
                 "spend_today": spend_t,
                 "spend_yesterday": spend_y,
+                "spend_yesterday_full": spend_y_full,
                 "cpm_today": cpm_t,
                 "cpm_yesterday": cpm_y,
+                "cpm_yesterday_full": cpm_y_full,
                 "cpm_delta": cpm_delta,
                 "stock": stock_qty,
                 "in_way": in_way,
