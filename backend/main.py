@@ -3466,6 +3466,144 @@ def _calc_spp(sale_price, client_price):
         return round(spp, 1)
     return round(max(0.0, spp), 1)
 
+def _fmt_snap_dt(raw):
+    if not raw:
+        return None
+    try:
+        s = str(raw).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return str(raw)[:16]
+
+def _num_or_none(v):
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except Exception:
+        return None
+
+def fetch_latest_price_snapshots(nm_ids: list) -> dict:
+    """Последний снимок по каждому nm_id (за 30 дней)."""
+    if not nm_ids or not SUPABASE_URL or not SUPABASE_KEY:
+        return {}
+    out = {}
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    for i in range(0, len(nm_ids), 80):
+        chunk = [int(x) for x in nm_ids[i:i + 80] if x is not None]
+        if not chunk:
+            continue
+        ids = ",".join(str(x) for x in chunk)
+        try:
+            resp = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/price_snapshots",
+                params={
+                    "select": "nm_id,sale_price,client_price,price,spp,captured_at",
+                    "nm_id": f"in.({ids})",
+                    "captured_at": f"gte.{since}",
+                    "order": "captured_at.desc",
+                    "limit": "8000",
+                },
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                },
+                timeout=30,
+            )
+            if not resp.is_success:
+                if resp.status_code == 404:
+                    logger.warning("price_snapshots table missing — run supabase/price_snapshots.sql")
+                else:
+                    logger.warning(f"fetch_latest_price_snapshots: {resp.status_code} {resp.text[:160]}")
+                continue
+            for row in resp.json() or []:
+                nm = row.get("nm_id")
+                if nm is not None and nm not in out:
+                    out[int(nm)] = row
+        except Exception as e:
+            logger.warning(f"fetch_latest_price_snapshots error: {e}")
+    return out
+
+def attach_price_deltas(articles: list, prev_map: dict) -> list:
+    """Добавляет prev_* и дельты относительно прошлого снимка."""
+    for a in articles:
+        nm = a.get("nm_id")
+        prev = prev_map.get(int(nm)) if nm is not None else None
+        if not prev:
+            a["prev_sale_price"] = None
+            a["prev_client_price"] = None
+            a["prev_captured_at"] = None
+            a["sale_delta"] = None
+            a["client_delta"] = None
+            continue
+        prev_sale = _num_or_none(prev.get("sale_price"))
+        prev_client = _num_or_none(prev.get("client_price"))
+        cur_sale = _num_or_none(a.get("sale_price"))
+        cur_client = _num_or_none(a.get("client_price"))
+        a["prev_sale_price"] = prev_sale
+        a["prev_client_price"] = prev_client
+        a["prev_captured_at"] = _fmt_snap_dt(prev.get("captured_at"))
+        a["sale_delta"] = (
+            round(cur_sale - prev_sale, 2)
+            if cur_sale is not None and prev_sale is not None else None
+        )
+        a["client_delta"] = (
+            round(cur_client - prev_client, 2)
+            if cur_client is not None and prev_client is not None else None
+        )
+    return articles
+
+def save_price_snapshots(articles: list) -> int:
+    """Пишет снимок цен после sync. Возвращает число строк."""
+    if not articles or not SUPABASE_URL or not SUPABASE_KEY:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for a in articles:
+        nm = a.get("nm_id")
+        if nm is None:
+            continue
+        rows.append({
+            "nm_id": int(nm),
+            "vendor_code": a.get("vendor_code") or "",
+            "price": a.get("price"),
+            "sale_price": a.get("sale_price"),
+            "client_price": a.get("client_price"),
+            "spp": a.get("spp"),
+            "captured_at": now,
+        })
+    if not rows:
+        return 0
+    saved = 0
+    for i in range(0, len(rows), 200):
+        batch = rows[i:i + 200]
+        try:
+            resp = httpx.post(
+                f"{SUPABASE_URL}/rest/v1/price_snapshots",
+                json=batch,
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal",
+                },
+                timeout=40,
+            )
+            if resp.is_success:
+                saved += len(batch)
+            else:
+                logger.error(f"save_price_snapshots: {resp.status_code} {resp.text[:200]}")
+                if resp.status_code == 404:
+                    logger.error("Создай таблицу: supabase/price_snapshots.sql")
+                break
+        except Exception as e:
+            logger.error(f"save_price_snapshots error: {e}")
+            break
+    return saved
+
 def sync_spp_prices():
     if SPP_CACHE.get("syncing"):
         return
@@ -3481,6 +3619,7 @@ def sync_spp_prices():
             SPP_CACHE["articles"] = []
             return
         nm_ids = [a["nm_id"] for a in cabinet]
+        prev_map = fetch_latest_price_snapshots(nm_ids)
         client_map, source = fetch_client_prices(nm_ids)
         articles = []
         missing_client = 0
@@ -3522,16 +3661,21 @@ def sync_spp_prices():
                 "cashback_pct": cashback_pct,
                 "cashback_rub": cashback_rub,
             })
+        attach_price_deltas(articles, prev_map)
         articles.sort(key=lambda x: (-(x.get("spp") or -1), str(x.get("vendor_code") or "")))
         SPP_CACHE["articles"] = articles
         SPP_CACHE["updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
         SPP_CACHE["client_source"] = source
+        snap_n = save_price_snapshots(articles)
         if missing_client == len(articles):
             SPP_CACHE["error"] = "Цены кабинета загружены, но витрину WB не удалось прочитать (блокировка). СПП пока пустой — нажми Обновить позже."
         elif missing_client:
             SPP_CACHE["error"] = None
             logger.warning(f"SPP: no client price for {missing_client}/{len(articles)}")
-        logger.info(f"SPP sync: {len(articles)} arts, client_source={source}, missing={missing_client}")
+        logger.info(
+            f"SPP sync: {len(articles)} arts, client_source={source}, "
+            f"missing={missing_client}, snapshots={snap_n}"
+        )
     except Exception as e:
         logger.error(f"sync_spp_prices error: {e}")
         SPP_CACHE["error"] = str(e)
@@ -3550,6 +3694,49 @@ def get_spp_prices(refresh: bool = False):
         "error": SPP_CACHE.get("error"),
         "client_source": SPP_CACHE.get("client_source"),
     }
+
+@app.get("/api/price-history")
+def get_price_history(nm_id: int, days: int = 30):
+    """История снимков цен для графика (с момента включения, без бэкфилла WB)."""
+    days = max(1, min(int(days or 30), 90))
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return {"nm_id": nm_id, "days": days, "points": [], "error": "Supabase не настроен"}
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/price_snapshots",
+            params={
+                "select": "nm_id,vendor_code,price,sale_price,client_price,spp,captured_at",
+                "nm_id": f"eq.{int(nm_id)}",
+                "captured_at": f"gte.{since}",
+                "order": "captured_at.asc",
+                "limit": "2000",
+            },
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+            },
+            timeout=30,
+        )
+        if not resp.is_success:
+            err = "Таблица price_snapshots не создана — выполни supabase/price_snapshots.sql" if resp.status_code == 404 else resp.text[:200]
+            return {"nm_id": nm_id, "days": days, "points": [], "error": err}
+        rows = resp.json() or []
+        points = []
+        for r in rows:
+            points.append({
+                "captured_at": r.get("captured_at"),
+                "label": _fmt_snap_dt(r.get("captured_at")),
+                "price": _num_or_none(r.get("price")),
+                "sale_price": _num_or_none(r.get("sale_price")),
+                "client_price": _num_or_none(r.get("client_price")),
+                "spp": _num_or_none(r.get("spp")),
+                "vendor_code": r.get("vendor_code") or "",
+            })
+        vendor = points[-1]["vendor_code"] if points else ""
+        return {"nm_id": nm_id, "days": days, "vendor_code": vendor, "points": points}
+    except Exception as e:
+        return {"nm_id": nm_id, "days": days, "points": [], "error": str(e)}
 
 @app.post("/api/sync-spp-prices")
 async def trigger_spp_prices_sync():

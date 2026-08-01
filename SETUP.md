@@ -12,6 +12,7 @@
 
 1. [supabase.com](https://supabase.com) → New project.
 2. SQL Editor → вставь файл `supabase/schema.sql` → Run.
+   Если проект уже был создан раньше — для истории цен дополнительно выполни `supabase/price_snapshots.sql`.
 3. Project Settings → API:
    - `Project URL` → это `SUPABASE_URL`
    - `service_role` key (secret) → это `SUPABASE_KEY`  
