@@ -335,10 +335,10 @@ def upsert_stock(totals: list, warehouses: list) -> int:
             logger.error(f"stock_warehouses insert error {resp.status_code} {resp.text[:200]}")
     return saved
 
-def fetch_seller_fbs_warehouses() -> list:
-    """Склады продавца (FBS / Маркетплейс). Нужен токен категории «Маркетплейс»."""
+def fetch_seller_fbs_warehouses() -> tuple:
+    """Склады продавца (FBS / Маркетплейс). → (list, error_or_None)."""
     if not WB_TOKEN:
-        return []
+        return [], "WB_TOKEN не задан"
     try:
         resp = httpx.get(
             f"{WB_MARKETPLACE_URL}/api/v3/warehouses",
@@ -347,12 +347,18 @@ def fetch_seller_fbs_warehouses() -> list:
         )
     except Exception as e:
         logger.error(f"FBS warehouses exception: {e}")
-        return []
+        return [], str(e)
     if not resp.is_success:
         logger.error(f"FBS warehouses {resp.status_code}: {resp.text[:240]}")
-        return []
+        hint = ""
+        if resp.status_code in (401, 403):
+            hint = " — добавь категорию «Маркетплейс» в WB_TOKEN и перевыпусти токен"
+        return [], f"HTTP {resp.status_code}: {resp.text[:180]}{hint}"
     data = resp.json()
-    return data if isinstance(data, list) else (data.get("warehouses") or data.get("data") or [])
+    whs = data if isinstance(data, list) else (data.get("warehouses") or data.get("data") or [])
+    if not whs:
+        return [], "API ответил ок, но складов FBS в кабинете нет (создай склад продавца в WB)"
+    return whs, None
 
 
 def fetch_all_card_skus() -> list:
