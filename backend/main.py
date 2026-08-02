@@ -32,6 +32,7 @@ WB_PROMOTION_URL = "https://advert-api.wildberries.ru"
 WB_CALENDAR_URL = "https://dp-calendar-api.wildberries.ru"
 WB_CONTENT_URL = "https://content-api.wildberries.ru"
 WB_PRICES_URL = "https://discounts-prices-api.wildberries.ru"
+WB_MARKETPLACE_URL = "https://marketplace-api.wildberries.ru"
 
 # Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
 # а агрегаты — переносим их в отдельные поля stock_totals вместо списка складов.
@@ -334,6 +335,200 @@ def upsert_stock(totals: list, warehouses: list) -> int:
             logger.error(f"stock_warehouses insert error {resp.status_code} {resp.text[:200]}")
     return saved
 
+def fetch_seller_fbs_warehouses() -> list:
+    """Склады продавца (FBS / Маркетплейс). Нужен токен категории «Маркетплейс»."""
+    if not WB_TOKEN:
+        return []
+    try:
+        resp = httpx.get(
+            f"{WB_MARKETPLACE_URL}/api/v3/warehouses",
+            headers=wb_headers(),
+            timeout=30,
+        )
+    except Exception as e:
+        logger.error(f"FBS warehouses exception: {e}")
+        return []
+    if not resp.is_success:
+        logger.error(f"FBS warehouses {resp.status_code}: {resp.text[:240]}")
+        return []
+    data = resp.json()
+    return data if isinstance(data, list) else (data.get("warehouses") or data.get("data") or [])
+
+
+def fetch_all_card_skus() -> list:
+    """Все баркоды карточек: [{sku, nm_id, vendor_code}]."""
+    if not WB_TOKEN:
+        return []
+    out, seen = [], set()
+    cursor = {"limit": 100}
+    for _ in range(200):
+        try:
+            resp = httpx.post(
+                f"{WB_CONTENT_URL}/content/v2/get/cards/list",
+                headers=wb_headers(),
+                json={
+                    "settings": {
+                        "sort": {"ascending": True},
+                        "filter": {"withPhoto": -1},
+                        "cursor": cursor,
+                    }
+                },
+                timeout=40,
+            )
+        except Exception as e:
+            logger.error(f"cards/list for FBS skus: {e}")
+            break
+        if not resp.is_success:
+            logger.error(f"cards/list FBS {resp.status_code}: {resp.text[:200]}")
+            break
+        payload = resp.json() or {}
+        cards = payload.get("cards") or []
+        if not cards:
+            break
+        for c in cards:
+            nm = c.get("nmID") or c.get("nmId")
+            vc = (c.get("vendorCode") or "").strip()
+            for sz in c.get("sizes") or []:
+                for sku in sz.get("skus") or []:
+                    sku_s = str(sku).strip()
+                    if not sku_s or sku_s in seen:
+                        continue
+                    seen.add(sku_s)
+                    out.append({"sku": sku_s, "nm_id": nm, "vendor_code": vc})
+        curs = payload.get("cursor") or {}
+        updated = curs.get("updatedAt")
+        nm_cur = curs.get("nmID") or curs.get("nmId")
+        if len(cards) < 100 or not updated or nm_cur is None:
+            break
+        cursor = {"limit": 100, "updatedAt": updated, "nmID": nm_cur}
+        time.sleep(0.35)
+    logger.info(f"FBS skus from cards: {len(out)}")
+    return out
+
+
+def fetch_fbs_stocks() -> dict:
+    """
+    Остатки FBS (система Маркетплейс) по складам продавца.
+    → {
+        warehouses: [{nm_id, warehouse_name, quantity, updated_at}],
+        by_nm: {nm_id: qty},
+        samples: [...],
+        error: optional
+      }
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    whs = fetch_seller_fbs_warehouses()
+    if not whs:
+        return {
+            "warehouses": [],
+            "by_nm": {},
+            "samples": [],
+            "error": "Нет складов FBS или нет доступа к категории «Маркетплейс» в токене",
+        }
+    sku_rows = fetch_all_card_skus()
+    if not sku_rows:
+        return {
+            "warehouses": [],
+            "by_nm": {},
+            "samples": [],
+            "error": "Не удалось получить баркоды из Content API",
+            "fbs_warehouses": [
+                {"id": w.get("id"), "name": w.get("name")} for w in whs if isinstance(w, dict)
+            ],
+        }
+    sku_meta = {r["sku"]: r for r in sku_rows}
+    skus = list(sku_meta.keys())
+    # qty по (nm_id, warehouse_label)
+    qty_map = {}
+    errors = []
+    for w in whs:
+        if not isinstance(w, dict):
+            continue
+        wid = w.get("id")
+        wname = (w.get("name") or f"склад {wid}").strip()
+        label = f"Маркетплейс (FBS) · {wname}"
+        if wid is None:
+            continue
+        for i in range(0, len(skus), 1000):
+            batch = skus[i:i + 1000]
+            try:
+                resp = httpx.post(
+                    f"{WB_MARKETPLACE_URL}/api/v3/stocks/{wid}",
+                    headers=wb_headers(),
+                    json={"skus": batch},
+                    timeout=60,
+                )
+            except Exception as e:
+                errors.append(f"{wname}: {e}")
+                break
+            if resp.status_code == 429:
+                time.sleep(2)
+                try:
+                    resp = httpx.post(
+                        f"{WB_MARKETPLACE_URL}/api/v3/stocks/{wid}",
+                        headers=wb_headers(),
+                        json={"skus": batch},
+                        timeout=60,
+                    )
+                except Exception as e:
+                    errors.append(f"{wname}: {e}")
+                    break
+            if not resp.is_success:
+                errors.append(f"{wname}: {resp.status_code} {resp.text[:160]}")
+                break
+            body = resp.json() or {}
+            stocks = body.get("stocks") if isinstance(body, dict) else body
+            for s in stocks or []:
+                if not isinstance(s, dict):
+                    continue
+                sku = str(s.get("sku") or "").strip()
+                amount = int(s.get("amount") or 0)
+                if amount <= 0 or not sku:
+                    continue
+                meta = sku_meta.get(sku) or {}
+                nm = meta.get("nm_id")
+                if nm is None:
+                    continue
+                key = (int(nm), label)
+                qty_map[key] = qty_map.get(key, 0) + amount
+            if i + 1000 < len(skus):
+                time.sleep(0.2)
+
+    warehouses = []
+    by_nm = {}
+    samples_acc = {}
+    for (nm, label), qty in qty_map.items():
+        warehouses.append({
+            "nm_id": nm,
+            "warehouse_name": label,
+            "quantity": qty,
+            "updated_at": now,
+        })
+        by_nm[nm] = by_nm.get(nm, 0) + qty
+        meta = next((r for r in sku_rows if r.get("nm_id") == nm), {})
+        samples_acc[nm] = {
+            "nm_id": nm,
+            "vendor_code": meta.get("vendor_code") or "",
+            "fbs_qty": by_nm[nm],
+        }
+    samples = sorted(samples_acc.values(), key=lambda x: -x["fbs_qty"])[:20]
+    logger.info(
+        f"FBS stocks: wh={len(whs)}, skus={len(skus)}, rows={len(warehouses)}, "
+        f"nms_with_stock={len(by_nm)}, errors={len(errors)}"
+    )
+    return {
+        "warehouses": warehouses,
+        "by_nm": by_nm,
+        "samples": samples,
+        "fbs_warehouses": [
+            {"id": w.get("id"), "name": w.get("name")} for w in whs if isinstance(w, dict)
+        ],
+        "skus_count": len(skus),
+        "errors": errors,
+        "error": ("; ".join(errors[:3]) if errors and not warehouses else None),
+    }
+
+
 def sync_stock():
     if not WB_TOKEN:
         logger.error("WB_TOKEN not set")
@@ -352,6 +547,41 @@ def sync_stock():
         time.sleep(15)
         items = download_stock_report(task_id)
     totals, warehouses = process_stock_items(items)
+
+    # FBS / Маркетплейс — отдельные колонки складов (не входят в quantity_warehouses_full WB)
+    fbs = {}
+    try:
+        fbs = fetch_fbs_stocks()
+        fbs_rows = fbs.get("warehouses") or []
+        if fbs_rows:
+            warehouses.extend(fbs_rows)
+            by_nm = fbs.get("by_nm") or {}
+            # артикулы только на FBS (нет в FBW-отчёте) — строка в totals с нулём на WB
+            have = {int(t["nm_id"]) for t in totals if t.get("nm_id") is not None}
+            now = datetime.now(timezone.utc).isoformat()
+            for nm, qty in by_nm.items():
+                if int(nm) in have or int(qty) <= 0:
+                    continue
+                vc = next(
+                    (s.get("vendor_code") for s in (fbs.get("samples") or []) if s.get("nm_id") == nm),
+                    "",
+                )
+                totals.append({
+                    "nm_id": int(nm),
+                    "vendor_code": vc or "",
+                    "subject_name": "",
+                    "brand": "",
+                    "volume": None,
+                    "in_way_to_client": 0,
+                    "in_way_from_client": 0,
+                    "quantity_warehouses_full": 0,
+                    "updated_at": now,
+                })
+        elif fbs.get("error"):
+            logger.warning(f"FBS stocks skipped: {fbs.get('error')}")
+    except Exception as e:
+        logger.error(f"FBS stocks merge error: {e}")
+
     saved = upsert_stock(totals, warehouses)
     httpx.post(
         f"{SUPABASE_URL}/rest/v1/settings",
@@ -359,7 +589,10 @@ def sync_stock():
               "updated_at": datetime.now(timezone.utc).isoformat()},
         headers=sb_headers(), timeout=10
     )
-    logger.info(f"Stock sync complete. Articles: {saved}, warehouse rows: {len(warehouses)}")
+    logger.info(
+        f"Stock sync complete. Articles: {saved}, warehouse rows: {len(warehouses)}, "
+        f"fbs_nms: {len((fbs or {}).get('by_nm') or {})}"
+    )
 
 # ---------- Остатки нашего склада (Google Sheets) ----------
 OWN_WAREHOUSE_SHEET_ID = os.getenv(
@@ -4047,6 +4280,38 @@ def trigger_stock_sync():
     import threading
     threading.Thread(target=sync_stock, daemon=True).start()
     return {"status": "started"}
+
+@app.get("/api/fbs-stocks")
+def get_fbs_stocks(limit: int = 15):
+    """Живой запрос остатков FBS (Маркетплейс) — для проверки и превью."""
+    limit = max(1, min(int(limit or 15), 50))
+    data = fetch_fbs_stocks()
+    samples = (data.get("samples") or [])[:limit]
+    # дополним vendor_code из stock_totals, если пусто
+    try:
+        st = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code",
+            headers=sb_headers(), timeout=15,
+        )
+        vc_map = {
+            int(r["nm_id"]): r.get("vendor_code") or ""
+            for r in (st.json() or [])
+            if r.get("nm_id") is not None
+        } if st.is_success else {}
+        for s in samples:
+            if not s.get("vendor_code") and s.get("nm_id") in vc_map:
+                s["vendor_code"] = vc_map[int(s["nm_id"])]
+    except Exception:
+        pass
+    return {
+        "samples": samples,
+        "fbs_warehouses": data.get("fbs_warehouses") or [],
+        "skus_count": data.get("skus_count"),
+        "nms_with_stock": len(data.get("by_nm") or {}),
+        "warehouse_rows": len(data.get("warehouses") or []),
+        "errors": data.get("errors") or [],
+        "error": data.get("error"),
+    }
 
 @app.post("/api/sync-supply")
 def trigger_supply_sync():
