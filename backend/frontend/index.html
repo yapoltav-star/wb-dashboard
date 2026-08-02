@@ -2409,18 +2409,39 @@ function buildSupplyMatrix() {
   WH_DISABLED = WH_DISABLED.filter(w => warehouses.includes(w));
   localStorage.setItem('wb_supply_wh_disabled', JSON.stringify(WH_DISABLED));
 
+  // Ключ — nm_id (FBS часто пишется с vendor_code=nm_id, FBW — с артикулом продавца)
   const byArticle = {};
+  const isRealVendor = (vc, nm) => {
+    const s = String(vc || '').trim();
+    return !!(s && s !== String(nm ?? ''));
+  };
   SUPPLY_REPORT.forEach(r => {
-    const vc = r.vendor_code;
-    if(!byArticle[vc]) byArticle[vc] = { vendor_code: vc, nm_id: r.nm_id, barcode: r.barcode || '', plannedQty: r.planned_supply_qty || 0, byWh: {} };
-    if(r.nm_id && !byArticle[vc].nm_id) byArticle[vc].nm_id = r.nm_id;
-    if(r.barcode && !byArticle[vc].barcode) byArticle[vc].barcode = r.barcode;
-    if(r.planned_supply_qty) byArticle[vc].plannedQty = r.planned_supply_qty;
-    byArticle[vc].byWh[r.warehouse_name] = r;
+    const nm = r.nm_id;
+    const key = (nm != null && nm !== '') ? `nm:${nm}` : `vc:${r.vendor_code}`;
+    if(!byArticle[key]) {
+      byArticle[key] = {
+        vendor_code: isRealVendor(r.vendor_code, nm) ? r.vendor_code : (r.vendor_code || String(nm || '')),
+        nm_id: nm,
+        barcode: r.barcode || '',
+        plannedQty: r.planned_supply_qty || 0,
+        byWh: {},
+      };
+    }
+    const a = byArticle[key];
+    if(isRealVendor(r.vendor_code, nm)) a.vendor_code = r.vendor_code;
+    if(r.nm_id && !a.nm_id) a.nm_id = r.nm_id;
+    if(r.barcode && !a.barcode) a.barcode = r.barcode;
+    if(r.planned_supply_qty) a.plannedQty = r.planned_supply_qty;
+    // при дублях по складу берём строку с большим остатком / заказами
+    const prev = a.byWh[r.warehouse_name];
+    if(!prev || (r.current_stock||0) + (r.ordered_qty||0) >= (prev.current_stock||0) + (prev.ordered_qty||0)) {
+      a.byWh[r.warehouse_name] = r;
+    }
   });
 
-  let articles = Object.keys(byArticle).map(vc => {
-    const a = byArticle[vc];
+  let articles = Object.keys(byArticle).map(key => {
+    const a = byArticle[key];
+    const vc = a.vendor_code;
     let rawRecommend = 0;
     let wbStock = 0;
     const cells = {};

@@ -1235,12 +1235,18 @@ def sync_supply():
         if s.get("barcode") and s.get("nmId"):
             nm_to_barcode[s["nmId"]] = s["barcode"]
 
-    try:
-        st = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code", headers=sb_headers(), timeout=15)
-        nm_to_vendor = {r["nm_id"]: r["vendor_code"] for r in st.json()} if st.is_success else {}
-    except Exception as e:
-        logger.error(f"sync_supply: stock_totals fetch error {e}")
-        nm_to_vendor = {}
+    # stock_totals часто без vendor_code — берём ratings/feedbacks + артикулы из заказов
+    nm_to_vendor = build_nm_to_vendor_map()
+    for (nm_id, _), a in agg.items():
+        vc = (a.get("vendor_code") or "").strip()
+        if not nm_id or not vc or vc == str(nm_id):
+            continue
+        try:
+            nm_int = int(nm_id)
+        except (TypeError, ValueError):
+            continue
+        if nm_int not in nm_to_vendor:
+            nm_to_vendor[nm_int] = vc
 
     try:
         sw = httpx.get(f"{SUPABASE_URL}/rest/v1/stock_warehouses?select=nm_id,warehouse_name,quantity", headers=sb_headers(), timeout=20)
@@ -1251,6 +1257,24 @@ def sync_supply():
 
     planned_map = fetch_planned_supplies_qty()
 
+    def resolve_supply_vendor(nm_id, fallback=""):
+        try:
+            nm_int = int(nm_id)
+        except (TypeError, ValueError):
+            nm_int = None
+        for cand in (nm_to_vendor.get(nm_int) if nm_int is not None else None, fallback):
+            vc = (cand or "").strip()
+            if vc and vc != str(nm_id):
+                return vc
+        # любой склад с заказами по этому nm
+        for (n, _), aa in agg.items():
+            if n != nm_id:
+                continue
+            vc = (aa.get("vendor_code") or "").strip()
+            if vc and vc != str(nm_id):
+                return vc
+        return str(nm_id)
+
     keys = set(agg.keys()) | set(stock_map.keys())
     now = datetime.now(timezone.utc).isoformat()
     rows = []
@@ -1259,7 +1283,7 @@ def sync_supply():
             continue
         a = agg.get((nm_id, wh), {"ordered": 0, "buyout": 0, "vendor_code": ""})
         rows.append({
-            "vendor_code": nm_to_vendor.get(nm_id) or a["vendor_code"] or str(nm_id),
+            "vendor_code": resolve_supply_vendor(nm_id, a.get("vendor_code") or ""),
             "nm_id": nm_id,
             "barcode": nm_to_barcode.get(nm_id),
             "planned_supply_qty": planned_map.get(nm_id, 0),
