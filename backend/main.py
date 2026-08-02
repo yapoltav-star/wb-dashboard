@@ -355,10 +355,34 @@ def fetch_seller_fbs_warehouses() -> tuple:
             hint = " — добавь категорию «Маркетплейс» в WB_TOKEN и перевыпусти токен"
         return [], f"HTTP {resp.status_code}: {resp.text[:180]}{hint}"
     data = resp.json()
-    whs = data if isinstance(data, list) else (data.get("warehouses") or data.get("data") or [])
+    if isinstance(data, list):
+        whs = data
+    elif isinstance(data, dict):
+        whs = data.get("warehouses") or data.get("data") or data.get("result") or []
+        # иногда один склад приходит объектом
+        if not whs and (data.get("id") is not None or data.get("warehouseId") is not None):
+            whs = [data]
+    else:
+        whs = []
     if not whs:
         return [], "API ответил ок, но складов FBS в кабинете нет (создай склад продавца в WB)"
-    return whs, None
+    # нормализуем id/name
+    norm = []
+    for w in whs:
+        if not isinstance(w, dict):
+            continue
+        wid = w.get("id") if w.get("id") is not None else w.get("warehouseId")
+        name = w.get("name") or w.get("warehouseName") or w.get("officeName") or ""
+        if wid is None:
+            continue
+        item = dict(w)
+        item["id"] = wid
+        item["name"] = str(name).strip() or f"склад {wid}"
+        norm.append(item)
+    if not norm:
+        sample = str(whs[:2])[:300]
+        return [], f"Склады пришли в неожиданном формате: {sample}"
+    return norm, None
 
 
 def fetch_all_card_skus() -> list:
@@ -423,13 +447,13 @@ def fetch_fbs_stocks() -> dict:
       }
     """
     now = datetime.now(timezone.utc).isoformat()
-    whs = fetch_seller_fbs_warehouses()
+    whs, wh_err = fetch_seller_fbs_warehouses()
     if not whs:
         return {
             "warehouses": [],
             "by_nm": {},
             "samples": [],
-            "error": "Нет складов FBS или нет доступа к категории «Маркетплейс» в токене",
+            "error": wh_err or "Нет складов FBS",
         }
     sku_rows = fetch_all_card_skus()
     if not sku_rows:
@@ -484,12 +508,16 @@ def fetch_fbs_stocks() -> dict:
                 break
             body = resp.json() or {}
             stocks = body.get("stocks") if isinstance(body, dict) else body
+            # на всякий случай считаем и нули — в samples потом отфильтруем >0
             for s in stocks or []:
                 if not isinstance(s, dict):
                     continue
-                sku = str(s.get("sku") or "").strip()
-                amount = int(s.get("amount") or 0)
-                if amount <= 0 or not sku:
+                sku = str(s.get("sku") or s.get("barcode") or "").strip()
+                try:
+                    amount = int(s.get("amount") if s.get("amount") is not None else s.get("quantity") or 0)
+                except Exception:
+                    amount = 0
+                if not sku:
                     continue
                 meta = sku_meta.get(sku) or {}
                 nm = meta.get("nm_id")
@@ -504,6 +532,8 @@ def fetch_fbs_stocks() -> dict:
     by_nm = {}
     samples_acc = {}
     for (nm, label), qty in qty_map.items():
+        if qty <= 0:
+            continue
         warehouses.append({
             "nm_id": nm,
             "warehouse_name": label,
@@ -522,6 +552,11 @@ def fetch_fbs_stocks() -> dict:
         f"FBS stocks: wh={len(whs)}, skus={len(skus)}, rows={len(warehouses)}, "
         f"nms_with_stock={len(by_nm)}, errors={len(errors)}"
     )
+    err = None
+    if errors and not warehouses:
+        err = "; ".join(errors[:3])
+    elif not warehouses and not errors:
+        err = "Склады FBS есть, но остатки по всем баркодам = 0 (или SKU не совпали)"
     return {
         "warehouses": warehouses,
         "by_nm": by_nm,
@@ -531,7 +566,7 @@ def fetch_fbs_stocks() -> dict:
         ],
         "skus_count": len(skus),
         "errors": errors,
-        "error": ("; ".join(errors[:3]) if errors and not warehouses else None),
+        "error": err,
     }
 
 
