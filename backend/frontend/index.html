@@ -1393,6 +1393,7 @@ function drawOwnWarehouse() {
     if(OWN_WH.as_of) bits.push('остатки на ' + OWN_WH.as_of);
     else if(OWN_WH.title) bits.push(OWN_WH.title);
     if(OWN_WH.updated_at) bits.push('подтянуто ' + OWN_WH.updated_at);
+    bits.push('авто каждые 30 мин');
     if(info) info.textContent = bits.join(' · ') || '';
   }
 
