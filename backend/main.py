@@ -1037,6 +1037,18 @@ def sync_own_warehouse():
     threading.Thread(target=refresh_own_warehouse_stock, daemon=True).start()
     return {"status": "started"}
 
+
+def sync_own_warehouse_job():
+    """Планировщик: тихо тянем Google Sheets при старте и каждые 30 мин."""
+    if not OWN_WAREHOUSE_SHEET_ID:
+        return
+    if OWN_WAREHOUSE_CACHE.get("syncing"):
+        return
+    try:
+        refresh_own_warehouse_stock()
+    except Exception as e:
+        logger.error(f"own-warehouse scheduled sync: {e}")
+
 # ---------- Рекомендации по поставкам: заказы + продажи по складам (WB Statistics API) ----------
 # Заказано — /api/v1/supplier/orders, Выкупили — /api/v1/supplier/sales (только saleID, начинающиеся
 # на "S" — это продажи; "R" — возврат, "D" — доплата, их не считаем). Текущий остаток берём из уже
@@ -4234,9 +4246,12 @@ scheduler.add_job(lambda: sync_article_daily_stats(30), "interval", hours=6, id=
 scheduler.add_job(sync_promotions, "interval", hours=6, id="sync_promotions")
 scheduler.add_job(lambda: sync_sales_pace("day"), "interval", hours=1, id="sync_sales_pace")
 scheduler.add_job(sync_spp_prices, "interval", hours=3, id="sync_spp_prices")
+scheduler.add_job(sync_own_warehouse_job, "interval", minutes=30, id="sync_own_warehouse")
 scheduler.start()
 # Разово чистим ошибочные api-рейтинги после деплоя (item-rating ломал склейки).
 threading.Thread(target=sync_ratings_official, daemon=True).start()
+# Сразу подтянуть «Наш склад» из Google Sheets при старте.
+threading.Thread(target=sync_own_warehouse_job, daemon=True).start()
 
 FRONTEND_CANDIDATES = [
     Path(__file__).resolve().parent.parent / "frontend",  # repo/frontend

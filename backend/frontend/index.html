@@ -686,13 +686,14 @@ td.tc{text-align:center}
     <button class="filter-btn" id="owFltZero" onclick="setOwnWhFilter('zero')">Нулевые</button>
     <button class="filter-btn" id="owFltNoArt" onclick="setOwnWhFilter('noart')">Без артикула</button>
     <span id="ownWhInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
-    <div class="ml-auto">
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span style="font-size:11px;color:var(--wb-faint)">авто каждые 30 мин</span>
       <a class="action-btn" href="https://docs.google.com/spreadsheets/d/1Lhoy4s_KX0pWndsd3Y5oCOjTFCtfEfVUM4AgtBv4Crc/edit?gid=1829622647" target="_blank" rel="noopener" style="text-decoration:none">↗ Таблица</a>
-      <button class="action-btn" id="ownWhSyncBtn" onclick="triggerOwnWarehouseSync()">↻ Обновить</button>
+      <button class="action-btn primary" id="ownWhSyncBtn" onclick="triggerOwnWarehouseSync()">↻ Обновить из Sheets</button>
     </div>
   </div>
   <div class="cards" id="ownWhCards"></div>
-  <div id="ownWhRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить», чтобы подтянуть остатки из Google Sheets</div></div>
+  <div id="ownWhRoot"><div class="empty" style="padding:40px 20px">Загружаем остатки из Google Sheets…</div></div>
 </div>
 
 <div class="page" id="page-ads">
@@ -1307,6 +1308,7 @@ let OWN_WH_LOADED = false;
 let OWN_WH_FILTER = 'all';
 let OWN_WH_BY_VENDOR = {};  // vendor_code → {stock, family_stock, family}
 let ownWhPoll = null;
+let OWN_WH_AUTO_SYNCED = false;
 
 function setOwnWhFilter(f) {
   OWN_WH_FILTER = f;
@@ -1319,19 +1321,34 @@ function setOwnWhFilter(f) {
   renderOwnWarehouse();
 }
 
+function parseOwnWhUpdatedAt(s) {
+  // "03.08.2026 18:46" или ISO
+  if(!s) return null;
+  const m = String(s).match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2})/);
+  if(m) return new Date(+m[3], +m[2]-1, +m[1], +m[4], +m[5]).getTime();
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? t : null;
+}
+
+function ownWhIsStale(maxAgeMin) {
+  const ts = parseOwnWhUpdatedAt(OWN_WH && OWN_WH.updated_at);
+  if(!ts) return true;
+  return (Date.now() - ts) > (maxAgeMin || 30) * 60 * 1000;
+}
+
 async function triggerOwnWarehouseSync() {
   const btn = document.getElementById('ownWhSyncBtn');
   const info = document.getElementById('ownWhInfo');
-  if(btn) btn.disabled = true;
+  if(btn) { btn.disabled = true; btn.textContent = 'Обновляем…'; }
   if(info) info.textContent = 'Тянем Google Sheets…';
   try {
     OWN_WH_BY_VENDOR = {};
     await fetch(`${RAILWAY_URL}/api/sync-own-warehouse`, { method: 'POST' });
     clearTimeout(ownWhPoll);
-    ownWhPoll = setTimeout(() => renderOwnWarehouse(true), 1500);
+    ownWhPoll = setTimeout(() => renderOwnWarehouse(true), 1200);
   } catch(e) {
     if(info) info.textContent = 'Ошибка запроса';
-    if(btn) btn.disabled = false;
+    if(btn) { btn.disabled = false; btn.textContent = '↻ Обновить из Sheets'; }
   }
 }
 
@@ -1352,7 +1369,12 @@ async function renderOwnWarehouse(forceLoad) {
     ownWhPoll = setTimeout(() => renderOwnWarehouse(true), 2000);
   } else {
     const btn = document.getElementById('ownWhSyncBtn');
-    if(btn) btn.disabled = false;
+    if(btn) { btn.disabled = false; btn.textContent = '↻ Обновить из Sheets'; }
+    // при открытии вкладки — если данные старше 30 мин, тихо перетянуть
+    if(!OWN_WH_AUTO_SYNCED && !OWN_WH.error && ownWhIsStale(30)) {
+      OWN_WH_AUTO_SYNCED = true;
+      triggerOwnWarehouseSync();
+    }
   }
 }
 
@@ -1371,6 +1393,7 @@ function drawOwnWarehouse() {
     if(OWN_WH.as_of) bits.push('остатки на ' + OWN_WH.as_of);
     else if(OWN_WH.title) bits.push(OWN_WH.title);
     if(OWN_WH.updated_at) bits.push('подтянуто ' + OWN_WH.updated_at);
+    bits.push('авто каждые 30 мин');
     if(info) info.textContent = bits.join(' · ') || '';
   }
 
