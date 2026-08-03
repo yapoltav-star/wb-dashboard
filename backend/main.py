@@ -650,6 +650,40 @@ OWN_WAREHOUSE_CACHE = {
     "syncing": False,
 }
 
+OWN_WH_SHIPMENTS_KEY = "own_wh_shipments"
+
+
+def _own_wh_shipments() -> list:
+    raw = get_setting_json(OWN_WH_SHIPMENTS_KEY, []) or []
+    return raw if isinstance(raw, list) else []
+
+
+def _own_wh_deduction_map() -> dict:
+    """Суммарные списания по артикулу из загруженных отгрузок."""
+    out = {}
+    for sh in _own_wh_shipments():
+        for it in sh.get("items") or []:
+            vc = str(it.get("vendor_code") or "").strip()
+            if not vc:
+                continue
+            try:
+                qty = int(it.get("qty") or 0)
+            except Exception:
+                qty = 0
+            if qty <= 0:
+                continue
+            out[vc] = out.get(vc, 0) + qty
+    return out
+
+
+def _apply_own_wh_deductions(personal_sheet: dict) -> dict:
+    ded = _own_wh_deduction_map()
+    out = {str(k): int(v or 0) for k, v in (personal_sheet or {}).items()}
+    for vc, qty in ded.items():
+        out[vc] = max(0, int(out.get(vc, 0)) - int(qty))
+    return out
+
+
 def _parse_int_cell(v):
     s = str(v or "").strip().replace("\xa0", "").replace(" ", "").replace(",", ".")
     if not s or s.lower() in ("nan", "none", "-"):
@@ -750,6 +784,10 @@ def fetch_own_warehouse_stock() -> dict:
             continue
         personal[vc] = personal.get(vc, 0) + (row["stock"] or 0)
 
+    # База из Google Sheets; отгрузки Excel списывают поверх (см. own_wh_shipments)
+    personal_sheet = dict(personal)
+    personal = _apply_own_wh_deductions(personal_sheet)
+
     # Семьи: основной (есть имя или ячейка остатка) + следующие «голые» артикулы без имени
     # Пример: 044_LK_GT5Pro_black_O (380) → 037_G7Pro_black_O (пусто) делят 380
     families = []  # [{root, members:[], name}]
@@ -828,6 +866,7 @@ def fetch_own_warehouse_stock() -> dict:
 
     out = []
     seen_vc = set()
+    shipped_map = _own_wh_deduction_map()
     for row in raw_rows:
         vc = row["vendor_code"]
         if vc and vc in seen_vc and not row["name"] and not row["has_stock_cell"]:
@@ -835,6 +874,7 @@ def fetch_own_warehouse_stock() -> dict:
         if vc:
             seen_vc.add(vc)
         meta = by_vendor.get(vc, {}) if vc else {}
+        sheet_qty = personal_sheet.get(vc, row["stock"] or 0) if vc else (row["stock"] or 0)
         out.append({
             "vendor_code": vc,
             "name": row["name"],
@@ -842,6 +882,8 @@ def fetch_own_warehouse_stock() -> dict:
             "model_root": meta.get("root"),
             "model_manual": bool(vc and vc in model_map),
             "stock": meta.get("stock", row["stock"] or 0),
+            "stock_sheet": sheet_qty,
+            "shipped": shipped_map.get(vc, 0) if vc else 0,
             "family_stock": meta.get("family_stock", row["stock"] or 0),
             "family": meta.get("family", [vc] if vc else []),
             "note": row["note"],
@@ -855,8 +897,10 @@ def fetch_own_warehouse_stock() -> dict:
         "models": models,
         "model_map": model_map,
         "personal": personal,
+        "personal_sheet": personal_sheet,
         "name_by_vc": name_by_vc,
         "auto_by_vendor": auto_by_vendor,
+        "shipments": _own_wh_shipments(),
         "updated_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
         "error": None,
     }
@@ -931,27 +975,37 @@ def _apply_own_wh_model_map(auto_by_vendor: dict, personal: dict, name_by_vc: di
 def _rebuild_own_wh_from_cache():
     """Пересчитывает by_vendor/rows из кэша + актуальной model_map (без повторного Google Sheets)."""
     auto = OWN_WAREHOUSE_CACHE.get("auto_by_vendor") or {}
-    personal = OWN_WAREHOUSE_CACHE.get("personal") or {}
+    personal_sheet = OWN_WAREHOUSE_CACHE.get("personal_sheet")
+    if personal_sheet is None:
+        personal_sheet = OWN_WAREHOUSE_CACHE.get("personal") or {}
+    personal = _apply_own_wh_deductions(personal_sheet)
     name_by_vc = OWN_WAREHOUSE_CACHE.get("name_by_vc") or {}
-    if not auto and not personal:
+    if not auto and not personal_sheet and not personal:
         return False
     model_map = get_setting_json("own_wh_model_map", {}) or {}
     by_vendor, models = _apply_own_wh_model_map(auto, personal, name_by_vc, model_map)
+    OWN_WAREHOUSE_CACHE["personal"] = personal
+    OWN_WAREHOUSE_CACHE["personal_sheet"] = personal_sheet
     OWN_WAREHOUSE_CACHE["by_vendor"] = by_vendor
     OWN_WAREHOUSE_CACHE["models"] = models
     OWN_WAREHOUSE_CACHE["model_map"] = model_map
+    OWN_WAREHOUSE_CACHE["shipments"] = _own_wh_shipments()
+    shipped_map = _own_wh_deduction_map()
     # обновить поля в rows
     rows = OWN_WAREHOUSE_CACHE.get("rows") or []
     new_rows = []
     for row in rows:
         vc = row.get("vendor_code")
         meta = by_vendor.get(vc, {}) if vc else {}
+        sheet_qty = personal_sheet.get(vc, row.get("stock_sheet", row.get("stock") or 0)) if vc else (row.get("stock") or 0)
         new_rows.append({
             **row,
             "model_name": meta.get("model_name") or row.get("name"),
             "model_root": meta.get("root"),
             "model_manual": bool(vc and vc in model_map),
             "stock": meta.get("stock", row.get("stock") or 0),
+            "stock_sheet": sheet_qty,
+            "shipped": shipped_map.get(vc, 0) if vc else 0,
             "family_stock": meta.get("family_stock", row.get("stock") or 0),
             "family": meta.get("family", [vc] if vc else []),
         })
@@ -990,6 +1044,7 @@ def get_own_warehouse_stock(refresh: bool = False):
         "by_vendor": OWN_WAREHOUSE_CACHE.get("by_vendor") or {},
         "models": OWN_WAREHOUSE_CACHE.get("models") or [],
         "model_map": OWN_WAREHOUSE_CACHE.get("model_map") or {},
+        "shipments": OWN_WAREHOUSE_CACHE.get("shipments") or _own_wh_shipments(),
         "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
         "error": OWN_WAREHOUSE_CACHE.get("error"),
         "syncing": OWN_WAREHOUSE_CACHE.get("syncing", False),
@@ -1036,6 +1091,192 @@ def sync_own_warehouse():
         return {"status": "already_running"}
     threading.Thread(target=refresh_own_warehouse_stock, daemon=True).start()
     return {"status": "started"}
+
+
+def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
+    """
+    Два формата отгрузки со своего склада:
+    1) shk-excel: колонки «Артикул поставщика» + «Количество»
+    2) WB-GI лист подбора: «Артикул продавца» (1 строка = 1 шт)
+    """
+    import io as _io
+    try:
+        xl = pd.ExcelFile(_io.BytesIO(content))
+    except Exception as e:
+        return {"error": f"Не удалось прочитать Excel: {e}"}
+
+    best = None
+    for sheet in xl.sheet_names:
+        try:
+            df_raw = pd.read_excel(xl, sheet_name=sheet, header=None, dtype=object)
+        except Exception:
+            continue
+        if df_raw is None or df_raw.empty:
+            continue
+
+        header_row = None
+        col_vc = col_qty = None
+        kind = None
+        for i in range(min(12, len(df_raw))):
+            vals = [str(v).strip().lower() if v is not None and str(v) != "nan" else "" for v in list(df_raw.iloc[i].values)]
+            joined = " | ".join(vals)
+            # shk / поставка: артикул + количество
+            vc_i = next((j for j, v in enumerate(vals) if "артикул поставщика" in v or v == "артикул продавца" or (v.startswith("артикул") and "wb" not in v and "баркод" not in v)), None)
+            qty_i = next((j for j, v in enumerate(vals) if v.startswith("количество")), None)
+            if vc_i is not None and qty_i is not None:
+                header_row, col_vc, col_qty, kind = i, vc_i, qty_i, "shk"
+                break
+            # лист подбора WB-GI
+            if "артикул продавца" in joined and ("стикер" in joined or "баркод" in joined):
+                vc_i = next((j for j, v in enumerate(vals) if "артикул продавца" in v), None)
+                if vc_i is not None:
+                    header_row, col_vc, col_qty, kind = i, vc_i, None, "picking"
+                    break
+            # fallback: shk headers slightly different
+            if "артикул поставщика" in joined and "количество" in joined:
+                vc_i = next((j for j, v in enumerate(vals) if "артикул" in v), None)
+                qty_i = next((j for j, v in enumerate(vals) if "количество" in v), None)
+                if vc_i is not None and qty_i is not None:
+                    header_row, col_vc, col_qty, kind = i, vc_i, qty_i, "shk"
+                    break
+
+        if header_row is None:
+            continue
+
+        agg = {}
+        for i in range(header_row + 1, len(df_raw)):
+            row = list(df_raw.iloc[i].values)
+            if col_vc >= len(row):
+                continue
+            vc = str(row[col_vc] or "").strip()
+            if not vc or vc.lower() in ("nan", "none", "итого"):
+                continue
+            if kind == "picking":
+                qty = 1
+            else:
+                qty = _parse_int_cell(row[col_qty] if col_qty is not None and col_qty < len(row) else None) or 0
+            if qty <= 0:
+                continue
+            agg[vc] = agg.get(vc, 0) + qty
+
+        items = [{"vendor_code": vc, "qty": q} for vc, q in sorted(agg.items(), key=lambda x: -x[1])]
+        cand = {
+            "kind": kind,
+            "sheet": sheet,
+            "items": items,
+            "total_qty": sum(i["qty"] for i in items),
+            "articles": len(items),
+        }
+        if best is None or cand["total_qty"] > best["total_qty"]:
+            best = cand
+
+    if not best or not best["items"]:
+        return {
+            "error": (
+                "Не нашёл артикулы в файле. Ожидаю shk-excel "
+                "(Артикул поставщика + Количество) или лист подбора WB-GI (Артикул продавца)."
+            )
+        }
+    best["filename"] = filename or ""
+    return best
+
+
+def _save_own_wh_shipments(shipments: list) -> bool:
+    return save_setting_value(OWN_WH_SHIPMENTS_KEY, shipments)
+
+
+@app.post("/api/own-warehouse-upload-shipment")
+async def own_warehouse_upload_shipment(files: list[UploadFile] = File(...)):
+    """Загрузка Excel отгрузки → списание с «Наш склад» (поверх Google Sheets)."""
+    if not files:
+        raise HTTPException(status_code=400, detail="files required")
+    if not OWN_WAREHOUSE_CACHE.get("rows") and not OWN_WAREHOUSE_CACHE.get("personal_sheet"):
+        # подтянем базу, чтобы сразу пересчитать
+        try:
+            refresh_own_warehouse_stock()
+        except Exception:
+            pass
+
+    shipments = _own_wh_shipments()
+    applied = []
+    errors = []
+    for f in files:
+        try:
+            content = await f.read()
+        except Exception as e:
+            errors.append({"filename": f.filename, "error": str(e)})
+            continue
+        parsed = parse_own_wh_shipment_excel(content, f.filename or "")
+        if parsed.get("error"):
+            errors.append({"filename": f.filename, "error": parsed["error"]})
+            continue
+        sid = f"sh_{int(time.time())}_{len(shipments)}_{len(applied)}"
+        entry = {
+            "id": sid,
+            "filename": f.filename or parsed.get("filename") or "",
+            "kind": parsed.get("kind"),
+            "created_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
+            "items": parsed["items"],
+            "total_qty": parsed["total_qty"],
+            "articles": parsed["articles"],
+        }
+        shipments.insert(0, entry)
+        applied.append(entry)
+
+    # ограничим лог
+    shipments = shipments[:100]
+    if applied and not _save_own_wh_shipments(shipments):
+        raise HTTPException(status_code=500, detail="Не удалось сохранить списания в settings")
+
+    OWN_WAREHOUSE_CACHE["shipments"] = shipments
+    if not _rebuild_own_wh_from_cache():
+        refresh_own_warehouse_stock()
+
+    return {
+        "status": "ok",
+        "applied": [
+            {
+                "id": a["id"],
+                "filename": a["filename"],
+                "kind": a["kind"],
+                "total_qty": a["total_qty"],
+                "articles": a["articles"],
+                "items": a["items"][:30],
+            }
+            for a in applied
+        ],
+        "errors": errors,
+        "shipments": shipments[:20],
+        "rows": OWN_WAREHOUSE_CACHE.get("rows") or [],
+        "by_vendor": OWN_WAREHOUSE_CACHE.get("by_vendor") or {},
+        "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
+        "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
+        "note": "Списано в остатках сайта. Google Sheets сам не меняется — когда поправишь таблицу, нажми «Сбросить списания».",
+    }
+
+
+@app.post("/api/own-warehouse-undo-shipment")
+async def own_warehouse_undo_shipment(request: dict):
+    """Отменить одно списание по id или все (all=true)."""
+    shipments = _own_wh_shipments()
+    if request.get("all"):
+        shipments = []
+    else:
+        sid = str(request.get("id") or "").strip()
+        if not sid:
+            raise HTTPException(status_code=400, detail="id required (или all=true)")
+        shipments = [s for s in shipments if str(s.get("id")) != sid]
+    if not _save_own_wh_shipments(shipments):
+        raise HTTPException(status_code=500, detail="Не удалось сохранить")
+    OWN_WAREHOUSE_CACHE["shipments"] = shipments
+    if not _rebuild_own_wh_from_cache():
+        refresh_own_warehouse_stock()
+    return {
+        "status": "ok",
+        "shipments": shipments[:20],
+        "rows": OWN_WAREHOUSE_CACHE.get("rows") or [],
+        "by_vendor": OWN_WAREHOUSE_CACHE.get("by_vendor") or {},
+    }
 
 # ---------- Рекомендации по поставкам: заказы + продажи по складам (WB Statistics API) ----------
 # Заказано — /api/v1/supplier/orders, Выкупили — /api/v1/supplier/sales (только saleID, начинающиеся
