@@ -686,14 +686,16 @@ td.tc{text-align:center}
     <button class="filter-btn" id="owFltZero" onclick="setOwnWhFilter('zero')">Нулевые</button>
     <button class="filter-btn" id="owFltNoArt" onclick="setOwnWhFilter('noart')">Без артикула</button>
     <span id="ownWhInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
-    <div class="ml-auto">
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <a class="action-btn" href="https://docs.google.com/spreadsheets/d/1Lhoy4s_KX0pWndsd3Y5oCOjTFCtfEfVUM4AgtBv4Crc/edit?gid=1829622647" target="_blank" rel="noopener" style="text-decoration:none">↗ Таблица</a>
-      <button class="action-btn" onclick="document.getElementById('ownWhShipInput').click()">📦 Отгрузка Excel</button>
+      <button class="action-btn" onclick="startOwnWhUpload('fbw')" title="shk-excel или лист подбора WB-GI">📦 Поставка на WB</button>
+      <button class="action-btn" onclick="startOwnWhUpload('fbs')" title="Отгрузка со склада продавца (FBS)">📦 Отгрузка FBS</button>
       <input type="file" id="ownWhShipInput" accept=".xlsx,.xls" multiple style="display:none" onchange="uploadOwnWhShipments(this.files)">
       <button class="action-btn" id="ownWhSyncBtn" onclick="triggerOwnWarehouseSync()">↻ Обновить</button>
     </div>
   </div>
   <div class="cards" id="ownWhCards"></div>
+  <div id="ownWhChannelTables" style="display:none;padding:12px 20px;border-bottom:1px solid var(--wb-border);background:var(--wb-surface)"></div>
   <div id="ownWhShipLog" style="display:none;padding:10px 20px;border-bottom:1px solid var(--wb-border);background:#FFFBEB"></div>
   <div id="ownWhRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить», чтобы подтянуть остатки из Google Sheets</div></div>
 </div>
@@ -1338,6 +1340,17 @@ async function triggerOwnWarehouseSync() {
   }
 }
 
+let OWN_WH_UPLOAD_CHANNEL = 'fbw';
+function startOwnWhUpload(channel) {
+  OWN_WH_UPLOAD_CHANNEL = (channel === 'fbs') ? 'fbs' : 'fbw';
+  const inp = document.getElementById('ownWhShipInput');
+  if(inp) inp.click();
+}
+
+function ownWhChannelLabel(ch) {
+  return ch === 'fbs' ? 'FBS' : 'Поставка на WB';
+}
+
 async function renderOwnWarehouse(forceLoad) {
   if(forceLoad || !OWN_WH_LOADED) {
     try {
@@ -1364,10 +1377,12 @@ async function uploadOwnWhShipments(fileList) {
   const inp = document.getElementById('ownWhShipInput');
   if(inp) inp.value = '';
   if(!files.length) return;
+  const channel = OWN_WH_UPLOAD_CHANNEL === 'fbs' ? 'fbs' : 'fbw';
   const info = document.getElementById('ownWhInfo');
-  if(info) info.textContent = `Списываем отгрузку (${files.length} файл)…`;
+  if(info) info.textContent = `Списываем ${ownWhChannelLabel(channel)} (${files.length} файл)…`;
   const fd = new FormData();
   files.forEach(f => fd.append('files', f));
+  fd.append('channel', channel);
   try {
     const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-upload-shipment`, { method: 'POST', body: fd });
     const d = await r.json().catch(() => ({}));
@@ -1378,6 +1393,7 @@ async function uploadOwnWhShipments(fileList) {
         rows: d.rows,
         by_vendor: d.by_vendor || OWN_WH.by_vendor,
         shipments: d.shipments || [],
+        channel_summaries: d.channel_summaries || OWN_WH.channel_summaries,
         as_of: d.as_of || OWN_WH.as_of,
         updated_at: d.updated_at || OWN_WH.updated_at,
         error: null,
@@ -1390,9 +1406,13 @@ async function uploadOwnWhShipments(fileList) {
     const errs = d.errors || [];
     const sumQty = applied.reduce((s,a) => s + (a.total_qty||0), 0);
     let msg = applied.length
-      ? `Списано ${sumQty} шт из ${applied.length} файл(ов)`
+      ? `${ownWhChannelLabel(channel)}: списано ${sumQty} шт из ${applied.length} файл(ов)`
       : 'Ничего не списано';
-    if(errs.length) msg += ` · ошибки: ${errs.map(e => e.filename + ': ' + e.error).join('; ')}`;
+    if(applied[0] && applied[0].items && applied[0].items.length) {
+      const top = applied[0].items.slice(0, 8).map(it => `${it.vendor_code} −${it.qty}`).join('\n');
+      msg += '\n\nАртикулы:\n' + top + (applied[0].items.length > 8 ? '\n…' : '');
+    }
+    if(errs.length) msg += `\n\nОшибки: ${errs.map(e => e.filename + ': ' + e.error).join('; ')}`;
     alert(msg + (d.note ? '\n\n' + d.note : ''));
     drawOwnWarehouse();
   } catch(e) {
@@ -1417,6 +1437,7 @@ async function undoOwnWhShipment(id) {
       rows: d.rows || OWN_WH.rows,
       by_vendor: d.by_vendor || OWN_WH.by_vendor,
       shipments: d.shipments || [],
+      channel_summaries: d.channel_summaries || OWN_WH.channel_summaries,
     };
     OWN_WH_BY_VENDOR = OWN_WH.by_vendor || {};
     drawOwnWarehouse();
@@ -1440,12 +1461,78 @@ async function clearOwnWhShipments() {
       rows: d.rows || OWN_WH.rows,
       by_vendor: d.by_vendor || OWN_WH.by_vendor,
       shipments: [],
+      channel_summaries: d.channel_summaries || {fbw:{items:[]}, fbs:{items:[]}},
     };
     OWN_WH_BY_VENDOR = OWN_WH.by_vendor || {};
     drawOwnWarehouse();
   } catch(e) {
     alert('Не удалось сбросить: ' + e.message);
   }
+}
+
+function buildOwnWhChannelSummaryFromShipments(ships) {
+  const buckets = {fbw: {}, fbs: {}};
+  const meta = {fbw: {files:0, total_qty:0}, fbs: {files:0, total_qty:0}};
+  (ships || []).forEach(sh => {
+    const ch = (sh.channel === 'fbs') ? 'fbs' : 'fbw';
+    meta[ch].files += 1;
+    meta[ch].total_qty += (sh.total_qty || 0);
+    (sh.items || []).forEach(it => {
+      const vc = String(it.vendor_code || '').trim();
+      const qty = Number(it.qty) || 0;
+      if(!vc || qty <= 0) return;
+      buckets[ch][vc] = (buckets[ch][vc] || 0) + qty;
+    });
+  });
+  const out = {};
+  ['fbw','fbs'].forEach(ch => {
+    const items = Object.entries(buckets[ch])
+      .map(([vendor_code, qty]) => ({vendor_code, qty}))
+      .sort((a,b) => b.qty - a.qty || a.vendor_code.localeCompare(b.vendor_code, 'ru'));
+    out[ch] = {...meta[ch], articles: items.length, items};
+  });
+  return out;
+}
+
+function drawOwnWhChannelTables() {
+  const box = document.getElementById('ownWhChannelTables');
+  if(!box) return;
+  const summaries = OWN_WH.channel_summaries || buildOwnWhChannelSummaryFromShipments(OWN_WH.shipments || []);
+  const fbw = summaries.fbw || {items: [], total_qty: 0, articles: 0, files: 0};
+  const fbs = summaries.fbs || {items: [], total_qty: 0, articles: 0, files: 0};
+  if(!(fbw.items && fbw.items.length) && !(fbs.items && fbs.items.length)) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  const renderCol = (title, sub, data, color) => {
+    const items = data.items || [];
+    const body = items.length
+      ? items.map(it => `<tr>
+          <td style="text-align:left"><div class="art">${escapeHtml(it.vendor_code)}</div></td>
+          <td style="text-align:right;font-weight:600;color:${color}">−${fmt(it.qty)}</td>
+        </tr>`).join('')
+      : `<tr><td colspan="2" style="text-align:left;color:var(--wb-faint);padding:12px">Пока пусто — загрузи Excel кнопкой выше</td></tr>`;
+    return `<div style="flex:1;min-width:280px;border:1px solid var(--wb-border);border-radius:var(--rs);overflow:hidden;background:#fff">
+      <div style="padding:10px 12px;border-bottom:1px solid var(--wb-border);background:#FAFAF8">
+        <div style="font-size:13px;font-weight:600">${title}</div>
+        <div style="font-size:11px;color:var(--wb-muted);margin-top:2px">${sub} · −${fmt(data.total_qty||0)} шт · ${fmt(data.articles||0)} арт.${data.files?` · ${data.files} файл(ов)`:''}</div>
+      </div>
+      <div style="max-height:280px;overflow:auto">
+        <table class="comp-tbl" style="width:100%">
+          <thead><tr><th style="text-align:left">Артикул</th><th style="text-align:right">Кол-во</th></tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </div>`;
+  };
+  box.style.display = 'block';
+  box.innerHTML = `
+    <div style="font-size:12px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:8px">Поставки и отгрузки</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:stretch">
+      ${renderCol('Поставки на склады WB', 'shk-excel / лист подбора WB-GI', fbw, '#B54708')}
+      ${renderCol('Отгрузки FBS', 'со склада продавца', fbs, '#026AA2')}
+    </div>`;
 }
 
 function drawOwnWhShipLog() {
@@ -1462,7 +1549,7 @@ function drawOwnWhShipLog() {
   box.innerHTML = `
     <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
       <div>
-        <div style="font-size:12px;font-weight:600;color:#92400E">Списания с отгрузок Excel · ${ships.length} · −${fmt(total)} шт</div>
+        <div style="font-size:12px;font-weight:600;color:#92400E">Файлы списаний · ${ships.length} · −${fmt(total)} шт</div>
         <div style="font-size:11px;color:#B54708;margin-top:2px">Остаток на сайте = Google Sheets минус эти файлы. Сам Sheets не меняется.</div>
       </div>
       <button class="action-btn" onclick="clearOwnWhShipments()">Сбросить все списания</button>
@@ -1470,11 +1557,12 @@ function drawOwnWhShipLog() {
     <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px">
       ${ships.slice(0, 12).map(sh => {
         const kind = sh.kind === 'picking' ? 'лист подбора' : (sh.kind === 'shk' ? 'shk-excel' : (sh.kind || 'excel'));
+        const ch = ownWhChannelLabel(sh.channel === 'fbs' ? 'fbs' : 'fbw');
         const safeId = String(sh.id || '').replace(/'/g, '');
         return `<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 8px;background:#fff;border:1px solid #F8E3B0;border-radius:6px;font-size:12px">
           <div>
             <b>${escapeHtml(sh.filename || 'файл')}</b>
-            <span style="color:var(--wb-muted)"> · ${escapeHtml(kind)} · −${fmt(sh.total_qty||0)} шт · ${fmt(sh.articles||0)} арт.${sh.created_at ? ' · ' + escapeHtml(sh.created_at) : ''}</span>
+            <span style="color:var(--wb-muted)"> · ${escapeHtml(ch)} · ${escapeHtml(kind)} · −${fmt(sh.total_qty||0)} шт · ${fmt(sh.articles||0)} арт.${sh.created_at ? ' · ' + escapeHtml(sh.created_at) : ''}</span>
           </div>
           <button class="action-btn" style="padding:3px 8px;font-size:11px" onclick="undoOwnWhShipment('${safeId}')">↩ Отменить</button>
         </div>`;
@@ -1487,6 +1575,7 @@ function drawOwnWarehouse() {
   const root = document.getElementById('ownWhRoot');
   const cards = document.getElementById('ownWhCards');
   if(!root) return;
+  drawOwnWhChannelTables();
   drawOwnWhShipLog();
 
   if(OWN_WH.error) {

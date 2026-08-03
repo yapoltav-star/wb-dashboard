@@ -8,7 +8,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone, date
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -1045,6 +1045,9 @@ def get_own_warehouse_stock(refresh: bool = False):
         "models": OWN_WAREHOUSE_CACHE.get("models") or [],
         "model_map": OWN_WAREHOUSE_CACHE.get("model_map") or {},
         "shipments": OWN_WAREHOUSE_CACHE.get("shipments") or _own_wh_shipments(),
+        "channel_summaries": _own_wh_channel_summaries(
+            OWN_WAREHOUSE_CACHE.get("shipments") or _own_wh_shipments()
+        ),
         "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
         "error": OWN_WAREHOUSE_CACHE.get("error"),
         "syncing": OWN_WAREHOUSE_CACHE.get("syncing", False),
@@ -1181,17 +1184,70 @@ def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
     return best
 
 
+def _own_wh_shipment_channel(sh: dict) -> str:
+    """fbw = поставка на склады WB; fbs = отгрузка FBS."""
+    ch = str((sh or {}).get("channel") or "").strip().lower()
+    if ch in ("fbw", "fbs"):
+        return ch
+    kind = str((sh or {}).get("kind") or "")
+    # shk-excel и лист подбора WB-GI — это поставки на склады WB
+    if kind in ("shk", "picking"):
+        return "fbw"
+    return "fbw"
+
+
+def _own_wh_channel_summaries(shipments: list | None = None) -> dict:
+    """Сводки по артикулам: поставки на WB и отгрузки FBS."""
+    shipments = shipments if shipments is not None else _own_wh_shipments()
+    buckets = {"fbw": {}, "fbs": {}}
+    meta = {"fbw": {"files": 0, "total_qty": 0}, "fbs": {"files": 0, "total_qty": 0}}
+    for sh in shipments:
+        ch = _own_wh_shipment_channel(sh)
+        meta[ch]["files"] += 1
+        meta[ch]["total_qty"] += int(sh.get("total_qty") or 0)
+        for it in sh.get("items") or []:
+            vc = str(it.get("vendor_code") or "").strip()
+            if not vc:
+                continue
+            try:
+                qty = int(it.get("qty") or 0)
+            except Exception:
+                qty = 0
+            if qty <= 0:
+                continue
+            buckets[ch][vc] = buckets[ch].get(vc, 0) + qty
+    out = {}
+    for ch in ("fbw", "fbs"):
+        items = [
+            {"vendor_code": vc, "qty": q}
+            for vc, q in sorted(buckets[ch].items(), key=lambda x: (-x[1], x[0]))
+        ]
+        out[ch] = {
+            **meta[ch],
+            "articles": len(items),
+            "items": items,
+        }
+    return out
+
+
 def _save_own_wh_shipments(shipments: list) -> bool:
     return save_setting_value(OWN_WH_SHIPMENTS_KEY, shipments)
 
 
 @app.post("/api/own-warehouse-upload-shipment")
-async def own_warehouse_upload_shipment(files: list[UploadFile] = File(...)):
-    """Загрузка Excel отгрузки → списание с «Наш склад» (поверх Google Sheets)."""
+async def own_warehouse_upload_shipment(
+    files: list[UploadFile] = File(...),
+    channel: str = Form("auto"),
+):
+    """Загрузка Excel отгрузки → списание с «Наш склад» (поверх Google Sheets).
+    channel: auto|fbw|fbs — поставка на склады WB или отгрузка FBS."""
     if not files:
         raise HTTPException(status_code=400, detail="files required")
+    ch_req = str(channel or "auto").strip().lower()
+    if ch_req not in ("auto", "fbw", "fbs"):
+        ch_req = "auto"
+
     if not OWN_WAREHOUSE_CACHE.get("rows") and not OWN_WAREHOUSE_CACHE.get("personal_sheet"):
-        # подтянем базу, чтобы сразу пересчитать
         try:
             refresh_own_warehouse_stock()
         except Exception:
@@ -1210,11 +1266,16 @@ async def own_warehouse_upload_shipment(files: list[UploadFile] = File(...)):
         if parsed.get("error"):
             errors.append({"filename": f.filename, "error": parsed["error"]})
             continue
+        if ch_req in ("fbw", "fbs"):
+            ch = ch_req
+        else:
+            ch = "fbw" if parsed.get("kind") in ("shk", "picking") else "fbw"
         sid = f"sh_{int(time.time())}_{len(shipments)}_{len(applied)}"
         entry = {
             "id": sid,
             "filename": f.filename or parsed.get("filename") or "",
             "kind": parsed.get("kind"),
+            "channel": ch,
             "created_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
             "items": parsed["items"],
             "total_qty": parsed["total_qty"],
@@ -1223,7 +1284,6 @@ async def own_warehouse_upload_shipment(files: list[UploadFile] = File(...)):
         shipments.insert(0, entry)
         applied.append(entry)
 
-    # ограничим лог
     shipments = shipments[:100]
     if applied and not _save_own_wh_shipments(shipments):
         raise HTTPException(status_code=500, detail="Не удалось сохранить списания в settings")
@@ -1232,6 +1292,7 @@ async def own_warehouse_upload_shipment(files: list[UploadFile] = File(...)):
     if not _rebuild_own_wh_from_cache():
         refresh_own_warehouse_stock()
 
+    summaries = _own_wh_channel_summaries(shipments)
     return {
         "status": "ok",
         "applied": [
@@ -1239,14 +1300,16 @@ async def own_warehouse_upload_shipment(files: list[UploadFile] = File(...)):
                 "id": a["id"],
                 "filename": a["filename"],
                 "kind": a["kind"],
+                "channel": a.get("channel"),
                 "total_qty": a["total_qty"],
                 "articles": a["articles"],
-                "items": a["items"][:30],
+                "items": a["items"][:40],
             }
             for a in applied
         ],
         "errors": errors,
-        "shipments": shipments[:20],
+        "shipments": shipments[:30],
+        "channel_summaries": summaries,
         "rows": OWN_WAREHOUSE_CACHE.get("rows") or [],
         "by_vendor": OWN_WAREHOUSE_CACHE.get("by_vendor") or {},
         "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
@@ -1273,7 +1336,8 @@ async def own_warehouse_undo_shipment(request: dict):
         refresh_own_warehouse_stock()
     return {
         "status": "ok",
-        "shipments": shipments[:20],
+        "shipments": shipments[:30],
+        "channel_summaries": _own_wh_channel_summaries(shipments),
         "rows": OWN_WAREHOUSE_CACHE.get("rows") or [],
         "by_vendor": OWN_WAREHOUSE_CACHE.get("by_vendor") or {},
     }
