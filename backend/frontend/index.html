@@ -1611,13 +1611,16 @@ function drawOwnWarehouse() {
   const totalQty = rows.reduce((s,r) => s + (r.stock||0), 0);
   const shippedQty = rows.reduce((s,r) => s + (r.shipped||0), 0);
   const withArt = rows.filter(r => r.vendor_code).length;
+  const summaries = OWN_WH.channel_summaries || buildOwnWhChannelSummaryFromShipments(OWN_WH.shipments || []);
   if(cards) {
     const cardItems = [
       ['Позиций', fmt(rows.length)],
       ['С артикулом', fmt(withArt)],
       ['Сумма остатков', fmt(totalQty)],
     ];
-    if(shippedQty) cardItems.push(['Списано Excel', '−' + fmt(shippedQty)]);
+    if((summaries.fbw || {}).total_qty) cardItems.push(['Поставки WB', '−' + fmt(summaries.fbw.total_qty)]);
+    if((summaries.fbs || {}).total_qty) cardItems.push(['Отгрузки FBS', '−' + fmt(summaries.fbs.total_qty)]);
+    else if(shippedQty) cardItems.push(['Списано Excel', '−' + fmt(shippedQty)]);
     if(OWN_WH.as_of) cardItems.unshift(['Остатки на', OWN_WH.as_of]);
     cards.innerHTML = cardItems.map(([l,v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${l==='Остатки на'?'font-size:20px':''}">${v}</div></div>`).join('');
   }
