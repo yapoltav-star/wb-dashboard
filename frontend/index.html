@@ -5982,12 +5982,13 @@ function myShelfChipDrop(e) {
   // переставляем только внутри своей группы (закреплённые / остальные)
   if(dragPinned !== targetPinned) return;
   if(dragPinned) {
-    const from = MY_SHELF_PINNED.indexOf(drag);
-    let to = MY_SHELF_PINNED.indexOf(target);
+    const from = MY_SHELF_PINNED.findIndex(x => Number(x) === drag);
+    let to = MY_SHELF_PINNED.findIndex(x => Number(x) === target);
     if(from < 0 || to < 0) return;
     MY_SHELF_PINNED.splice(from, 1);
-    to = MY_SHELF_PINNED.indexOf(target);
+    to = MY_SHELF_PINNED.findIndex(x => Number(x) === target);
     MY_SHELF_PINNED.splice(to, 0, drag);
+    MY_SHELF_PINNED = MY_SHELF_PINNED.map(Number);
   } else {
     const from = MY_SHELF_CARDS.findIndex(c => Number(c.nm_id) === drag);
     let to = MY_SHELF_CARDS.findIndex(c => Number(c.nm_id) === target);
