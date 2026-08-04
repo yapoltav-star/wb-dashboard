@@ -520,6 +520,7 @@ td.tc{text-align:center}
 <div class="subnav" id="subnav-positions" style="display:none">
   <div class="sn-item on" onclick="showPage('positions',this)">Позиции в поиске</div>
   <div class="sn-item" onclick="showPage('shelves',this)">Полки у конкурентов</div>
+  <div class="sn-item" onclick="showPage('my-shelves',this)">Полки у моих карточек</div>
 </div>
 
 <!-- Upload modal -->
@@ -937,6 +938,53 @@ td.tc{text-align:center}
   </div>
 </div>
 
+<!-- ПОЛКИ У МОИХ КАРТОЧЕК -->
+<div class="page" id="page-my-shelves">
+  <div class="toolbar">
+    <span style="font-size:13px;font-weight:600">Полки у моих карточек</span>
+    <span style="font-size:12px;color:var(--wb-muted);margin-left:10px">«Смотрите также» · топ-15 · доли брендов</span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="action-btn" id="myShelfLoadAllBtn" onclick="loadAllMyShelfCards()">↓ Все мои карточки</button>
+      <button class="action-btn" id="myShelfRefreshBtn" onclick="refreshActiveMyShelf()" disabled>↻ Обновить полку</button>
+    </div>
+  </div>
+
+  <div style="padding:12px 20px 10px;border-bottom:1px solid var(--wb-border);background:var(--wb-surface)">
+    <div style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap">
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Добавить свою карточку</div>
+        <div style="position:relative">
+          <input id="myShelfArtSearch" placeholder="Артикул продавца, напр. 034…" autocomplete="off"
+            style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:260px"
+            oninput="searchMyShelfArticles(this.value)" onfocus="searchMyShelfArticles(this.value)">
+          <div id="myShelfArtDropdown" style="display:none;position:absolute;top:100%;left:0;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--rs);z-index:100;min-width:280px;max-height:280px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.1)"></div>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Город</div>
+        <select id="myShelfCity" onchange="onMyShelfCityChange()"
+          style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;min-width:180px;background:#fff">
+          <option value="-1257786">Москва</option>
+        </select>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Фильтр кнопок</div>
+        <input id="myShelfChipFilter" placeholder="Поиск по артикулу…" oninput="buildMyShelfChips()"
+          style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:200px">
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Мои карточки · 📌 закрепить · ⋮⋮ перетащить</div>
+      <div id="myShelfChips" style="display:flex;gap:8px;flex-wrap:wrap;min-height:32px;align-items:center"></div>
+    </div>
+    <div id="myShelfStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Загрузи свои карточки или найди артикул — клик по кнопке покажет топ-15 полки и доли конкурентов</div>
+  </div>
+
+  <div id="myShelfRoot" style="overflow:auto">
+    <div class="empty" style="padding:40px 20px">Выбери свою карточку, чтобы увидеть полку «Смотрите также»</div>
+  </div>
+</div>
+
 <!-- ФИНАНСЫ -->
 <div class="page" id="page-finance">
   <div id="finGate" class="fin-lock">
@@ -1095,6 +1143,7 @@ function showPage(id, btn) {
   if(id === 'sales-pace') renderSalesPace(true);
   if(id === 'positions') renderPositionsPage();
   if(id === 'shelves') renderShelvesPage();
+  if(id === 'my-shelves') renderMyShelvesPage();
   if(id === 'finance') renderFinance();
 }
 
@@ -5586,8 +5635,9 @@ function shelfBrandShares(items, ownSet) {
 
 const SHELF_SHARE_COLORS = ['#7C3AED','#2563EB','#0891B2','#059669','#CA8A04','#EA580C','#DC2626','#DB2777','#4F46E5','#0D9488'];
 
-function drawShelfTable(data) {
-  const root = document.getElementById('shelfRoot');
+function drawShelfTable(data, opts) {
+  opts = opts || {};
+  const root = document.getElementById(opts.rootId || 'shelfRoot');
   if(!root) return;
   const items = data.items || [];
   const comp = data.competitor || {};
@@ -5597,6 +5647,10 @@ function drawShelfTable(data) {
   }
   const ownSet = new Set((COMP_OWN_ARTICLES||[]).map(a => Number(a.nm_id)));
   if(POS_ARTICLE && POS_ARTICLE.nm_id) ownSet.add(Number(POS_ARTICLE.nm_id));
+  (typeof MY_SHELF_CARDS !== 'undefined' ? MY_SHELF_CARDS : []).forEach(a => {
+    if(a && a.nm_id) ownSet.add(Number(a.nm_id));
+  });
+  if(opts.ownNmId) ownSet.add(Number(opts.ownNmId));
   const shares = shelfBrandShares(items, ownSet);
   const barHtml = shares.rows.map((r, i) => {
     const color = r.mine ? 'var(--wb-purple)' : SHELF_SHARE_COLORS[i % SHELF_SHARE_COLORS.length];
@@ -5614,14 +5668,19 @@ function drawShelfTable(data) {
     </div>`;
   }).join('');
 
+  const titleMain = opts.title
+    || (opts.vendorCode ? `${opts.vendorCode}` : null)
+    || `${comp.brand || 'Конкурент'} · ${comp.nm_id || data.nm_id}`;
+  const titleSub = opts.subtitle
+    || (opts.vendorCode ? `${comp.brand || ''} · ${comp.nm_id || data.nm_id}`.replace(/^\s·\s/, '') : (comp.name || ''));
   root.innerHTML = `
     <div style="padding:10px 20px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--wb-border);background:#FAFAFA">
       <img src="${comp.thumb || wbThumbUrl(comp.nm_id || data.nm_id)}" width="48" height="48"
         style="border-radius:6px;object-fit:cover;background:#eee"
         onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(comp.nm_id||data.nm_id,'jpg')}';}else{this.style.display='none'}">
       <div>
-        <div style="font-size:14px;font-weight:600">${escapeHtml(comp.brand || 'Конкурент')} · ${comp.nm_id || data.nm_id}</div>
-        <div style="font-size:12px;color:var(--wb-muted)">${escapeHtml(comp.name || '')}</div>
+        <div style="font-size:14px;font-weight:600">${escapeHtml(titleMain)}</div>
+        <div style="font-size:12px;color:var(--wb-muted)">${escapeHtml(titleSub || '')}${opts.vendorCode && comp.name ? ' · ' + escapeHtml(comp.name) : ''}</div>
         <a href="${comp.url || ('https://www.wildberries.ru/catalog/'+(comp.nm_id||data.nm_id)+'/detail.aspx')}" target="_blank" rel="noopener"
           style="font-size:12px;color:var(--wb-purple)">Открыть карточку на WB ↗</a>
       </div>
@@ -5666,6 +5725,400 @@ function drawShelfTable(data) {
         }).join('')}
       </tbody>
     </table>`;
+}
+
+// ─────────── Полки у моих карточек ───────────
+let MY_SHELF_CARDS = JSON.parse(localStorage.getItem('my_shelf_cards') || '[]'); // [{nm_id, vendor_code, brand, name, thumb}]
+let MY_SHELF_PINNED = JSON.parse(localStorage.getItem('my_shelf_pinned') || '[]'); // nm_id[]
+let MY_SHELF_ACTIVE = Number(localStorage.getItem('my_shelf_active_nm') || 0) || null;
+let MY_SHELF_CACHE = {};
+let MY_SHELF_LOADING = false;
+let MY_SHELF_DRAG_NM = null;
+
+function saveMyShelfState() {
+  localStorage.setItem('my_shelf_cards', JSON.stringify(MY_SHELF_CARDS));
+  localStorage.setItem('my_shelf_pinned', JSON.stringify(MY_SHELF_PINNED));
+  if(MY_SHELF_ACTIVE) localStorage.setItem('my_shelf_active_nm', String(MY_SHELF_ACTIVE));
+  else localStorage.removeItem('my_shelf_active_nm');
+}
+
+function myShelfDest() {
+  return Number((document.getElementById('myShelfCity')||{}).value || -1257786);
+}
+
+function onMyShelfCityChange() {
+  const sel = document.getElementById('myShelfCity');
+  if(sel) localStorage.setItem('my_shelf_dest', sel.value);
+  MY_SHELF_CACHE = {};
+  if(MY_SHELF_ACTIVE) loadMyShelfFor(MY_SHELF_ACTIVE, true);
+}
+
+function orderedMyShelfCards() {
+  const byNm = new Map(MY_SHELF_CARDS.map(c => [Number(c.nm_id), c]));
+  const pinSet = new Set(MY_SHELF_PINNED.map(Number));
+  MY_SHELF_PINNED = MY_SHELF_PINNED.filter(nm => byNm.has(Number(nm)));
+  const pinned = MY_SHELF_PINNED.map(nm => byNm.get(Number(nm))).filter(Boolean);
+  const rest = MY_SHELF_CARDS.filter(c => !pinSet.has(Number(c.nm_id)));
+  return [...pinned, ...rest];
+}
+
+function ensureMyShelfCities() {
+  const sel = document.getElementById('myShelfCity');
+  if(!sel) return;
+  if(POS_CITIES && POS_CITIES.length && sel.options.length <= 1) {
+    const saved = localStorage.getItem('my_shelf_dest') || localStorage.getItem('shelf_dest') || '-1257786';
+    sel.innerHTML = POS_CITIES.map(c =>
+      `<option value="${c.dest}"${String(c.dest)===String(saved)?' selected':''}>${c.name}</option>`
+    ).join('');
+    return;
+  }
+  if(!POS_CITIES.length) {
+    fetch(`${RAILWAY_URL}/api/search-keywords`).then(r=>r.json()).then(d => {
+      POS_CITIES = Array.isArray(d.cities) ? d.cities : POS_CITIES;
+      const s = document.getElementById('myShelfCity');
+      if(s && POS_CITIES.length) {
+        const saved = localStorage.getItem('my_shelf_dest') || String(d.default_dest || -1257786);
+        s.innerHTML = POS_CITIES.map(c =>
+          `<option value="${c.dest}"${String(c.dest)===String(saved)?' selected':''}>${c.name}</option>`
+        ).join('');
+      }
+    }).catch(()=>{});
+  }
+}
+
+function renderMyShelvesPage() {
+  ensureMyShelfCities();
+  buildMyShelfChips();
+  const btn = document.getElementById('myShelfRefreshBtn');
+  if(btn) btn.disabled = !MY_SHELF_ACTIVE || MY_SHELF_LOADING;
+  if(MY_SHELF_ACTIVE) loadMyShelfFor(MY_SHELF_ACTIVE, false);
+  else {
+    const root = document.getElementById('myShelfRoot');
+    if(root) root.innerHTML = '<div class="empty" style="padding:40px 20px">Выбери свою карточку, чтобы увидеть полку «Смотрите также»</div>';
+  }
+  if(!MY_SHELF_CARDS.length) {
+    // автоподгрузка списка при первом заходе
+    loadAllMyShelfCards(true);
+  }
+}
+
+function buildMyShelfChips() {
+  const el = document.getElementById('myShelfChips');
+  if(!el) return;
+  const q = ((document.getElementById('myShelfChipFilter')||{}).value || '').trim().toLowerCase();
+  const cards = orderedMyShelfCards().filter(c => {
+    if(!q) return true;
+    return String(c.vendor_code||'').toLowerCase().includes(q) || String(c.nm_id||'').includes(q)
+      || String(c.brand||'').toLowerCase().includes(q);
+  });
+  if(!MY_SHELF_CARDS.length) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--wb-faint)">Пока пусто — нажми «Все мои карточки» или найди артикул</span>';
+    return;
+  }
+  if(!cards.length) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--wb-faint)">Ничего не найдено по фильтру</span>';
+    return;
+  }
+  const pinSet = new Set(MY_SHELF_PINNED.map(Number));
+  el.innerHTML = cards.map(c => {
+    const nm = Number(c.nm_id);
+    const on = nm === Number(MY_SHELF_ACTIVE);
+    const pinned = pinSet.has(nm);
+    const label = escapeHtml(c.vendor_code || String(nm));
+    const thumb = c.thumb || wbThumbUrl(nm);
+    return `<div class="my-shelf-chip${pinned?' pinned':''}" draggable="true" data-my-shelf-nm="${nm}"
+      onclick="selectMyShelfCard(${nm})"
+      ondragstart="myShelfChipDS(event)" ondragover="myShelfChipDOver(event)" ondrop="myShelfChipDrop(event)" ondragend="myShelfChipDE(event)"
+      style="display:inline-flex;align-items:center;gap:6px;padding:5px 8px 5px 5px;border-radius:8px;cursor:pointer;font-size:12px;
+        border:1px solid ${on?'var(--wb-purple)':(pinned?'#C4B5FD':'var(--wb-border)')};
+        background:${on?'var(--wb-purple-light)':(pinned?'#F5F3FF':'var(--wb-surface)')};
+        opacity:1;user-select:none">
+      <span style="cursor:grab;color:var(--wb-faint);font-size:11px;letter-spacing:-1px" title="Перетащить">⋮⋮</span>
+      <img src="${thumb}" alt="" width="28" height="28" style="border-radius:4px;object-fit:cover;background:#f3f3f3"
+        onerror="this.style.display='none'">
+      <span><b>${label}</b></span>
+      <span style="cursor:pointer;font-size:12px;opacity:${pinned?1:.45}" title="${pinned?'Открепить':'Закрепить'}"
+        onclick="event.stopPropagation();toggleMyShelfPin(${nm})">${pinned?'📌':'📍'}</span>
+      <span style="color:var(--wb-faint);margin-left:2px" onclick="event.stopPropagation();removeMyShelfCard(${nm})" title="Убрать">✕</span>
+    </div>`;
+  }).join('');
+}
+
+async function searchMyShelfArticles(q) {
+  const dd = document.getElementById('myShelfArtDropdown');
+  if(!dd) return;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/search-own-articles?q=${encodeURIComponent((q||'').trim())}`);
+    const results = await r.json();
+    if(!Array.isArray(results) || !results.length) {
+      dd.style.display = (q||'').trim() ? 'block' : 'none';
+      dd.innerHTML = (q||'').trim()
+        ? `<div style="padding:10px 12px;font-size:12px;color:var(--wb-muted)">Ничего не найдено</div>`
+        : '';
+      return;
+    }
+    const prefix = (q||'').trim().replace(/\.+$/,'').toLowerCase();
+    dd.style.display = 'block';
+    dd.innerHTML = results.map(a => {
+      const vc = String(a.vendor_code || '');
+      let label = vc;
+      if(prefix && vc.toLowerCase().startsWith(prefix)) {
+        label = `<span style="color:var(--wb-purple)">${escapeHtml(vc.slice(0, prefix.length))}</span>${escapeHtml(vc.slice(prefix.length))}`;
+      } else {
+        label = `<b>${escapeHtml(vc)}</b>`;
+      }
+      const safeVc = vc.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      return `<div style="padding:8px 12px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--wb-border)"
+        onmousedown="addMyShelfCard(${a.nm_id},'${safeVc}')"
+        onmouseover="this.style.background='var(--wb-bg)'" onmouseout="this.style.background=''">
+        <b>${label}</b> <span style="color:var(--wb-faint)">${a.nm_id}</span>
+      </div>`;
+    }).join('');
+  } catch(e) { dd.style.display = 'none'; }
+}
+
+document.addEventListener('click', e => {
+  const dd = document.getElementById('myShelfArtDropdown');
+  if(dd && !e.target.closest('#myShelfArtSearch') && !e.target.closest('#myShelfArtDropdown'))
+    dd.style.display = 'none';
+});
+
+function upsertMyShelfCard(card, {select = false, toFront = false} = {}) {
+  const nm = Number(card.nm_id);
+  if(!nm) return;
+  const i = MY_SHELF_CARDS.findIndex(c => Number(c.nm_id) === nm);
+  const next = {
+    nm_id: nm,
+    vendor_code: card.vendor_code || (i >= 0 ? MY_SHELF_CARDS[i].vendor_code : String(nm)),
+    brand: card.brand || (i >= 0 ? MY_SHELF_CARDS[i].brand : ''),
+    name: card.name || (i >= 0 ? MY_SHELF_CARDS[i].name : ''),
+    thumb: card.thumb || (i >= 0 ? MY_SHELF_CARDS[i].thumb : '') || wbThumbUrl(nm),
+  };
+  if(i >= 0) {
+    MY_SHELF_CARDS[i] = {...MY_SHELF_CARDS[i], ...next};
+    if(toFront) {
+      const row = MY_SHELF_CARDS.splice(i, 1)[0];
+      MY_SHELF_CARDS.unshift(row);
+    }
+  } else if(toFront) {
+    MY_SHELF_CARDS.unshift(next);
+  } else {
+    MY_SHELF_CARDS.push(next);
+  }
+  if(select) MY_SHELF_ACTIVE = nm;
+  saveMyShelfState();
+}
+
+async function addMyShelfCard(nmId, vendorCode) {
+  const dd = document.getElementById('myShelfArtDropdown');
+  if(dd) dd.style.display = 'none';
+  const inp = document.getElementById('myShelfArtSearch');
+  if(inp) inp.value = '';
+  upsertMyShelfCard({nm_id: nmId, vendor_code: vendorCode}, {select: true, toFront: true});
+  buildMyShelfChips();
+  await loadMyShelfFor(nmId, true);
+}
+
+function selectMyShelfCard(nmId) {
+  MY_SHELF_ACTIVE = Number(nmId);
+  saveMyShelfState();
+  buildMyShelfChips();
+  loadMyShelfFor(MY_SHELF_ACTIVE, false);
+}
+
+function removeMyShelfCard(nmId) {
+  MY_SHELF_CARDS = MY_SHELF_CARDS.filter(c => Number(c.nm_id) !== Number(nmId));
+  MY_SHELF_PINNED = MY_SHELF_PINNED.filter(nm => Number(nm) !== Number(nmId));
+  delete MY_SHELF_CACHE[nmId];
+  if(Number(MY_SHELF_ACTIVE) === Number(nmId)) {
+    const ordered = orderedMyShelfCards();
+    MY_SHELF_ACTIVE = ordered[0] ? ordered[0].nm_id : null;
+  }
+  saveMyShelfState();
+  buildMyShelfChips();
+  if(MY_SHELF_ACTIVE) loadMyShelfFor(MY_SHELF_ACTIVE, false);
+  else {
+    const root = document.getElementById('myShelfRoot');
+    if(root) root.innerHTML = '<div class="empty" style="padding:40px 20px">Выбери свою карточку, чтобы увидеть полку «Смотрите также»</div>';
+    const btn = document.getElementById('myShelfRefreshBtn');
+    if(btn) btn.disabled = true;
+  }
+}
+
+function toggleMyShelfPin(nmId) {
+  const nm = Number(nmId);
+  const i = MY_SHELF_PINNED.findIndex(x => Number(x) === nm);
+  if(i >= 0) MY_SHELF_PINNED.splice(i, 1);
+  else MY_SHELF_PINNED.unshift(nm);
+  MY_SHELF_PINNED = MY_SHELF_PINNED.map(Number);
+  saveMyShelfState();
+  buildMyShelfChips();
+}
+
+function myShelfChipDS(e) {
+  const chip = e.currentTarget;
+  MY_SHELF_DRAG_NM = Number(chip.dataset.myShelfNm);
+  chip.style.opacity = '.45';
+  e.dataTransfer.effectAllowed = 'move';
+  try { e.dataTransfer.setData('text/plain', String(MY_SHELF_DRAG_NM)); } catch(_) {}
+}
+function myShelfChipDE(e) {
+  e.currentTarget.style.opacity = '1';
+  MY_SHELF_DRAG_NM = null;
+}
+function myShelfChipDOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+}
+function myShelfChipDrop(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const target = Number(e.currentTarget.dataset.myShelfNm);
+  const drag = MY_SHELF_DRAG_NM || Number(e.dataTransfer.getData('text/plain'));
+  if(!drag || !target || drag === target) return;
+  const pinSet = new Set(MY_SHELF_PINNED.map(Number));
+  const dragPinned = pinSet.has(drag);
+  const targetPinned = pinSet.has(target);
+  // переставляем только внутри своей группы (закреплённые / остальные)
+  if(dragPinned !== targetPinned) return;
+  if(dragPinned) {
+    const from = MY_SHELF_PINNED.indexOf(drag);
+    let to = MY_SHELF_PINNED.indexOf(target);
+    if(from < 0 || to < 0) return;
+    MY_SHELF_PINNED.splice(from, 1);
+    to = MY_SHELF_PINNED.indexOf(target);
+    MY_SHELF_PINNED.splice(to, 0, drag);
+  } else {
+    const from = MY_SHELF_CARDS.findIndex(c => Number(c.nm_id) === drag);
+    let to = MY_SHELF_CARDS.findIndex(c => Number(c.nm_id) === target);
+    if(from < 0 || to < 0) return;
+    const [row] = MY_SHELF_CARDS.splice(from, 1);
+    to = MY_SHELF_CARDS.findIndex(c => Number(c.nm_id) === target);
+    MY_SHELF_CARDS.splice(to, 0, row);
+  }
+  saveMyShelfState();
+  buildMyShelfChips();
+}
+
+async function loadAllMyShelfCards(silent) {
+  const status = document.getElementById('myShelfStatus');
+  const btn = document.getElementById('myShelfLoadAllBtn');
+  if(btn) btn.disabled = true;
+  if(status && !silent) status.textContent = 'Загружаю все мои карточки…';
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/own-articles-all`);
+    const d = await r.json().catch(() => ({}));
+    const arts = Array.isArray(d.articles) ? d.articles : [];
+    if(!arts.length) {
+      if(status) status.textContent = d.error ? `Ошибка: ${d.error}` : 'Карточки не найдены';
+      return;
+    }
+    const have = new Set(MY_SHELF_CARDS.map(c => Number(c.nm_id)));
+    let added = 0;
+    arts.forEach(a => {
+      const nm = Number(a.nm_id);
+      if(!nm || have.has(nm)) {
+        // обновим vendor_code если пустой
+        const i = MY_SHELF_CARDS.findIndex(c => Number(c.nm_id) === nm);
+        if(i >= 0 && a.vendor_code && !MY_SHELF_CARDS[i].vendor_code) {
+          MY_SHELF_CARDS[i].vendor_code = a.vendor_code;
+        }
+        return;
+      }
+      MY_SHELF_CARDS.push({
+        nm_id: nm,
+        vendor_code: a.vendor_code || String(nm),
+        brand: '',
+        name: '',
+        thumb: wbThumbUrl(nm),
+      });
+      have.add(nm);
+      added += 1;
+    });
+    if(!MY_SHELF_ACTIVE && MY_SHELF_CARDS.length) {
+      MY_SHELF_ACTIVE = orderedMyShelfCards()[0].nm_id;
+    }
+    saveMyShelfState();
+    buildMyShelfChips();
+    if(status) {
+      status.textContent = added
+        ? `Добавлено ${added} · всего ${MY_SHELF_CARDS.length}`
+        : `Все карточки уже в списке · ${MY_SHELF_CARDS.length}`;
+    }
+    if(MY_SHELF_ACTIVE) loadMyShelfFor(MY_SHELF_ACTIVE, false);
+  } catch(e) {
+    if(status) status.textContent = `Ошибка: ${e.message}`;
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+
+function refreshActiveMyShelf() {
+  if(MY_SHELF_ACTIVE) loadMyShelfFor(MY_SHELF_ACTIVE, true);
+}
+
+async function fetchMyShelfData(nmId) {
+  const dest = myShelfDest();
+  const r = await fetch(`${RAILWAY_URL}/api/competitor-shelf?nm_id=${nmId}&dest=${dest}&limit=15`);
+  const d = await r.json().catch(() => ({}));
+  if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+  if(d.error && !(d.items||[]).length) throw new Error(d.error);
+  return d;
+}
+
+async function loadMyShelfFor(nmId, force) {
+  const btn = document.getElementById('myShelfRefreshBtn');
+  const status = document.getElementById('myShelfStatus');
+  const root = document.getElementById('myShelfRoot');
+  const card = MY_SHELF_CARDS.find(c => Number(c.nm_id) === Number(nmId));
+  const drawOpts = {
+    rootId: 'myShelfRoot',
+    vendorCode: card && card.vendor_code,
+    ownNmId: nmId,
+    title: card && card.vendor_code ? card.vendor_code : null,
+  };
+  if(!force && MY_SHELF_CACHE[nmId] && MY_SHELF_CACHE[nmId].items) {
+    drawShelfTable(MY_SHELF_CACHE[nmId], drawOpts);
+    if(btn) btn.disabled = false;
+    return;
+  }
+  MY_SHELF_LOADING = true;
+  if(btn) btn.disabled = true;
+  if(status) status.textContent = `Загружаю полку ${card && card.vendor_code ? card.vendor_code : nmId}…`;
+  if(root) root.innerHTML = '<div class="empty" style="padding:40px 20px">Загрузка полки…</div>';
+  try {
+    const d = await fetchMyShelfData(nmId);
+    MY_SHELF_CACHE[nmId] = d;
+    if(d.competitor) {
+      upsertMyShelfCard({
+        nm_id: nmId,
+        vendor_code: (card && card.vendor_code) || '',
+        brand: d.competitor.brand || '',
+        name: d.competitor.name || '',
+        thumb: d.competitor.thumb || '',
+      });
+      buildMyShelfChips();
+    }
+    const fresh = MY_SHELF_CARDS.find(c => Number(c.nm_id) === Number(nmId));
+    drawShelfTable(d, {
+      rootId: 'myShelfRoot',
+      vendorCode: fresh && fresh.vendor_code,
+      ownNmId: nmId,
+      title: fresh && fresh.vendor_code ? fresh.vendor_code : null,
+    });
+    if(status) {
+      const c = d.competitor || {};
+      status.textContent = `${(fresh && fresh.vendor_code) || ''} · ${nmId}` +
+        (c.name ? ` · ${c.name}` : '') +
+        ` · топ-${(d.items||[]).length}` + (d.city ? ` · ${d.city}` : '');
+    }
+  } catch(e) {
+    if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка: ${escapeHtml(e.message)}</div>`;
+    if(status) status.textContent = `Ошибка: ${e.message}`;
+  } finally {
+    MY_SHELF_LOADING = false;
+    if(btn) btn.disabled = !MY_SHELF_ACTIVE;
+  }
 }
 
 const FINANCE_PIN = '1997';

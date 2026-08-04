@@ -2929,6 +2929,59 @@ async def upload_competitor_report(file: UploadFile = File(...)):
         import traceback; logger.error(traceback.format_exc())
         return {"error": str(e)}
 
+@app.get("/api/own-articles-all")
+def own_articles_all():
+    """Все свои карточки (nm_id + vendor_code) через Content API с пагинацией."""
+    if not WB_TOKEN:
+        return {"articles": [], "error": "WB_TOKEN not set"}
+    out, seen = [], set()
+    cursor = {"limit": 100}
+    try:
+        for _ in range(200):
+            resp = httpx.post(
+                f"{WB_CONTENT_URL}/content/v2/get/cards/list",
+                headers=wb_headers(),
+                json={
+                    "settings": {
+                        "sort": {"ascending": True},
+                        "filter": {"withPhoto": -1},
+                        "cursor": cursor,
+                    }
+                },
+                timeout=40,
+            )
+            if not resp.is_success:
+                return {
+                    "articles": out,
+                    "error": f"Content API {resp.status_code}: {resp.text[:160]}",
+                }
+            payload = resp.json() or {}
+            cards = payload.get("cards") or []
+            if not cards:
+                break
+            for c in cards:
+                nm = c.get("nmID") or c.get("nmId")
+                vc = (c.get("vendorCode") or "").strip()
+                if not nm or nm in seen:
+                    continue
+                if not vc or vc == str(nm):
+                    continue
+                seen.add(nm)
+                out.append({"nm_id": int(nm), "vendor_code": vc})
+            curs = payload.get("cursor") or {}
+            updated = curs.get("updatedAt")
+            nm_cur = curs.get("nmID") or curs.get("nmId")
+            if len(cards) < 100 or not updated or nm_cur is None:
+                break
+            cursor = {"limit": 100, "updatedAt": updated, "nmID": nm_cur}
+            time.sleep(0.25)
+        out.sort(key=lambda a: str(a["vendor_code"]).lower())
+        return {"articles": out, "count": len(out)}
+    except Exception as e:
+        logger.error(f"own-articles-all: {e}")
+        return {"articles": out, "error": str(e)}
+
+
 @app.get("/api/search-own-articles")
 def search_own_articles(q: str = ""):
     """Поиск своих артикулов по артикулу продавца (vendorCode).
