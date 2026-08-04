@@ -245,10 +245,17 @@ def sync_ratings_official():
 
 # ---------- Остатки на складах (WB Analytics: warehouse_remains report) ----------
 
+def _is_fbs_warehouse_name(name: str) -> bool:
+    n = str(name or "")
+    return n.startswith("Маркетплейс (FBS)") or n.startswith("Marketplace (FBS)")
+
+
 def create_stock_report():
     resp = httpx.get(
         f"{WB_ANALYTICS_URL}/api/v1/warehouse_remains",
-        headers=wb_headers(), params={"groupByNm": "true"}, timeout=30
+        headers=wb_headers(),
+        params={"groupByNm": True, "locale": "ru"},
+        timeout=30,
     )
     if not resp.is_success:
         logger.error(f"WB stock report create error {resp.status_code} {resp.text[:200]}")
@@ -268,6 +275,9 @@ def wait_stock_report(task_id: str, max_wait: int = 180) -> bool:
         logger.info(f"Stock report status (t+{elapsed}s): {status}")
         if status == "done":
             return True
+        if status in ("purged", "canceled", "cancelled", "error", "failed"):
+            logger.error(f"Stock report failed with status={status}")
+            return False
     return False
 
 def download_stock_report(task_id: str) -> list:
@@ -278,9 +288,18 @@ def download_stock_report(task_id: str) -> list:
     if not resp.is_success:
         logger.error(f"WB stock report download error {resp.status_code} {resp.text[:200]}")
         return []
-    data = resp.json()
+    raw = resp.json()
+    # WB иногда отдаёт список, иногда {"data": [...]}
+    if isinstance(raw, list):
+        data = raw
+    elif isinstance(raw, dict):
+        data = raw.get("data") or raw.get("report") or raw.get("items") or []
+        if isinstance(data, dict):
+            data = data.get("items") or data.get("rows") or []
+    else:
+        data = []
     if not isinstance(data, list):
-        logger.error(f"Unexpected stock report shape ({type(data).__name__}): {str(data)[:300]}")
+        logger.error(f"Unexpected stock report shape ({type(raw).__name__}): {str(raw)[:300]}")
         return []
     logger.info(f"Stock report download: {len(data)} items" + (f", raw snippet: {resp.text[:300]}" if not data else ""))
     if data:
@@ -293,31 +312,109 @@ def process_stock_items(items: list):
     now = datetime.now(timezone.utc).isoformat()
     totals, warehouses = [], []
     for it in items:
-        nm_id = it.get("nmId")
+        if not isinstance(it, dict):
+            continue
+        nm_id = it.get("nmId") if it.get("nmId") is not None else it.get("nm_id") or it.get("nmID")
         if not nm_id:
             continue
+        try:
+            nm_id = int(nm_id)
+        except (TypeError, ValueError):
+            continue
+        # топ-уровневые агрегаты (на случай плоского формата)
+        try:
+            top_qwf = int(it.get("quantityWarehousesFull") if it.get("quantityWarehousesFull") is not None else it.get("quantity_warehouses_full") or 0)
+        except Exception:
+            top_qwf = 0
+        try:
+            top_to = int(it.get("inWayToClient") if it.get("inWayToClient") is not None else it.get("in_way_to_client") or 0)
+        except Exception:
+            top_to = 0
+        try:
+            top_from = int(it.get("inWayFromClient") if it.get("inWayFromClient") is not None else it.get("in_way_from_client") or 0)
+        except Exception:
+            top_from = 0
         row = {
             "nm_id": nm_id,
-            "vendor_code": it.get("vendorCode", ""),
-            "subject_name": it.get("subjectName", ""),
-            "brand": it.get("brand", ""),
+            "vendor_code": it.get("vendorCode") or it.get("vendor_code") or it.get("supplierArticle") or "",
+            "subject_name": it.get("subjectName") or it.get("subject_name") or it.get("subject") or "",
+            "brand": it.get("brand") or "",
             "volume": it.get("volume"),
-            "in_way_to_client": 0,
-            "in_way_from_client": 0,
-            "quantity_warehouses_full": 0,
+            "in_way_to_client": top_to,
+            "in_way_from_client": top_from,
+            "quantity_warehouses_full": top_qwf,
             "updated_at": now,
         }
-        for w in it.get("warehouses", []):
-            name, qty = w.get("warehouseName"), w.get("quantity", 0)
+        wh_list = it.get("warehouses")
+        if not isinstance(wh_list, list):
+            wh_list = []
+        # плоский формат: одна строка = один склад
+        if not wh_list and (it.get("warehouseName") or it.get("warehouse_name")):
+            wh_list = [it]
+        for w in wh_list:
+            if not isinstance(w, dict):
+                continue
+            name = w.get("warehouseName") or w.get("warehouse_name") or w.get("name") or ""
+            name = str(name).strip()
+            try:
+                qty = int(
+                    w.get("quantity") if w.get("quantity") is not None
+                    else w.get("qty") if w.get("qty") is not None
+                    else w.get("quantityWarehousesFull") or 0
+                )
+            except Exception:
+                qty = 0
+            if not name:
+                continue
             field = STOCK_SPECIAL_FIELDS.get(name)
             if field:
                 row[field] = qty
             else:
-                warehouses.append({"nm_id": nm_id, "warehouse_name": name, "quantity": qty, "updated_at": now})
+                warehouses.append({
+                    "nm_id": nm_id,
+                    "warehouse_name": name,
+                    "quantity": qty,
+                    "updated_at": now,
+                })
         totals.append(row)
     return totals, warehouses
 
-def upsert_stock(totals: list, warehouses: list) -> int:
+def _delete_stock_warehouses(mode: str = "all") -> None:
+    """mode: all | fbw | fbs — что вычищать перед вставкой."""
+    if mode == "all":
+        httpx.delete(f"{SUPABASE_URL}/rest/v1/stock_warehouses?id=gte.0", headers=sb_headers(), timeout=15)
+        return
+    # тянем id пачками и удаляем нужные (PostgREST like по кириллице капризен)
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_warehouses?select=id,warehouse_name&limit=10000",
+            headers=sb_headers(),
+            timeout=30,
+        )
+        rows = resp.json() if resp.is_success else []
+    except Exception as e:
+        logger.error(f"stock_warehouses fetch for selective delete: {e}")
+        return
+    if not isinstance(rows, list) or not rows:
+        return
+    ids = []
+    for r in rows:
+        is_fbs = _is_fbs_warehouse_name(r.get("warehouse_name"))
+        if mode == "fbs" and is_fbs:
+            ids.append(r["id"])
+        elif mode == "fbw" and not is_fbs:
+            ids.append(r["id"])
+    for i in range(0, len(ids), 200):
+        chunk = ids[i:i + 200]
+        id_list = ",".join(str(x) for x in chunk)
+        httpx.delete(
+            f"{SUPABASE_URL}/rest/v1/stock_warehouses?id=in.({id_list})",
+            headers=sb_headers(),
+            timeout=30,
+        )
+
+
+def upsert_stock(totals: list, warehouses: list, *, replace_fbw: bool = True, replace_fbs: bool = True) -> int:
     saved = 0
     for i in range(0, len(totals), 200):
         batch = totals[i:i + 200]
@@ -326,10 +423,27 @@ def upsert_stock(totals: list, warehouses: list) -> int:
             saved += len(batch)
         else:
             logger.error(f"stock_totals upsert error {resp.status_code} {resp.text[:200]}")
-    # Полная перезаливка детализации по складам — проще, чем строить составной upsert-ключ
-    httpx.delete(f"{SUPABASE_URL}/rest/v1/stock_warehouses?id=gte.0", headers=sb_headers(), timeout=15)
-    for i in range(0, len(warehouses), 500):
-        batch = warehouses[i:i + 500]
+
+    fbs_rows = [w for w in warehouses if _is_fbs_warehouse_name(w.get("warehouse_name"))]
+    fbw_rows = [w for w in warehouses if not _is_fbs_warehouse_name(w.get("warehouse_name"))]
+
+    if replace_fbw and replace_fbs:
+        _delete_stock_warehouses("all")
+        to_insert = warehouses
+    else:
+        to_insert = []
+        if replace_fbw:
+            _delete_stock_warehouses("fbw")
+            to_insert.extend(fbw_rows)
+        if replace_fbs:
+            _delete_stock_warehouses("fbs")
+            to_insert.extend(fbs_rows)
+        if not replace_fbw and not replace_fbs:
+            logger.warning("upsert_stock: nothing to replace, skip warehouse write")
+            return saved
+
+    for i in range(0, len(to_insert), 500):
+        batch = to_insert[i:i + 500]
         resp = httpx.post(f"{SUPABASE_URL}/rest/v1/stock_warehouses", json=batch, headers=sb_headers(), timeout=30)
         if not resp.is_success:
             logger.error(f"stock_warehouses insert error {resp.status_code} {resp.text[:200]}")
@@ -577,6 +691,36 @@ def sync_stock():
     logger.info("Starting stock sync...")
     task_id = create_stock_report()
     if not task_id:
+        # FBW не создался — всё равно обновим FBS, не трогая FBW-склады
+        logger.error("Stock report taskId missing — updating FBS only, keep FBW warehouses")
+        fbs = {}
+        try:
+            fbs = fetch_fbs_stocks()
+        except Exception as e:
+            logger.error(f"FBS stocks merge error: {e}")
+            return
+        fbs_rows = fbs.get("warehouses") or []
+        totals = []
+        now = datetime.now(timezone.utc).isoformat()
+        for nm, qty in (fbs.get("by_nm") or {}).items():
+            if int(qty) <= 0:
+                continue
+            vc = next(
+                (s.get("vendor_code") for s in (fbs.get("samples") or []) if s.get("nm_id") == nm),
+                "",
+            )
+            totals.append({
+                "nm_id": int(nm),
+                "vendor_code": vc or "",
+                "subject_name": "",
+                "brand": "",
+                "volume": None,
+                "in_way_to_client": 0,
+                "in_way_from_client": 0,
+                "quantity_warehouses_full": 0,
+                "updated_at": now,
+            })
+        upsert_stock(totals, fbs_rows, replace_fbw=False, replace_fbs=True)
         return
     if not wait_stock_report(task_id):
         logger.error("Stock report generation timed out")
@@ -587,7 +731,23 @@ def sync_stock():
         logger.info("Stock report empty on first download, retrying once after 15s")
         time.sleep(15)
         items = download_stock_report(task_id)
+    if not items:
+        logger.info("Stock report still empty, retrying once more after 25s")
+        time.sleep(25)
+        items = download_stock_report(task_id)
     totals, warehouses = process_stock_items(items)
+    fbw_detail = [w for w in warehouses if not _is_fbs_warehouse_name(w.get("warehouse_name"))]
+    replace_fbw = bool(fbw_detail)
+    if items and not fbw_detail:
+        logger.warning(
+            "FBW report has %s nomenclatures but 0 warehouse breakdown rows — "
+            "keep previous FBW stock_warehouses, update totals/FBS only",
+            len(totals),
+        )
+    elif not items:
+        logger.warning("FBW report empty — keep previous FBW stock_warehouses, update FBS only")
+        totals = []  # не затираем quantity_warehouses_full нулями через пустой upsert? 
+        # пустой totals просто ничего не мержит — ок
 
     # FBS / Маркетплейс — отдельные колонки складов (не входят в quantity_warehouses_full WB)
     fbs = {}
@@ -595,7 +755,7 @@ def sync_stock():
         fbs = fetch_fbs_stocks()
         fbs_rows = fbs.get("warehouses") or []
         if fbs_rows:
-            warehouses.extend(fbs_rows)
+            warehouses = list(warehouses) + list(fbs_rows)
             by_nm = fbs.get("by_nm") or {}
             # артикулы только на FBS (нет в FBW-отчёте) — строка в totals с нулём на WB
             have = {int(t["nm_id"]) for t in totals if t.get("nm_id") is not None}
@@ -623,15 +783,40 @@ def sync_stock():
     except Exception as e:
         logger.error(f"FBS stocks merge error: {e}")
 
-    saved = upsert_stock(totals, warehouses)
+    replace_fbs = True
+    # если FBS с ошибкой и без строк — не трогаем старые FBS колонки
+    if fbs.get("error") and not (fbs.get("warehouses") or []):
+        replace_fbs = False
+        logger.warning(f"FBS stocks not applied, keep previous FBS rows: {fbs.get('error')}")
+
+    saved = upsert_stock(
+        totals,
+        warehouses,
+        replace_fbw=replace_fbw,
+        replace_fbs=replace_fbs,
+    )
     httpx.post(
         f"{SUPABASE_URL}/rest/v1/settings",
         json={"key": "last_stock_sync", "value": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
               "updated_at": datetime.now(timezone.utc).isoformat()},
         headers=sb_headers(), timeout=10
     )
+    # предупреждение в settings — видно на фронте если прокинем
+    warn = None
+    if not replace_fbw:
+        warn = "FBW-остатки по складам не обновились (пустой отчёт WB) — показаны прошлые FBW + свежий FBS"
+    httpx.post(
+        f"{SUPABASE_URL}/rest/v1/settings",
+        json={
+            "key": "stock_sync_warning",
+            "value": warn or "",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+        headers=sb_headers(), timeout=10,
+    )
     logger.info(
         f"Stock sync complete. Articles: {saved}, warehouse rows: {len(warehouses)}, "
+        f"fbw_detail={len(fbw_detail)}, replace_fbw={replace_fbw}, replace_fbs={replace_fbs}, "
         f"fbs_nms: {len((fbs or {}).get('by_nm') or {})}"
     )
 

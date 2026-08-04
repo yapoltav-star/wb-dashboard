@@ -1240,7 +1240,16 @@ async function loadData() {
     const swEl = document.getElementById('salesWindowInput');
     if(swEl) swEl.value = parseInt((data.settings || {}).sales_window_days) || 14;
     const suEl = document.getElementById('supplyUploadInfo');
-    if(suEl) suEl.textContent = (data.settings || {}).last_supply_sync ? 'Обновлено: ' + data.settings.last_supply_sync : 'Данные ещё не загружены';
+    if(suEl) {
+      const parts = [];
+      if((data.settings || {}).last_supply_sync) parts.push('Обновлено: ' + data.settings.last_supply_sync);
+      else parts.push('Данные ещё не загружены');
+      if((data.settings || {}).last_stock_sync) parts.push('остатки: ' + data.settings.last_stock_sync);
+      const warn = ((data.settings || {}).stock_sync_warning || '').trim();
+      if(warn) parts.push('⚠ ' + warn);
+      suEl.textContent = parts.join(' · ');
+      suEl.style.color = warn ? '#B54708' : '';
+    }
 
     // Продвижение — статистика рекламы
     AD_STATS = data.ad_stats || [];
@@ -2991,14 +3000,33 @@ async function renderSupplyRecs() {
   const matrix = buildSupplyMatrix();
   renderSupplyCards(matrix);
   let note = '';
+  if(supplyFbwStockBroken()) {
+    note += `<div style="margin-bottom:10px;padding:8px 12px;background:#FEF3C7;border:1px solid #F59E0B;border-radius:var(--rs);font-size:12px;color:#92400E">
+      Остатки WB по складам (Коледино и др.) сейчас нулевые — в базе остался только FBS.
+      Нажми «Обновить» ещё раз после деплоя фикса; если не поможет — FBW-отчёт WB пришёл без разбивки по складам.
+    </div>`;
+  }
   if(!Object.keys(OWN_WH_BY_VENDOR).length) {
-    note = '<div class="empty" style="margin-bottom:10px">Колонка «Наш склад» пустая — не удалось подтянуть Google Sheets. Открой вкладку «Наш склад» и нажми Обновить.</div>';
+    note += '<div class="empty" style="margin-bottom:10px">Колонка «Наш склад» пустая — не удалось подтянуть Google Sheets. Открой вкладку «Наш склад» и нажми Обновить.</div>';
   } else if(OWN_WH && OWN_WH.as_of) {
-    note = `<div style="margin-bottom:10px;padding:8px 12px;background:#FFF0E8;border:1px solid #F5D0B5;border-radius:var(--rs);font-size:12px;color:var(--wb-text)">
+    note += `<div style="margin-bottom:10px;padding:8px 12px;background:#FFF0E8;border:1px solid #F5D0B5;border-radius:var(--rs);font-size:12px;color:var(--wb-text)">
       Колонка «Наш склад» — остатки из Google Sheets <b>на ${OWN_WH.as_of}</b>${OWN_WH.updated_at ? ` <span style="color:var(--wb-muted)">(подтянуто ${OWN_WH.updated_at})</span>` : ''}
     </div>`;
   }
   document.getElementById('supplyRoot').innerHTML = note + renderSupplyMatrixTable(matrix);
+}
+
+function supplyFbwStockBroken() {
+  if(!SUPPLY_REPORT.length) return false;
+  let fbwStock = 0, fbsStock = 0, fbwRows = 0;
+  SUPPLY_REPORT.forEach(r => {
+    const name = String(r.warehouse_name || '');
+    const qty = r.current_stock || 0;
+    if(name.startsWith('Маркетплейс (FBS)') || name.startsWith('Marketplace (FBS)')) fbsStock += qty;
+    else { fbwRows++; fbwStock += qty; }
+  });
+  const qwf = (STOCK_TOTALS || []).reduce((s, t) => s + (t.quantity_warehouses_full || 0), 0);
+  return fbwRows > 0 && fbwStock === 0 && (fbsStock > 0 || qwf > 0);
 }
 
 // ---------- Продвижение (реклама) ----------
