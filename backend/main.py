@@ -2931,55 +2931,87 @@ async def upload_competitor_report(file: UploadFile = File(...)):
 
 @app.get("/api/own-articles-all")
 def own_articles_all():
-    """Все свои карточки (nm_id + vendor_code) через Content API с пагинацией."""
-    if not WB_TOKEN:
-        return {"articles": [], "error": "WB_TOKEN not set"}
-    out, seen = [], set()
-    cursor = {"limit": 100}
+    """Свои карточки с заказами или выкупами за окно поставок (не весь каталог)."""
+    window_days = get_setting_int("sales_window_days", 14)
+    by_nm = {}
     try:
-        for _ in range(200):
-            resp = httpx.post(
-                f"{WB_CONTENT_URL}/content/v2/get/cards/list",
-                headers=wb_headers(),
-                json={
-                    "settings": {
-                        "sort": {"ascending": True},
-                        "filter": {"withPhoto": -1},
-                        "cursor": cursor,
-                    }
-                },
-                timeout=40,
-            )
-            if not resp.is_success:
-                return {
-                    "articles": out,
-                    "error": f"Content API {resp.status_code}: {resp.text[:160]}",
-                }
-            payload = resp.json() or {}
-            cards = payload.get("cards") or []
-            if not cards:
-                break
-            for c in cards:
-                nm = c.get("nmID") or c.get("nmId")
-                vc = (c.get("vendorCode") or "").strip()
-                if not nm or nm in seen:
-                    continue
-                if not vc or vc == str(nm):
-                    continue
-                seen.add(nm)
-                out.append({"nm_id": int(nm), "vendor_code": vc})
-            curs = payload.get("cursor") or {}
-            updated = curs.get("updatedAt")
-            nm_cur = curs.get("nmID") or curs.get("nmId")
-            if len(cards) < 100 or not updated or nm_cur is None:
-                break
-            cursor = {"limit": 100, "updatedAt": updated, "nmID": nm_cur}
-            time.sleep(0.25)
-        out.sort(key=lambda a: str(a["vendor_code"]).lower())
-        return {"articles": out, "count": len(out)}
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/supply_report"
+            f"?select=nm_id,vendor_code,ordered_qty,buyout_qty&limit=20000",
+            headers=sb_headers(),
+            timeout=25,
+        )
+        if not r.is_success:
+            return {
+                "articles": [],
+                "days": window_days,
+                "error": f"supply_report {r.status_code}",
+            }
+        for row in r.json() or []:
+            nm = row.get("nm_id")
+            if nm is None:
+                continue
+            try:
+                nm = int(nm)
+            except (TypeError, ValueError):
+                continue
+            a = by_nm.setdefault(nm, {
+                "nm_id": nm,
+                "vendor_code": "",
+                "ordered_qty": 0,
+                "buyout_qty": 0,
+            })
+            a["ordered_qty"] += int(row.get("ordered_qty") or 0)
+            a["buyout_qty"] += int(row.get("buyout_qty") or 0)
+            vc = (row.get("vendor_code") or "").strip()
+            if vc and vc != str(nm):
+                a["vendor_code"] = vc
     except Exception as e:
-        logger.error(f"own-articles-all: {e}")
-        return {"articles": out, "error": str(e)}
+        logger.error(f"own-articles-all supply_report: {e}")
+        return {"articles": [], "days": window_days, "error": str(e)}
+
+    active = [
+        a for a in by_nm.values()
+        if (a["ordered_qty"] or 0) > 0 or (a["buyout_qty"] or 0) > 0
+    ]
+    if not active:
+        return {
+            "articles": [],
+            "count": 0,
+            "days": window_days,
+            "error": "Нет карточек с заказами/выкупами за окно — сначала синхронизируй остатки и поставки",
+        }
+
+    nm_to_vendor = build_nm_to_vendor_map()
+    for a in active:
+        vc = (a.get("vendor_code") or "").strip()
+        if not vc or vc == str(a["nm_id"]):
+            mapped = nm_to_vendor.get(a["nm_id"])
+            if mapped:
+                a["vendor_code"] = mapped
+        if not a.get("vendor_code"):
+            a["vendor_code"] = str(a["nm_id"])
+
+    active.sort(
+        key=lambda a: (
+            -(a["ordered_qty"] or 0),
+            -(a["buyout_qty"] or 0),
+            str(a.get("vendor_code") or "").lower(),
+        )
+    )
+    return {
+        "articles": [
+            {
+                "nm_id": a["nm_id"],
+                "vendor_code": a["vendor_code"],
+                "ordered_qty": a["ordered_qty"],
+                "buyout_qty": a["buyout_qty"],
+            }
+            for a in active
+        ],
+        "count": len(active),
+        "days": window_days,
+    }
 
 
 @app.get("/api/search-own-articles")

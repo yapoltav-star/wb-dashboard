@@ -944,7 +944,7 @@ td.tc{text-align:center}
     <span style="font-size:13px;font-weight:600">Полки у моих карточек</span>
     <span style="font-size:12px;color:var(--wb-muted);margin-left:10px">«Смотрите также» · топ-15 · доли брендов</span>
     <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button class="action-btn" id="myShelfLoadAllBtn" onclick="loadAllMyShelfCards()">↓ Все мои карточки</button>
+      <button class="action-btn" id="myShelfLoadAllBtn" onclick="loadAllMyShelfCards()">↓ С продажами</button>
       <button class="action-btn" id="myShelfRefreshBtn" onclick="refreshActiveMyShelf()" disabled>↻ Обновить полку</button>
     </div>
   </div>
@@ -977,7 +977,7 @@ td.tc{text-align:center}
       <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Мои карточки · 📌 закрепить · ⋮⋮ перетащить</div>
       <div id="myShelfChips" style="display:flex;gap:8px;flex-wrap:wrap;min-height:32px;align-items:center"></div>
     </div>
-    <div id="myShelfStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Загрузи свои карточки или найди артикул — клик по кнопке покажет топ-15 полки и доли конкурентов</div>
+    <div id="myShelfStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Только карточки с заказами/выкупами за окно поставок · клик — топ-15 полки и доли конкурентов</div>
   </div>
 
   <div id="myShelfRoot" style="overflow:auto">
@@ -5796,10 +5796,8 @@ function renderMyShelvesPage() {
     const root = document.getElementById('myShelfRoot');
     if(root) root.innerHTML = '<div class="empty" style="padding:40px 20px">Выбери свою карточку, чтобы увидеть полку «Смотрите также»</div>';
   }
-  if(!MY_SHELF_CARDS.length) {
-    // автоподгрузка списка при первом заходе
-    loadAllMyShelfCards(true);
-  }
+  // всегда подтягиваем только активные с продажами (убираем старые без заказов)
+  loadAllMyShelfCards(true);
 }
 
 function buildMyShelfChips() {
@@ -5812,7 +5810,7 @@ function buildMyShelfChips() {
       || String(c.brand||'').toLowerCase().includes(q);
   });
   if(!MY_SHELF_CARDS.length) {
-    el.innerHTML = '<span style="font-size:12px;color:var(--wb-faint)">Пока пусто — нажми «Все мои карточки» или найди артикул</span>';
+    el.innerHTML = '<span style="font-size:12px;color:var(--wb-faint)">Пока пусто — нажми «С продажами» или найди артикул</span>';
     return;
   }
   if(!cards.length) {
@@ -6005,46 +6003,45 @@ async function loadAllMyShelfCards(silent) {
   const status = document.getElementById('myShelfStatus');
   const btn = document.getElementById('myShelfLoadAllBtn');
   if(btn) btn.disabled = true;
-  if(status && !silent) status.textContent = 'Загружаю все мои карточки…';
+  if(status && !silent) status.textContent = 'Загружаю карточки с продажами…';
   try {
     const r = await fetch(`${RAILWAY_URL}/api/own-articles-all`);
     const d = await r.json().catch(() => ({}));
     const arts = Array.isArray(d.articles) ? d.articles : [];
+    const days = d.days || '';
     if(!arts.length) {
-      if(status) status.textContent = d.error ? `Ошибка: ${d.error}` : 'Карточки не найдены';
+      MY_SHELF_CARDS = [];
+      MY_SHELF_PINNED = [];
+      MY_SHELF_ACTIVE = null;
+      saveMyShelfState();
+      buildMyShelfChips();
+      if(status) status.textContent = d.error ? `Ошибка: ${d.error}` : 'Нет карточек с продажами за окно';
       return;
     }
-    const have = new Set(MY_SHELF_CARDS.map(c => Number(c.nm_id)));
-    let added = 0;
-    arts.forEach(a => {
+    const prevByNm = new Map(MY_SHELF_CARDS.map(c => [Number(c.nm_id), c]));
+    MY_SHELF_CARDS = arts.map(a => {
       const nm = Number(a.nm_id);
-      if(!nm || have.has(nm)) {
-        // обновим vendor_code если пустой
-        const i = MY_SHELF_CARDS.findIndex(c => Number(c.nm_id) === nm);
-        if(i >= 0 && a.vendor_code && !MY_SHELF_CARDS[i].vendor_code) {
-          MY_SHELF_CARDS[i].vendor_code = a.vendor_code;
-        }
-        return;
-      }
-      MY_SHELF_CARDS.push({
+      const prev = prevByNm.get(nm) || {};
+      return {
         nm_id: nm,
-        vendor_code: a.vendor_code || String(nm),
-        brand: '',
-        name: '',
-        thumb: wbThumbUrl(nm),
-      });
-      have.add(nm);
-      added += 1;
+        vendor_code: a.vendor_code || prev.vendor_code || String(nm),
+        brand: prev.brand || '',
+        name: prev.name || '',
+        thumb: prev.thumb || wbThumbUrl(nm),
+        ordered_qty: a.ordered_qty || 0,
+        buyout_qty: a.buyout_qty || 0,
+      };
     });
-    if(!MY_SHELF_ACTIVE && MY_SHELF_CARDS.length) {
-      MY_SHELF_ACTIVE = orderedMyShelfCards()[0].nm_id;
+    const activeSet = new Set(MY_SHELF_CARDS.map(c => Number(c.nm_id)));
+    MY_SHELF_PINNED = MY_SHELF_PINNED.map(Number).filter(nm => activeSet.has(nm));
+    if(!activeSet.has(Number(MY_SHELF_ACTIVE))) {
+      MY_SHELF_ACTIVE = orderedMyShelfCards()[0] ? orderedMyShelfCards()[0].nm_id : null;
     }
     saveMyShelfState();
     buildMyShelfChips();
     if(status) {
-      status.textContent = added
-        ? `Добавлено ${added} · всего ${MY_SHELF_CARDS.length}`
-        : `Все карточки уже в списке · ${MY_SHELF_CARDS.length}`;
+      status.textContent = `${MY_SHELF_CARDS.length} карточек с заказами/выкупами` +
+        (days ? ` за ${days} дн.` : '') + ' · без продаж скрыты';
     }
     if(MY_SHELF_ACTIVE) loadMyShelfFor(MY_SHELF_ACTIVE, false);
   } catch(e) {
