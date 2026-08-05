@@ -79,7 +79,17 @@ tr:hover td{background:#F8FAFF}
 .empty{padding:48px 24px;text-align:center;color:var(--oz-muted);font-size:14px}
 .empty b{display:block;color:var(--oz-text);margin-bottom:6px;font-size:15px}
 
-.matrix-wrap{overflow:auto;background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);max-height:calc(100vh - 280px)}
+.matrix-wrap{overflow:auto;background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);max-height:calc(100vh - 280px);cursor:default;
+  scrollbar-gutter:stable;scrollbar-width:auto}
+.matrix-wrap::-webkit-scrollbar{height:14px;width:14px}
+.matrix-wrap::-webkit-scrollbar-thumb{background:#C5CAD3;border-radius:8px;border:3px solid var(--oz-surface)}
+.matrix-wrap::-webkit-scrollbar-thumb:hover{background:#9AA1AD}
+.matrix-wrap::-webkit-scrollbar-track{background:#EEF0F3;border-radius:8px}
+.matrix-wrap.panning{cursor:grabbing;user-select:none}
+.scroll-hint{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.scroll-btn{border:1px solid var(--oz-border);background:var(--oz-surface);border-radius:var(--rs);padding:4px 10px;font-size:12px;cursor:pointer;font-family:inherit;color:var(--oz-text)}
+.scroll-btn:hover{border-color:var(--oz-blue);color:var(--oz-blue);background:var(--oz-blue-light)}
+.scroll-hint span{font-size:12px;color:var(--oz-muted)}
 .matrix{border-collapse:collapse;font-size:12px;min-width:100%;table-layout:fixed}
 .matrix th,.matrix td{border-bottom:1px solid var(--oz-border);border-right:1px solid var(--oz-border);padding:6px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative}
 .matrix th{background:#FAFBFC;position:sticky;top:0;z-index:2;font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--oz-muted)}
@@ -743,7 +753,12 @@ function renderStocks() {
   }).join('');
 
   document.getElementById('stocksRoot').innerHTML = `
-    <div class="matrix-wrap">
+    <div class="scroll-hint">
+      <button type="button" class="scroll-btn" onclick="scrollStocks(-320)">← Влево</button>
+      <button type="button" class="scroll-btn" onclick="scrollStocks(320)">Вправо →</button>
+      <span>Колесо мыши / Shift+колесо — горизонтально · зажми ЛКМ и тяни · снизу полоса прокрутки</span>
+    </div>
+    <div class="matrix-wrap" id="stocksScroll">
       <table class="matrix" id="stocksMatrix">
         ${colgroup}
         <thead><tr>${head1}</tr><tr>${head2}</tr></thead>
@@ -757,6 +772,55 @@ function renderStocks() {
       Формулы: темп = заказы/окно · дней = остаток/темп · поставить = темп×цель − остаток.
     </div>`;
   attachColResizers(document.getElementById('stocksMatrix'));
+  bindStocksScroll(document.getElementById('stocksScroll'));
+}
+
+function scrollStocks(dx) {
+  const el = document.getElementById('stocksScroll');
+  if (el) el.scrollBy({ left: dx, behavior: 'smooth' });
+}
+
+let _stocksPan = null;
+function _stocksPanMove(e) {
+  if (!_stocksPan) return;
+  _stocksPan.el.scrollLeft = _stocksPan.startLeft - (e.clientX - _stocksPan.startX);
+}
+function _stocksPanUp() {
+  if (!_stocksPan) return;
+  _stocksPan.el.classList.remove('panning');
+  _stocksPan = null;
+}
+if (!window.__ozStocksPanBound) {
+  window.__ozStocksPanBound = true;
+  window.addEventListener('mousemove', _stocksPanMove);
+  window.addEventListener('mouseup', _stocksPanUp);
+}
+
+function bindStocksScroll(wrap) {
+  if (!wrap || wrap.dataset.scrollBound === '1') return;
+  wrap.dataset.scrollBound = '1';
+
+  wrap.addEventListener('wheel', (e) => {
+    const mostlyVertical = Math.abs(e.deltaY) >= Math.abs(e.deltaX);
+    if (e.shiftKey || mostlyVertical) {
+      const dx = e.deltaY;
+      const atStart = wrap.scrollLeft <= 0 && dx < 0;
+      const atEnd = wrap.scrollLeft + wrap.clientWidth >= wrap.scrollWidth - 1 && dx > 0;
+      if (atStart || atEnd) return;
+      if (wrap.scrollWidth <= wrap.clientWidth) return;
+      e.preventDefault();
+      wrap.scrollLeft += dx;
+    }
+  }, { passive: false });
+
+  wrap.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest('input,button,label,a,.col-resizer,.pin-btn,.wh-toggle')) return;
+    if (e.target.closest('[draggable="true"]')) return;
+    _stocksPan = { el: wrap, startX: e.clientX, startLeft: wrap.scrollLeft };
+    wrap.classList.add('panning');
+    e.preventDefault();
+  });
 }
 
 refreshStatus();
