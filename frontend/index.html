@@ -398,6 +398,37 @@ td.tc{text-align:center}
 .matrix.pace-tbl tbody tr.total-row td.pg-cr{background:#FFE4E6!important}
 .matrix.pace-tbl tbody tr.total-row td.pg-meta,
 .matrix.pace-tbl tbody tr.total-row td.mcol-art.pg-meta{background:#E8E4DE!important}
+.pace-insights{margin:0 0 12px;padding:14px 16px;border:1px solid var(--wb-border);border-radius:var(--r);background:linear-gradient(180deg,#FCFAF7 0%,#fff 100%)}
+.pace-insights-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.pace-insights-h h3{margin:0;font-size:14px;font-weight:700;color:var(--wb-text)}
+.pace-insights-h .pi-sub{font-size:11px;color:var(--wb-muted)}
+.pace-insights-sum{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.pace-insights-chip{font-size:11px;padding:4px 10px;border-radius:999px;border:1px solid var(--wb-border);background:#fff;color:var(--wb-text)}
+.pace-insights-chip b{font-weight:700}
+.pi-chip-stock{background:#FEF3F2;border-color:#FECDCA;color:#B42318}
+.pi-chip-geo{background:#FFFAEB;border-color:#FEDF89;color:#B54708}
+.pi-chip-ads{background:#F5F3FF;border-color:#DDD6FE;color:#5B21B6}
+.pi-chip-click{background:#F0FDFA;border-color:#99F6E4;color:#115E59}
+.pi-chip-cart{background:#ECFDF5;border-color:#A7F3D0;color:#065F46}
+.pi-chip-weak{background:#F9FAFB;border-color:#E5E7EB;color:#6B7280}
+.pace-insights-list{display:flex;flex-direction:column;gap:8px}
+.pace-insight-row{display:grid;grid-template-columns:minmax(140px,1.1fr) minmax(90px,0.6fr) minmax(200px,2fr);gap:10px 14px;align-items:start;padding:10px 12px;border-radius:8px;background:#fff;border:1px solid #F0EDE8}
+.pace-insight-row .pi-art{font-weight:700;font-size:13px;color:var(--wb-text);word-break:break-word}
+.pace-insight-row .pi-nm{display:block;font-size:11px;color:var(--wb-faint);font-weight:400;margin-top:2px}
+.pace-insight-row .pi-delta{font-size:13px;font-weight:700;color:#B42318;white-space:nowrap}
+.pace-insight-row .pi-hyp .pi-tag{display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;padding:2px 7px;border-radius:6px;margin-bottom:4px}
+.pace-insight-row .pi-hyp .pi-text{font-size:12px;line-height:1.4;color:var(--wb-text)}
+.pace-insight-row .pi-hyp .pi-facts{font-size:11px;color:var(--wb-muted);margin-top:3px}
+.pi-tag-stock{background:#FEE4E2;color:#B42318}
+.pi-tag-geo{background:#FEF0C7;color:#B54708}
+.pi-tag-ads{background:#EDE9FE;color:#5B21B6}
+.pi-tag-click{background:#CCFBF1;color:#115E59}
+.pi-tag-cart{background:#D1FAE5;color:#065F46}
+.pi-tag-weak{background:#F3F4F6;color:#4B5563}
+.pace-insights-empty{font-size:12px;color:var(--wb-muted);padding:4px 0}
+@media (max-width:900px){
+  .pace-insight-row{grid-template-columns:1fr}
+}
 .promo-ov{width:100%;border-collapse:collapse;font-size:12px}
 .promo-ov th{position:sticky;top:0;background:#FAFAFA;font-size:10px;color:var(--wb-muted);font-weight:600;text-transform:uppercase;letter-spacing:.3px;text-align:right;padding:8px 10px;border-bottom:1px solid var(--wb-border);z-index:1}
 .promo-ov th:first-child{text-align:left}
@@ -631,6 +662,7 @@ td.tc{text-align:center}
     </div>
   </div>
   <div class="cards" id="paceCards"></div>
+  <div id="paceInsights" class="pace-insights" style="display:none"></div>
   <div id="paceRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить» — сравним текущий период с прошлым (день / неделя / 2 недели / месяц).</div></div>
 </div>
 
@@ -3381,6 +3413,251 @@ function paceTd(html, cls) {
   return `<td class="${cls || ''}">${html}</td>`;
 }
 
+/** Значимое падение заказов: −3 шт и больше или −15%+ при базе ≥5. */
+function paceSignificantDrop(a) {
+  const d = Number(a.orders_delta);
+  if(!isFinite(d) || d >= 0) return false;
+  if(d <= -3) return true;
+  const y = Number(a.orders_yesterday) || 0;
+  if(y >= 5 && (-d / y) >= 0.15) return true;
+  if(y > 0 && (-d / y) >= 0.5 && d <= -2) return true;
+  return false;
+}
+
+function paceRelDrop(cur, prev) {
+  const p = Number(prev);
+  if(!isFinite(p) || p <= 0) return null;
+  return (p - (Number(cur) || 0)) / p;
+}
+
+/**
+ * Гипотеза по воронке WB (этапы 1–3) + сток/география.
+ * code: stock_oos | stock_low | stock_geo | ads_views | ads_cpm | funnel_click | funnel_cart | weak
+ */
+function paceHypothesis(a) {
+  const od = Number(a.orders_delta) || 0;
+  const facts = [`заказы ${od > 0 ? '+' : ''}${od}`];
+  const stock = a.stock;
+  if(stock != null) facts.push(`сток ${stock}`);
+  if(a.days_left != null) facts.push(`~${a.days_left}д запаса`);
+  if(a.wh_live != null) {
+    facts.push(a.wh_live_prev != null && a.wh_live_prev !== a.wh_live
+      ? `скл. ${a.wh_live} (было ${a.wh_live_prev})`
+      : `скл. ${a.wh_live}`);
+  }
+  if(a.views_delta != null) facts.push(`показы ${a.views_delta > 0 ? '+' : ''}${a.views_delta}`);
+  if(a.opens_delta != null) facts.push(`переходы ${a.opens_delta > 0 ? '+' : ''}${a.opens_delta}`);
+  if(a.cart_delta != null) facts.push(`корзина ${a.cart_delta > 0 ? '+' : ''}${a.cart_delta}`);
+  if(a.cart_cr_delta != null) facts.push(`CR ${a.cart_cr_delta > 0 ? '+' : ''}${a.cart_cr_delta}п.п.`);
+  if(a.cpm_delta != null) facts.push(`CPM ${a.cpm_delta > 0 ? '+' : ''}${a.cpm_delta}`);
+
+  // 1) Полный OOS
+  if(a.stock_flag === 'oos' || (stock != null && Number(stock) <= 0)) {
+    return {
+      code: 'stock_oos', tag: 'Сток', tagCls: 'pi-tag-stock', chipCls: 'pi-chip-stock',
+      title: 'Обнулился остаток',
+      text: 'Нет товара на складах WB — падают показы, корзина и заказы. Нужна поставка.',
+      facts,
+    };
+  }
+
+  // 2) Обнулился склад / узкая география (срок доставки)
+  if(a.stock_geo_flag === 'emptied') {
+    const names = (a.wh_emptied || []).slice(0, 3).join(', ');
+    return {
+      code: 'stock_geo', tag: 'География', tagCls: 'pi-tag-geo', chipCls: 'pi-chip-geo',
+      title: 'Обнулился склад',
+      text: names
+        ? `Пусто: ${names}. Вероятно вырос срок доставки — бьёт по клику, корзине и заказам.`
+        : 'Живых складов стало меньше — срок доставки вырос, страдает вся воронка.',
+      facts,
+    };
+  }
+  if(a.stock_geo_flag === 'narrow') {
+    return {
+      code: 'stock_geo', tag: 'География', tagCls: 'pi-tag-geo', chipCls: 'pi-chip-geo',
+      title: 'Узкая география складов',
+      text: `Только ${a.wh_live || 0} живых склад(а). Доставка дольше в регионах → хуже конверсии.`,
+      facts,
+    };
+  }
+
+  // 3) Мало дней запаса
+  if(a.stock_flag === 'low' || (a.days_left != null && a.days_left < 5)) {
+    return {
+      code: 'stock_low', tag: 'Сток', tagCls: 'pi-tag-stock', chipCls: 'pi-chip-stock',
+      title: 'Мало запаса',
+      text: 'Остатка меньше ~5 дней — часть регионов уже «режется» по сроку/наличию. Поставить товар.',
+      facts,
+    };
+  }
+
+  const viewsDrop = paceRelDrop(a.views_today, a.views_yesterday);
+  const vd = a.views_delta;
+  // 4) Упали показы (реклама / выдача)
+  if(vd != null && vd < 0 && (vd <= -30 || (viewsDrop != null && viewsDrop >= 0.15))) {
+    return {
+      code: 'ads_views', tag: 'Показы', tagCls: 'pi-tag-ads', chipCls: 'pi-chip-ads',
+      title: 'Упали показы',
+      text: 'Меньше охвата (ставка, бюджет, кластеры, выдача). Проверь рекламу и наличие в выдаче.',
+      facts,
+    };
+  }
+
+  // 5) CPM↑ и показы↓ — дороже охват
+  if(a.cpm_delta != null && a.cpm_delta > 0 && vd != null && vd < 0) {
+    return {
+      code: 'ads_cpm', tag: 'CPM', tagCls: 'pi-tag-ads', chipCls: 'pi-chip-ads',
+      title: 'Дороже показы',
+      text: 'CPM вырос, показы упали — бюджет покупает меньше охвата. Пересмотри ставки/лимиты.',
+      facts,
+    };
+  }
+
+  const opensD = a.opens_delta;
+  const opensDrop = paceRelDrop(a.opens_today, a.opens_yesterday);
+  // 6) Показы живые, переходы↓ — превью / CTR (этап 2)
+  if(opensD != null && opensD < 0 && (opensD <= -5 || (opensDrop != null && opensDrop >= 0.15))
+     && (vd == null || vd >= 0 || (viewsDrop != null && viewsDrop < 0.1))) {
+    return {
+      code: 'funnel_click', tag: 'Клик', tagCls: 'pi-tag-click', chipCls: 'pi-chip-click',
+      title: 'Не кликают в карточку',
+      text: 'Показы есть, переходы падают — превью: фото, цена, рейтинг, «Оригинал», срок доставки.',
+      facts,
+    };
+  }
+
+  const cartD = a.cart_delta;
+  const crD = a.cart_cr_delta;
+  // 7) Переходы живые, корзина/CR↓ — карточка (этап 3)
+  if(((cartD != null && cartD < 0) || (crD != null && crD <= -1))
+     && (opensD == null || opensD >= 0 || (opensDrop != null && opensDrop < 0.1))) {
+    return {
+      code: 'funnel_cart', tag: 'Корзина', tagCls: 'pi-tag-cart', chipCls: 'pi-chip-cart',
+      title: 'Карточка не конвертит',
+      text: 'Заходят, но реже кладут в корзину — цена/СПП, фото, отзывы, наличие размера.',
+      facts,
+    };
+  }
+
+  // 8) Слабая / внешняя
+  return {
+    code: 'weak', tag: 'Прочее', tagCls: 'pi-tag-weak', chipCls: 'pi-chip-weak',
+    title: 'Воронка ровная',
+    text: 'Показы/переходы/корзина без сильного минуса. Возможны выдача, конкуренты, конец акции — слабый сигнал.',
+    facts,
+  };
+}
+
+function buildPaceInsights(all) {
+  const drops = (all || [])
+    .filter(paceSignificantDrop)
+    .sort((a, b) => (a.orders_delta || 0) - (b.orders_delta || 0));
+  const items = drops.slice(0, 8).map(a => {
+    const hyp = paceHypothesis(a);
+    return { a, hyp };
+  });
+  const byCode = {};
+  drops.forEach(a => {
+    const c = paceHypothesis(a).code;
+    byCode[c] = (byCode[c] || 0) + 1;
+  });
+  // риски роста при низком стоке
+  const risks = (all || [])
+    .filter(a => (a.orders_delta || 0) > 0 && (a.stock_flag === 'oos' || a.stock_flag === 'low' || a.stock_geo_flag === 'emptied' || a.stock_geo_flag === 'narrow'))
+    .sort((a, b) => (b.orders_delta || 0) - (a.orders_delta || 0))
+    .slice(0, 3);
+  return { items, byCode, totalDrops: drops.length, risks };
+}
+
+function renderPaceInsights(all) {
+  const box = document.getElementById('paceInsights');
+  if(!box) return;
+  if(PACE_DATA.syncing && !(all || []).length) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  if(!(all || []).length) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  const { items, byCode, totalDrops, risks } = buildPaceInsights(all);
+  const chipOrder = [
+    ['stock_oos', 'OOS', 'pi-chip-stock'],
+    ['stock_low', 'Мало стока', 'pi-chip-stock'],
+    ['stock_geo', 'География', 'pi-chip-geo'],
+    ['ads_views', 'Показы↓', 'pi-chip-ads'],
+    ['ads_cpm', 'CPM↑', 'pi-chip-ads'],
+    ['funnel_click', 'Клик↓', 'pi-chip-click'],
+    ['funnel_cart', 'Корзина↓', 'pi-chip-cart'],
+    ['weak', 'Прочее', 'pi-chip-weak'],
+  ];
+  const chips = chipOrder
+    .filter(([code]) => byCode[code])
+    .map(([code, label, cls]) => `<span class="pace-insights-chip ${cls}"><b>${byCode[code]}</b> · ${label}</span>`)
+    .join('');
+
+  let body;
+  if(!items.length) {
+    body = '<div class="pace-insights-empty">Существенных падений по заказам нет (порог: −3 шт или −15%).</div>';
+  } else {
+    body = `<div class="pace-insights-list">${items.map(({ a, hyp }) => {
+      const d = a.orders_delta || 0;
+      const y = a.orders_yesterday || 0;
+      const pct = y > 0 ? ` (${Math.round(100 * d / y)}%)` : '';
+      return `<div class="pace-insight-row">
+        <div>
+          <div class="pi-art">${escapeHtml(String(a.vendor_code || a.nm_id || '—'))}</div>
+          <span class="pi-nm">${a.nm_id || ''}</span>
+        </div>
+        <div class="pi-delta">${d}${pct}</div>
+        <div class="pi-hyp">
+          <span class="pi-tag ${hyp.tagCls}">${escapeHtml(hyp.tag)}</span>
+          <div class="pi-text"><b>${escapeHtml(hyp.title)}.</b> ${escapeHtml(hyp.text)}</div>
+          <div class="pi-facts">${escapeHtml((hyp.facts || []).join(' · '))}</div>
+        </div>
+      </div>`;
+    }).join('')}</div>`;
+  }
+
+  let riskHtml = '';
+  if(risks.length) {
+    riskHtml = `<div style="margin-top:12px;padding-top:10px;border-top:1px solid #F0EDE8">
+      <div style="font-size:11px;font-weight:700;color:#B54708;margin-bottom:6px;text-transform:uppercase;letter-spacing:.3px">Риск: растут, но сток/география слабые</div>
+      <div class="pace-insights-list">${risks.map(a => {
+        let why = 'сток на исходе';
+        if(a.stock_flag === 'oos') why = 'OOS при росте';
+        else if(a.stock_geo_flag === 'emptied') why = 'обнулился склад';
+        else if(a.stock_geo_flag === 'narrow') why = 'мало живых складов';
+        else if(a.stock_flag === 'low') why = 'мало дней запаса';
+        return `<div class="pace-insight-row" style="border-color:#FEDF89;background:#FFFCF5">
+          <div>
+            <div class="pi-art">${escapeHtml(String(a.vendor_code || a.nm_id || '—'))}</div>
+            <span class="pi-nm">${a.nm_id || ''}</span>
+          </div>
+          <div class="pi-delta" style="color:#027A48">+${a.orders_delta || 0}</div>
+          <div class="pi-hyp">
+            <span class="pi-tag pi-tag-geo">Риск</span>
+            <div class="pi-text"><b>${escapeHtml(why)}.</b> Растёт спрос — закрепить поставкой, иначе сломается доставка и заказы.</div>
+          </div>
+        </div>`;
+      }).join('')}</div>
+    </div>`;
+  }
+
+  box.style.display = 'block';
+  box.innerHTML = `
+    <div class="pace-insights-h">
+      <h3>Выводы по темпу</h3>
+      <span class="pi-sub">Лидеры падения · гипотеза по воронке (сток → показы → клик → корзина) · топ ${items.length} из ${totalDrops}</span>
+    </div>
+    ${chips ? `<div class="pace-insights-sum">${chips}</div>` : ''}
+    ${body}
+    ${riskHtml}`;
+}
+
 function drawSalesPace() {
   const info = document.getElementById('paceInfo');
   const root = document.getElementById('paceRoot');
@@ -3467,6 +3744,7 @@ function drawSalesPace() {
       ['Δ заказов всего', (sumDelta>0?'+':'') + fmt(sumDelta), sumDelta<0?'color:#B42318':(sumDelta>0?'color:#027A48':'')],
     ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
   }
+  renderPaceInsights(all);
 
   if(PACE_DATA.syncing && !all.length) {
     root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Тянем заказы, воронку и рекламу с WB (до ~2–3 мин)…</span></div>';
