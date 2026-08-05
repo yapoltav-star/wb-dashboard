@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=1400, initial-scale=1, minimum-scale=0.15, maximum-scale=4, user-scalable=yes">
 <title>Ozon Partners — Дашборд</title>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -85,6 +86,13 @@ body{font-family:'Manrope',sans-serif;background:var(--oz-bg);color:var(--oz-tex
 .tip.warn{border-color:#FDE68A;background:#FFFBEB;color:#92400E}
 .tip.info{border-color:#C7D9FF;background:#EEF4FF;color:#1E3A8A}
 .own-brand-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;font-size:12px;color:var(--oz-muted)}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 16px}
+@media(max-width:1100px){.charts{grid-template-columns:1fr}}
+.chart-card{background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);padding:12px 14px 8px;min-height:280px}
+.chart-card h4{font-size:12px;font-weight:700;color:var(--oz-muted);text-transform:uppercase;letter-spacing:.4px;margin:0 0 8px}
+.chart-card .chart-box{position:relative;height:230px}
+.chart-card.wide{grid-column:1 / -1}
+.chart-card.wide .chart-box{height:260px}
 
 .tbl-wrap{background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);overflow:auto}
 table{width:100%;border-collapse:collapse;font-size:13px}
@@ -564,6 +572,7 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
       <input type="file" id="compFileInput" accept=".xlsx,.xls" style="display:none" onchange="uploadCompetitors(this.files[0])">
     </div>
   </div>
+  <div id="compCharts" class="charts" style="display:none"></div>
   <div id="compRoot"><div class="empty"><b>Товары категории</b>Excel «Конкурентная позиция». Сохраняется в общую базу.</div></div>
 </div>
 
@@ -571,6 +580,7 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
 <div class="page" id="page-comp-brands">
   <div class="banner" id="brandsBanner" style="display:none"></div>
   <div class="cards" id="brandsCards"></div>
+  <div id="brandsCharts" class="charts" style="display:none"></div>
   <div class="toolbar">
     <div class="search">
       <input id="brandsSearch" placeholder="Бренд…" oninput="drawCompBrands()">
@@ -598,6 +608,7 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
   <div id="brandCompare"></div>
   <div id="brandTips" class="tips"></div>
   <div class="cards" id="brandCards"></div>
+  <div id="brandCharts" class="charts" style="display:none"></div>
   <div class="toolbar">
     <select class="neg-sel" id="brandSelect" onchange="selectBrandDetail(this.value)" style="max-width:220px"></select>
     <div class="search">
@@ -2602,6 +2613,102 @@ let COMP_SORT = 'ordered_sum';
 let COMP_BRAND = '';
 let BRANDS_ONLY_DETAIL = false;
 let BRANDS_SHOW_HIDDEN = false;
+const COMP_CHARTS = {}; // id -> Chart instance
+
+function destroyCompCharts(prefix) {
+  Object.keys(COMP_CHARTS).forEach(id => {
+    if (prefix && !id.startsWith(prefix)) return;
+    try { COMP_CHARTS[id].destroy(); } catch (_) {}
+    delete COMP_CHARTS[id];
+  });
+}
+function shortLabel(s, n = 28) {
+  const t = String(s || '—').replace(/\s+/g, ' ').trim();
+  return t.length > n ? t.slice(0, n - 1) + '…' : t;
+}
+function ensureChartJs() {
+  return typeof Chart !== 'undefined';
+}
+function makeBarChart(canvasId, labels, datasets, opts = {}) {
+  if (!ensureChartJs()) return null;
+  const el = document.getElementById(canvasId);
+  if (!el) return null;
+  if (COMP_CHARTS[canvasId]) {
+    try { COMP_CHARTS[canvasId].destroy(); } catch (_) {}
+  }
+  const horizontal = !!opts.horizontal;
+  const dualY = !!opts.dualY;
+  const scales = horizontal
+    ? {
+        x: { beginAtZero: true, ticks: { font: { size: 10, family: 'Manrope' } }, grid: { color: '#F0F3F8' } },
+        y: { ticks: { font: { size: 10, family: 'Manrope' } }, grid: { color: '#F0F3F8' } },
+      }
+    : {
+        x: {
+          beginAtZero: true,
+          ticks: { font: { size: 10, family: 'Manrope' }, maxRotation: 40, minRotation: 0 },
+          grid: { color: '#F0F3F8' },
+        },
+        y: {
+          beginAtZero: true,
+          position: 'left',
+          ticks: { font: { size: 10, family: 'Manrope' } },
+          grid: { color: '#F0F3F8' },
+        },
+      };
+  if (dualY && !horizontal) {
+    scales.y1 = {
+      beginAtZero: true,
+      position: 'right',
+      grid: { drawOnChartArea: false },
+      ticks: { font: { size: 10, family: 'Manrope' } },
+    };
+  }
+  COMP_CHARTS[canvasId] = new Chart(el, {
+    type: opts.type || 'bar',
+    data: { labels, datasets },
+    options: {
+      indexAxis: horizontal ? 'y' : 'x',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: datasets.length > 1, position: 'top', labels: { boxWidth: 10, font: { size: 11, family: 'Manrope' } } },
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              const i = items[0]?.dataIndex;
+              return (opts.fullLabels && opts.fullLabels[i]) || items[0]?.label || '';
+            },
+            label: (item) => {
+              if (opts.tooltipRaw && opts.tooltipRaw[item.datasetIndex]) {
+                const raw = opts.tooltipRaw[item.datasetIndex][item.dataIndex];
+                const name = item.dataset.label || '';
+                return `${name}: ${raw}`;
+              }
+              return `${item.dataset.label || ''}: ${item.formattedValue}`;
+            },
+          },
+        },
+      },
+      scales: opts.type === 'radar' ? undefined : scales,
+      ...(opts.type === 'radar' ? {
+        scales: {
+          r: {
+            beginAtZero: true,
+            max: 100,
+            ticks: { display: false },
+            pointLabels: { font: { size: 11, family: 'Manrope' } },
+            grid: { color: '#E8EEF7' },
+          },
+        },
+      } : {}),
+    },
+  });
+  return COMP_CHARTS[canvasId];
+}
+function chartCard(title, canvasId, wide) {
+  return `<div class="chart-card${wide ? ' wide' : ''}"><h4>${esc(title)}</h4><div class="chart-box"><canvas id="${canvasId}"></canvas></div></div>`;
+}
 
 function pct1(n) {
   if (n == null || n === '') return '—';
@@ -2742,7 +2849,10 @@ function drawCompPosition() {
   ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div></div>`).join('');
   if (info) info.textContent = pos?.uploaded_at ? ('в базе ' + fmtDt(pos.uploaded_at)) : 'нет в базе';
 
+  const chartsEl = document.getElementById('compCharts');
   if (!rowsAll.length) {
+    destroyCompCharts('comp-');
+    if (chartsEl) { chartsEl.style.display = 'none'; chartsEl.innerHTML = ''; }
     root.innerHTML = '<div class="empty"><b>Нет данных</b>Загрузи Excel «Конкурентная позиция» — сохранится для всех устройств.</div>';
     return;
   }
@@ -2761,6 +2871,7 @@ function drawCompPosition() {
     if (COMP_SORT === 'ordered_qty') return (b.ordered_qty || 0) - (a.ordered_qty || 0);
     return (b.ordered_sum || 0) - (a.ordered_sum || 0);
   });
+  renderPositionCharts(rows);
   const maxSum = Math.max(...rows.map(r => r.ordered_sum || 0), 1);
   const body = rows.slice(0, 500).map(r => {
     const pct = Math.round((r.ordered_sum || 0) / maxSum * 100);
@@ -2786,6 +2897,29 @@ function drawCompPosition() {
     <thead><tr><th>#</th><th>Конкурент</th><th>Товар</th><th>SKU</th><th>Заказано, ₽</th><th>Шт</th><th>Ср. цена</th></tr></thead>
     <tbody>${body}</tbody></table></div>
     <div class="hint">До 500 строк · ср. цена = сумма ÷ шт · данные из общей базы</div>`;
+}
+function renderPositionCharts(rows) {
+  const el = document.getElementById('compCharts');
+  if (!el) return;
+  destroyCompCharts('comp-');
+  if (!rows.length || !ensureChartJs()) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const top = rows.slice(0, 12);
+  const labels = top.map(r => shortLabel((r.competitor ? r.competitor + ': ' : '') + (r.name || r.sku), 22));
+  const full = top.map(r => r.name || r.sku || '—');
+  el.style.display = 'grid';
+  el.innerHTML = chartCard('Топ по сумме заказов, ₽', 'comp-sum') + chartCard('Топ по заказам, шт', 'comp-qty');
+  makeBarChart('comp-sum', labels, [{
+    label: 'Сумма, ₽',
+    data: top.map(r => Math.round(r.ordered_sum || 0)),
+    backgroundColor: 'rgba(0,91,255,0.75)',
+    borderRadius: 4,
+  }], { fullLabels: full });
+  makeBarChart('comp-qty', labels, [{
+    label: 'Заказы, шт',
+    data: top.map(r => r.ordered_qty || 0),
+    backgroundColor: 'rgba(18,183,106,0.75)',
+    borderRadius: 4,
+  }], { fullLabels: full });
 }
 
 function toggleBrandsOnlyDetail() {
@@ -2872,6 +3006,9 @@ function drawCompBrands() {
   if (info) info.textContent = br?.uploaded_at ? ('в базе ' + fmtDt(br.uploaded_at)) : 'нет в базе';
 
   if (!rowsAll.length) {
+    destroyCompCharts('brands-');
+    const ch = document.getElementById('brandsCharts');
+    if (ch) { ch.style.display = 'none'; ch.innerHTML = ''; }
     root.innerHTML = '<div class="empty"><b>Нет сводки</b>Загрузи Excel аналитики с листом «Бренды».</div>';
     return;
   }
@@ -2882,11 +3019,15 @@ function drawCompBrands() {
   const q = ((document.getElementById('brandsSearch') || {}).value || '').toLowerCase().trim();
   if (q) rows = rows.filter(r => String(r.brand || '').toLowerCase().includes(q));
   if (!rows.length) {
+    destroyCompCharts('brands-');
+    const ch = document.getElementById('brandsCharts');
+    if (ch) { ch.style.display = 'none'; ch.innerHTML = ''; }
     root.innerHTML = BRANDS_SHOW_HIDDEN
       ? '<div class="empty"><b>Нет скрытых</b>Все бренды на виду. Нажми «Скрытые», чтобы вернуться к списку.</div>'
       : '<div class="empty"><b>Пусто</b>Нет брендов по фильтру. Возможно, они скрыты — открой «Скрытые».</div>';
     return;
   }
+  renderBrandsCharts(rows);
   const body = rows.map(r => {
     const dyn = r.dynamics || 0;
     const dynCls = dyn > 0 ? 'pace-delta-up' : (dyn < 0 ? 'pace-delta-down' : 'pace-delta-flat');
@@ -2915,6 +3056,29 @@ function drawCompBrands() {
     <thead><tr><th>#</th><th>Бренд</th><th>Сумма, ₽</th><th>Динамика</th><th>Шт</th><th>Ср. цена</th><th>Выкуп</th><th>Доля</th><th></th></tr></thead>
     <tbody>${body}</tbody></table></div>
     <div class="hint">Скрытые бренды не попадают в карточки оборота · список общий для всех устройств</div>`;
+}
+function renderBrandsCharts(rows) {
+  const el = document.getElementById('brandsCharts');
+  if (!el) return;
+  destroyCompCharts('brands-');
+  if (!rows.length || !ensureChartJs()) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const top = [...rows].sort((a, b) => (b.ordered_sum || 0) - (a.ordered_sum || 0)).slice(0, 15);
+  const labels = top.map(r => shortLabel(r.brand, 16));
+  const full = top.map(r => `${r.brand} (#${r.rank || '—'})`);
+  el.style.display = 'grid';
+  el.innerHTML = chartCard('Бренды: сумма заказов, ₽', 'brands-sum') + chartCard('Бренды: заказы, шт', 'brands-qty');
+  makeBarChart('brands-sum', labels, [{
+    label: 'Сумма, ₽',
+    data: top.map(r => Math.round(r.ordered_sum || 0)),
+    backgroundColor: 'rgba(0,91,255,0.75)',
+    borderRadius: 4,
+  }], { fullLabels: full });
+  makeBarChart('brands-qty', labels, [{
+    label: 'Заказы, шт',
+    data: top.map(r => r.ordered_qty || 0),
+    backgroundColor: 'rgba(18,183,106,0.75)',
+    borderRadius: 4,
+  }], { fullLabels: full });
 }
 function openBrandDetail(brand) {
   COMP_BRAND = brand;
@@ -3230,6 +3394,9 @@ function drawBrandDetail() {
     if (ban) ban.style.display = 'none';
     cards.innerHTML = '';
     if (info) info.textContent = '';
+    destroyCompCharts('brand-');
+    const ch = document.getElementById('brandCharts');
+    if (ch) { ch.style.display = 'none'; ch.innerHTML = ''; }
     renderBrandCompareAndTips('');
     root.innerHTML = '<div class="empty"><b>Нет отчёта бренда</b>Загрузи Excel по бренду (с колонками показы / воронка) — сохранится в общую базу.</div>';
     return;
@@ -3261,6 +3428,7 @@ function drawBrandDetail() {
     String(r.name || '').toLowerCase().includes(q) ||
     String(r.sku || '').includes(q)
   );
+  renderBrandDetailCharts(rowsAll, COMP_BRAND);
   const body = rows.slice(0, 400).map(r => {
     const name = r.url
       ? `<a class="prod-link" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name || '—')}</a>`
@@ -3288,6 +3456,116 @@ function drawBrandDetail() {
     </tr></thead>
     <tbody>${body}</tbody></table></div>
     <div class="hint">До 400 строк · отчёт бренда из общей базы</div>`;
+}
+function renderBrandDetailCharts(rowsAll, brandName) {
+  const el = document.getElementById('brandCharts');
+  if (!el) return;
+  destroyCompCharts('brand-');
+  if (!rowsAll.length || !ensureChartJs()) { el.style.display = 'none'; el.innerHTML = ''; return; }
+
+  const bySum = [...rowsAll].sort((a, b) => (b.ordered_sum || 0) - (a.ordered_sum || 0)).slice(0, 12);
+  const byShows = [...rowsAll].sort((a, b) => (b.shows || 0) - (a.shows || 0)).slice(0, 12);
+  const byAds = [...rowsAll].filter(r => (r.ads_share || 0) > 0).sort((a, b) => (b.ads_share || 0) - (a.ads_share || 0)).slice(0, 12);
+  const byStock = [...rowsAll].sort((a, b) => (b.stock || 0) - (a.stock || 0)).slice(0, 12);
+
+  const lab = (arr, n = 20) => arr.map(r => shortLabel(r.name || r.sku, n));
+  const full = (arr) => arr.map(r => r.name || r.sku || '—');
+
+  const own = COMP_ALL.own_brand || '';
+  const ownAgg = own ? detailAgg(own) : null;
+  const themAgg = detailAgg(brandName);
+  const showCompare = own && ownAgg && themAgg && own.toLowerCase() !== String(brandName || '').toLowerCase();
+
+  el.style.display = 'grid';
+  el.innerHTML =
+    chartCard('Сумма и заказы (топ SKU)', 'brand-sumqty', true) +
+    chartCard('Показы (топ SKU)', 'brand-shows') +
+    chartCard('Доля рекламы, %', 'brand-ads') +
+    chartCard('Остаток на конец, шт', 'brand-stock') +
+    (showCompare ? chartCard('Я vs они: показы / сумма / заказы / реклама', 'brand-compare', true) : '');
+
+  makeBarChart('brand-sumqty', lab(bySum, 18), [
+    {
+      label: 'Сумма, ₽',
+      data: bySum.map(r => Math.round(r.ordered_sum || 0)),
+      backgroundColor: 'rgba(0,91,255,0.75)',
+      borderRadius: 4,
+      yAxisID: 'y',
+    },
+    {
+      label: 'Заказы, шт',
+      data: bySum.map(r => r.ordered_qty || 0),
+      backgroundColor: 'rgba(18,183,106,0.65)',
+      borderRadius: 4,
+      yAxisID: 'y1',
+    },
+  ], { fullLabels: full(bySum), dualY: true });
+
+  makeBarChart('brand-shows', lab(byShows), [{
+    label: 'Показы',
+    data: byShows.map(r => r.shows || 0),
+    backgroundColor: 'rgba(247,144,9,0.75)',
+    borderRadius: 4,
+  }], { fullLabels: full(byShows) });
+
+  makeBarChart('brand-ads', lab(byAds.length ? byAds : bySum), [{
+    label: 'Доля рекламы, %',
+    data: (byAds.length ? byAds : bySum).map(r => Number(r.ads_share) || 0),
+    backgroundColor: 'rgba(240,68,56,0.7)',
+    borderRadius: 4,
+  }], { fullLabels: full(byAds.length ? byAds : bySum), horizontal: true });
+
+  const stockColors = byStock.map(r => (r.stock || 0) === 0 ? 'rgba(240,68,56,0.75)' : 'rgba(0,91,255,0.65)');
+  makeBarChart('brand-stock', lab(byStock), [{
+    label: 'Остаток, шт',
+    data: byStock.map(r => r.stock || 0),
+    backgroundColor: stockColors,
+    borderRadius: 4,
+  }], { fullLabels: full(byStock) });
+
+  if (showCompare) {
+    // нормализуем 0..100, в тултипе — реальные значения (иначе млн ₽ съедают шкалу)
+    const pairs = [
+      ['Показы', ownAgg.shows, themAgg.shows, v => fmt(Math.round(v))],
+      ['Сумма', ownAgg.sum, themAgg.sum, v => moneyShort(v)],
+      ['Заказы', ownAgg.qty, themAgg.qty, v => fmt(Math.round(v)) + ' шт'],
+      ['Реклама %', ownAgg.avgAds, themAgg.avgAds, v => v.toFixed(1) + '%'],
+      ['В наличии SKU', Math.max(ownAgg.count - ownAgg.zeroStock, 0), Math.max(themAgg.count - themAgg.zeroStock, 0), v => fmt(Math.round(v))],
+    ];
+    const norm = (a, b) => {
+      const m = Math.max(Number(a) || 0, Number(b) || 0, 1);
+      return [((Number(a) || 0) / m) * 100, ((Number(b) || 0) / m) * 100];
+    };
+    const meNorm = [], themNorm = [], meRaw = [], themRaw = [];
+    pairs.forEach(([, a, b, fmtFn]) => {
+      const [na, nb] = norm(a, b);
+      meNorm.push(Math.round(na));
+      themNorm.push(Math.round(nb));
+      meRaw.push(fmtFn(Number(a) || 0));
+      themRaw.push(fmtFn(Number(b) || 0));
+    });
+    makeBarChart('brand-compare', pairs.map(p => p[0]), [
+      {
+        label: 'Я: ' + own,
+        data: meNorm,
+        backgroundColor: 'rgba(0,91,255,0.25)',
+        borderColor: 'rgba(0,91,255,0.9)',
+        borderWidth: 2,
+        pointBackgroundColor: 'rgba(0,91,255,1)',
+      },
+      {
+        label: 'Они: ' + brandName,
+        data: themNorm,
+        backgroundColor: 'rgba(107,114,128,0.2)',
+        borderColor: 'rgba(107,114,128,0.9)',
+        borderWidth: 2,
+        pointBackgroundColor: 'rgba(107,114,128,1)',
+      },
+    ], {
+      type: 'radar',
+      tooltipRaw: [meRaw, themRaw],
+    });
+  }
 }
 
 /* ── Реклама ── */
