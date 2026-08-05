@@ -638,35 +638,45 @@ def sync_stocks() -> dict:
                     }
                 )
 
-        # 3) FBS by warehouse
+        # 3) FBS by warehouse (не валим весь синк, если FBS недоступен)
+        fbs_items: list[dict] = []
         if sku_list:
-            fbs_items = fetch_fbs_stocks_by_warehouse(sku_list)
-            for it in fbs_items:
-                sku = str(it.get("sku") or "")
-                row = by_sku.get(sku)
-                offer = row["offer_id"] if row else sku
-                for st in it.get("stocks") or [it]:
-                    wh_name = st.get("warehouse_name") or it.get("warehouse_name") or "FBS"
-                    wh_id = st.get("warehouse_id") or it.get("warehouse_id")
-                    present = _to_int(st.get("present"))
-                    reserved = _to_int(st.get("reserved"))
-                    free = present - reserved if present >= reserved else present
-                    warehouse_rows.append(
-                        {
-                            "product_id": row.get("product_id") if row else None,
-                            "sku": _to_int(sku) if sku.isdigit() else (row.get("sku") if row else None),
-                            "offer_id": offer,
-                            "warehouse_id": _to_int(wh_id) if wh_id is not None else None,
-                            "warehouse_name": f"FBS · {wh_name}",
-                            "channel": "fbs",
-                            "present": present,
-                            "reserved": reserved,
-                            "free_to_sell": free,
-                            "promised": _to_int(st.get("waiting")),
-                            "ordered_qty": 0,
-                            "updated_at": now_iso,
-                        }
-                    )
+            try:
+                fbs_items = fetch_fbs_stocks_by_warehouse(sku_list)
+            except HTTPException as e:
+                logger.warning("FBS warehouse stocks skipped: %s", e.detail)
+            except Exception as e:
+                logger.warning("FBS warehouse stocks skipped: %s", e)
+
+        for it in fbs_items:
+            sku = str(it.get("sku") or "")
+            row = by_sku.get(sku)
+            offer = row["offer_id"] if row else str(it.get("offer_id") or sku)
+            stock_list = it.get("stocks")
+            if not stock_list:
+                stock_list = [it]
+            for st in stock_list:
+                wh_name = st.get("warehouse_name") or it.get("warehouse_name") or "FBS"
+                wh_id = st.get("warehouse_id") or it.get("warehouse_id")
+                present = _to_int(st.get("present"))
+                reserved = _to_int(st.get("reserved"))
+                free = present - reserved if present >= reserved else present
+                warehouse_rows.append(
+                    {
+                        "product_id": row.get("product_id") if row else None,
+                        "sku": _to_int(sku) if sku.isdigit() else (row.get("sku") if row else None),
+                        "offer_id": offer,
+                        "warehouse_id": _to_int(wh_id) if wh_id is not None else None,
+                        "warehouse_name": f"FBS · {wh_name}",
+                        "channel": "fbs",
+                        "present": present,
+                        "reserved": reserved,
+                        "free_to_sell": free,
+                        "promised": _to_int(st.get("waiting")),
+                        "ordered_qty": 0,
+                        "updated_at": now_iso,
+                    }
+                )
 
         # 4) orders by sku
         ordered = fetch_ordered_units(date_from, date_to)
