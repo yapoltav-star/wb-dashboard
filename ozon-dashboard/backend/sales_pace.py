@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -12,6 +13,8 @@ logger = logging.getLogger("ozon-dashboard.pace")
 
 MSK = timezone(timedelta(hours=3))
 SALES_PACE_PERIODS = ("day", "week", "weeks2", "month")
+# почасовые снимки воронки/рекламы — Ozon analytics только по суткам
+SNAPS_KEY = "ozon_sales_pace_funnel_snaps"
 
 SALES_PACE_CACHE: dict = {
     "by_period": {},
@@ -89,6 +92,7 @@ def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> 
             "col_cur": "Сегодня",
             "col_prev": "Вчера",
             "custom_dates": False,
+            "use_snaps": True,
         }
 
     if period == "week":
@@ -288,7 +292,7 @@ def fetch_orders_windows(
 def fetch_analytics_sku(
     ozon_post: Callable, date_from: date, date_to: date, metrics: list[str]
 ) -> dict[str, dict]:
-    """POST /v1/analytics/data → {sku_str: {metric: value}}."""
+    """POST /v1/analytics/data → {sku_str: {metric: value}}. Только суточная гранулярность."""
     by_sku: dict[str, dict] = {}
     offset = 0
     limit = 1000
@@ -327,6 +331,71 @@ def fetch_analytics_sku(
     return by_sku
 
 
+def _load_snaps(get_setting: Callable | None) -> list:
+    if not get_setting:
+        return []
+    raw = get_setting(SNAPS_KEY, "[]")
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else (raw or [])
+    except Exception:
+        data = []
+    return data if isinstance(data, list) else []
+
+
+def _save_snaps(save_setting: Callable | None, snaps: list) -> None:
+    if not save_setting:
+        return
+    save_setting(SNAPS_KEY, snaps)
+
+
+def _pick_yesterday_snap(snaps: list, yest_day: str, prev_end: datetime) -> dict | None:
+    """Снимок вчерашнего дня на час ≤ prev_end (как WB)."""
+    target = prev_end.strftime("%Y-%m-%dT%H")
+    yest_snap = None
+    for s in snaps:
+        if s.get("day") == yest_day and (s.get("hour_key") or "") <= target:
+            yest_snap = s
+    if yest_snap is not None:
+        return yest_snap
+    candidates = [s for s in snaps if s.get("day") == yest_day]
+    if not candidates:
+        return None
+    prev_hour = prev_end.replace(minute=0, second=0, microsecond=0)
+
+    def _dist(s):
+        try:
+            hk = datetime.strptime(s["hour_key"], "%Y-%m-%dT%H").replace(tzinfo=MSK)
+            return abs((hk - prev_hour).total_seconds())
+        except Exception:
+            return 10**9
+
+    return min(candidates, key=_dist)
+
+
+def _funnel_ads_from_snap_products(products: dict) -> tuple[dict, dict, bool]:
+    """snap products → (funnel_by_sku, ads_by_sku, ads_present)."""
+    funnel: dict[str, dict] = {}
+    ads_out: dict[str, dict] = {}
+    ads_present = False
+    for sku, v in (products or {}).items():
+        if not isinstance(v, dict):
+            continue
+        key = str(sku)
+        funnel[key] = {
+            "hits_view": float(v.get("hits_view") or v.get("opens") or 0),
+            "session_view_pdp": float(v.get("session_view_pdp") or v.get("clicks") or 0),
+            "hits_tocart": float(v.get("hits_tocart") or v.get("cart") or 0),
+        }
+        if "views" in v or "spend" in v or "expense" in v:
+            ads_present = True
+            ads_out[key] = {
+                "views": int(v.get("views") or 0),
+                "expense": float(v.get("spend") if v.get("spend") is not None else (v.get("expense") or 0)),
+                "cpm": v.get("cpm"),
+            }
+    return funnel, ads_out, ads_present
+
+
 def sync_sales_pace(
     ozon_post: Callable,
     load_stock_totals: Callable,
@@ -336,6 +405,8 @@ def sync_sales_pace(
     date_prev: str | None = None,
     load_ads_sku: Callable | None = None,
     load_stock_index: Callable | None = None,
+    get_setting: Callable | None = None,
+    save_setting: Callable | None = None,
 ) -> dict:
     period = period if period in SALES_PACE_PERIODS else "day"
     if period != "day":
@@ -365,34 +436,119 @@ def sync_sales_pace(
         )
         cur_ord, prev_ord = fetch_orders_windows(ozon_post, cur_start, cur_end, prev_start, prev_end)
 
-        # Воронка Premium: показы / переходы / корзина (сутки аналитики; заказы — только из postings)
+        # Воронка / реклама
+        # Analytics и Performance — только сутки. Для day делаем почасовые снимки как WB:
+        # сегодня = текущий накопленный срез API; вчера до HH = снимок вчера на тот же час.
         funnel_metrics = ["hits_view", "session_view_pdp", "hits_tocart"]
         funnel_cur, funnel_prev = {}, {}
-        funnel_ready = True
-        try:
-            funnel_cur = fetch_analytics_sku(
-                ozon_post, cur_start.date(), cur_end.date(), funnel_metrics
-            )
-            time.sleep(0.4)
-            funnel_prev = fetch_analytics_sku(
-                ozon_post, prev_start.date(), prev_end.date(), funnel_metrics
-            )
-        except Exception as e:
-            logger.warning("pace funnel analytics: %s", e)
-            funnel_ready = False
-
-        # CPM / рекламные показы из Performance API (опционально)
         ads_cur, ads_prev = {}, {}
+        funnel_ready = False
         ads_ready = False
-        if load_ads_sku:
+        compare_as_of = None
+        use_snaps = bool(win.get("use_snaps")) and not win.get("custom_dates")
+
+        if use_snaps:
             try:
-                ads_cur = load_ads_sku(cur_start.date(), cur_end.date()) or {}
-                time.sleep(0.2)
-                ads_prev = load_ads_sku(prev_start.date(), prev_end.date()) or {}
-                ads_ready = bool(ads_cur or ads_prev)
+                funnel_cur = fetch_analytics_sku(
+                    ozon_post, cur_start.date(), cur_end.date(), funnel_metrics
+                )
             except Exception as e:
-                logger.warning("pace ads sku: %s", e)
+                logger.warning("pace funnel today: %s", e)
+                funnel_cur = {}
+
+            if load_ads_sku:
+                try:
+                    ads_cur = load_ads_sku(cur_start.date(), cur_end.date()) or {}
+                except Exception as e:
+                    logger.warning("pace ads today: %s", e)
+                    ads_cur = {}
+
+            hour_key = now.strftime("%Y-%m-%dT%H")
+            products_snap: dict[str, dict] = {}
+            for sku, v in (funnel_cur or {}).items():
+                products_snap[str(sku)] = {
+                    "hits_view": int(v.get("hits_view") or 0),
+                    "session_view_pdp": int(v.get("session_view_pdp") or 0),
+                    "hits_tocart": int(v.get("hits_tocart") or 0),
+                    "views": 0,
+                    "spend": 0.0,
+                    "cpm": None,
+                }
+            for sku, v in (ads_cur or {}).items():
+                key = str(sku)
+                entry = products_snap.setdefault(
+                    key,
+                    {
+                        "hits_view": 0,
+                        "session_view_pdp": 0,
+                        "hits_tocart": 0,
+                        "views": 0,
+                        "spend": 0.0,
+                        "cpm": None,
+                    },
+                )
+                entry["views"] = int(v.get("views") or 0)
+                entry["spend"] = float(v.get("expense") or v.get("spend") or 0)
+                entry["cpm"] = v.get("cpm")
+
+            snaps = _load_snaps(get_setting)
+            snaps = [s for s in snaps if s.get("hour_key") != hour_key]
+            snaps.append({
+                "hour_key": hour_key,
+                "as_of": now.strftime("%Y-%m-%d %H:%M"),
+                "day": cur_start.date().isoformat(),
+                "products": products_snap,
+            })
+            cutoff_day = (cur_start.date() - timedelta(days=3)).isoformat()
+            snaps = [s for s in snaps if (s.get("day") or "") >= cutoff_day]
+            snaps.sort(key=lambda s: s.get("hour_key") or "")
+            _save_snaps(save_setting, snaps)
+            logger.info("pace snap saved %s products=%s total_snaps=%s", hour_key, len(products_snap), len(snaps))
+
+            yest_snap = _pick_yesterday_snap(snaps, prev_start.date().isoformat(), prev_end)
+            if yest_snap:
+                funnel_prev, ads_prev, ads_from_snap = _funnel_ads_from_snap_products(
+                    yest_snap.get("products") or {}
+                )
+                compare_as_of = yest_snap.get("as_of")
+                funnel_ready = True
+                ads_ready = ads_from_snap and bool(ads_prev or ads_cur)
+                logger.info(
+                    "pace snap prev=%s as_of=%s funnel_skus=%s ads=%s",
+                    yest_snap.get("hour_key"),
+                    compare_as_of,
+                    len(funnel_prev),
+                    ads_ready,
+                )
+            else:
+                funnel_prev, ads_prev = {}, {}
+                funnel_ready = False
                 ads_ready = False
+                compare_as_of = None
+                logger.info("pace: no yesterday snap yet — funnel/ads same-time unavailable")
+        else:
+            try:
+                funnel_cur = fetch_analytics_sku(
+                    ozon_post, cur_start.date(), cur_end.date(), funnel_metrics
+                )
+                time.sleep(0.4)
+                funnel_prev = fetch_analytics_sku(
+                    ozon_post, prev_start.date(), prev_end.date(), funnel_metrics
+                )
+                funnel_ready = True
+            except Exception as e:
+                logger.warning("pace funnel analytics: %s", e)
+                funnel_ready = False
+            if load_ads_sku:
+                try:
+                    ads_cur = load_ads_sku(cur_start.date(), cur_end.date()) or {}
+                    time.sleep(0.2)
+                    ads_prev = load_ads_sku(prev_start.date(), prev_end.date()) or {}
+                    ads_ready = bool(ads_cur or ads_prev)
+                except Exception as e:
+                    logger.warning("pace ads sku: %s", e)
+                    ads_ready = False
+            compare_as_of = f"{prev_start.date().isoformat()}–{prev_end.date().isoformat()}"
 
         # stock + product meta
         stock_by_offer: dict[str, dict] = {}
@@ -596,12 +752,13 @@ def sync_sales_pace(
             "cache_key": cache_key,
             "articles": articles,
             "as_of": now.strftime("%Y-%m-%d %H:%M"),
-            "compare_as_of": None,
+            "compare_as_of": compare_as_of,
             "label_cur": win["label_cur"],
             "label_prev": win["label_prev"],
             "col_cur": win["col_cur"],
             "col_prev": win["col_prev"],
             "custom_dates": win.get("custom_dates", False),
+            "use_snaps": use_snaps,
             "date_cur": date_cur,
             "date_prev": date_prev,
             "today": now.strftime("%Y-%m-%d"),

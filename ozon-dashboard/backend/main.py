@@ -1082,6 +1082,8 @@ def _run_pace_sync(period: str = "day", date_cur: str | None = None, date_prev: 
             date_cur=date_cur,
             date_prev=date_prev,
             load_ads_sku=ads.fetch_ads_sku_stats if ads.perf_configured() else None,
+            get_setting=get_setting,
+            save_setting=save_setting,
         )
     except Exception as e:
         logger.exception("pace sync thread: %s", e)

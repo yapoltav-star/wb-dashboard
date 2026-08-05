@@ -301,6 +301,7 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
 
 <!-- GROWTH / SALES PACE -->
 <div class="page" id="page-growth">
+  <div class="banner" id="paceBanner" style="display:none"></div>
   <div class="toolbar">
     <div class="search">
       <input id="paceSearch" placeholder="Артикул продавца…" oninput="drawSalesPace()">
@@ -1341,11 +1342,31 @@ function drawSalesPace() {
     const bits = [];
     if (PACE_DATA.label_cur) bits.push(PACE_DATA.label_cur);
     if (PACE_DATA.label_prev) bits.push('vs ' + PACE_DATA.label_prev);
+    if (PACE_DATA.compare_as_of && PACE_DATA.use_snaps) bits.push('снимок вчера ' + PACE_DATA.compare_as_of);
     if (PACE_DATA.as_of) bits.push('обновлено ' + PACE_DATA.as_of);
     if (info) info.textContent = bits.join(' · ');
     if (btn) btn.disabled = false;
     document.getElementById('syncDot').className = 'tb-dot';
     document.getElementById('syncLabel').textContent = 'ок';
+  }
+
+  const ban = document.getElementById('paceBanner');
+  if (ban) {
+    if (PACE_DATA.use_snaps && PACE_DATA.funnel_ready === false && !PACE_DATA.syncing) {
+      ban.style.display = 'block';
+      ban.className = 'banner warn';
+      ban.innerHTML = '<b>Показы / переходы / корзина «до того же времени»</b> появятся после снимков. '
+        + 'Обновляй «Рост продаж» в течение дня — сегодня сохраняем срез, завтра сравним с вчерашним на этот час. '
+        + 'Заказы уже считаются по точному времени.';
+    } else if (PACE_DATA.use_snaps && PACE_DATA.funnel_ready) {
+      ban.style.display = 'block';
+      ban.className = 'banner';
+      ban.innerHTML = 'Показы и воронка: сегодня — текущий срез API, вчера до этого часа — из снимка'
+        + (PACE_DATA.compare_as_of ? ` <b>${esc(PACE_DATA.compare_as_of)}</b>` : '')
+        + '. Заказы — всегда по exact time из отправлений.';
+    } else {
+      ban.style.display = 'none';
+    }
   }
 
   let arts = [...(PACE_DATA.articles || [])].filter(a => (a.orders_today || 0) > 0 || (a.orders_yesterday || 0) > 0);
