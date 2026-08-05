@@ -1371,6 +1371,12 @@ async function loadData() {
     SUPPLY_REPORT = data.supply_report || [];
     TARGET_DAYS = parseInt((data.settings || {}).target_coverage_days) || 30;
     applyWhDisabledFromSettings(data.settings || {});
+    // всегда подтягиваем актуальный список (dashboard-data кэшируется ~45с)
+    loadWhDisabledFromServer().then(() => {
+      if(document.getElementById('page-supply-recs')?.classList.contains('on')) {
+        try { renderSupplyRecs(); } catch(e) {}
+      }
+    });
     const tdEl = document.getElementById('targetDaysInput');
     if(tdEl) tdEl.value = TARGET_DAYS;
     const swEl = document.getElementById('salesWindowInput');
@@ -2984,47 +2990,101 @@ var WH_DISABLED = JSON.parse(localStorage.getItem('wb_supply_wh_disabled') || 'n
 var SUPPLY_PINNED = JSON.parse(localStorage.getItem('wb_supply_pinned') || 'null') || [];
 var SHOW_BARCODE = JSON.parse(localStorage.getItem('wb_supply_show_barcode') || 'true');
 var dragWh = null, dragSupplyArt = null;
+var WH_DISABLED_LOADED = false;
 
 function parseSupplyWhDisabled(raw) {
   if(raw == null || raw === '') return null;
   try {
-    if(typeof raw === 'string') {
-      const p = JSON.parse(raw);
-      return Array.isArray(p) ? p.map(String) : null;
+    let v = raw;
+    if(typeof v === 'string') {
+      v = JSON.parse(v);
+      // double-encoded JSON string
+      if(typeof v === 'string') {
+        try { v = JSON.parse(v); } catch(e2) {}
+      }
     }
-    if(Array.isArray(raw)) return raw.map(String);
+    if(Array.isArray(v)) return v.map(x => String(x)).filter(Boolean);
   } catch(e) {}
   return null;
 }
 
+function setWhDisabledList(list, {saveLocal = true} = {}) {
+  WH_DISABLED = Array.from(new Set((list || []).map(x => String(x).trim()).filter(Boolean)));
+  if(saveLocal) localStorage.setItem('wb_supply_wh_disabled', JSON.stringify(WH_DISABLED));
+  WH_DISABLED_LOADED = true;
+}
+
 /** Сохранить список отключённых складов (общий — Supabase + локальный кэш). */
-function persistWhDisabled(immediate) {
-  const payload = JSON.stringify(WH_DISABLED);
-  localStorage.setItem('wb_supply_wh_disabled', payload);
-  const doSave = () => fetch(`${RAILWAY_URL}/api/save-setting`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({key: 'supply_wh_disabled', value: payload})
-  }).catch(() => {});
+async function persistWhDisabled(immediate) {
+  localStorage.setItem('wb_supply_wh_disabled', JSON.stringify(WH_DISABLED));
+  const doSave = async () => {
+    try {
+      const r = await fetch(`${RAILWAY_URL}/api/supply-wh-disabled`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({disabled: WH_DISABLED}),
+      });
+      const d = await r.json().catch(() => ({}));
+      if(!r.ok || d.error) throw new Error(d.error || d.detail || `HTTP ${r.status}`);
+      if(Array.isArray(d.disabled)) setWhDisabledList(d.disabled);
+      return true;
+    } catch(e) {
+      console.error('persistWhDisabled', e);
+      // fallback через save-setting
+      try {
+        const r2 = await fetch(`${RAILWAY_URL}/api/save-setting`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({key: 'supply_wh_disabled', value: WH_DISABLED}),
+        });
+        const d2 = await r2.json().catch(() => ({}));
+        if(!r2.ok || d2.error) throw new Error(d2.error || `HTTP ${r2.status}`);
+        return true;
+      } catch(e2) {
+        console.error('persistWhDisabled fallback', e2);
+        return false;
+      }
+    }
+  };
   if(immediate) return doSave();
   clearTimeout(window._whDisSaveT);
-  window._whDisSaveT = setTimeout(doSave, 300);
-  return Promise.resolve();
+  return new Promise(resolve => {
+    window._whDisSaveT = setTimeout(async () => resolve(await doSave()), 300);
+  });
+}
+
+/** Загрузить список с сервера (без кэша dashboard). */
+async function loadWhDisabledFromServer({migrateLocal = true} = {}) {
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/supply-wh-disabled`, {cache: 'no-store'});
+    const d = await r.json().catch(() => ({}));
+    if(r.ok && Array.isArray(d.disabled)) {
+      const srv = d.disabled.map(String);
+      const local = parseSupplyWhDisabled(localStorage.getItem('wb_supply_wh_disabled')) || [];
+      if(srv.length) {
+        setWhDisabledList(srv);
+      } else if(migrateLocal && local.length) {
+        // сервер пуст — переносим из этого браузера
+        setWhDisabledList(local);
+        await persistWhDisabled(true);
+      } else {
+        setWhDisabledList(srv);
+      }
+      return WH_DISABLED;
+    }
+  } catch(e) {
+    console.warn('loadWhDisabledFromServer', e);
+  }
+  // fallback из settings в dashboard, если уже есть
+  return WH_DISABLED;
 }
 
 function applyWhDisabledFromSettings(settings) {
   const hasKey = settings && Object.prototype.hasOwnProperty.call(settings, 'supply_wh_disabled');
-  const srv = hasKey ? (parseSupplyWhDisabled(settings.supply_wh_disabled) || []) : null;
-  const local = parseSupplyWhDisabled(localStorage.getItem('wb_supply_wh_disabled'));
-  if(srv !== null) {
-    WH_DISABLED = srv;
-    localStorage.setItem('wb_supply_wh_disabled', JSON.stringify(WH_DISABLED));
-  } else if(local && local.length) {
-    // разовый перенос с этого браузера на общий список
-    WH_DISABLED = local;
-    persistWhDisabled(true);
-  } else {
-    WH_DISABLED = local || [];
+  if(!hasKey) return; // дождёмся loadWhDisabledFromServer
+  const srv = parseSupplyWhDisabled(settings.supply_wh_disabled);
+  if(srv !== null && srv.length) {
+    setWhDisabledList(srv);
   }
 }
 
@@ -3045,9 +3105,10 @@ async function toggleWhEnabled(encodedName, e) {
   const i = WH_DISABLED.indexOf(name);
   if(i > -1) WH_DISABLED.splice(i, 1);
   else WH_DISABLED.push(name);
-  await persistWhDisabled(true);
+  setWhDisabledList(WH_DISABLED);
+  const ok = await persistWhDisabled(true);
+  if(!ok) alert('Не удалось сохранить отключение склада на сервер — на другом устройстве галка не появится. Обнови страницу и попробуй ещё раз.');
   renderSupplyRecs();
-  // темп: гео/остатки без сгоревших складов (обогащение stock/geo на каждый GET)
   if(typeof loadSalesPace === 'function') {
     try { loadSalesPace(); } catch(err) {}
   }
@@ -3060,9 +3121,8 @@ function buildSupplyMatrix() {
   SUPPLY_REPORT.forEach(r => { whTotals[r.warehouse_name] = (whTotals[r.warehouse_name]||0) + (r.ordered_qty||0); });
   const defaultSorted = Object.keys(whTotals).sort((a,b) => whTotals[b]-whTotals[a]);
   const warehouses = reconcileWhOrder(Object.keys(whTotals), defaultSorted);
-  // убрать из disabled склады, которых больше нет
-  WH_DISABLED = WH_DISABLED.filter(w => warehouses.includes(w));
-  persistWhDisabled();
+  // не трогаем WH_DISABLED и не пишем на сервер при каждом рендере —
+  // иначе можно затереть общий список (другое устройство / кэш)
 
   // Ключ — nm_id (FBS часто пишется с vendor_code=nm_id, FBW — с артикулом продавца)
   const byArticle = {};
