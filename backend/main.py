@@ -624,6 +624,10 @@ def sync_stock():
         logger.error(f"FBS stocks merge error: {e}")
 
     saved = upsert_stock(totals, warehouses)
+    try:
+        save_stock_warehouse_snapshot_from_rows(warehouses)
+    except Exception as e:
+        logger.error(f"stock warehouse snapshot error: {e}")
     httpx.post(
         f"{SUPABASE_URL}/rest/v1/settings",
         json={"key": "last_stock_sync", "value": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
@@ -634,6 +638,146 @@ def sync_stock():
         f"Stock sync complete. Articles: {saved}, warehouse rows: {len(warehouses)}, "
         f"fbs_nms: {len((fbs or {}).get('by_nm') or {})}"
     )
+
+
+# ---------- Снимки остатков по складам (для сравнения географии) ----------
+STOCK_WH_SNAPS_KEY = "stock_warehouse_snaps"
+STOCK_WH_SNAPS_KEEP_DAYS = 7
+# Если живых складов меньше — считаем географию узкой (срок доставки бьёт по конверсии)
+STOCK_WH_NARROW_LIVE = 2
+
+
+def _stock_wh_by_nm_from_rows(warehouses: list) -> dict:
+    """nm_id(str) -> {t: total, w: {warehouse_name: qty}} — только qty > 0."""
+    by_nm = {}
+    for row in warehouses or []:
+        nm = row.get("nm_id")
+        if nm is None:
+            continue
+        name = (row.get("warehouse_name") or "").strip()
+        qty = int(row.get("quantity") or 0)
+        if not name or qty <= 0:
+            continue
+        key = str(int(nm))
+        slot = by_nm.setdefault(key, {"t": 0, "w": {}})
+        slot["w"][name] = slot["w"].get(name, 0) + qty
+        slot["t"] = sum(slot["w"].values())
+    return by_nm
+
+
+def _fetch_stock_wh_by_nm() -> dict:
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_warehouses?select=nm_id,warehouse_name,quantity",
+            headers=sb_headers(),
+            timeout=30,
+        )
+        rows = r.json() if r.is_success else []
+        return _stock_wh_by_nm_from_rows(rows if isinstance(rows, list) else [])
+    except Exception as e:
+        logger.error(f"fetch stock_warehouses for snapshot: {e}")
+        return {}
+
+
+def _save_stock_wh_snaps(snaps: list) -> bool:
+    import json as _json
+    body = {
+        "key": STOCK_WH_SNAPS_KEY,
+        "value": _json.dumps(snaps, ensure_ascii=False),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        resp = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/settings?on_conflict=key",
+            json=body,
+            headers=sb_headers(),
+            timeout=60,
+        )
+        return resp.is_success
+    except Exception as e:
+        logger.error(f"save stock_warehouse_snaps: {e}")
+        return False
+
+
+def save_stock_warehouse_snapshot_from_rows(warehouses: list = None) -> dict:
+    """Пишет дневной снимок остатков по складам (перезаписывает сегодняшний)."""
+    by_nm = _stock_wh_by_nm_from_rows(warehouses) if warehouses is not None else _fetch_stock_wh_by_nm()
+    return save_stock_warehouse_snapshot_by_nm(by_nm)
+
+
+def save_stock_warehouse_snapshot_by_nm(by_nm: dict) -> dict:
+    now = _msk_now()
+    day = now.strftime("%Y-%m-%d")
+    hour_key = now.strftime("%Y-%m-%dT%H")
+    payload = {
+        "day": day,
+        "hour_key": hour_key,
+        "as_of": now.strftime("%Y-%m-%d %H:%M"),
+        "by_nm": by_nm or {},
+        "nm_count": len(by_nm or {}),
+    }
+    snaps = get_setting_json(STOCK_WH_SNAPS_KEY, []) or []
+    if not isinstance(snaps, list):
+        snaps = []
+    snaps = [s for s in snaps if isinstance(s, dict) and s.get("day") != day]
+    snaps.append(payload)
+    cutoff = (now - timedelta(days=STOCK_WH_SNAPS_KEEP_DAYS)).strftime("%Y-%m-%d")
+    snaps = [s for s in snaps if (s.get("day") or "") >= cutoff]
+    snaps.sort(key=lambda s: s.get("day") or "")
+    ok = _save_stock_wh_snaps(snaps)
+    logger.info(
+        f"stock WH snapshot day={day}: nms={len(by_nm or {})}, kept_days={len(snaps)}, saved={ok}"
+    )
+    return payload
+
+
+def get_stock_warehouse_snap_for_day(day: str):
+    """Последний снимок за календарный день YYYY-MM-DD (или None)."""
+    snaps = get_setting_json(STOCK_WH_SNAPS_KEY, []) or []
+    if not isinstance(snaps, list):
+        return None
+    day = str(day or "")[:10]
+    best = None
+    for s in snaps:
+        if not isinstance(s, dict):
+            continue
+        if (s.get("day") or "")[:10] != day:
+            continue
+        if best is None or (s.get("hour_key") or "") >= (best.get("hour_key") or ""):
+            best = s
+    return best
+
+
+def stock_wh_geo_compare(nm_id, cur_by_nm: dict, prev_snap: dict) -> dict:
+    """Сравнивает текущую географию складов с вчерашним снимком."""
+    key = str(int(nm_id))
+    cur = (cur_by_nm or {}).get(key) or {}
+    cur_w = cur.get("w") or {}
+    prev = ((prev_snap or {}).get("by_nm") or {}).get(key) or {}
+    prev_w = prev.get("w") or {}
+    cur_live = sorted([n for n, q in cur_w.items() if int(q or 0) > 0])
+    prev_live = sorted([n for n, q in prev_w.items() if int(q or 0) > 0])
+    emptied = [n for n in prev_live if n not in cur_w or int(cur_w.get(n) or 0) <= 0]
+    added = [n for n in cur_live if n not in prev_w]
+    live_now = len(cur_live)
+    live_prev = len(prev_live)
+    geo_flag = "ok"
+    if live_now <= 0:
+        geo_flag = "oos"
+    elif emptied and live_now < live_prev:
+        geo_flag = "emptied"
+    elif live_now <= STOCK_WH_NARROW_LIVE and (cur.get("t") or sum(cur_w.values()) or 0) > 0:
+        geo_flag = "narrow"
+    return {
+        "wh_live": live_now,
+        "wh_live_prev": live_prev if prev_w or prev.get("t") is not None else None,
+        "wh_emptied": emptied[:8],
+        "wh_added": added[:8],
+        "wh_names": cur_live[:12],
+        "stock_geo_flag": geo_flag,
+        "wh_snap_prev_as_of": (prev_snap or {}).get("as_of"),
+    }
+
 
 # ---------- Остатки нашего склада (Google Sheets) ----------
 OWN_WAREHOUSE_SHEET_ID = os.getenv(
@@ -3895,6 +4039,14 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             nm_to_vendor = {}
             stock_by_nm = {}
 
+        # Текущая география складов + вчерашний снимок (для «обнулился склад»)
+        stock_wh_by_nm = _fetch_stock_wh_by_nm()
+        try:
+            save_stock_warehouse_snapshot_by_nm(stock_wh_by_nm)
+        except Exception as e:
+            logger.warning(f"sales-pace stock WH snapshot: {e}")
+        stock_wh_prev_snap = get_stock_warehouse_snap_for_day(prev_s)
+
         period_days = {"day": 1, "week": 7, "weeks2": 14, "month": 30}.get(period, 1)
 
         def _cr_pct(num, den):
@@ -3951,6 +4103,7 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 stock_flag = "low"
             else:
                 stock_flag = "ok"
+            geo = stock_wh_geo_compare(nm, stock_wh_by_nm, stock_wh_prev_snap)
             opens_delta = opens_t - opens_y if funnel_ready else None
             cart_delta = cart_t - cart_y if funnel_ready else None
             funnel_down = (
@@ -3959,7 +4112,11 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 or (cart_cr_delta is not None and cart_cr_delta <= -1)
             )
             orders_down = (o_t - o_y) < 0
-            stock_linked = bool((funnel_down or orders_down) and stock_flag in ("oos", "low"))
+            geo_bad = geo.get("stock_geo_flag") in ("oos", "narrow", "emptied")
+            stock_linked = bool(
+                (funnel_down or orders_down)
+                and (stock_flag in ("oos", "low") or geo_bad)
+            )
             articles.append({
                 "nm_id": nm,
                 "vendor_code": ft.get("vendor_code") or fy.get("vendor_code") or nm_to_vendor.get(nm) or vc_from_orders.get(nm) or str(nm),
@@ -3994,6 +4151,11 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 "in_way": in_way,
                 "days_left": days_left,
                 "stock_flag": stock_flag,
+                "wh_live": geo.get("wh_live"),
+                "wh_live_prev": geo.get("wh_live_prev"),
+                "wh_emptied": geo.get("wh_emptied") or [],
+                "wh_names": geo.get("wh_names") or [],
+                "stock_geo_flag": geo.get("stock_geo_flag") or "ok",
                 "funnel_down": funnel_down,
                 "stock_linked": stock_linked,
                 "funnel_compare_ready": funnel_ready,
@@ -4037,10 +4199,12 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
         SALES_PACE_CACHE["syncing_period"] = None
 
 def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
-    """Докидывает текущий остаток/флаги к кэшу темпа (без полного пересчёта WB)."""
+    """Докидывает текущий остаток/флаги/географию складов к кэшу темпа (без полного пересчёта WB)."""
     if not articles:
         return articles
-    if all(isinstance(a, dict) and a.get("stock") is not None for a in articles):
+    need_stock = not all(isinstance(a, dict) and a.get("stock") is not None for a in articles)
+    need_geo = not all(isinstance(a, dict) and a.get("wh_live") is not None for a in articles)
+    if not need_stock and not need_geo:
         return articles
     stock_by_nm = {}
     try:
@@ -4058,7 +4222,11 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
                 }
     except Exception as e:
         logger.warning(f"enrich pace stock: {e}")
-        return articles
+        if need_stock:
+            return articles
+    stock_wh_by_nm = _fetch_stock_wh_by_nm() if need_geo else {}
+    prev_day = (_msk_now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    prev_snap = get_stock_warehouse_snap_for_day(prev_day) if need_geo else None
     period_days = {"day": 1, "week": 7, "weeks2": 14, "month": 30}.get(period, 1)
     out = []
     for a in articles:
@@ -4069,8 +4237,12 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
             out.append(item)
             continue
         st_info = stock_by_nm.get(nm) or {}
-        stock_qty = int(st_info.get("stock") or 0)
-        in_way = int(st_info.get("in_way") or 0)
+        if need_stock:
+            stock_qty = int(st_info.get("stock") or 0)
+            in_way = int(st_info.get("in_way") or 0)
+        else:
+            stock_qty = int(item.get("stock") if item.get("stock") is not None else (st_info.get("stock") or 0))
+            in_way = int(item.get("in_way") if item.get("in_way") is not None else (st_info.get("in_way") or 0))
         o_t = int(item.get("orders_today") or 0)
         o_y = int(item.get("orders_yesterday") or 0)
         daily_orders = max(o_t, o_y, 0) / float(period_days or 1)
@@ -4104,6 +4276,14 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
             or (cr_d is not None and cr_d <= -1)
         )
         orders_down = (item.get("orders_delta") or 0) < 0
+        geo = stock_wh_geo_compare(nm, stock_wh_by_nm, prev_snap) if need_geo else {
+            "wh_live": item.get("wh_live"),
+            "wh_live_prev": item.get("wh_live_prev"),
+            "wh_emptied": item.get("wh_emptied") or [],
+            "wh_names": item.get("wh_names") or [],
+            "stock_geo_flag": item.get("stock_geo_flag") or "ok",
+        }
+        geo_bad = geo.get("stock_geo_flag") in ("oos", "narrow", "emptied")
         item.update({
             "stock": stock_qty,
             "in_way": in_way,
@@ -4112,8 +4292,16 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
             "cart_cr_today": cr_t,
             "cart_cr_yesterday": cr_y,
             "cart_cr_delta": cr_d,
+            "wh_live": geo.get("wh_live"),
+            "wh_live_prev": geo.get("wh_live_prev"),
+            "wh_emptied": geo.get("wh_emptied") or [],
+            "wh_names": geo.get("wh_names") or [],
+            "stock_geo_flag": geo.get("stock_geo_flag") or "ok",
             "funnel_down": funnel_down,
-            "stock_linked": bool((funnel_down or orders_down) and stock_flag in ("oos", "low")),
+            "stock_linked": bool(
+                (funnel_down or orders_down)
+                and (stock_flag in ("oos", "low") or geo_bad)
+            ),
         })
         out.append(item)
     return out
