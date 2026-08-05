@@ -132,14 +132,30 @@ a.prod-link:hover .prod-name{color:var(--oz-blue);text-decoration:underline}
   box-shadow:2px 0 4px rgba(0,0,0,.06);min-width:300px;
 }
 .matrix th.sticky{z-index:5;background:#FAFBFC}
-.matrix .wh-head{text-align:center;background:#F0F4FF;cursor:grab;user-select:none}
+.matrix .wh-head{text-align:center;background:#E8F0FF;cursor:grab;user-select:none}
 .matrix .wh-head:active{cursor:grabbing}
-.matrix .wh-sub{font-size:10px;font-weight:500;text-align:center;background:#F7F9FC}
+.matrix .wh-head.wh-even{background:#EAF7F0}
+.matrix .wh-sub{font-size:10px;font-weight:500;text-align:center;background:#F0F5FF}
+.matrix .wh-sub.wh-even{background:#EEF8F2}
+/* граница между складами + чередование цветов блоков */
+#stocksMatrix .wh-start,
+#stocksMatrix thead th.wh-block{border-left:3px solid #5B6575!important}
+#stocksMatrix td.wh-a,#stocksMatrix th.wh-a{background:#EEF4FF}
+#stocksMatrix td.wh-b,#stocksMatrix th.wh-b{background:#ECFDF5}
+#stocksMatrix thead th.wh-a.wh-sub{background:#D6E4FF;color:#1E3A8A}
+#stocksMatrix thead th.wh-b.wh-sub{background:#D1FADF;color:#065F46}
+#stocksMatrix thead th.wh-a.wh-head{background:#C7D9FF;color:#1E3A8A}
+#stocksMatrix thead th.wh-b.wh-head{background:#A7F3D0;color:#065F46}
+#stocksMatrix tr.pinned td.wh-a{background:#FFF3D6}
+#stocksMatrix tr.pinned td.wh-b{background:#E8F8EF}
 .matrix .num{text-align:right;font-variant-numeric:tabular-nums}
 .matrix .m-urgent{color:var(--red);font-weight:600}
 .matrix .m-ok{color:var(--green)}
 .matrix .muted{color:var(--oz-faint)}
-.matrix .tot-col{background:#F8FAFF}
+.matrix .tot-col{background:#FFF4E8}
+#stocksMatrix thead th.tot-col{background:#FFE4C4;color:#9A3412}
+#stocksMatrix thead th.wh-tot{background:#FFD6A8;color:#9A3412}
+#stocksMatrix tr.pinned td.tot-col{background:#FFE8B8}
 .matrix tr.pinned td{background:#FFFBEB}
 .matrix tr.pinned td.sticky{background:#FFFBEB}
 .matrix tr.dragging{opacity:.45}
@@ -1086,10 +1102,11 @@ function renderStocks() {
   colgroup += '</colgroup>';
 
   let head1 = `<th class="sticky" data-col="0" data-wkey="product">Артикул</th>
-    <th class="wh-head" colspan="4">Весь Ozon</th>`;
-  warehouses.forEach(w => {
+    <th class="wh-head wh-tot wh-block" colspan="4">Весь Ozon</th>`;
+  warehouses.forEach((w, wi) => {
     const on = isWhEnabled(w);
-    head1 += `<th class="wh-head${!on?' cell-off':''}" colspan="4" draggable="true"
+    const stripe = wi % 2 ? 'wh-b wh-even' : 'wh-a';
+    head1 += `<th class="wh-head wh-block ${stripe}${!on?' cell-off':''}" colspan="4" draggable="true"
       ondragstart='whDS(event,${JSON.stringify(w)})'
       ondragover="event.preventDefault()"
       ondrop='whDrop(event,${JSON.stringify(w)})'
@@ -1104,13 +1121,14 @@ function renderStocks() {
   const subLabels = ['Остаток','Заказы','Дн.','Поставить'];
   let head2 = `<th class="sticky" data-col="0" data-wkey="product"></th>`;
   for (let i = 0; i < 4; i++) {
-    head2 += `<th class="wh-sub tot-col" data-col="${1+i}" data-wkey="metric">${subLabels[i]}</th>`;
+    head2 += `<th class="wh-sub tot-col${i===0?' wh-start':''}" data-col="${1+i}" data-wkey="metric">${subLabels[i]}</th>`;
   }
   warehouses.forEach((w, wi) => {
     const off = isWhEnabled(w) ? '' : ' cell-off';
+    const stripe = wi % 2 ? 'wh-b wh-even' : 'wh-a';
     ['Ост.','Зак.','Дн.','Пост.'].forEach((lab, j) => {
       const idx = 1 + 4 + wi * 4 + j;
-      head2 += `<th class="wh-sub${off}" data-col="${idx}" data-wkey="metric">${lab}</th>`;
+      head2 += `<th class="wh-sub ${stripe}${j===0?' wh-start':''}${off}" data-col="${idx}" data-wkey="metric">${lab}</th>`;
     });
   });
 
@@ -1128,23 +1146,24 @@ function renderStocks() {
         <span class="prod-name">${esc(a.offer_id)}</span>
         <div class="prod-meta">${fmt(a.warehouses || 0)} скл.</div>
       </td>
-      <td class="num tot-col">${fmt(a.totalStock)}<div class="prod-meta">${fmt(a.warehouses || 0)} скл.</div></td>
+      <td class="num tot-col wh-start">${fmt(a.totalStock)}<div class="prod-meta">${fmt(a.warehouses || 0)} скл.</div></td>
       <td class="num tot-col">${fmt(a.ordered_qty)}</td>
       <td class="num tot-col ${dlCls}">${dl}</td>
       <td class="num tot-col"><b>${fmt(a.recAll)}</b></td>`;
-    warehouses.forEach(w => {
+    warehouses.forEach((w, wi) => {
       const c = a.cells[w];
       const off = isWhEnabled(w) ? '' : 'cell-off';
+      const stripe = wi % 2 ? 'wh-b' : 'wh-a';
       if (!c) {
-        html += `<td class="num muted ${off}">—</td><td class="num muted ${off}">—</td><td class="num muted ${off}">—</td><td class="num muted ${off}">—</td>`;
+        html += `<td class="num muted wh-start ${stripe} ${off}">—</td><td class="num muted ${stripe} ${off}">—</td><td class="num muted ${stripe} ${off}">—</td><td class="num muted ${stripe} ${off}">—</td>`;
         return;
       }
       const dcls = c.daysLeft == null ? 'muted' : (c.daysLeft < TARGET_DAYS ? 'm-urgent' : 'm-ok');
       const d = c.daysLeft == null ? '—' : Math.round(c.daysLeft);
-      html += `<td class="num ${off}">${fmt(c.stock)}</td>
-        <td class="num ${off}">${fmt(c.orders)}</td>
-        <td class="num ${dcls} ${off}">${d}</td>
-        <td class="num ${off}">${fmt(c.recommend)}</td>`;
+      html += `<td class="num wh-start ${stripe} ${off}">${fmt(c.stock)}</td>
+        <td class="num ${stripe} ${off}">${fmt(c.orders)}</td>
+        <td class="num ${dcls} ${stripe} ${off}">${d}</td>
+        <td class="num ${stripe} ${off}">${fmt(c.recommend)}</td>`;
     });
     html += '</tr>';
     return html;
