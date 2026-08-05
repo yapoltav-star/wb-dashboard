@@ -651,16 +651,49 @@ SUPPLY_WH_DISABLED_KEY = "supply_wh_disabled"
 
 def get_disabled_warehouses() -> set:
     """Имена складов, снятых галкой в матрице поставок — не участвуют в расчётах темпа."""
-    raw = get_setting_json(SUPPLY_WH_DISABLED_KEY, []) or []
+    raw = get_setting_raw(SUPPLY_WH_DISABLED_KEY, None)
+    if raw is None:
+        # fallback: json path
+        raw = get_setting_json(SUPPLY_WH_DISABLED_KEY, None)
+    return set(_normalize_disabled_warehouses(raw if raw is not None else []))
+
+
+def _normalize_disabled_warehouses(value) -> list:
+    """Приводит value из API/settings к чистому list[str]."""
+    import json as _json
+    raw = value
+    if raw is None or raw == "":
+        return []
     if isinstance(raw, str):
         try:
-            import json as _json
             raw = _json.loads(raw)
+            if isinstance(raw, str):
+                raw = _json.loads(raw)
         except Exception:
-            raw = []
+            return [raw.strip()] if raw.strip() else []
     if not isinstance(raw, list):
-        return set()
-    return {str(x).strip() for x in raw if str(x).strip()}
+        return []
+    out, seen = [], set()
+    for x in raw:
+        n = str(x).strip()
+        if n and n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def _save_disabled_warehouses(names: list) -> bool:
+    clean = _normalize_disabled_warehouses(names)
+    return save_setting_value(SUPPLY_WH_DISABLED_KEY, clean)
+
+
+def _invalidate_dash_cache():
+    try:
+        with _DASH_CACHE_LOCK:
+            _DASH_CACHE["ts"] = 0.0
+            _DASH_CACHE["data"] = None
+    except Exception:
+        pass
 
 
 def _filter_wh_map(wh_map: dict, disabled: set) -> dict:
@@ -5439,6 +5472,8 @@ async def save_setting(request: dict):
     if not key:
         return {"error": "key required"}
     try:
+        if key == SUPPLY_WH_DISABLED_KEY:
+            value = _normalize_disabled_warehouses(value)
         # списки/объекты — как JSON-строка (иначе str(list) сломает get_setting_json)
         if isinstance(value, (list, dict)):
             import json as _json
@@ -5452,12 +5487,36 @@ async def save_setting(request: dict):
         )
         if not resp.is_success:
             return {"error": f"Supabase error: {resp.status_code} {resp.text[:200]}"}
-        # отключённые склады влияют на темп/гео — сбрасываем кэш
+        # сброс кэшей, где настройка влияет на UI/расчёты
         if key == SUPPLY_WH_DISABLED_KEY:
             SALES_PACE_CACHE["by_period"] = {}
-        return {"status": "ok"}
+            _invalidate_dash_cache()
+        elif key in (
+            "target_coverage_days", "sales_window_days",
+            "last_supply_sync", "last_ads_sync", "last_sync",
+        ):
+            _invalidate_dash_cache()
+        return {"status": "ok", "key": key, "value": value if key == SUPPLY_WH_DISABLED_KEY else store_val}
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/api/supply-wh-disabled")
+def get_supply_wh_disabled():
+    """Актуальный список отключённых складов (без кэша dashboard-data)."""
+    names = sorted(get_disabled_warehouses())
+    return {"status": "ok", "disabled": names}
+
+
+@app.put("/api/supply-wh-disabled")
+async def put_supply_wh_disabled(request: dict):
+    """Сохранить список отключённых складов (общий для всех устройств)."""
+    names = _normalize_disabled_warehouses(request.get("disabled", request.get("value")))
+    if not _save_disabled_warehouses(names):
+        return {"error": "не удалось сохранить в settings"}
+    SALES_PACE_CACHE["by_period"] = {}
+    _invalidate_dash_cache()
+    return {"status": "ok", "disabled": names}
 
 # ---------- Proxy endpoints: фронтенд обращается только к Railway, ----------
 # ---------- никогда напрямую к Supabase (для пользователей у которых ----------
