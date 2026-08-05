@@ -57,6 +57,7 @@ body{font-family:'Manrope',sans-serif;background:var(--oz-bg);color:var(--oz-tex
 .num-inp{width:56px;border:1px solid var(--oz-border);border-radius:var(--rs);padding:6px 8px;font-size:12px;font-family:inherit}
 
 .banner{background:#EEF4FF;border:1px solid #C7D9FF;border-radius:var(--r);padding:12px 16px;margin-bottom:16px;font-size:13px;color:#1E3A8A;line-height:1.45}
+.banner.ok{background:#ECFDF5;border-color:#A7F3D0;color:#065F46}
 .banner.warn{background:#FFFBEB;border-color:#FDE68A;color:#92400E}
 .banner.err{background:#FEF3F2;border-color:#FECDCA;color:#912018}
 
@@ -1447,7 +1448,8 @@ function drawCoinvest() {
 
   if (COIN_DATA.note) {
     banner.style.display = 'block';
-    banner.className = 'banner warn';
+    const ok = !!(COIN_DATA.client_source || COIN_DATA.client_count);
+    banner.className = ok ? 'banner ok' : 'banner warn';
     banner.textContent = COIN_DATA.note;
   } else {
     banner.style.display = 'none';
@@ -1527,7 +1529,7 @@ function drawCoinvest() {
   }).join('');
 
   if (COIN_DATA.syncing && !arts.length) {
-    root.innerHTML = '<div class="loading"><div class="spinner"></div>Тянем /v5/product/info/prices и акции…</div>';
+    root.innerHTML = '<div class="loading"><div class="spinner"></div>Тянем цены кабинета + витрину ozon.ru…</div>';
     return;
   }
   if (!arts.length) {
@@ -1537,8 +1539,11 @@ function drawCoinvest() {
 
   const rows = arts.map(a => {
     const titles = (a.action_titles || []).join(', ') || (a.in_actions_count ? (a.in_actions_count + ' акц.') : '—');
-    const sitePrice = a.customer_price != null ? a.customer_price : (a.action_price ?? a.marketing_price);
-    const coinPct = a.ozon_discount_pct != null ? a.ozon_discount_pct : a.coinvest_pct;
+    const sitePrice = a.customer_price != null ? a.customer_price : (a.client_price ?? a.action_price ?? a.marketing_price);
+    const coinPct = a.coinvest_pct != null ? a.coinvest_pct : a.ozon_discount_pct;
+    const src = a.price_source || (a.premium_details ? 'premium' : '');
+    const srcTag = src === 'ozon.ru' ? ' <span class="tag ok">витрина</span>'
+      : src === 'premium' ? ' <span class="tag ok">premium</span>' : '';
     return `<tr>
       <td class="sticky"><span class="prod-name">${esc(a.offer_id)}</span></td>
       <td class="num mono">${money(a.old_price)}</td>
@@ -1552,7 +1557,7 @@ function drawCoinvest() {
       <td class="num mono">${money(a.ozon_min_price)}</td>
       <td class="num mono">${money(a.min_price)}</td>
       <td title="${esc(titles)}">${esc(String(titles).slice(0, 40))}${String(titles).length > 40 ? '…' : ''}</td>
-      <td>${a.auto_action_enabled ? '<span class="tag ok">авто</span>' : '<span class="tag">выкл</span>'}${a.premium_details ? ' <span class="tag ok">premium</span>' : ''}</td>
+      <td>${a.auto_action_enabled ? '<span class="tag ok">авто</span>' : '<span class="tag">выкл</span>'}${srcTag}</td>
     </tr>`;
   }).join('');
 
@@ -1572,14 +1577,14 @@ function drawCoinvest() {
           ${coinTh('Мин. на Ozon', 'ozon_min_price')}
           ${coinTh('Твой min', 'min_price')}
           <th>Акции</th>
-          <th>Авто / Premium</th>
+          <th>Авто / источник</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
     <div class="hint">
-      <b>Соинвест</b> — скидка за счёт Ozon. При Premium Pro берём <code>customer_price</code> и <code>discount_percent</code> из /v1/product/prices/details.
-      Без Premium — прокси по action_price акций. Индекс: SUPER/GREEN/YELLOW/RED.
+      <b>Цена на сайте</b> — с клиентской карточки ozon.ru (composer-api), как <code>card.wb.ru</code> на WB.
+      <b>Соинвест</b> = цена продавца (с акциями) − цена на сайте. Индекс: SUPER/GREEN/YELLOW/RED.
     </div>`;
 }
 

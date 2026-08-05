@@ -1,10 +1,8 @@
 """Цены и соинвест Ozon — аналог раздела «Цены и СПП» на WB.
 
-На Ozon нет поля SPP. Ближайшие сигналы из Seller API:
-- price / marketing_seller_price / marketing_price (если ещё отдаётся)
-- marketing_actions (акции на карточке)
-- price_indexes.color_index
-- /v1/actions — список акций Ozon с участием
+Цена на сайте — с клиентской витрины ozon.ru (composer-api), как card.wb.ru на WB.
+Seller API больше не отдаёт marketing_price; Premium /v1/product/prices/details — запасной путь.
+Соинвест ≈ цена продавца (с учётом акций продавца) − цена на сайте.
 """
 
 from __future__ import annotations
@@ -15,6 +13,8 @@ import time
 from datetime import datetime, timezone
 from typing import Callable
 
+import client_prices as cprices
+
 logger = logging.getLogger("ozon-dashboard.coinvest")
 
 COINVEST_CACHE: dict = {
@@ -24,6 +24,7 @@ COINVEST_CACHE: dict = {
     "syncing": False,
     "error": None,
     "note": None,
+    "client_source": None,
 }
 
 _lock = threading.Lock()
@@ -195,9 +196,37 @@ def normalize_price_item(item: dict, action_by_pid: dict[int, list[dict]]) -> di
         "ozon_index": idx["ozon_index"],
         "commissions": item.get("commissions") if isinstance(item.get("commissions"), dict) else {},
         "customer_price": None,
+        "client_price": None,
         "ozon_discount_pct": None,
         "premium_details": False,
+        "price_source": None,
     }
+
+
+def _apply_site_price(article: dict, site_price: float, *, source: str, ozon_disc: float | None = None) -> None:
+    """Проставить цену на сайте и пересчитать соинвест (как СПП на WB)."""
+    article["customer_price"] = site_price
+    article["client_price"] = site_price
+    article["marketing_price"] = site_price
+    article["price_source"] = source
+    if source == "premium":
+        article["premium_details"] = True
+    price = article.get("price")
+    base = article.get("marketing_seller_price")
+    if base is None:
+        base = price
+    if ozon_disc is not None:
+        article["ozon_discount_pct"] = round(float(ozon_disc), 1)
+        article["coinvest_pct"] = article["ozon_discount_pct"]
+    if price and price > 0:
+        article["total_discount_pct"] = _pct(site_price, price)
+    if base is not None and site_price is not None and base >= site_price and price and price > 0:
+        article["coinvest_rub"] = round(float(base) - float(site_price), 2)
+        if article.get("coinvest_pct") is None or source == "ozon.ru":
+            # от витрины считаем сами; Premium % оставляем если уже задан через ozon_disc
+            if ozon_disc is None or source == "ozon.ru":
+                article["coinvest_pct"] = round((float(base) - float(site_price)) / float(price) * 100.0, 1)
+                article["ozon_discount_pct"] = article["coinvest_pct"]
 
 
 def fetch_prices_details(ozon_post: Callable, skus: list[int]) -> tuple[dict[int, dict], str | None]:
@@ -322,49 +351,74 @@ def sync_coinvest(
             row["sku"] = sku
             articles.append(row)
 
-        # Premium Pro: точная цена на сайте + % скидки за счёт Ozon
+        # 1) Главное — цена с клиентской витрины ozon.ru (как card.wb.ru)
+        skus = [a["sku"] for a in articles if a.get("sku")]
+        client_map, client_source = {}, None
+        try:
+            client_map, client_source = cprices.fetch_client_prices(skus)
+        except Exception as e:
+            logger.warning("client prices failed: %s", e)
+        client_ok = bool(client_map)
+        if client_ok:
+            for a in articles:
+                info = client_map.get(a.get("sku")) if a.get("sku") else None
+                if not info or info.get("client_price") is None:
+                    continue
+                _apply_site_price(a, float(info["client_price"]), source="ozon.ru")
+                if info.get("card_price") is not None:
+                    a["client_price_card"] = info["card_price"]
+                if info.get("regular_price") is not None:
+                    a["client_price_regular"] = info["regular_price"]
+
+        # 2) Запасной путь — Premium Pro /v1/product/prices/details (только где витрина не ответила)
         premium_ok = False
         premium_note = None
-        skus = [a["sku"] for a in articles if a.get("sku")]
-        details, derr = fetch_prices_details(ozon_post, skus)
+        need_premium = [a["sku"] for a in articles if a.get("sku") and a.get("customer_price") is None]
+        details, derr = ({}, None)
+        if need_premium:
+            details, derr = fetch_prices_details(ozon_post, need_premium)
         if derr == "premium":
-            premium_note = (
-                "Premium Pro недоступен — /v1/product/prices/details не отдал customer_price. "
-                "Соинвест считаем по акциям / marketing_seller_price."
-            )
+            premium_note = None  # не пугаем, если витрина уже дала цены
         elif derr:
             premium_note = f"prices/details: {derr}"
         elif details:
-            premium_ok = True
             for a in articles:
-                d = details.get(a.get("sku")) if a.get("sku") else None
-                if not d:
+                if a.get("customer_price") is not None:
                     continue
-                a["customer_price"] = d.get("customer_price")
-                a["ozon_discount_pct"] = d.get("ozon_discount_pct")
-                a["premium_details"] = True
-                # пересчёт соинвеста от официального % / цены сайта
-                if d.get("ozon_discount_pct") is not None:
-                    a["coinvest_pct"] = round(float(d["ozon_discount_pct"]), 1)
-                if a.get("price") and d.get("customer_price") is not None and a["price"] > 0:
-                    a["marketing_price"] = d["customer_price"]
-                    a["total_discount_pct"] = _pct(d["customer_price"], a["price"])
-                    base = a.get("marketing_seller_price") if a.get("marketing_seller_price") is not None else a["price"]
-                    if base is not None and base >= d["customer_price"]:
-                        a["coinvest_rub"] = round(base - d["customer_price"], 2)
-                        if a.get("coinvest_pct") is None:
-                            a["coinvest_pct"] = round((base - d["customer_price"]) / a["price"] * 100.0, 1)
+                d = details.get(a.get("sku")) if a.get("sku") else None
+                if not d or d.get("customer_price") is None:
+                    continue
+                premium_ok = True
+                _apply_site_price(
+                    a,
+                    float(d["customer_price"]),
+                    source="premium",
+                    ozon_disc=d.get("ozon_discount_pct"),
+                )
 
-        has_mp = any(a.get("marketing_price") is not None or a.get("customer_price") is not None for a in articles)
+        # 3) Совсем без витрины/Premium — action_price уже в normalize_price_item
+        n_site = sum(1 for a in articles if a.get("customer_price") is not None)
         note = None
-        if premium_ok:
-            note = "Premium Pro: цена на сайте и «скидка за счёт Ozon» из /v1/product/prices/details."
-        elif premium_note:
-            note = premium_note
-        elif not has_mp:
+        if client_ok:
             note = (
-                "Ozon в /v5/product/info/prices не отдаёт marketing_price. "
-                "Соинвест % считаем по action_price акций и marketing_seller_price."
+                f"Цена на сайте с ozon.ru ({n_site}/{len(articles)} арт.) — как card.wb.ru на WB. "
+                "Соинвест = цена продавца (с акциями) − цена на сайте."
+            )
+            if premium_ok:
+                note += " Часть артикулов дополнена Premium prices/details."
+        elif premium_ok:
+            note = "Витрина ozon.ru недоступна с сервера. Цена на сайте из Premium /v1/product/prices/details."
+        elif premium_note:
+            note = (
+                "Не удалось открыть клиентский ozon.ru с сервера (антибот/гео). "
+                "Premium Pro тоже не отдал customer_price. "
+                "Соинвест — оценка по акциям / marketing_seller_price. "
+                "На Railway в RU/EU или с OZON_CLIENT_PROXY витрина обычно открывается."
+            )
+        elif n_site == 0:
+            note = (
+                "Цена на сайте не получена: витрина ozon.ru недоступна с этого сервера. "
+                "Соинвест считаем по action_price акций. Задай OZON_CLIENT_PROXY или задеплой ближе к RU."
             )
 
         COINVEST_CACHE.update({
@@ -375,13 +429,22 @@ def sync_coinvest(
             "error": None,
             "note": note,
             "premium_details": premium_ok,
+            "client_source": client_source,
+            "client_count": len(client_map),
             "count": len(articles),
         })
         logger.info(
-            "coinvest sync done: %s prices, %s actions, premium=%s",
-            len(articles), len(actions), premium_ok,
+            "coinvest sync done: %s prices, %s actions, client=%s premium=%s",
+            len(articles), len(actions), len(client_map), premium_ok,
         )
-        return {"ok": True, "count": len(articles), "actions": len(actions), "premium_details": premium_ok}
+        return {
+            "ok": True,
+            "count": len(articles),
+            "actions": len(actions),
+            "premium_details": premium_ok,
+            "client_source": client_source,
+            "client_count": len(client_map),
+        }
     except Exception as e:
         logger.exception("coinvest sync failed")
         COINVEST_CACHE["error"] = str(e)
@@ -430,5 +493,7 @@ def get_cached() -> dict:
         "error": COINVEST_CACHE.get("error"),
         "note": COINVEST_CACHE.get("note"),
         "premium_details": bool(COINVEST_CACHE.get("premium_details")),
+        "client_source": COINVEST_CACHE.get("client_source"),
+        "client_count": COINVEST_CACHE.get("client_count") or 0,
         "count": len(COINVEST_CACHE.get("articles") or []),
     }
