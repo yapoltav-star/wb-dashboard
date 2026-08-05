@@ -23,6 +23,7 @@ KEY_POSITION = "ozon_competitor_position"
 KEY_BRANDS = "ozon_competitor_brands"
 KEY_BRAND_DETAILS = "ozon_competitor_brand_details"
 KEY_HIDDEN_BRANDS = "ozon_competitor_hidden_brands"
+KEY_OWN_BRAND = "ozon_competitor_own_brand"
 NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
 CACHE: dict = {
@@ -30,6 +31,7 @@ CACHE: dict = {
     "brands": None,
     "brand_details": {},  # brand -> report
     "hidden_brands": [],  # list of brand names (exact casing from hide action)
+    "own_brand": "",
     "loaded": False,
 }
 
@@ -553,11 +555,30 @@ def _hidden_set(hidden: list[str] | None) -> set[str]:
     return {str(b).lower() for b in (hidden or []) if b}
 
 
+def _guess_own_brand(details: dict, products: list[dict] | None, brands_rows: list[dict] | None) -> str:
+    """Если свой бренд не задан — пробуем угадать по пересечению SKU с каталогом."""
+    if not details or not products:
+        return ""
+    own_sku = {str(p["sku"]) for p in products if p.get("sku") is not None}
+    if not own_sku:
+        return ""
+    best_brand, best_hits = "", 0
+    for brand, rep in details.items():
+        hits = sum(1 for r in (rep.get("rows") or []) if str(r.get("sku") or "") in own_sku)
+        if hits > best_hits:
+            best_hits, best_brand = hits, brand
+    if best_hits >= 3:
+        return best_brand
+    # fallback: exact name match in brands list that has detail + catalog hits
+    return best_brand if best_hits else ""
+
+
 def load_all(get_setting: Callable, products: list[dict] | None = None) -> dict:
     position = _load_json(get_setting, KEY_POSITION, None)
     brands = _load_json(get_setting, KEY_BRANDS, None)
     details = _load_json(get_setting, KEY_BRAND_DETAILS, {}) or {}
     hidden = _normalize_hidden(_load_json(get_setting, KEY_HIDDEN_BRANDS, []))
+    own_brand = str(get_setting(KEY_OWN_BRAND, "") or "").strip()
     if not isinstance(details, dict):
         details = {}
     if position is not None and not (position.get("rows") or []):
@@ -574,11 +595,19 @@ def load_all(get_setting: Callable, products: list[dict] | None = None) -> dict:
             b = str(r.get("brand") or "")
             r["has_detail"] = b.lower() in detail_keys
             r["is_hidden"] = b.lower() in hidden_l
+    # mark own SKUs inside brand detail reports
+    if products is not None:
+        for rep in details.values():
+            mark_own_rows(rep.get("rows") or [], products)
+
+    if not own_brand:
+        own_brand = _guess_own_brand(details, products, (brands or {}).get("rows") if brands else None)
 
     CACHE["position"] = position
     CACHE["brands"] = brands
     CACHE["brand_details"] = details
     CACHE["hidden_brands"] = hidden
+    CACHE["own_brand"] = own_brand
     CACHE["loaded"] = True
     return summarize()
 
@@ -621,6 +650,7 @@ def summarize() -> dict:
             "with_detail": sum(1 for r in visible_rows if r.get("has_detail")),
         } if brands else None,
         "hidden_brands": hidden,
+        "own_brand": CACHE.get("own_brand") or "",
         "brand_details": [
             {
                 "brand": d.get("brand"),
@@ -768,6 +798,16 @@ def set_brand_hidden(
 
     save_setting(KEY_HIDDEN_BRANDS, hidden)
     CACHE["hidden_brands"] = hidden
+    return summarize()
+
+
+def set_own_brand(save_setting: Callable, get_setting: Callable, brand: str | None) -> dict:
+    """Запомнить «мой бренд» в общей базе для сравнения и точек роста."""
+    if not CACHE.get("loaded"):
+        load_all(get_setting)
+    name = str(brand or "").strip()
+    save_setting(KEY_OWN_BRAND, name)
+    CACHE["own_brand"] = name
     return summarize()
 
 

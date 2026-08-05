@@ -1334,7 +1334,10 @@ def get_competitors():
         data = comp.load_all(get_setting, products=products)
     except Exception as e:
         logger.warning("competitors load: %s", e)
-        data = {"position": None, "brands": None, "brand_details": [], "brand_detail_map": {}, "hidden_brands": []}
+        data = {
+            "position": None, "brands": None, "brand_details": [],
+            "brand_detail_map": {}, "hidden_brands": [], "own_brand": "",
+        }
     return data
 
 
@@ -1393,6 +1396,14 @@ def competitors_hide_brand(body: dict = Body(...)):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, **data}
+
+
+@app.post("/api/competitors-own-brand")
+def competitors_own_brand(body: dict = Body(...)):
+    """Сохранить «мой бренд» для сравнения в отчёте бренда."""
+    brand = body.get("brand")
+    data = comp.set_own_brand(save_setting, get_setting, brand)
     return {"ok": True, **data}
 
 
