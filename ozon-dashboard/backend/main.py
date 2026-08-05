@@ -19,6 +19,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+import sales_pace as pace
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ozon-dashboard")
 
@@ -942,6 +944,64 @@ def get_stocks():
         "target_coverage_days": get_setting_int("target_coverage_days", 30),
         "last_stocks_sync": get_setting("last_stocks_sync"),
     }
+
+
+@app.get("/api/sales-pace")
+def get_sales_pace(period: str = "day", date_cur: str | None = None, date_prev: str | None = None):
+    period = period if period in pace.SALES_PACE_PERIODS else "day"
+    cached = pace.get_cached_pace(period, date_cur, date_prev)
+    if cached:
+        return cached
+    # автозапуск синка в фоне
+    if not pace.SALES_PACE_CACHE.get("syncing"):
+        threading.Thread(
+            target=_run_pace_sync,
+            kwargs={"period": period, "date_cur": date_cur, "date_prev": date_prev},
+            daemon=True,
+        ).start()
+    return {
+        "period": period,
+        "articles": [],
+        "syncing": True,
+        "error": None,
+        "label_cur": "",
+        "label_prev": "",
+        "col_cur": "Сейчас",
+        "col_prev": "Было",
+        "funnel_ready": False,
+        "ads_ready": False,
+    }
+
+
+@app.post("/api/sync-sales-pace")
+def trigger_sales_pace(period: str = "day", date_cur: str | None = None, date_prev: str | None = None):
+    if pace.SALES_PACE_CACHE.get("syncing"):
+        return {"ok": True, "syncing": True}
+    threading.Thread(
+        target=_run_pace_sync,
+        kwargs={"period": period, "date_cur": date_cur, "date_prev": date_prev},
+        daemon=True,
+    ).start()
+    return {"ok": True, "syncing": True}
+
+
+def _run_pace_sync(period: str = "day", date_cur: str | None = None, date_prev: str | None = None):
+    try:
+        pace.sync_sales_pace(
+            ozon_post=ozon_post,
+            load_stock_totals=lambda: _sb_select_all(
+                "stock_totals",
+                "offer_id,product_id,sku,name,stock_total",
+            ),
+            load_products=load_products_from_db,
+            period=period,
+            date_cur=date_cur,
+            date_prev=date_prev,
+        )
+    except Exception as e:
+        logger.exception("pace sync thread: %s", e)
+        pace.SALES_PACE_CACHE["error"] = str(e)
+        pace.SALES_PACE_CACHE["syncing"] = False
 
 
 @app.get("/")
