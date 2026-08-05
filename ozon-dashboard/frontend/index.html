@@ -79,19 +79,17 @@ tr:hover td{background:#F8FAFF}
 .empty{padding:48px 24px;text-align:center;color:var(--oz-muted);font-size:14px}
 .empty b{display:block;color:var(--oz-text);margin-bottom:6px;font-size:15px}
 
-.matrix-wrap{overflow-x:scroll;overflow-y:auto;background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);max-height:calc(100vh - 280px);
-  scrollbar-gutter:stable both-edges;scrollbar-width:auto}
-.matrix-wrap::-webkit-scrollbar{height:16px;width:16px}
-.matrix-wrap::-webkit-scrollbar-thumb{background:#9AA1AD;border-radius:8px;border:3px solid #EEF0F3;min-width:48px}
-.matrix-wrap::-webkit-scrollbar-thumb:hover{background:#6B7280}
-.matrix-wrap::-webkit-scrollbar-track{background:#EEF0F3;border-radius:8px}
-.matrix-wrap::-webkit-scrollbar-corner{background:#EEF0F3}
-.matrix{border-collapse:collapse;font-size:12px;min-width:100%;table-layout:fixed}
-.matrix th,.matrix td{border-bottom:1px solid var(--oz-border);border-right:1px solid var(--oz-border);padding:6px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative}
-.matrix th{background:#FAFBFC;position:sticky;top:0;z-index:2;font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--oz-muted)}
-.matrix thead tr:nth-child(2) th{top:28px}
-.matrix th.sticky,.matrix td.sticky{position:sticky;left:0;background:var(--oz-surface);z-index:1}
-.matrix th.sticky{z-index:3;background:#FAFBFC}
+.matrix-wrap{overflow-x:auto;border:1px solid var(--oz-border);border-radius:var(--r);background:var(--oz-surface);-webkit-overflow-scrolling:touch}
+.matrix{border-collapse:separate;border-spacing:0;font-size:12px;min-width:100%;table-layout:fixed}
+.matrix th,.matrix td{border-bottom:1px solid var(--oz-border);border-right:1px solid var(--oz-border);padding:8px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative}
+.matrix th{background:#FAFBFC;position:sticky;top:0;z-index:2;font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--oz-muted);font-weight:600}
+.matrix thead tr:first-child th{text-align:center;border-bottom:1px solid var(--oz-border);z-index:3}
+.matrix thead tr:nth-child(2) th{top:0;z-index:2}
+.matrix th.sticky,.matrix td.sticky{
+  position:sticky;left:0;z-index:3;background:var(--oz-surface);text-align:left;
+  box-shadow:2px 0 4px rgba(0,0,0,.06);
+}
+.matrix th.sticky{z-index:5;background:#FAFBFC}
 .matrix .wh-head{text-align:center;background:#F0F4FF;cursor:grab;user-select:none}
 .matrix .wh-head:active{cursor:grabbing}
 .matrix .wh-sub{font-size:10px;font-weight:500;text-align:center;background:#F7F9FC}
