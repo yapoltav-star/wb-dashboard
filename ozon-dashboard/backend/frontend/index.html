@@ -1551,7 +1551,7 @@ function drawCoinvest() {
   const rows = arts.map(a => {
     const titles = (a.action_titles || []).join(', ') || (a.in_actions_count ? (a.in_actions_count + ' акц.') : '—');
     const sitePrice = a.customer_price != null ? a.customer_price : '';
-    const coinPct = a.coinvest_pct != null ? a.coinvest_pct : a.ozon_discount_pct;
+    const coinPct = a.coinvest_pct;
     const offer = a.offer_id || '';
     const srcTag = (a.manual_site_price || a.price_source === 'manual')
       ? ' <span class="tag ok">ручная</span>' : '';

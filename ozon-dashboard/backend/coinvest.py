@@ -204,8 +204,27 @@ def normalize_price_item(item: dict, action_by_pid: dict[int, list[dict]]) -> di
     }
 
 
+def _coinvest_from_site(base: float | None, site_price: float | None) -> tuple[float | None, float | None]:
+    """Соинвест ₽ и %: база = цена с акциями продавца (или цена продавца).
+
+    % = (база − цена на сайте) / база × 100  — как доля скидки Ozon от цены после акций.
+    """
+    if base is None or site_price is None:
+        return None, None
+    try:
+        b = float(base)
+        s = float(site_price)
+    except (TypeError, ValueError):
+        return None, None
+    if b <= 0 or s < 0 or b < s:
+        return None, None
+    rub = round(b - s, 2)
+    pct = round((b - s) / b * 100.0, 1)
+    return rub, pct
+
+
 def _apply_site_price(article: dict, site_price: float, *, source: str, ozon_disc: float | None = None) -> None:
-    """Проставить цену на сайте и пересчитать соинвест (как СПП на WB)."""
+    """Проставить цену на сайте и пересчитать соинвест."""
     article["customer_price"] = site_price
     article["client_price"] = site_price
     article["marketing_price"] = site_price
@@ -216,18 +235,17 @@ def _apply_site_price(article: dict, site_price: float, *, source: str, ozon_dis
     base = article.get("marketing_seller_price")
     if base is None:
         base = price
-    if ozon_disc is not None:
-        article["ozon_discount_pct"] = round(float(ozon_disc), 1)
-        article["coinvest_pct"] = article["ozon_discount_pct"]
     if price and price > 0:
         article["total_discount_pct"] = _pct(site_price, price)
-    if base is not None and site_price is not None and base >= site_price and price and price > 0:
-        article["coinvest_rub"] = round(float(base) - float(site_price), 2)
-        if article.get("coinvest_pct") is None or source == "ozon.ru":
-            # от витрины считаем сами; Premium % оставляем если уже задан через ozon_disc
-            if ozon_disc is None or source == "ozon.ru":
-                article["coinvest_pct"] = round((float(base) - float(site_price)) / float(price) * 100.0, 1)
-                article["ozon_discount_pct"] = article["coinvest_pct"]
+    rub, pct = _coinvest_from_site(base, site_price)
+    article["coinvest_rub"] = rub
+    # Для ручного ввода всегда свой %; premium-disc только если сами не посчитали
+    if source == "manual" or ozon_disc is None or rub is not None:
+        article["coinvest_pct"] = pct
+        article["ozon_discount_pct"] = pct
+    elif ozon_disc is not None:
+        article["ozon_discount_pct"] = round(float(ozon_disc), 1)
+        article["coinvest_pct"] = article["ozon_discount_pct"]
 
 
 def fetch_prices_details(ozon_post: Callable, skus: list[int]) -> tuple[dict[int, dict], str | None]:
