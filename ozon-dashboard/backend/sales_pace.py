@@ -306,6 +306,7 @@ def sync_sales_pace(
     period: str = "day",
     date_cur: str | None = None,
     date_prev: str | None = None,
+    load_ads_sku: Callable | None = None,
 ) -> dict:
     period = period if period in SALES_PACE_PERIODS else "day"
     if period != "day":
@@ -325,8 +326,8 @@ def sync_sales_pace(
 
         cur_ord, prev_ord = fetch_orders_windows(ozon_post, cur_start, cur_end, prev_start, prev_end)
 
-        # Воронка: показы + корзина по календарным дням окон
-        funnel_metrics = ["hits_view", "hits_tocart", "ordered_units"]
+        # Воронка Premium: показы, сессии на карточке (=переходы), корзина
+        funnel_metrics = ["hits_view", "session_view_pdp", "hits_tocart", "ordered_units"]
         funnel_cur, funnel_prev = {}, {}
         funnel_ready = True
         try:
@@ -340,6 +341,19 @@ def sync_sales_pace(
         except Exception as e:
             logger.warning("pace funnel analytics: %s", e)
             funnel_ready = False
+
+        # CPM / рекламные показы из Performance API (опционально)
+        ads_cur, ads_prev = {}, {}
+        ads_ready = False
+        if load_ads_sku:
+            try:
+                ads_cur = load_ads_sku(cur_start.date(), cur_end.date()) or {}
+                time.sleep(0.2)
+                ads_prev = load_ads_sku(prev_start.date(), prev_end.date()) or {}
+                ads_ready = bool(ads_cur or ads_prev)
+            except Exception as e:
+                logger.warning("pace ads sku: %s", e)
+                ads_ready = False
 
         # stock + product meta
         stock_by_offer: dict[str, dict] = {}
@@ -416,6 +430,8 @@ def sync_sales_pace(
 
             opens_t = int(fc.get("hits_view") or 0)
             opens_y = int(fp.get("hits_view") or 0)
+            clicks_t = int(fc.get("session_view_pdp") or 0)
+            clicks_y = int(fp.get("session_view_pdp") or 0)
             cart_t = int(fc.get("hits_tocart") or 0)
             cart_y = int(fp.get("hits_tocart") or 0)
 
@@ -424,13 +440,34 @@ def sync_sales_pace(
                     return None
                 return round(100.0 * float(num) / float(den), 1)
 
-            cr_t = _cr(cart_t, opens_t)
-            cr_y = _cr(cart_y, opens_y)
+            # CR как на WB: корзина ÷ переходы в карточку; fallback ÷ показы
+            cr_den_t = clicks_t if clicks_t > 0 else opens_t
+            cr_den_y = clicks_y if clicks_y > 0 else opens_y
+            cr_t = _cr(cart_t, cr_den_t)
+            cr_y = _cr(cart_y, cr_den_y)
             cr_delta = None
             if cr_t is not None and cr_y is not None:
                 cr_delta = round(cr_t - cr_y, 1)
 
             meta = stock_by_offer.get(offer) or {}
+            sku = meta.get("sku")
+            sku_key = str(sku) if sku is not None else ""
+            ac = ads_cur.get(sku_key) or {}
+            ap = ads_prev.get(sku_key) or {}
+            views_t = int(ac.get("views") or 0)
+            views_y = int(ap.get("views") or 0)
+            spend_t = float(ac.get("expense") or 0)
+            spend_y = float(ap.get("expense") or 0)
+            cpm_t = ac.get("cpm")
+            cpm_y = ap.get("cpm")
+            if cpm_t is None and views_t > 0:
+                cpm_t = round(spend_t / views_t * 1000, 1)
+            if cpm_y is None and views_y > 0:
+                cpm_y = round(spend_y / views_y * 1000, 1)
+            cpm_delta = None
+            if ads_ready and cpm_t is not None and cpm_y is not None:
+                cpm_delta = round(cpm_t - cpm_y, 1)
+
             stock_qty = int(meta.get("stock") or 0)
             daily_orders = max(o_t, o_y, 0) / period_days if period_days else 0
             days_left = round(stock_qty / daily_orders, 1) if daily_orders > 0 else None
@@ -442,12 +479,14 @@ def sync_sales_pace(
                 stock_flag = "ok"
 
             opens_delta = (opens_t - opens_y) if funnel_ready else None
+            clicks_delta = (clicks_t - clicks_y) if funnel_ready else None
             cart_delta = (cart_t - cart_y) if funnel_ready else None
             orders_delta = o_t - o_y
             funnel_down = False
             if funnel_ready:
                 funnel_down = (
                     (opens_delta is not None and opens_delta < 0)
+                    or (clicks_delta is not None and clicks_delta < 0)
                     or (cart_delta is not None and cart_delta < 0)
                     or (cr_delta is not None and cr_delta <= -1)
                 )
@@ -467,19 +506,30 @@ def sync_sales_pace(
                     "opens_today": opens_t if funnel_ready else None,
                     "opens_yesterday": opens_y if funnel_ready else None,
                     "opens_delta": opens_delta,
+                    "clicks_today": clicks_t if funnel_ready else None,
+                    "clicks_yesterday": clicks_y if funnel_ready else None,
+                    "clicks_delta": clicks_delta,
                     "cart_today": cart_t if funnel_ready else None,
                     "cart_yesterday": cart_y if funnel_ready else None,
                     "cart_delta": cart_delta,
                     "cart_cr_today": cr_t if funnel_ready else None,
                     "cart_cr_yesterday": cr_y if funnel_ready else None,
                     "cart_cr_delta": cr_delta if funnel_ready else None,
+                    "views_today": views_t if ads_ready else None,
+                    "views_yesterday": views_y if ads_ready else None,
+                    "views_delta": (views_t - views_y) if ads_ready else None,
+                    "spend_today": spend_t if ads_ready else None,
+                    "spend_yesterday": spend_y if ads_ready else None,
+                    "cpm_today": cpm_t if ads_ready else None,
+                    "cpm_yesterday": cpm_y if ads_ready else None,
+                    "cpm_delta": cpm_delta,
                     "stock": stock_qty,
                     "days_left": days_left,
                     "stock_flag": stock_flag,
                     "stock_linked": stock_linked,
                     "funnel_down": funnel_down,
                     "funnel_compare_ready": funnel_ready,
-                    "ads_compare_ready": False,
+                    "ads_compare_ready": ads_ready,
                 }
             )
 
@@ -503,7 +553,7 @@ def sync_sales_pace(
             "now_time": now.strftime("%H:%M"),
             "updated_at": now.isoformat(),
             "funnel_ready": funnel_ready,
-            "ads_ready": False,
+            "ads_ready": ads_ready,
             "syncing": False,
             "error": None,
         }

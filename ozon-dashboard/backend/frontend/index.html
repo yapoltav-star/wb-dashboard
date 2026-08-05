@@ -98,14 +98,21 @@ tr:hover td{background:#F8FAFF}
 #paceMatrix thead th.pg-cart{background:#D1FADF;color:#065F46}
 #paceMatrix th.pg-cr,#paceMatrix td.pg-cr{background:#F0FDFA}
 #paceMatrix thead th.pg-cr{background:#CCFBF1;color:#115E59}
+#paceMatrix th.pg-clicks,#paceMatrix td.pg-clicks{background:#F0F9FF}
+#paceMatrix thead th.pg-clicks{background:#BAE6FD;color:#0C4A6E}
+#paceMatrix th.pg-cpm,#paceMatrix td.pg-cpm{background:#F8FAFC}
+#paceMatrix thead th.pg-cpm{background:#E2E8F0;color:#334155}
 #paceMatrix tr.pinned td.pg-stock,#paceMatrix tr.pinned td.pg-orders,
 #paceMatrix tr.pinned td.pg-opens,#paceMatrix tr.pinned td.pg-cart,
-#paceMatrix tr.pinned td.pg-cr{filter:saturate(.85) brightness(.98)}
+#paceMatrix tr.pinned td.pg-cr,#paceMatrix tr.pinned td.pg-clicks,
+#paceMatrix tr.pinned td.pg-cpm{filter:saturate(.85) brightness(.98)}
 #paceMatrix tr.pace-down td.pg-orders,#paceMatrix tr.pace-down td.pg-opens,
 #paceMatrix tr.pace-down td.pg-cart,#paceMatrix tr.pace-down td.pg-cr,
+#paceMatrix tr.pace-down td.pg-clicks,#paceMatrix tr.pace-down td.pg-cpm,
 #paceMatrix tr.pace-down td.pg-stock{box-shadow:inset 0 0 0 999px rgba(240,68,56,.04)}
 #paceMatrix tr.pace-up td.pg-orders,#paceMatrix tr.pace-up td.pg-opens,
 #paceMatrix tr.pace-up td.pg-cart,#paceMatrix tr.pace-up td.pg-cr,
+#paceMatrix tr.pace-up td.pg-clicks,#paceMatrix tr.pace-up td.pg-cpm,
 #paceMatrix tr.pace-up td.pg-stock{box-shadow:inset 0 0 0 999px rgba(18,183,106,.04)}
 .matrix th.sticky,.matrix td.sticky{
   position:sticky;left:0;z-index:3;background:var(--oz-surface);text-align:left;
@@ -149,6 +156,8 @@ tr:hover td{background:#F8FAFF}
 #paceMatrix tr.total-row td.pg-opens{background:#FDECC8!important}
 #paceMatrix tr.total-row td.pg-cart{background:#D1FADF!important}
 #paceMatrix tr.total-row td.pg-cr{background:#CCFBF1!important}
+#paceMatrix tr.total-row td.pg-clicks{background:#BAE6FD!important}
+#paceMatrix tr.total-row td.pg-cpm{background:#E2E8F0!important}
 .total-label{font-weight:700}
 .total-sub{font-size:11px;color:var(--oz-muted);font-weight:500;margin-top:2px}
 .idx{display:inline-flex;align-items:center;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
@@ -416,7 +425,7 @@ let STOCK_PINNED = JSON.parse(localStorage.getItem('oz_stock_pinned') || 'null')
 let COL_WIDTHS = JSON.parse(localStorage.getItem('oz_col_widths') || 'null') || { product: 320, metric: 72 };
 if (!COL_WIDTHS.product || COL_WIDTHS.product < 280) COL_WIDTHS.product = 320;
 let PACE_COL_WIDTHS = JSON.parse(localStorage.getItem('oz_pace_col_widths') || 'null') || {};
-const PACE_COL_DEFAULTS = [320, 100, 110, 100, 72, 110, 100, 72, 110, 100, 72, 100, 80];
+const PACE_COL_DEFAULTS = [300, 90, 100, 90, 64, 100, 90, 64, 80, 80, 64, 100, 90, 64, 100, 90, 64, 80, 80, 64];
 function paceColW(i) {
   const w = PACE_COL_WIDTHS[i];
   return (w && w >= 44) ? w : (PACE_COL_DEFAULTS[i] || 80);
@@ -1093,6 +1102,10 @@ function paceCrDeltaHtml(d) {
   if (n < 0) return `<span class="pace-delta-down">−${s}</span>`;
   return '<span class="pace-delta-flat">0</span>';
 }
+function paceCpmFmt(v) {
+  if (v == null || !isFinite(Number(v))) return '—';
+  return Number(v).toLocaleString('ru-RU', { maximumFractionDigits: 1 });
+}
 function paceStockHtml(a) {
   const stock = a.stock;
   if (stock == null) return '—';
@@ -1217,7 +1230,8 @@ function drawSalesPace() {
 
   const colCur = PACE_DATA.col_cur || 'Сейчас';
   const colPrev = PACE_DATA.col_prev || 'Было';
-  const nCols = 13;
+  const adsOk = PACE_DATA.ads_ready !== false && allCabinet.some(a => a.cpm_today != null || a.views_today != null);
+  const nCols = 20;
   let colgroup = '<colgroup>';
   for (let i = 0; i < nCols; i++) colgroup += `<col style="width:${paceColW(i)}px">`;
   colgroup += '</colgroup>';
@@ -1227,8 +1241,10 @@ function drawSalesPace() {
     <th class="mhead pg-start pg-stock" rowspan="2" style="cursor:pointer" data-col="1" data-wkey="per" onclick="paceSort('stock')">Остаток${paceSortMark('stock')}</th>
     <th colspan="3" class="pg-start pg-orders pg-g">Заказы</th>
     <th colspan="3" class="pg-start pg-opens pg-g">Показы</th>
+    <th colspan="3" class="pg-start pg-cpm pg-g">CPM, ₽</th>
+    <th colspan="3" class="pg-start pg-clicks pg-g">Переходы</th>
     <th colspan="3" class="pg-start pg-cart pg-g">Корзина</th>
-    <th colspan="2" class="pg-start pg-cr pg-g">CR корзины</th>
+    <th colspan="3" class="pg-start pg-cr pg-g">CR корзины</th>
   </tr><tr>
     ${paceTh(colCur, 'orders_today', 2, 'pg-orders')}
     ${paceTh(colPrev, 'orders_yesterday', 3, 'pg-orders')}
@@ -1236,11 +1252,18 @@ function drawSalesPace() {
     ${paceTh(colCur, 'opens_today', 5, 'pg-start pg-opens')}
     ${paceTh(colPrev, 'opens_yesterday', 6, 'pg-opens')}
     ${paceTh('Δ', 'opens_delta', 7, 'pg-opens')}
-    ${paceTh(colCur, 'cart_today', 8, 'pg-start pg-cart')}
-    ${paceTh(colPrev, 'cart_yesterday', 9, 'pg-cart')}
-    ${paceTh('Δ', 'cart_delta', 10, 'pg-cart')}
-    ${paceTh(colCur, 'cart_cr_today', 11, 'pg-start pg-cr')}
-    ${paceTh('Δ', 'cart_cr_delta', 12, 'pg-cr')}
+    ${paceTh(colCur, 'cpm_today', 8, 'pg-start pg-cpm')}
+    ${paceTh(colPrev, 'cpm_yesterday', 9, 'pg-cpm')}
+    ${paceTh('Δ', 'cpm_delta', 10, 'pg-cpm')}
+    ${paceTh(colCur, 'clicks_today', 11, 'pg-start pg-clicks')}
+    ${paceTh(colPrev, 'clicks_yesterday', 12, 'pg-clicks')}
+    ${paceTh('Δ', 'clicks_delta', 13, 'pg-clicks')}
+    ${paceTh(colCur, 'cart_today', 14, 'pg-start pg-cart')}
+    ${paceTh(colPrev, 'cart_yesterday', 15, 'pg-cart')}
+    ${paceTh('Δ', 'cart_delta', 16, 'pg-cart')}
+    ${paceTh(colCur, 'cart_cr_today', 17, 'pg-start pg-cr')}
+    ${paceTh(colPrev, 'cart_cr_yesterday', 18, 'pg-cr')}
+    ${paceTh('Δ', 'cart_cr_delta', 19, 'pg-cr')}
   </tr>`;
 
   // Итого по всему кабинету (все артикулы с заказами, без поиска/фильтра)
@@ -1250,17 +1273,30 @@ function drawSalesPace() {
     orders_yesterday: allCabinet.reduce((s, a) => s + (a.orders_yesterday || 0), 0),
     opens_today: allCabinet.reduce((s, a) => s + (a.opens_today || 0), 0),
     opens_yesterday: allCabinet.reduce((s, a) => s + (a.opens_yesterday || 0), 0),
+    clicks_today: allCabinet.reduce((s, a) => s + (a.clicks_today || 0), 0),
+    clicks_yesterday: allCabinet.reduce((s, a) => s + (a.clicks_yesterday || 0), 0),
     cart_today: allCabinet.reduce((s, a) => s + (a.cart_today || 0), 0),
     cart_yesterday: allCabinet.reduce((s, a) => s + (a.cart_yesterday || 0), 0),
+    views_today: allCabinet.reduce((s, a) => s + (a.views_today || 0), 0),
+    views_yesterday: allCabinet.reduce((s, a) => s + (a.views_yesterday || 0), 0),
+    spend_today: allCabinet.reduce((s, a) => s + (a.spend_today || 0), 0),
+    spend_yesterday: allCabinet.reduce((s, a) => s + (a.spend_yesterday || 0), 0),
   };
   tot.orders_delta = tot.orders_today - tot.orders_yesterday;
-  const funnelOk = allCabinet.some(a => a.opens_today != null || a.cart_today != null);
+  const funnelOk = allCabinet.some(a => a.opens_today != null || a.cart_today != null || a.clicks_today != null);
   tot.opens_delta = funnelOk ? tot.opens_today - tot.opens_yesterday : null;
+  tot.clicks_delta = funnelOk ? tot.clicks_today - tot.clicks_yesterday : null;
   tot.cart_delta = funnelOk ? tot.cart_today - tot.cart_yesterday : null;
-  const crT = (funnelOk && tot.opens_today > 0) ? Math.round(1000 * tot.cart_today / tot.opens_today) / 10 : null;
-  const crY = (funnelOk && tot.opens_yesterday > 0) ? Math.round(1000 * tot.cart_yesterday / tot.opens_yesterday) / 10 : null;
+  const crDenT = tot.clicks_today > 0 ? tot.clicks_today : tot.opens_today;
+  const crDenY = tot.clicks_yesterday > 0 ? tot.clicks_yesterday : tot.opens_yesterday;
+  const crT = (funnelOk && crDenT > 0) ? Math.round(1000 * tot.cart_today / crDenT) / 10 : null;
+  const crY = (funnelOk && crDenY > 0) ? Math.round(1000 * tot.cart_yesterday / crDenY) / 10 : null;
   tot.cart_cr_today = crT;
+  tot.cart_cr_yesterday = crY;
   tot.cart_cr_delta = (crT != null && crY != null) ? Math.round((crT - crY) * 10) / 10 : null;
+  tot.cpm_today = (adsOk && tot.views_today > 0) ? Math.round(tot.spend_today / tot.views_today * 1000 * 10) / 10 : null;
+  tot.cpm_yesterday = (adsOk && tot.views_yesterday > 0) ? Math.round(tot.spend_yesterday / tot.views_yesterday * 1000 * 10) / 10 : null;
+  tot.cpm_delta = (tot.cpm_today != null && tot.cpm_yesterday != null) ? Math.round((tot.cpm_today - tot.cpm_yesterday) * 10) / 10 : null;
 
   const totalRow = `<tr class="total-row">
       <td class="sticky">
@@ -1274,10 +1310,17 @@ function drawSalesPace() {
       <td class="num pg-start pg-opens">${funnelOk ? fmt(tot.opens_today) : '—'}</td>
       <td class="num pg-opens">${funnelOk ? fmt(tot.opens_yesterday) : '—'}</td>
       <td class="num pg-opens">${paceDeltaHtml(tot.opens_delta)}</td>
+      <td class="num pg-start pg-cpm">${paceCpmFmt(tot.cpm_today)}</td>
+      <td class="num pg-cpm">${paceCpmFmt(tot.cpm_yesterday)}</td>
+      <td class="num pg-cpm">${tot.cpm_delta == null ? '—' : paceDeltaHtml(tot.cpm_delta)}</td>
+      <td class="num pg-start pg-clicks">${funnelOk ? fmt(tot.clicks_today) : '—'}</td>
+      <td class="num pg-clicks">${funnelOk ? fmt(tot.clicks_yesterday) : '—'}</td>
+      <td class="num pg-clicks">${paceDeltaHtml(tot.clicks_delta)}</td>
       <td class="num pg-start pg-cart">${funnelOk ? fmt(tot.cart_today) : '—'}</td>
       <td class="num pg-cart">${funnelOk ? fmt(tot.cart_yesterday) : '—'}</td>
       <td class="num pg-cart">${paceDeltaHtml(tot.cart_delta)}</td>
       <td class="num pg-start pg-cr">${tot.cart_cr_today == null ? '—' : tot.cart_cr_today + '%'}</td>
+      <td class="num pg-cr">${tot.cart_cr_yesterday == null ? '—' : tot.cart_cr_yesterday + '%'}</td>
       <td class="num pg-cr">${paceCrDeltaHtml(tot.cart_cr_delta)}</td>
     </tr>`;
 
@@ -1296,10 +1339,17 @@ function drawSalesPace() {
       <td class="num pg-start pg-opens">${a.opens_today == null ? '—' : fmt(a.opens_today)}</td>
       <td class="num pg-opens">${a.opens_yesterday == null ? '—' : fmt(a.opens_yesterday)}</td>
       <td class="num pg-opens">${paceDeltaHtml(a.opens_delta)}</td>
+      <td class="num pg-start pg-cpm">${a.ads_compare_ready === false ? '—' : paceCpmFmt(a.cpm_today)}</td>
+      <td class="num pg-cpm">${a.ads_compare_ready === false ? '—' : paceCpmFmt(a.cpm_yesterday)}</td>
+      <td class="num pg-cpm">${a.cpm_delta == null ? '—' : paceDeltaHtml(a.cpm_delta)}</td>
+      <td class="num pg-start pg-clicks">${a.clicks_today == null ? '—' : fmt(a.clicks_today)}</td>
+      <td class="num pg-clicks">${a.clicks_yesterday == null ? '—' : fmt(a.clicks_yesterday)}</td>
+      <td class="num pg-clicks">${paceDeltaHtml(a.clicks_delta)}</td>
       <td class="num pg-start pg-cart">${a.cart_today == null ? '—' : fmt(a.cart_today)}</td>
       <td class="num pg-cart">${a.cart_yesterday == null ? '—' : fmt(a.cart_yesterday)}</td>
       <td class="num pg-cart">${paceDeltaHtml(a.cart_delta)}</td>
       <td class="num pg-start pg-cr">${a.cart_cr_today == null ? '—' : a.cart_cr_today + '%'}</td>
+      <td class="num pg-cr">${a.cart_cr_yesterday == null ? '—' : a.cart_cr_yesterday + '%'}</td>
       <td class="num pg-cr">${paceCrDeltaHtml(a.cart_cr_delta)}</td>
     </tr>`;
   }).join('');
@@ -1312,7 +1362,7 @@ function drawSalesPace() {
         <tbody>${totalRow}${rows}</tbody>
       </table>
     </div>
-    <div class="hint">Первая строка — <b>весь кабинет</b> (суммы по всем артикулам с заказами, без учёта поиска/фильтра). Сравниваем <b>то же время</b> текущего периода с прошлым. Δ — абсолютная разница. CR корзины = корзина ÷ показы.</div>`;
+    <div class="hint">Первая строка — <b>весь кабинет</b>. <b>Показы</b> = hits_view, <b>Переходы</b> = session_view_pdp (сессии на карточке), <b>CR</b> = корзина ÷ переходы (если нет переходов — ÷ показы). <b>CPM</b> из Performance API (нужны OZON_PERF_*). Воронка требует Premium Plus.</div>`;
   attachColResizers(document.getElementById('paceMatrix'), 'pace');
 }
 

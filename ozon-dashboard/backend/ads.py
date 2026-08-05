@@ -205,6 +205,62 @@ def sync_ads(period_days: int = 7) -> dict:
         _lock.release()
 
 
+def fetch_ads_sku_stats(date_from: date, date_to: date) -> dict[str, dict]:
+    """Performance API: views/clicks/expense по SKU за период → для CPM.
+
+    POST /api/client/statistics/products/sku
+    """
+    if not perf_configured():
+        return {}
+    try:
+        campaigns = fetch_campaigns()
+    except Exception as e:
+        logger.warning("ads campaigns for pace: %s", e)
+        return {}
+    ids = [c["id"] for c in campaigns if c.get("id")]
+    if not ids:
+        return {}
+    by_sku: dict[str, dict] = {}
+    # API принимает список кампаний; бьём батчами
+    for i in range(0, len(ids), 20):
+        batch = ids[i : i + 20]
+        try:
+            data = perf_request(
+                "POST",
+                "/api/client/statistics/products/sku",
+                json_body={
+                    "campaignIds": batch,
+                    "dateFrom": date_from.isoformat(),
+                    "dateTo": date_to.isoformat(),
+                },
+            )
+        except Exception as e:
+            logger.warning("ads sku stats: %s", e)
+            continue
+        rows = data.get("rows") if isinstance(data, dict) else (data if isinstance(data, list) else [])
+        for r in rows or []:
+            if not isinstance(r, dict):
+                continue
+            sku = r.get("sku")
+            if sku is None:
+                continue
+            key = str(sku)
+            entry = by_sku.setdefault(key, {"views": 0, "clicks": 0, "expense": 0.0, "orders": 0, "toCart": 0})
+            entry["views"] += int(r.get("views") or 0)
+            entry["clicks"] += int(r.get("clicks") or 0)
+            try:
+                entry["expense"] += float(r.get("expense") or 0)
+            except (TypeError, ValueError):
+                pass
+            entry["orders"] += int(r.get("orders") or 0)
+            entry["toCart"] += int(r.get("toCart") or 0)
+        time.sleep(0.15)
+    for entry in by_sku.values():
+        v = entry["views"]
+        entry["cpm"] = round(entry["expense"] / v * 1000, 1) if v > 0 else None
+    return by_sku
+
+
 def get_cached() -> dict:
     return {
         "campaigns": ADS_CACHE.get("campaigns") or [],
