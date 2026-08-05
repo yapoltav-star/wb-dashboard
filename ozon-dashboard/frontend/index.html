@@ -2895,17 +2895,32 @@ function openBrandDetail(brand) {
   COMP_BRAND = brand;
   showCompPage('brand');
 }
+function brandRankFromList(brand) {
+  const rows = (COMP_ALL.brands && COMP_ALL.brands.rows) || [];
+  const key = String(brand || '').toLowerCase();
+  const hit = rows.find(r => String(r.brand || '').toLowerCase() === key);
+  return hit && hit.rank != null ? hit.rank : null;
+}
 function fillBrandSelect() {
   const sel = document.getElementById('brandSelect');
   if (!sel) return;
   const map = COMP_ALL.brand_detail_map || {};
   const keys = Object.keys(map).sort((a, b) => {
+    const ra = brandRankFromList(a);
+    const rb = brandRankFromList(b);
+    if (ra != null && rb != null && ra !== rb) return ra - rb;
+    if (ra != null && rb == null) return -1;
+    if (ra == null && rb != null) return 1;
     const sa = (map[a].rows || []).reduce((s, r) => s + (r.ordered_sum || 0), 0);
     const sb = (map[b].rows || []).reduce((s, r) => s + (r.ordered_sum || 0), 0);
     return sb - sa;
   });
   sel.innerHTML = keys.length
-    ? keys.map(k => `<option value="${esc(k)}" ${k === COMP_BRAND ? 'selected' : ''}>${esc(k)}</option>`).join('')
+    ? keys.map(k => {
+        const rank = brandRankFromList(k);
+        const label = rank != null ? `${k} (${rank})` : k;
+        return `<option value="${esc(k)}" ${k === COMP_BRAND ? 'selected' : ''}>${esc(label)}</option>`;
+      }).join('')
     : '<option value="">нет загруженных отчётов</option>';
   if (COMP_BRAND && !keys.includes(COMP_BRAND) && keys.length) COMP_BRAND = keys[0];
 }
