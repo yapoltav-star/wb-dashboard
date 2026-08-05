@@ -69,7 +69,7 @@ tr:hover td{background:#F8FAFF}
 .prod{display:flex;align-items:center;gap:10px;min-width:240px}
 .prod img{width:40px;height:40px;object-fit:cover;border-radius:6px;background:#F0F2F5;border:1px solid var(--oz-border)}
 .prod-ph{width:40px;height:40px;border-radius:6px;background:#EEF1F5;display:flex;align-items:center;justify-content:center;color:var(--oz-faint);font-size:11px;flex-shrink:0}
-.prod-name{font-weight:500;line-height:1.3;max-width:320px}
+.prod-name{font-weight:600;line-height:1.3;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
 .prod-meta{font-size:11px;color:var(--oz-faint);margin-top:2px}
 .mono{font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 .tag{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;background:#F3F4F6;color:var(--oz-muted)}
@@ -87,7 +87,7 @@ tr:hover td{background:#F8FAFF}
 .matrix thead tr:nth-child(2) th{top:0;z-index:2}
 .matrix th.sticky,.matrix td.sticky{
   position:sticky;left:0;z-index:3;background:var(--oz-surface);text-align:left;
-  box-shadow:2px 0 4px rgba(0,0,0,.06);
+  box-shadow:2px 0 4px rgba(0,0,0,.06);min-width:300px;
 }
 .matrix th.sticky{z-index:5;background:#FAFBFC}
 .matrix .wh-head{text-align:center;background:#F0F4FF;cursor:grab;user-select:none}
@@ -159,7 +159,7 @@ tr:hover td{background:#F8FAFF}
 <div class="page" id="page-growth">
   <div class="toolbar">
     <div class="search">
-      <input id="paceSearch" placeholder="Поиск по артикулу…" oninput="drawSalesPace()">
+      <input id="paceSearch" placeholder="Артикул продавца…" oninput="drawSalesPace()">
     </div>
     <span style="font-size:12px;color:var(--oz-muted)">Период:</span>
     <button class="filter-btn on" id="pacePerDay" onclick="setPacePeriod('day')">День</button>
@@ -230,7 +230,7 @@ tr:hover td{background:#F8FAFF}
   <div class="banner" id="stocksBanner" style="display:none"></div>
   <div class="toolbar">
     <div class="search">
-      <input id="stSearch" placeholder="Артикул / название / SKU…" oninput="renderStocks()">
+      <input id="stSearch" placeholder="Артикул продавца…" oninput="renderStocks()">
     </div>
     <span style="font-size:12px;color:var(--oz-muted)">Окно продаж:</span>
     <input class="num-inp" id="salesWindowInput" type="number" min="1" value="14" onchange="setSalesWindow(this.value)">
@@ -280,7 +280,8 @@ let STOCK_WH = [];
 let WH_DISABLED = JSON.parse(localStorage.getItem('oz_wh_disabled') || '[]');
 let WH_ORDER = JSON.parse(localStorage.getItem('oz_wh_order') || 'null') || [];
 let STOCK_PINNED = JSON.parse(localStorage.getItem('oz_stock_pinned') || 'null') || [];
-let COL_WIDTHS = JSON.parse(localStorage.getItem('oz_col_widths') || 'null') || { product: 260, metric: 72 };
+let COL_WIDTHS = JSON.parse(localStorage.getItem('oz_col_widths') || 'null') || { product: 320, metric: 72 };
+if (!COL_WIDTHS.product || COL_WIDTHS.product < 280) COL_WIDTHS.product = 320;
 let dragWh = null;
 let dragPinArt = null;
 
@@ -685,7 +686,6 @@ function buildStockMatrix() {
   if (q) {
     articles = articles.filter(a =>
       (a.offer_id || '').toLowerCase().includes(q) ||
-      (a.name || '').toLowerCase().includes(q) ||
       String(a.sku || '').includes(q)
     );
   }
@@ -725,14 +725,14 @@ function renderStocks() {
     return;
   }
 
-  const pw = COL_WIDTHS.product || 260;
+  const pw = Math.max(COL_WIDTHS.product || 320, 280);
   const mw = COL_WIDTHS.metric || 72;
   const colCount = 1 + 4 + warehouses.length * 4;
   let colgroup = `<colgroup><col style="width:${pw}px">`;
   for (let i = 1; i < colCount; i++) colgroup += `<col style="width:${mw}px">`;
   colgroup += '</colgroup>';
 
-  let head1 = `<th class="sticky" data-col="0" data-wkey="product">Товар</th>
+  let head1 = `<th class="sticky" data-col="0" data-wkey="product">Артикул</th>
     <th class="wh-head" colspan="4">Весь Ozon</th>`;
   warehouses.forEach(w => {
     const on = isWhEnabled(w);
@@ -762,9 +762,6 @@ function renderStocks() {
   });
 
   const rows = articles.map(a => {
-    const img = a.primary_image
-      ? `<img src="${esc(a.primary_image)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
-      : `<div class="prod-ph">n/a</div>`;
     const dlCls = a.daysAll == null ? 'muted' : (a.daysAll < TARGET_DAYS ? 'm-urgent' : 'm-ok');
     const dl = a.daysAll == null ? '—' : Math.round(a.daysAll);
     const pinCls = a.isPinned ? 'on' : '';
@@ -772,13 +769,11 @@ function renderStocks() {
       ? `draggable="true" ondragstart='pinDS(event,${JSON.stringify(a.offer_id)})' ondragend="pinDE(event)" ondragover="event.preventDefault()" ondrop='pinDrop(event,${JSON.stringify(a.offer_id)})'`
       : `ondragover="event.preventDefault()" ondrop='pinDrop(event,${JSON.stringify(a.offer_id)})'`;
     let html = `<tr class="${a.isPinned?'pinned':''}" ${dragAttrs}>
-      <td class="sticky"><div class="prod">
+      <td class="sticky">
         <button class="pin-btn ${pinCls}" title="${a.isPinned?'Открепить':'Закрепить'}"
           onclick='toggleStockPin(${JSON.stringify(a.offer_id)}, event)'>📌</button>
-        ${img}<div>
-        <div class="prod-name">${esc(a.offer_id)}</div>
-        <div class="prod-meta">${esc((a.name||'').slice(0,60))} · sku ${esc(a.sku ?? '—')} · FBO ${fmt(a.fbo)} / FBS ${fmt(a.fbs)}</div>
-      </div></div></td>
+        <span class="prod-name">${esc(a.offer_id)}</span>
+      </td>
       <td class="num tot-col">${fmt(a.totalStock)}</td>
       <td class="num tot-col">${fmt(a.ordered_qty)}</td>
       <td class="num tot-col ${dlCls}">${dl}</td>
@@ -814,7 +809,7 @@ function renderStocks() {
       <b>⠿</b> перетащи заголовок склада · тяни край колонки для ширины ·
       галочка склада — включить/выключить из расчёта.
       Формулы: темп = заказы/окно · дней = остаток/темп · поставить = темп×цель − остаток.
-      Склады вправо/влево — ползунок снизу таблицы.
+      Склады вправо/влево — ползунок под таблицей (как на WB).
     </div>`;
   attachColResizers(document.getElementById('stocksMatrix'));
 }
@@ -999,8 +994,7 @@ function drawSalesPace() {
   const q = ((document.getElementById('paceSearch') || {}).value || '').toLowerCase().trim();
   if (q) arts = arts.filter(a =>
     String(a.vendor_code || a.offer_id || '').toLowerCase().includes(q) ||
-    String(a.sku || '').includes(q) ||
-    String(a.name || '').toLowerCase().includes(q)
+    String(a.sku || '').includes(q)
   );
   if (PACE_FILTER === 'down') arts = arts.filter(a => (a.orders_delta || 0) < 0);
   else if (PACE_FILTER === 'stock') arts = arts.filter(a => a.stock_linked);
@@ -1074,8 +1068,7 @@ function drawSalesPace() {
     return `<tr class="${cls}">
       <td class="sticky">
         <button class="pin-btn ${a.isPinned?'on':''}" onclick='togglePacePin(${JSON.stringify(offer)},event)'>📌</button>
-        <b>${esc(offer)}</b>${paceStockBadge(a)}
-        <div class="prod-meta">${esc((a.name||'').slice(0,50))} · sku ${esc(a.sku ?? '—')}</div>
+        <span class="prod-name">${esc(offer)}</span>${paceStockBadge(a)}
       </td>
       <td class="num">${paceStockHtml(a)}</td>
       <td class="num">${fmt(a.orders_today)}</td>
@@ -1093,7 +1086,7 @@ function drawSalesPace() {
   }).join('');
 
   root.innerHTML = `
-    <div class="matrix-wrap" style="max-height:calc(100vh - 300px)">
+    <div class="matrix-wrap">
       <table class="matrix">
         <thead>${head}</thead>
         <tbody>${rows}</tbody>
