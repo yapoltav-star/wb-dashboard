@@ -5,7 +5,9 @@ Seller API больше не отдаёт marketing_price / customer_price бе�
   GET https://www.ozon.ru/api/composer-api.bx/page/json/v2?url=/product/{sku}/
 
 Парсим виджет webPrice (cardPrice / price / originalPrice) и fallback SEO LD+JSON.
-Опционально: OZON_CLIENT_PROXY, curl_cffi (лучше проходит антибот).
+
+OZON_CLIENT_PROXY — RU mobile/residential (proxy.market). Важна одна sticky-сессия:
+куки антибота шарим на все SKU (не параллелим вслепую).
 """
 
 from __future__ import annotations
@@ -14,9 +16,9 @@ import json
 import logging
 import os
 import re
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -27,27 +29,23 @@ HOME = "https://www.ozon.ru/"
 
 _BROWSER_HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
     "Origin": "https://www.ozon.ru",
     "Referer": "https://www.ozon.ru/",
+    "sec-ch-ua": '"Chromium";v="126", "Google Chrome";v="126", "Not.A/Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
 }
+
+_lock = threading.Lock()
+LAST_PROBE: dict = {}
 
 
 def normalize_proxy_url(raw: str | None) -> str | None:
-    """Приводит строку прокси к URL для httpx/curl_cffi.
-
-    Поддерживает форматы proxy.market и аналоги:
-      http://user:pass@host:port
-      socks5://user:pass@host:port
-      user:pass@host:port
-      host:port:user:pass
-      host:port@user:pass
-      host:port
-    """
+    """Приводит строку прокси к URL для httpx/curl_cffi."""
     s = (raw or "").strip()
     if not s:
         return None
@@ -60,7 +58,6 @@ def normalize_proxy_url(raw: str | None) -> str | None:
         host, port = part.rsplit(":", 1)
         return bool(host) and port.isdigit()
 
-    # user:pass@host:port  ИЛИ  host:port@user:pass
     if "@" in s:
         left, right = s.split("@", 1)
         if _hostport(left) and not _hostport(right):
@@ -81,6 +78,40 @@ def normalize_proxy_url(raw: str | None) -> str | None:
 
 def proxy_configured() -> bool:
     return bool(normalize_proxy_url(os.environ.get("OZON_CLIENT_PROXY")))
+
+
+def proxy_public_info() -> dict:
+    """Без секретов — для статуса/баннера."""
+    raw = normalize_proxy_url(os.environ.get("OZON_CLIENT_PROXY"))
+    if not raw:
+        return {"configured": False}
+    try:
+        u = urlparse(raw)
+        host = u.hostname or ""
+        port = u.port
+        return {
+            "configured": True,
+            "scheme": u.scheme or "http",
+            "host": host,
+            "port": port,
+            "has_auth": bool(u.username),
+        }
+    except Exception:
+        return {"configured": True, "host": "?", "has_auth": True}
+
+
+def _proxy_candidates() -> list[str]:
+    """http и socks5 варианты одной и той же строки."""
+    base = normalize_proxy_url(os.environ.get("OZON_CLIENT_PROXY"))
+    if not base:
+        return []
+    out = [base]
+    if base.startswith("http://"):
+        out.append("socks5://" + base[len("http://") :])
+        out.append("socks5h://" + base[len("http://") :])
+    elif base.startswith("socks5://"):
+        out.append("http://" + base[len("socks5://") :])
+    return out
 
 
 def _price_text_to_num(text) -> float | None:
@@ -115,8 +146,6 @@ def _parse_composer_page(page: dict, sku: int) -> dict | None:
     card = _price_text_to_num(price_w.get("cardPrice"))
     regular = _price_text_to_num(price_w.get("price"))
     old = _price_text_to_num(price_w.get("originalPrice"))
-
-    # Предпочитаем карточную (то, что крупно на PDP), иначе обычную
     client = card if card is not None else regular
 
     if client is None:
@@ -157,64 +186,198 @@ def _parse_composer_page(page: dict, sku: int) -> dict | None:
     }
 
 
-def _http_get(url: str, timeout: float = 25.0) -> tuple[int, str]:
-    """GET с curl_cffi (если есть) или httpx. Учитывает OZON_CLIENT_PROXY."""
-    proxy = normalize_proxy_url(os.environ.get("OZON_CLIENT_PROXY"))
-    try:
-        from curl_cffi import requests as creq  # type: ignore
+def _classify_body(status: int, text: str) -> str:
+    head = (text or "")[:800]
+    if status in (401, 407):
+        return "proxy_auth"
+    if "incidentId" in head or "fab_" in head:
+        return "ozon_antibot"
+    if status == 403:
+        return "forbidden"
+    if status == 200 and ("widgetStates" in head or '"seo"' in head):
+        return "ok"
+    if status == 200 and ("Доступ ограничен" in head or "antibot" in head.lower() or "нет соединения" in head.lower()):
+        return "ozon_antibot"
+    if status != 200:
+        return f"http_{status}"
+    return "unknown"
 
-        r = creq.get(
-            url,
-            headers=_BROWSER_HEADERS,
-            impersonate="chrome124",
-            timeout=timeout,
-            proxies={"http": proxy, "https": proxy} if proxy else None,
-            allow_redirects=True,
+
+class _Session:
+    """Одна sticky-сессия: proxy + cookies на весь синк."""
+
+    def __init__(self, proxy: str | None):
+        self.proxy = proxy
+        self.backend = None
+        self._creq = None
+        self._httpx = None
+        self._init()
+
+    def _init(self):
+        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        try:
+            from curl_cffi import requests as creq  # type: ignore
+
+            self._creq = creq.Session()
+            if proxies:
+                self._creq.proxies = proxies
+            self.backend = "curl_cffi"
+            return
+        except Exception as e:
+            logger.info("curl_cffi unavailable (%s), httpx", e)
+
+        self._httpx = httpx.Client(
+            headers={k: v for k, v in _BROWSER_HEADERS.items()},
+            timeout=35.0,
+            follow_redirects=True,
+            proxy=self.proxy,
         )
+        self.backend = "httpx"
+
+    def get(self, url: str, *, accept: str = "text/html,application/xhtml+xml,*/*;q=0.8") -> tuple[int, str]:
+        headers = {**_BROWSER_HEADERS, "Accept": accept}
+        if self._creq is not None:
+            r = self._creq.get(
+                url,
+                headers=headers,
+                impersonate="chrome124",
+                timeout=35,
+                allow_redirects=True,
+            )
+            return int(r.status_code), r.text or ""
+        assert self._httpx is not None
+        r = self._httpx.get(url, headers=headers)
         return int(r.status_code), r.text or ""
-    except ImportError:
-        pass
+
+    def close(self):
+        try:
+            if self._creq is not None:
+                self._creq.close()
+        except Exception:
+            pass
+        try:
+            if self._httpx is not None:
+                self._httpx.close()
+        except Exception:
+            pass
+
+
+def _warmup(sess: _Session) -> dict:
+    """Прогрев главной — антибот пишет abt_data / cookies."""
+    try:
+        status, text = sess.get(HOME, accept="text/html,application/xhtml+xml,*/*;q=0.8")
     except Exception as e:
-        logger.debug("curl_cffi get failed: %s", e)
+        return {"ok": False, "step": "home", "error": str(e)[:300]}
+    kind = _classify_body(status, text)
+    time.sleep(1.2)
+    return {
+        "ok": kind == "ok" or status == 200,
+        "step": "home",
+        "status": status,
+        "kind": kind,
+        "len": len(text or ""),
+        "snippet": (text or "")[:160].replace("\n", " "),
+    }
 
-    with httpx.Client(
-        headers=_BROWSER_HEADERS,
-        timeout=timeout,
-        follow_redirects=True,
-        proxy=proxy,
-    ) as client:
-        r = client.get(url)
-        return int(r.status_code), r.text or ""
 
-
-def fetch_one_client_price(sku: int) -> dict | None:
-    """Одна карточка: /product/{sku}/ через composer-api."""
+def _fetch_sku(sess: _Session, sku: int) -> tuple[dict | None, dict]:
     path = f"/product/{int(sku)}/"
     url = COMPOSER + quote(path, safe="")
     try:
-        status, text = _http_get(url)
+        status, text = sess.get(url, accept="application/json, text/plain, */*")
     except Exception as e:
-        logger.warning("client price sku=%s: %s", sku, e)
-        return None
-    if status != 200:
-        logger.debug("client price sku=%s HTTP %s", sku, status)
-        return None
-    if "incidentId" in text[:500] or "Access Denied" in text[:500]:
-        return None
+        return None, {"sku": sku, "ok": False, "error": str(e)[:300]}
+    kind = _classify_body(status, text)
+    meta = {"sku": sku, "status": status, "kind": kind, "len": len(text or "")}
+    if kind != "ok":
+        meta["snippet"] = (text or "")[:160].replace("\n", " ")
+        return None, meta
     try:
         page = json.loads(text)
     except json.JSONDecodeError:
-        return None
-    if not isinstance(page, dict) or not (page.get("widgetStates") or page.get("seo")):
-        return None
-    return _parse_composer_page(page, int(sku))
+        meta["kind"] = "bad_json"
+        return None, meta
+    info = _parse_composer_page(page, int(sku)) if isinstance(page, dict) else None
+    meta["ok"] = bool(info and info.get("client_price") is not None)
+    if info:
+        meta["client_price"] = info["client_price"]
+    return info, meta
 
 
-def fetch_client_prices(skus: list[int], max_workers: int | None = None) -> tuple[dict[int, dict], str | None]:
-    """Цены с витрины. Возвращает ({sku: info}, source_or_None).
+def probe_client_access(sample_sku: int | None = None) -> dict:
+    """Диагностика прокси + одного SKU. Без секретов."""
+    info = proxy_public_info()
+    result = {
+        "proxy": info,
+        "tried": [],
+        "ok": False,
+        "hint": None,
+    }
+    candidates = _proxy_candidates() or [None]
+    sku = sample_sku
+    if sku is None:
+        try:
+            sku = int(os.environ.get("OZON_PROBE_SKU") or "0") or None
+        except ValueError:
+            sku = None
 
-    Как на WB: без Seller API. На Ozon нет batch-nm — ходим по SKU параллельно.
-    """
+    for proxy in candidates:
+        label = (proxy.split("@")[-1] if proxy and "@" in proxy else (proxy or "direct"))
+        entry = {"proxy_endpoint": label, "backend": None}
+        sess = None
+        try:
+            sess = _Session(proxy)
+            entry["backend"] = sess.backend
+            warm = _warmup(sess)
+            entry["home"] = warm
+            if sku:
+                _info, meta = _fetch_sku(sess, int(sku))
+                entry["product"] = meta
+                if meta.get("ok"):
+                    result["ok"] = True
+                    result["client_price"] = meta.get("client_price")
+                    result["working_proxy"] = label
+                    result["tried"].append(entry)
+                    break
+            elif warm.get("kind") == "ok" or (warm.get("status") == 200 and warm.get("kind") != "ozon_antibot"):
+                # без sku — хотя бы home
+                if warm.get("kind") != "ozon_antibot" and warm.get("kind") != "proxy_auth":
+                    result["ok"] = warm.get("status") == 200
+            result["tried"].append(entry)
+            if entry.get("home", {}).get("kind") == "proxy_auth":
+                result["hint"] = "Прокси не принял логин/пароль (401/407). Сверь строку OZON_CLIENT_PROXY."
+                break
+            if entry.get("product", {}).get("kind") == "ozon_antibot" or entry.get("home", {}).get("kind") == "ozon_antibot":
+                result["hint"] = (
+                    "Прокси жив, но Ozon антибот. Нужны: страна Россия, липкая сессия, "
+                    "и строка из «Создать список прокси» (не сырой логин пула)."
+                )
+        except Exception as e:
+            entry["error"] = str(e)[:300]
+            result["tried"].append(entry)
+            err = str(e).lower()
+            if "407" in err or "auth" in err or "proxy" in err:
+                result["hint"] = "Ошибка авторизации/подключения к прокси. Проверь логин, пароль, порт."
+        finally:
+            if sess:
+                sess.close()
+
+    if not result["ok"] and not result["hint"]:
+        if not info.get("configured"):
+            result["hint"] = "OZON_CLIENT_PROXY не задан."
+        else:
+            result["hint"] = "Витрина не открылась. Открой /api/client-proxy-probe после Redeploy."
+
+    with _lock:
+        LAST_PROBE.clear()
+        LAST_PROBE.update(result)
+    return result
+
+
+def fetch_client_prices(
+    skus: list[int], max_workers: int | None = None
+) -> tuple[dict[int, dict], str | None, dict]:
+    """Цены с витрины. Возвращает ({sku: info}, source, diag)."""
     uniq: list[int] = []
     seen: set[int] = set()
     for s in skus:
@@ -225,36 +388,62 @@ def fetch_client_prices(skus: list[int], max_workers: int | None = None) -> tupl
         if si and si not in seen:
             seen.add(si)
             uniq.append(si)
+
+    diag: dict = {"proxy": proxy_public_info(), "fetched": 0, "total": len(uniq), "error": None}
     if not uniq:
-        return {}, None
+        return {}, None, diag
 
-    workers = max_workers
-    if workers is None:
-        try:
-            workers = max(1, min(8, int(os.environ.get("OZON_CLIENT_WORKERS") or 6)))
-        except ValueError:
-            workers = 6
-
+    # С прокси — последовательно на одной сессии (липкий IP + куки).
+    # Без прокси — тоже последовательно: антибот иначе режет.
     by_sku: dict[int, dict] = {}
-    # лёгкий прогрев куки (часто нужен abt_data)
-    try:
-        _http_get(HOME, timeout=15)
-        time.sleep(0.3)
-    except Exception:
-        pass
+    last_fail = None
+    working_proxy = None
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = {pool.submit(fetch_one_client_price, sku): sku for sku in uniq}
-        for fut in as_completed(futs):
-            sku = futs[fut]
-            try:
-                info = fut.result()
-            except Exception as e:
-                logger.warning("client price worker sku=%s: %s", sku, e)
+    for proxy in _proxy_candidates() or [None]:
+        sess = None
+        try:
+            sess = _Session(proxy)
+            warm = _warmup(sess)
+            diag["warmup"] = {k: warm.get(k) for k in ("status", "kind", "len", "error")}
+            if warm.get("kind") == "proxy_auth":
+                diag["error"] = "proxy_auth"
+                last_fail = "proxy_auth"
                 continue
-            if info and info.get("client_price") is not None:
-                by_sku[int(sku)] = info
+            ok_n = 0
+            for i, sku in enumerate(uniq):
+                info, meta = _fetch_sku(sess, sku)
+                if info and info.get("client_price") is not None:
+                    by_sku[int(sku)] = info
+                    ok_n += 1
+                else:
+                    last_fail = meta.get("kind") or meta.get("error") or "fail"
+                    if meta.get("kind") in ("proxy_auth", "ozon_antibot") and ok_n == 0 and i < 3:
+                        # на старте уже блок — пробуем другой proxy scheme
+                        break
+                if (i + 1) % 20 == 0:
+                    time.sleep(0.4)
+                else:
+                    time.sleep(0.12)
+            if by_sku:
+                working_proxy = proxy
+                break
+        except Exception as e:
+            last_fail = str(e)[:200]
+            diag["error"] = last_fail
+            logger.warning("client prices session failed: %s", e)
+        finally:
+            if sess:
+                sess.close()
 
+    diag["fetched"] = len(by_sku)
+    diag["last_fail"] = last_fail
+    if working_proxy:
+        try:
+            diag["working_endpoint"] = working_proxy.split("@")[-1]
+        except Exception:
+            pass
     source = "ozon.ru" if by_sku else None
-    logger.info("client prices: %s/%s skus from ozon.ru", len(by_sku), len(uniq))
-    return by_sku, source
+    logger.info("client prices: %s/%s skus (fail=%s)", len(by_sku), len(uniq), last_fail)
+    with _lock:
+        LAST_PROBE["last_sync"] = diag
+    return by_sku, source, diag

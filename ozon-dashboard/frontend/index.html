@@ -1450,7 +1450,11 @@ function drawCoinvest() {
     banner.style.display = 'block';
     const ok = !!(COIN_DATA.client_source || COIN_DATA.client_count);
     banner.className = ok ? 'banner ok' : 'banner warn';
-    banner.textContent = COIN_DATA.note;
+    const diag = COIN_DATA.client_diag || {};
+    const extra = (!ok && (diag.last_fail || diag.error))
+      ? ` · fail=${esc(String(diag.last_fail || diag.error))} · <a href="/api/client-proxy-probe" target="_blank">проверка прокси</a>`
+      : (!ok ? ' · <a href="/api/client-proxy-probe" target="_blank">проверка прокси</a>' : '');
+    banner.innerHTML = esc(COIN_DATA.note) + extra;
   } else {
     banner.style.display = 'none';
   }

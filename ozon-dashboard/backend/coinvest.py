@@ -354,10 +354,12 @@ def sync_coinvest(
         # 1) Главное — цена с клиентской витрины ozon.ru (как card.wb.ru)
         skus = [a["sku"] for a in articles if a.get("sku")]
         client_map, client_source = {}, None
+        client_diag: dict = {}
         try:
-            client_map, client_source = cprices.fetch_client_prices(skus)
+            client_map, client_source, client_diag = cprices.fetch_client_prices(skus)
         except Exception as e:
             logger.warning("client prices failed: %s", e)
+            client_diag = {"error": str(e)[:300]}
         client_ok = bool(client_map)
         if client_ok:
             for a in articles:
@@ -398,28 +400,33 @@ def sync_coinvest(
 
         # 3) Совсем без витрины/Premium — action_price уже в normalize_price_item
         n_site = sum(1 for a in articles if a.get("customer_price") is not None)
+        fail = (client_diag or {}).get("last_fail") or (client_diag or {}).get("error")
+        proxy_on = bool((client_diag or {}).get("proxy", {}).get("configured"))
         note = None
         if client_ok:
             note = (
-                f"Цена на сайте с ozon.ru ({n_site}/{len(articles)} арт.) — как card.wb.ru на WB. "
+                f"Цена на сайте с ozon.ru ({len(client_map)}/{len(articles)} арт.) — как card.wb.ru на WB. "
                 "Соинвест = цена продавца (с акциями) − цена на сайте."
             )
             if premium_ok:
                 note += " Часть артикулов дополнена Premium prices/details."
         elif premium_ok:
-            note = "Витрина ozon.ru недоступна с сервера. Цена на сайте из Premium /v1/product/prices/details."
-        elif premium_note:
-            note = (
-                "Не удалось открыть клиентский ozon.ru с сервера (антибот). "
-                "Premium Pro тоже не отдал customer_price. "
-                "Соинвест — оценка по акциям. При необходимости задай OZON_CLIENT_PROXY."
-            )
-        elif n_site == 0:
-            note = (
-                "Цена на сайте не получена: витрина ozon.ru недоступна с этого сервера. "
-                "Соинвест считаем по action_price акций. "
-                "Возьми RU-прокси (proxy.market → резидентские/для Ozon) и задай OZON_CLIENT_PROXY в Railway."
-            )
+            note = "Витрина ozon.ru недоступна. Цена на сайте из Premium /v1/product/prices/details."
+        else:
+            bits = ["Цена на сайте не получена с ozon.ru."]
+            if fail == "proxy_auth":
+                bits.append("Прокси отклонил логин/пароль — проверь OZON_CLIENT_PROXY.")
+            elif fail == "ozon_antibot":
+                bits.append(
+                    "Прокси достучался, но Ozon антибот. В proxy.market: Россия + липкая, "
+                    "возьми строку из «Создать список прокси»."
+                )
+            elif not proxy_on:
+                bits.append("OZON_CLIENT_PROXY не задан.")
+            elif fail:
+                bits.append(f"Диагностика: {fail}.")
+            bits.append("Проверка: /api/client-proxy-probe")
+            note = " ".join(bits)
 
         COINVEST_CACHE.update({
             "articles": articles,
@@ -431,11 +438,12 @@ def sync_coinvest(
             "premium_details": premium_ok,
             "client_source": client_source,
             "client_count": len(client_map),
+            "client_diag": client_diag,
             "count": len(articles),
         })
         logger.info(
-            "coinvest sync done: %s prices, %s actions, client=%s premium=%s",
-            len(articles), len(actions), len(client_map), premium_ok,
+            "coinvest sync done: %s prices, %s actions, client=%s premium=%s fail=%s",
+            len(articles), len(actions), len(client_map), premium_ok, fail,
         )
         return {
             "ok": True,
@@ -495,6 +503,7 @@ def get_cached() -> dict:
         "premium_details": bool(COINVEST_CACHE.get("premium_details")),
         "client_source": COINVEST_CACHE.get("client_source"),
         "client_count": COINVEST_CACHE.get("client_count") or 0,
+        "client_diag": COINVEST_CACHE.get("client_diag") or {},
         "proxy_configured": cprices.proxy_configured(),
         "count": len(COINVEST_CACHE.get("articles") or []),
     }

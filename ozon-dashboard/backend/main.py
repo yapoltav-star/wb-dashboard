@@ -855,6 +855,7 @@ def status():
         "has_ozon_creds": bool(OZON_CLIENT_ID and OZON_API_KEY),
         "has_perf_creds": ads.perf_configured(),
         "has_client_proxy": cprices.proxy_configured(),
+        "client_proxy": cprices.proxy_public_info(),
         "last_products_sync": last_sync,
         "last_stocks_sync": last_stocks,
         "products_count": products_count,
@@ -1060,6 +1061,20 @@ def trigger_coinvest():
         return {"ok": True, "syncing": True}
     threading.Thread(target=_run_coinvest_sync, daemon=True).start()
     return {"ok": True, "syncing": True}
+
+
+@app.get("/api/client-proxy-probe")
+def client_proxy_probe(sku: int | None = None):
+    """Проверка OZON_CLIENT_PROXY + одной карточки ozon.ru (без секретов)."""
+    sample = sku
+    if sample is None:
+        # любой sku из последнего синка / products
+        arts = coin.COINVEST_CACHE.get("articles") or []
+        for a in arts:
+            if a.get("sku"):
+                sample = int(a["sku"])
+                break
+    return cprices.probe_client_access(sample_sku=sample)
 
 
 def _run_orders_sync(days: int = 7):
