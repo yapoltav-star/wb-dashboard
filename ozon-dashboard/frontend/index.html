@@ -1555,8 +1555,17 @@ function drawCoinvest() {
     const offer = a.offer_id || '';
     const srcTag = (a.manual_site_price || a.price_source === 'manual')
       ? ' <span class="tag ok">ручная</span>' : '';
+    const img = a.primary_image
+      ? `<img src="${esc(a.primary_image)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+      : `<div class="prod-ph">n/a</div>`;
+    const ozUrl = a.ozon_url || (a.sku ? `https://www.ozon.ru/product/${a.sku}/` : '');
+    const nameBlock = ozUrl
+      ? `<a class="prod-link" href="${esc(ozUrl)}" target="_blank" rel="noopener noreferrer" title="Открыть на ozon.ru">
+           <div class="coin-prod">${img}<div><div class="prod-name">${esc(offer)}</div>${a.name ? `<div class="prod-meta">${esc(String(a.name).slice(0, 48))}</div>` : ''}</div></div>
+         </a>`
+      : `<div class="coin-prod">${img}<div><div class="prod-name">${esc(offer)}</div></div></div>`;
     return `<tr>
-      <td class="sticky"><span class="prod-name">${esc(a.offer_id)}</span></td>
+      <td class="sticky">${nameBlock}</td>
       <td class="num mono">${money(a.old_price)}</td>
       <td class="num mono">${money(a.price)}</td>
       <td class="num mono">${money(a.marketing_seller_price)}</td>
@@ -1601,7 +1610,7 @@ function drawCoinvest() {
       </table>
     </div>
     <div class="hint">
-      <b>Цена на сайте</b> — впиши вручную с карточки ozon.ru. Сохраняется сама.
+      <b>Цена на сайте</b> — впиши вручную с карточки ozon.ru. Клик по артикулу/фото открывает карточку на сайте.
       <b>Соинвест</b> = цена продавца (с акциями) − цена на сайте. Пустое поле = сбросить.
     </div>`;
 }
