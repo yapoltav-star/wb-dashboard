@@ -1235,7 +1235,22 @@ def trigger_finance(days: int = 7):
 
 def _run_reviews_sync(status: str = "ALL"):
     try:
-        revs.sync_reviews(ozon_post=ozon_post, status=status)
+        products = []
+        try:
+            products = load_products_from_db()
+        except Exception as e:
+            logger.warning("reviews: products load skipped: %s", e)
+        # подтянуть склейки из settings перед синкингом
+        try:
+            revs.REVIEWS_CACHE["groups"] = revs.load_groups(get_setting)
+        except Exception:
+            pass
+        revs.sync_reviews(
+            ozon_post=ozon_post,
+            status=status,
+            products=products,
+            get_setting=get_setting,
+        )
     except Exception as e:
         logger.exception("reviews sync thread: %s", e)
         revs.REVIEWS_CACHE["error"] = str(e)
@@ -1245,6 +1260,12 @@ def _run_reviews_sync(status: str = "ALL"):
 @app.get("/api/reviews")
 def get_reviews(status: str = "ALL"):
     cached = revs.get_cached()
+    if not cached.get("groups"):
+        try:
+            cached["groups"] = revs.load_groups(get_setting)
+            revs.REVIEWS_CACHE["groups"] = cached["groups"]
+        except Exception:
+            pass
     if not cached["reviews"] and not cached["syncing"] and not cached["error"] and not cached["premium_required"]:
         if not revs.REVIEWS_CACHE.get("syncing"):
             threading.Thread(target=_run_reviews_sync, kwargs={"status": status}, daemon=True).start()
@@ -1259,6 +1280,43 @@ def trigger_reviews(status: str = "ALL"):
         return {"ok": True, "syncing": True}
     threading.Thread(target=_run_reviews_sync, kwargs={"status": status}, daemon=True).start()
     return {"ok": True, "syncing": True}
+
+
+@app.get("/api/article-reviews")
+def article_reviews(article: str, days: int = 5, stars: str = "1,2,3", limit: int = 50):
+    """Негативные отзывы по одному артикулу за период (из кэша синка)."""
+    if not article:
+        raise HTTPException(status_code=400, detail="article required")
+    star_list = []
+    for part in str(stars or "").split(","):
+        part = part.strip()
+        if part.isdigit():
+            star_list.append(int(part))
+    if not star_list:
+        star_list = [1, 2, 3]
+    feedbacks = revs.filter_article_reviews(
+        article=article,
+        days=days,
+        stars=star_list,
+        limit=min(max(limit, 1), 200),
+    )
+    return {"article": article, "days": days, "stars": star_list, "feedbacks": feedbacks}
+
+
+@app.get("/api/review-groups")
+def get_review_groups():
+    groups = revs.load_groups(get_setting)
+    revs.REVIEWS_CACHE["groups"] = groups
+    return {"groups": groups}
+
+
+@app.post("/api/save-review-groups")
+def save_review_groups(body: dict = Body(...)):
+    groups = body.get("groups") or {}
+    if not isinstance(groups, dict):
+        raise HTTPException(status_code=400, detail="groups must be object")
+    saved = revs.save_groups(save_setting, groups)
+    return {"ok": True, "groups": saved, "count": len(saved)}
 
 
 def _run_ads_sync(days: int = 7):

@@ -193,6 +193,73 @@ a.prod-link:hover .prod-name{color:var(--oz-blue);text-decoration:underline}
 .loading{padding:40px;text-align:center;color:var(--oz-muted)}
 .spinner{width:22px;height:22px;border:2px solid var(--oz-border);border-top-color:var(--oz-blue);border-radius:50%;animation:spin .7s linear infinite;display:inline-block;vertical-align:middle;margin-right:8px}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* Отзывы / оценки / склейки */
+.prod-row{background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);margin-bottom:8px;overflow:hidden}
+.prod-row.pinned{border-color:#F59E0B;background:#FFFBEB}
+.prod-main{display:flex;align-items:center;gap:12px;padding:12px 14px;cursor:pointer}
+.prod-main:hover{background:#F8FAFF}
+.prod-row.pinned .prod-main:hover{background:#FEF3C7}
+.prod-art{font-weight:600;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;min-width:160px}
+.prod-nmid{font-size:11px;color:var(--oz-faint);font-weight:400;margin-top:2px}
+.prod-rating{min-width:70px;font-weight:600;font-size:14px}
+.prod-neg{margin-left:auto;display:flex;align-items:center;gap:6px}
+.prod-neg-count{font-size:18px;font-weight:700;color:var(--red)}
+.prod-neg-count.zero{color:var(--oz-faint);font-weight:500}
+.prod-arr{color:var(--oz-faint);transition:transform .2s;font-size:12px}
+.prod-row.open .prod-arr{transform:rotate(180deg)}
+.prod-detail{display:none;padding:0 14px 12px;border-top:1px solid var(--oz-border);background:#FAFBFC}
+.prod-row.open .prod-detail{display:block;padding-top:12px}
+.prod-pin{cursor:pointer;opacity:.35;font-size:14px}
+.prod-pin.on{opacity:1}
+.fb-item{padding:10px 12px;background:#fff;border:1px solid var(--oz-border);border-radius:var(--rs);margin-bottom:8px}
+.fb-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.fb-stars{color:var(--red);font-weight:600;font-size:12px}
+.fb-date{font-size:11px;color:var(--oz-faint)}
+.fb-text{font-size:13px;color:var(--oz-text);line-height:1.4;white-space:pre-wrap}
+.fb-empty,.fb-loading{font-size:12px;color:var(--oz-muted);padding:8px}
+.group{margin-bottom:12px;border-radius:var(--r);overflow:hidden;border:1px solid var(--oz-border);background:var(--oz-surface)}
+.gh{display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer;user-select:none}
+.gh:hover{background:#F8FAFF}
+.gh-color{width:4px;height:32px;border-radius:2px;flex-shrink:0}
+.gh-name{font-weight:600;font-size:14px;flex:1}
+.gh-stats{display:flex;gap:12px;align-items:center}
+.gh-stat{font-size:12px;color:var(--oz-muted)}
+.gh-rating{font-size:18px;font-weight:700}
+.gh-badge{padding:2px 8px;border-radius:20px;font-size:11px;font-weight:500}
+.gh-arr{font-size:12px;color:var(--oz-faint);transition:transform .2s}
+.group.open .gh-arr{transform:rotate(180deg)}
+.gbody{display:none}
+.group.open .gbody{display:block}
+.sbar{display:flex;flex-direction:column;gap:2px;min-width:90px}
+.sbar-r{display:flex;align-items:center;gap:4px}
+.sbar-l{width:8px;font-size:9px;color:var(--oz-faint);text-align:right;flex-shrink:0}
+.sbar-t{flex:1;height:4px;background:#E8EEF7;border-radius:2px;overflow:hidden}
+.sbar-f{height:100%;border-radius:2px}
+.sbar-p{width:22px;font-size:9px;color:var(--oz-faint);text-align:right;flex-shrink:0}
+.rnum{font-weight:700}
+.tr2{text-align:right;font-variant-numeric:tabular-nums}
+.tc{text-align:center}
+.gm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.gm-g{border:1px solid var(--oz-border);border-radius:var(--r);overflow:hidden;background:var(--oz-surface)}
+.gm-gh{display:flex;align-items:center;gap:8px;padding:10px 14px;font-weight:600;font-size:13px;color:#fff}
+.gm-gb{padding:10px;min-height:50px}
+.gm-a{display:flex;align-items:center;padding:6px 10px;border-radius:var(--rs);font-size:12px;cursor:grab;background:var(--oz-bg);margin-bottom:6px;border:1px solid var(--oz-border);user-select:none}
+.gm-a:hover{border-color:var(--oz-blue);background:var(--oz-blue-light)}
+.gm-a span{flex:1}
+.gm-del{color:var(--oz-faint);cursor:pointer;padding:0 4px;font-size:14px}
+.gm-del:hover{color:var(--red)}
+.gm-add{display:flex;gap:6px;margin-top:8px}
+.gm-add input{flex:1;border:1px solid var(--oz-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;outline:none}
+.gm-add input:focus{border-color:var(--oz-blue)}
+.gm-add button{padding:6px 12px;font-size:12px;background:var(--oz-blue);color:#fff;border:none;border-radius:var(--rs);cursor:pointer;font-family:inherit}
+.section-wrap{padding:0}
+.section-title{font-size:16px;font-weight:700}
+.section-sub{font-size:12px;color:var(--oz-muted);margin-top:2px}
+.saved-note{display:none;font-size:12px;color:var(--green);font-weight:600}
+select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;color:var(--oz-text);background:var(--oz-surface);cursor:pointer}
+#page-ratings tr.total-row td{background:#EEF4FF;font-weight:600;border-top:2px solid #C7D9FF}
+#page-ratings .total-sub{font-size:11px;color:var(--oz-muted);font-weight:500;margin-top:2px}
 </style>
 </head>
 <body>
@@ -220,6 +287,11 @@ a.prod-link:hover .prod-name{color:var(--oz-blue);text-decoration:underline}
 
 <div class="subnav" id="subnav-growth">
   <div class="sn-item on">Темп к вчера</div>
+</div>
+<div class="subnav" id="subnav-reviews">
+  <div class="sn-item on" data-rev="reviews" onclick="showRevPage('reviews',this)">Последние отзывы</div>
+  <div class="sn-item" data-rev="ratings" onclick="showRevPage('ratings',this)">Оценки</div>
+  <div class="sn-item" data-rev="groups" onclick="showRevPage('groups',this)">Склейки</div>
 </div>
 
 <!-- GROWTH / SALES PACE -->
@@ -352,22 +424,76 @@ a.prod-link:hover .prod-name{color:var(--oz-blue);text-decoration:underline}
   <div id="ordRoot"><div class="empty"><b>Заказы</b>FBO v3 + FBS v4. Нажми «Обновить».</div></div>
 </div>
 
-<!-- REVIEWS -->
+<!-- REVIEWS: последние (негатив) -->
 <div class="page" id="page-reviews">
   <div class="banner" id="revBanner" style="display:none"></div>
+  <div class="cards" id="revCards"></div>
   <div class="toolbar">
     <div class="search">
-      <input id="revSearch" placeholder="SKU / текст…" oninput="drawReviews()">
+      <input id="revSearch" placeholder="Артикул / SKU…" oninput="drawNegReviews()">
     </div>
-    <button class="filter-btn on" id="revStALL" onclick="setRevStatus('ALL')">Все</button>
-    <button class="filter-btn" id="revStNEW" onclick="setRevStatus('NEW')">Новые</button>
-    <button class="filter-btn" id="revStVIEWED" onclick="setRevStatus('VIEWED')">Просмотренные</button>
-    <button class="filter-btn" id="revStPROCESSED" onclick="setRevStatus('PROCESSED')">Обработанные</button>
+    <span style="font-size:12px;color:var(--oz-muted)">Негатив за:</span>
+    <select class="neg-sel" id="negPeriodSelect" onchange="setNegPeriod(+this.value)">
+      <option value="1">1 день</option>
+      <option value="2">2 дня</option>
+      <option value="3">3 дня</option>
+      <option value="4">4 дня</option>
+      <option value="5" selected>5 дней</option>
+      <option value="7">7 дней</option>
+      <option value="14">14 дней</option>
+      <option value="30">30 дней</option>
+    </select>
+    <span style="font-size:12px;color:var(--oz-muted);margin-left:8px">Считать негативом:</span>
+    <button class="filter-btn on" id="ns_1" onclick="toggleNegStar(1)">★1</button>
+    <button class="filter-btn on" id="ns_2" onclick="toggleNegStar(2)">★2</button>
+    <button class="filter-btn" id="ns_3" onclick="toggleNegStar(3)">★3</button>
     <span id="revInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
     <button class="action-btn primary ml-auto" id="revSyncBtn" onclick="triggerReviewsSync()">↻ Обновить</button>
   </div>
-  <div class="cards" id="revCards"></div>
-  <div id="revRoot"><div class="empty"><b>Отзывы</b>ReviewAPI v2. Нужна подписка «Управление отзывами» или Premium Pro.</div></div>
+  <div id="revRoot"><div class="empty"><b>Последние отзывы</b>Нажми «Обновить» — подтянем ReviewAPI v2 и посчитаем негатив по товарам.</div></div>
+</div>
+
+<!-- REVIEWS: оценки по каждому товару -->
+<div class="page" id="page-ratings">
+  <div class="banner" id="ratBanner" style="display:none"></div>
+  <div class="cards" id="ratCards"></div>
+  <div class="toolbar">
+    <div class="search">
+      <input id="ratSearch" placeholder="Артикул продавца…" oninput="drawRatings()">
+    </div>
+    <span style="font-size:12px;color:var(--oz-muted)">Сортировка:</span>
+    <button class="filter-btn on" id="s_avg_rating" onclick="SS('avg_rating')">★ Рейтинг</button>
+    <button class="filter-btn" id="s_r1" onclick="SS('r1')">★1</button>
+    <button class="filter-btn" id="s_total" onclick="SS('total')">Отзывов</button>
+    <button class="filter-btn" id="s_article" onclick="SS('article')">А–Я</button>
+    <div class="ml-auto" style="display:flex;gap:8px">
+      <button class="action-btn" onclick="EA(1)">▾ Раскрыть</button>
+      <button class="action-btn" onclick="EA(0)">▸ Свернуть</button>
+      <button class="action-btn primary" id="ratSyncBtn" onclick="triggerReviewsSync()">↻ Обновить</button>
+    </div>
+  </div>
+  <div id="ratRoot"><div class="empty"><b>Оценки</b>Рейтинг каждого товара отдельно. Склейки — только группировка, без общей оценки карточки.</div></div>
+</div>
+
+<!-- REVIEWS: склейки -->
+<div class="page" id="page-groups">
+  <div class="section-wrap">
+    <div style="display:flex;align-items:center;margin-bottom:4px">
+      <div>
+        <div class="section-title">Управление склейками</div>
+        <div class="section-sub">Перетаскивай артикулы между группами. Нажми «Сохранить» — применится во вкладке «Оценки».</div>
+      </div>
+      <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+        <span class="saved-note" id="savedNote">✓ Сохранено</span>
+        <button class="action-btn" onclick="addGroup()">+ Склейка</button>
+        <button class="action-btn primary" onclick="saveGroups()">Сохранить</button>
+      </div>
+    </div>
+    <div class="search" style="width:260px;margin-bottom:14px">
+      <input id="gmSearch" placeholder="Поиск по артикулу…" oninput="renderGroupManager()">
+    </div>
+    <div class="gm-grid" id="gmGrid"></div>
+  </div>
 </div>
 
 <!-- ADS -->
@@ -452,11 +578,18 @@ function showSection(sec, el) {
   document.querySelectorAll('.tb-nav-item').forEach(t => t.classList.remove('on'));
   if (el) el.classList.add('on');
   document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
-  const sub = document.getElementById('subnav-growth');
-  if (sub) sub.classList.toggle('on', sec === 'growth');
+  const subG = document.getElementById('subnav-growth');
+  if (subG) subG.classList.toggle('on', sec === 'growth');
+  const subR = document.getElementById('subnav-reviews');
+  if (subR) subR.classList.toggle('on', sec === 'reviews');
+  const btn = document.getElementById('btnTopSync');
+  if (sec === 'reviews') {
+    btn.textContent = 'Обновить отзывы';
+    showRevPage(REV_PAGE || 'reviews');
+    return;
+  }
   const page = document.getElementById('page-' + sec);
   if (page) page.classList.add('on');
-  const btn = document.getElementById('btnTopSync');
   if (sec === 'stocks') {
     btn.textContent = 'Обновить остатки';
     if (!STOCK_TOTALS.length) loadStocks();
@@ -470,9 +603,6 @@ function showSection(sec, el) {
   } else if (sec === 'orders') {
     btn.textContent = 'Обновить заказы';
     renderOrders(true);
-  } else if (sec === 'reviews') {
-    btn.textContent = 'Обновить отзывы';
-    renderReviews(true);
   } else if (sec === 'ads') {
     btn.textContent = 'Обновить рекламу';
     renderAds(true);
@@ -482,6 +612,23 @@ function showSection(sec, el) {
   } else {
     btn.textContent = 'Обновить товары';
   }
+}
+
+function showRevPage(id, el) {
+  REV_PAGE = id || 'reviews';
+  document.querySelectorAll('#subnav-reviews .sn-item').forEach(n => {
+    n.classList.toggle('on', n.getAttribute('data-rev') === REV_PAGE);
+  });
+  if (el) {
+    document.querySelectorAll('#subnav-reviews .sn-item').forEach(n => n.classList.remove('on'));
+    el.classList.add('on');
+  }
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
+  const page = document.getElementById('page-' + REV_PAGE);
+  if (page) page.classList.add('on');
+  if (REV_PAGE === 'reviews') renderReviews(true);
+  else if (REV_PAGE === 'ratings') drawRatings();
+  else if (REV_PAGE === 'groups') renderGroupManager();
 }
 
 function topSync() {
@@ -1770,91 +1917,515 @@ function drawOrders() {
     <div class="hint">Показаны до 500 строк. Источники: <code>/v3/posting/fbo/list</code> и <code>/v4/posting/fbs/list</code>.</div>`;
 }
 
-/* ── Отзывы ── */
-let REV_DATA = { reviews: [], counts: {}, syncing: false };
-let REV_STATUS = 'ALL';
+/* ── Отзывы / оценки / склейки ── */
+let REV_DATA = { reviews: [], ratings: [], negative_counts: {}, groups: {}, counts: {}, syncing: false };
+let REV_PAGE = 'reviews';
+let NEG_PERIOD = 5;
+let NEG_STARS = [1, 2];
+let PINNED = JSON.parse(localStorage.getItem('oz_pinned_articles') || 'null') || [];
+let prodOpen = {};
+let prodFeedbackCache = {};
+let GROUPS = {};
+let EXP = {};
+let SK = 'avg_rating';
+let SD = -1;
+let dragArt = null, dragFrom = null;
 let revPoll = null;
-function setRevStatus(s) {
-  REV_STATUS = s;
-  ['ALL','NEW','VIEWED','PROCESSED'].forEach(x => {
-    const el = document.getElementById('revSt' + x);
-    if (el) el.classList.toggle('on', x === s);
-  });
-  triggerReviewsSync();
+const GROUP_COLORS = ['#005BFF','#12B76A','#F79009','#7C3AED','#F04438','#0EA5E9','#EC4899','#65A30D'];
+
+function rc(v) {
+  if (v == null || isNaN(v)) return 'var(--oz-faint)';
+  if (v >= 4.7) return 'var(--green)';
+  if (v >= 4.0) return 'var(--amber)';
+  return 'var(--red)';
 }
+function gc(name) {
+  if (name === 'Без склейки') return '#9CA3AF';
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return GROUP_COLORS[h % GROUP_COLORS.length];
+}
+function cssSafe(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
+
+function setNegPeriod(days) {
+  NEG_PERIOD = days;
+  const sel = document.getElementById('negPeriodSelect');
+  if (sel) sel.value = String(days);
+  drawNegReviews();
+}
+function toggleNegStar(star) {
+  const i = NEG_STARS.indexOf(star);
+  if (i >= 0) {
+    if (NEG_STARS.length === 1) return;
+    NEG_STARS.splice(i, 1);
+  } else NEG_STARS.push(star);
+  document.getElementById('ns_' + star)?.classList.toggle('on', NEG_STARS.includes(star));
+  drawNegReviews();
+}
+function negCountFor(article) {
+  const list = (REV_DATA.negative_counts || {})[String(NEG_PERIOD)] || [];
+  const entry = list.find(x => x.article === article);
+  if (!entry) return 0;
+  // клиентский срез по выбранным ★ (кэш считает ★≤3)
+  if (NEG_STARS.length === 3 || (NEG_STARS.includes(1) && NEG_STARS.includes(2) && NEG_STARS.includes(3))) {
+    return entry.negative_count || 0;
+  }
+  // точный пересчёт из reviews
+  const since = Date.now() - NEG_PERIOD * 86400000;
+  return (REV_DATA.reviews || []).filter(r => {
+    const art = r.article || r.offer_id || String(r.sku || '');
+    if (art !== article) return false;
+    if (!NEG_STARS.includes(Number(r.rating))) return false;
+    const t = r.published_at ? Date.parse(r.published_at) : 0;
+    return t >= since;
+  }).length;
+}
+
 async function renderReviews(force) {
   if (force || !(REV_DATA.reviews || []).length) await loadReviews();
-  else drawReviews();
+  else {
+    drawNegReviews();
+    drawRatings();
+  }
 }
 async function loadReviews() {
   try {
-    const r = await fetch('/api/reviews?status=' + encodeURIComponent(REV_STATUS));
+    const r = await fetch('/api/reviews?status=ALL');
     REV_DATA = await r.json();
+    GROUPS = REV_DATA.groups || {};
   } catch (e) {
-    REV_DATA = { reviews: [], counts: {}, syncing: false, error: String(e) };
+    REV_DATA = { reviews: [], ratings: [], negative_counts: {}, groups: {}, counts: {}, syncing: false, error: String(e) };
   }
-  drawReviews();
+  drawNegReviews();
+  drawRatings();
+  if (REV_PAGE === 'groups') renderGroupManager();
   clearTimeout(revPoll);
   if (REV_DATA.syncing) revPoll = setTimeout(loadReviews, 3000);
 }
 async function triggerReviewsSync() {
-  const btn = document.getElementById('revSyncBtn');
-  if (btn) btn.disabled = true;
+  ['revSyncBtn', 'ratSyncBtn'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.disabled = true;
+  });
   REV_DATA.syncing = true;
-  drawReviews();
-  try { await fetch('/api/sync-reviews?status=' + encodeURIComponent(REV_STATUS), { method: 'POST' }); } catch (_) {}
+  drawNegReviews();
+  drawRatings();
+  try { await fetch('/api/sync-reviews?status=ALL', { method: 'POST' }); } catch (_) {}
   clearTimeout(revPoll);
   revPoll = setTimeout(loadReviews, 2500);
 }
-function drawReviews() {
+
+function pinArticle(article, ev) {
+  ev.stopPropagation();
+  const i = PINNED.indexOf(article);
+  if (i >= 0) PINNED.splice(i, 1);
+  else PINNED.push(article);
+  localStorage.setItem('oz_pinned_articles', JSON.stringify(PINNED));
+  drawNegReviews();
+}
+function toggleProdRow(article) {
+  prodOpen[article] = !prodOpen[article];
+  drawNegReviews();
+  if (prodOpen[article]) loadArticleFeedbacks(article);
+}
+async function loadArticleFeedbacks(article) {
+  const cacheKey = `${article}|${NEG_PERIOD}|${NEG_STARS.slice().sort().join(',')}`;
+  const detailEl = document.getElementById('fbdetail_' + cssSafe(article));
+  if (!detailEl) return;
+  if (prodFeedbackCache[cacheKey]) {
+    detailEl.innerHTML = renderFeedbackList(prodFeedbackCache[cacheKey]);
+    return;
+  }
+  detailEl.innerHTML = '<div class="fb-loading">Загружаем отзывы…</div>';
+  try {
+    const stars = NEG_STARS.join(',');
+    const resp = await fetch(`/api/article-reviews?article=${encodeURIComponent(article)}&days=${NEG_PERIOD}&stars=${stars}&limit=50`);
+    const data = await resp.json();
+    const filtered = data.feedbacks || [];
+    prodFeedbackCache[cacheKey] = filtered;
+    detailEl.innerHTML = renderFeedbackList(filtered);
+  } catch (e) {
+    detailEl.innerHTML = `<div class="fb-empty">Ошибка: ${esc(e.message)}</div>`;
+  }
+}
+function renderFeedbackList(feedbacks) {
+  if (!feedbacks.length) return '<div class="fb-empty">Нет негативных отзывов за выбранный период с выбранными оценками.</div>';
+  return feedbacks.map(f => {
+    const d = f.created_date ? fmtDt(f.created_date) : '';
+    const txt = (f.text || '').trim() || '<span style="color:var(--oz-faint)">(без текста)</span>';
+    return `<div class="fb-item">
+      <div class="fb-head"><span class="fb-stars">${'★'.repeat(f.stars || 0)}</span><span class="fb-date">${esc(d)}</span></div>
+      <div class="fb-text">${typeof txt === 'string' && txt.startsWith('<') ? txt : esc(txt)}</div>
+    </div>`;
+  }).join('');
+}
+
+function drawNegReviews() {
   const root = document.getElementById('revRoot');
   const cards = document.getElementById('revCards');
   const info = document.getElementById('revInfo');
   const btn = document.getElementById('revSyncBtn');
   const banner = document.getElementById('revBanner');
   if (!root) return;
+
   if (REV_DATA.premium_required) {
     banner.style.display = 'block';
     banner.className = 'banner warn';
     banner.innerHTML = '<b>Нужна подписка.</b> ReviewAPI v2 доступен с «Управление отзывами» или Premium Pro.';
-  } else {
-    banner.style.display = 'none';
-  }
+  } else banner.style.display = 'none';
+
   if (REV_DATA.error && !REV_DATA.premium_required) { if (info) info.textContent = 'Ошибка: ' + REV_DATA.error; if (btn) btn.disabled = false; }
   else if (REV_DATA.syncing) { if (info) info.textContent = 'Тянем отзывы…'; if (btn) btn.disabled = true; }
   else { if (info) info.textContent = REV_DATA.updated_at ? ('обновлено ' + fmtDt(REV_DATA.updated_at)) : ''; if (btn) btn.disabled = false; }
 
-  const c = REV_DATA.counts || {};
+  const ratings = REV_DATA.ratings || [];
+  const byArt = {};
+  ratings.forEach(a => { byArt[a.article] = a; });
+
+  // артикулы с негативом + остальные из ratings
+  const arts = [...new Set([
+    ...((REV_DATA.negative_counts || {})[String(NEG_PERIOD)] || []).map(x => x.article),
+    ...ratings.map(a => a.article),
+  ])].filter(Boolean);
+
+  const withNeg = arts.filter(a => negCountFor(a) > 0).length;
+  const totalNeg = arts.reduce((s, a) => s + negCountFor(a), 0);
   cards.innerHTML = [
-    ['Всего', fmt(c.total), ''],
-    ['Новые', fmt(c.new), c.new ? 'color:var(--amber)' : ''],
-    ['Просмотренные', fmt(c.viewed), ''],
-    ['Обработанные', fmt(c.processed), ''],
-  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div></div>`).join('');
+    ['Артикулов', fmt(arts.length), '', ''],
+    [`Негатив за ${NEG_PERIOD} дн.`, fmt(totalNeg), 'color:var(--red)', `по ${NEG_STARS.slice().sort().map(s => '★' + s).join(' ')}`],
+    ['С негативом', fmt(withNeg), 'color:var(--amber)', ''],
+    ['Закреплено', fmt(PINNED.length), '', ''],
+  ].map(([l,v,s,sub]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div>${sub?`<div class="card-sub">${sub}</div>`:''}</div>`).join('');
 
-  let rows = [...(REV_DATA.reviews || [])];
-  const q = ((document.getElementById('revSearch') || {}).value || '').toLowerCase().trim();
-  if (q) rows = rows.filter(r => String(r.sku||'').includes(q) || String(r.text||'').toLowerCase().includes(q));
-
-  if (REV_DATA.syncing && !rows.length) {
+  if (REV_DATA.syncing && !arts.length) {
     root.innerHTML = '<div class="loading"><div class="spinner"></div>Загружаем отзывы v2…</div>';
     return;
   }
-  if (!rows.length) {
-    root.innerHTML = `<div class="empty"><b>Нет отзывов</b>${REV_DATA.error ? esc(REV_DATA.error) : 'Обнови или смени фильтр'}</div>`;
+  if (!arts.length) {
+    root.innerHTML = `<div class="empty"><b>Нет данных</b>${REV_DATA.error ? esc(REV_DATA.error) : 'Нажми «Обновить»'}</div>`;
     return;
   }
-  const body = rows.slice(0, 300).map(r => `<tr>
-    <td class="num">${r.rating ?? '—'}</td>
-    <td class="mono">${esc(r.sku)}</td>
-    <td>${esc(r.status)}</td>
-    <td>${esc(fmtDt(r.published_at))}</td>
-    <td style="max-width:480px;white-space:normal">${esc((r.text||'').slice(0,240))}</td>
-    <td class="num">${fmt(r.comments_amount)}</td>
-  </tr>`).join('');
-  root.innerHTML = `<div class="tbl-wrap"><table>
-    <thead><tr><th>★</th><th>SKU</th><th>Статус</th><th>Дата</th><th>Текст</th><th>Комменты</th></tr></thead>
-    <tbody>${body}</tbody></table></div>`;
+
+  const q = ((document.getElementById('revSearch') || {}).value || '').toLowerCase().trim();
+  let order = arts.slice().sort((a, b) => negCountFor(b) - negCountFor(a) || String(a).localeCompare(String(b), 'ru'));
+  if (q) order = order.filter(art => {
+    const a = byArt[art] || {};
+    return String(art).toLowerCase().includes(q) || String(a.sku || '').includes(q) || String(a.name || '').toLowerCase().includes(q);
+  });
+
+  const pinnedSet = new Set(PINNED);
+  const pinnedList = PINNED.filter(art => order.includes(art));
+  const restList = order.filter(art => !pinnedSet.has(art));
+
+  function row(article) {
+    const a = byArt[article] || { article };
+    const isPinned = pinnedSet.has(article);
+    const isOpen = !!prodOpen[article];
+    const neg = negCountFor(article);
+    const ratingHtml = a.avg_rating != null
+      ? `<span style="color:${rc(a.avg_rating)}">${Number(a.avg_rating).toFixed(2)}</span>`
+      : '<span style="color:var(--oz-faint)">—</span>';
+    const safe = String(article).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return `<div class="prod-row${isPinned ? ' pinned' : ''}${isOpen ? ' open' : ''}">
+      <div class="prod-main" onclick="toggleProdRow('${safe}')">
+        <span class="prod-pin${isPinned ? ' on' : ''}" onclick="pinArticle('${safe}', event)" title="${isPinned ? 'Открепить' : 'Закрепить'}">📌</span>
+        <div class="prod-art">${esc(article)}<div class="prod-nmid">${esc(a.sku ? ('SKU ' + a.sku) : (a.name || '—'))}</div></div>
+        <div class="prod-rating">${ratingHtml}</div>
+        <div class="prod-neg"><span class="prod-neg-count${neg === 0 ? ' zero' : ''}">${neg}</span> <span style="font-size:11px;color:var(--oz-faint)">за ${NEG_PERIOD} дн.</span></div>
+        <span class="prod-arr">▾</span>
+      </div>
+      <div class="prod-detail" id="fbdetail_${cssSafe(article)}">${isOpen ? '<div class="fb-loading">Загружаем отзывы…</div>' : ''}</div>
+    </div>`;
+  }
+
+  let html = '';
+  if (pinnedList.length) {
+    html += '<div style="font-size:11px;color:var(--oz-muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">📌 Закреплённые</div>';
+    html += pinnedList.map(row).join('');
+    html += '<div style="height:8px"></div>';
+  }
+  html += restList.map(row).join('');
+  root.innerHTML = html || '<div class="empty">Ничего не найдено</div>';
+  Object.keys(prodOpen).forEach(article => {
+    if (prodOpen[article] && order.includes(article)) loadArticleFeedbacks(article);
+  });
+}
+
+/* ── Оценки ── */
+function starBars(a) {
+  if (!a.total) return '<span style="color:var(--oz-faint);font-size:11px">—</span>';
+  return '<div class="sbar">' + [[5,'#12B76A'],[4,'#65A30D'],[3,'#F79009'],[2,'#EA580C'],[1,'#F04438']].map(([s,c]) => {
+    const p = Math.round((a['r' + s] || 0) / a.total * 100);
+    return `<div class="sbar-r"><div class="sbar-l">${s}</div><div class="sbar-t"><div class="sbar-f" style="width:${p}%;background:${c}"></div></div><div class="sbar-p">${p}%</div></div>`;
+  }).join('') + '</div>';
+}
+function artRow(a) {
+  const rat = a.avg_rating;
+  const ratingCell = rat != null
+    ? `<span class="rnum" style="color:${rc(rat)}">${Number(rat).toFixed(2)}</span>`
+    : '<span style="color:var(--oz-faint)">—</span>';
+  return `<tr>
+    <td><div class="prod-art" style="min-width:0">${esc(a.article)}<div class="prod-nmid">${esc(a.sku ? ('SKU ' + a.sku) : (a.name || ''))}</div></div></td>
+    <td class="tc">${ratingCell}</td>
+    <td class="tr2" style="color:${(a.r5||0)>0?'#12B76A':'inherit'}">${a.r5 || '—'}</td>
+    <td class="tr2">${a.r4 || '—'}</td>
+    <td class="tr2">${a.r3 || '—'}</td>
+    <td class="tr2">${a.r2 || '—'}</td>
+    <td class="tr2" style="color:${(a.r1||0)>0?'var(--red)':'inherit'};font-weight:${(a.r1||0)>0?600:400}">${a.r1 || '—'}</td>
+    <td class="tr2" style="color:var(--oz-muted)">${a.total || '—'}</td>
+    <td>${starBars(a)}</td>
+  </tr>`;
+}
+function thead() {
+  const a = k => SK === k ? (SD === -1 ? ' ↓' : ' ↑') : '';
+  return `<thead><tr>
+    <th onclick="SS('article')" style="cursor:pointer">Артикул${a('article')}</th>
+    <th class="tc" onclick="SS('avg_rating')" style="cursor:pointer">Рейтинг${a('avg_rating')}</th>
+    <th class="tr2" style="color:#12B76A">★5</th>
+    <th class="tr2">★4</th>
+    <th class="tr2">★3</th>
+    <th class="tr2">★2</th>
+    <th class="tr2" onclick="SS('r1')" style="color:var(--red);cursor:pointer">★1${a('r1')}</th>
+    <th class="tr2" onclick="SS('total')" style="cursor:pointer">Всего${a('total')}</th>
+    <th>Распределение</th>
+  </tr></thead>`;
+}
+function gblock(grp, arts) {
+  const color = gc(grp);
+  const wD = arts.filter(a => a.total > 0).length;
+  const tot = { r5:0,r4:0,r3:0,r2:0,r1:0,total:0 };
+  arts.forEach(a => ['r5','r4','r3','r2','r1','total'].forEach(k => tot[k] += (a[k] || 0)));
+  // справочная сумма по склейке (не подменяет рейтинг товара)
+  let weightedSum = 0, weightedTotal = 0;
+  arts.forEach(a => {
+    const starSum = (a.r5||0)+(a.r4||0)+(a.r3||0)+(a.r2||0)+(a.r1||0);
+    if (starSum > 0) {
+      weightedSum += (a.r5||0)*5+(a.r4||0)*4+(a.r3||0)*3+(a.r2||0)*2+(a.r1||0);
+      weightedTotal += starSum;
+    }
+  });
+  const avg = weightedTotal ? Math.round(weightedSum / weightedTotal * 100) / 100 : null;
+  const gi = Object.keys(GROUPS).concat(['Без склейки']).indexOf(grp);
+  const isOpen = EXP[grp] === true;
+  const sorted = [...arts].sort((a, b) => {
+    if (SK === 'article') return SD * String(a.article).localeCompare(String(b.article), 'ru');
+    return SD * ((+(a[SK] || 0)) - (+(b[SK] || 0)));
+  });
+  const totRow = `<tr class="total-row">
+    <td><span class="total-label">∑ Справка по склейке</span><div class="total-sub">оценка каждого товара — в своей строке</div></td>
+    <td class="tc">${avg != null ? `<span class="rnum" style="color:${rc(avg)}">${avg.toFixed(2)}</span>` : '—'}</td>
+    <td class="tr2" style="font-weight:600;color:#12B76A">${fmt(tot.r5)}</td>
+    <td class="tr2" style="font-weight:600">${fmt(tot.r4)}</td>
+    <td class="tr2" style="font-weight:600">${fmt(tot.r3)}</td>
+    <td class="tr2" style="font-weight:600">${fmt(tot.r2)}</td>
+    <td class="tr2" style="font-weight:600;color:${tot.r1>0?'var(--red)':'inherit'}">${fmt(tot.r1)}</td>
+    <td class="tr2" style="font-weight:600;color:var(--oz-muted)">${fmt(tot.total)}</td>
+    <td></td>
+  </tr>`;
+  const badges = tot.r1 > 0 ? `<span class="gh-badge" style="background:#FEE2E2;color:#B91C1C">★1: ${tot.r1}</span>` : '';
+  return `<div class="group${isOpen ? ' open' : ''}" id="g${gi}">
+    <div class="gh" onclick="TG(${gi})">
+      <div class="gh-color" style="background:${color}"></div>
+      <div class="gh-name">${esc(grp)}</div>
+      <div class="gh-stats">
+        <span class="gh-stat">${arts.length} арт. · ${wD} с отзывами</span>
+        ${badges}
+      </div>
+      ${avg != null ? `<span class="gh-rating" style="color:${rc(avg)}" title="Справка: среднее по сумме отзывов склейки">${avg.toFixed(2)} ★</span>` : ''}
+      <span class="gh-arr">▾</span>
+    </div>
+    <div class="gbody"><div class="tbl-wrap"><table>${thead()}<tbody>
+      ${sorted.map(artRow).join('')}
+      ${totRow}
+    </tbody></table></div></div>
+  </div>`;
+}
+function TG(i) {
+  const g = Object.keys(GROUPS).concat(['Без склейки'])[i];
+  if (!g) return;
+  EXP[g] = EXP[g] !== true;
+  const el = document.getElementById('g' + i);
+  if (el) el.classList.toggle('open', EXP[g]);
+}
+function EA(v) { Object.keys(GROUPS).concat(['Без склейки']).forEach(g => EXP[g] = !!v); drawRatings(); }
+function SS(k) {
+  if (SK === k) SD *= -1; else { SK = k; SD = -1; }
+  ['avg_rating','r1','total','article'].forEach(x => {
+    const el = document.getElementById('s_' + x);
+    if (el) el.classList.toggle('on', x === SK);
+  });
+  drawRatings();
+}
+function drawRatings() {
+  const root = document.getElementById('ratRoot');
+  const cards = document.getElementById('ratCards');
+  const banner = document.getElementById('ratBanner');
+  const btn = document.getElementById('ratSyncBtn');
+  if (!root) return;
+  GROUPS = REV_DATA.groups || GROUPS || {};
+  const ALL = REV_DATA.ratings || [];
+  if (btn) btn.disabled = !!REV_DATA.syncing;
+
+  if (REV_DATA.premium_required) {
+    banner.style.display = 'block';
+    banner.className = 'banner warn';
+    banner.innerHTML = '<b>Нужна подписка.</b> Без ReviewAPI v2 оценки по отзывам недоступны.';
+  } else {
+    banner.style.display = 'block';
+    banner.className = 'banner';
+    banner.innerHTML = 'Оценка <b>каждого товара отдельно</b> (по отзывам Ozon). Склейка только группирует строки — общая оценка склейки справочная.';
+  }
+
+  const tRev = ALL.reduce((s, a) => s + (a.total || 0), 0);
+  const t1 = ALL.reduce((s, a) => s + (a.r1 || 0), 0);
+  const tStars = ALL.reduce((s, a) => s + ((a.r5||0)*5+(a.r4||0)*4+(a.r3||0)*3+(a.r2||0)*2+(a.r1||0)), 0);
+  const avg = tRev ? (tStars / tRev).toFixed(2) : '—';
+  cards.innerHTML = [
+    ['Товаров', fmt(ALL.length), '', ''],
+    ['Отзывов в расчёте', fmt(tRev), '', ''],
+    ['Средний ★', avg + (avg !== '—' ? ' ★' : ''), `color:${rc(+avg)}`, 'по товарам'],
+    ['★1', fmt(t1), 'color:var(--red)', ''],
+  ].map(([l,v,s,sub]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div>${sub?`<div class="card-sub">${sub}</div>`:''}</div>`).join('');
+
+  if (REV_DATA.syncing && !ALL.length) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div>Считаем оценки…</div>';
+    return;
+  }
+  if (!ALL.length) {
+    root.innerHTML = `<div class="empty"><b>Нет данных</b>${REV_DATA.error ? esc(REV_DATA.error) : 'Нажми «Обновить»'}</div>`;
+    return;
+  }
+
+  const q = ((document.getElementById('ratSearch') || {}).value || '').toLowerCase().trim();
+  let html = '';
+  const gnames = Object.keys(GROUPS).concat(['Без склейки']);
+  const ga = new Set(Object.values(GROUPS).flat());
+  const grouped = {};
+  gnames.forEach(g => { grouped[g] = []; });
+  Object.entries(GROUPS).forEach(([g, list]) => {
+    (list || []).forEach(n => {
+      const found = ALL.find(a => a.article === n);
+      grouped[g].push(found || { article: n, total: 0, r5:0,r4:0,r3:0,r2:0,r1:0, avg_rating: null });
+    });
+  });
+  ALL.forEach(a => { if (!ga.has(a.article)) grouped['Без склейки'].push(a); });
+  gnames.forEach(g => {
+    let arts = grouped[g] || [];
+    if (q) arts = arts.filter(a => String(a.article).toLowerCase().includes(q) || String(a.sku||'').includes(q));
+    if (q && !arts.length) return;
+    html += gblock(g, arts);
+  });
+  root.innerHTML = html || '<div class="empty">Ничего не найдено</div>';
+}
+
+/* ── Склейки ── */
+function renderGroupManager() {
+  const grid = document.getElementById('gmGrid');
+  if (!grid) return;
+  GROUPS = REV_DATA.groups || GROUPS || {};
+  const ALL = REV_DATA.ratings || [];
+  const q = (document.getElementById('gmSearch')?.value || '').toLowerCase().trim();
+  const ga = new Set(Object.values(GROUPS).flat());
+  const ung = ALL.filter(a => !ga.has(a.article)).map(a => a.article);
+  const all = { ...GROUPS, 'Без склейки': ung };
+  let html = '';
+  Object.entries(all).forEach(([g, arts]) => {
+    let shown = arts;
+    if (q) shown = arts.filter(art => String(art).toLowerCase().includes(q));
+    if (q && !shown.length) return;
+    const color = gc(g);
+    const gid = 'gb_' + g.replace(/[^a-zа-я0-9]/gi, '_');
+    html += `<div class="gm-g" data-group="${esc(g)}" ondragover="gOver(event)" ondrop="gDrop(event,'${encodeURIComponent(g)}')">
+      <div class="gm-gh" style="background:${color}">
+        <span style="flex:1">${esc(g)}</span>
+        ${g !== 'Без склейки' ? `<span style="cursor:pointer;opacity:.85;font-size:12px;margin-right:8px" onclick="renameGroup('${encodeURIComponent(g)}')" title="Переименовать">✏️</span><span style="cursor:pointer;opacity:.7;font-size:12px" onclick="rmGroup('${encodeURIComponent(g)}')" title="Удалить">✕</span>` : ''}
+      </div>
+      <div class="gm-gb" id="${gid}">
+        ${shown.map(art => `<div class="gm-a" draggable="true" ondragstart="gDS(event,'${encodeURIComponent(art)}','${encodeURIComponent(g)}')">
+          <span>${esc(art)}</span>
+          ${g !== 'Без склейки' ? `<span class="gm-del" onclick="rmArt('${encodeURIComponent(g)}','${encodeURIComponent(art)}')">✕</span>` : ''}
+        </div>`).join('')}
+        ${q && shown.length < arts.length ? `<div style="font-size:11px;color:var(--oz-faint);margin-top:4px">показаны ${shown.length} из ${arts.length}</div>` : ''}
+        ${g !== 'Без склейки' ? `<div class="gm-add"><input placeholder="Добавить артикул…" id="ai_${gid}"><button onclick="addArt('${encodeURIComponent(g)}','ai_${gid}')">+</button></div>` : ''}
+      </div>
+    </div>`;
+  });
+  grid.innerHTML = html || '<div class="empty"><b>Нет товаров</b>Сначала обнови отзывы — подтянем артикулы.</div>';
+}
+function gDS(e, art, from) { dragArt = decodeURIComponent(art); dragFrom = decodeURIComponent(from); }
+function gOver(e) { e.preventDefault(); }
+function gDrop(e, toEnc) {
+  e.preventDefault();
+  const to = decodeURIComponent(toEnc);
+  if (!dragArt || dragFrom === to) return;
+  if (dragFrom !== 'Без склейки') GROUPS[dragFrom] = (GROUPS[dragFrom] || []).filter(a => a !== dragArt);
+  if (to !== 'Без склейки') {
+    if (!GROUPS[to]) GROUPS[to] = [];
+    if (!GROUPS[to].includes(dragArt)) GROUPS[to].push(dragArt);
+  }
+  dragArt = null; dragFrom = null;
+  REV_DATA.groups = GROUPS;
+  renderGroupManager();
+}
+function rmArt(gE, aE) {
+  const g = decodeURIComponent(gE), a = decodeURIComponent(aE);
+  GROUPS[g] = (GROUPS[g] || []).filter(x => x !== a);
+  REV_DATA.groups = GROUPS;
+  renderGroupManager();
+}
+function addArt(gE, inputId) {
+  const g = decodeURIComponent(gE);
+  const input = document.getElementById(inputId);
+  const art = (input.value || '').trim();
+  if (!art) return;
+  if (!GROUPS[g]) GROUPS[g] = [];
+  if (!GROUPS[g].includes(art)) GROUPS[g].push(art);
+  input.value = '';
+  REV_DATA.groups = GROUPS;
+  renderGroupManager();
+}
+function addGroup() {
+  const name = prompt('Название склейки:');
+  if (!name?.trim()) return;
+  GROUPS[name.trim()] = [];
+  REV_DATA.groups = GROUPS;
+  renderGroupManager();
+}
+function rmGroup(gE) {
+  const g = decodeURIComponent(gE);
+  if (!confirm(`Удалить «${g}»?`)) return;
+  delete GROUPS[g];
+  REV_DATA.groups = GROUPS;
+  renderGroupManager();
+}
+function renameGroup(gE) {
+  const g = decodeURIComponent(gE);
+  const newName = prompt('Новое название склейки:', g);
+  if (!newName || !newName.trim() || newName.trim() === g) return;
+  const trimmed = newName.trim();
+  if (GROUPS[trimmed] !== undefined) { alert('Склейка с таким названием уже есть'); return; }
+  const next = {};
+  Object.entries(GROUPS).forEach(([name, arts]) => { next[name === g ? trimmed : name] = arts; });
+  GROUPS = next;
+  if (EXP[g] !== undefined) { EXP[trimmed] = EXP[g]; delete EXP[g]; }
+  REV_DATA.groups = GROUPS;
+  renderGroupManager();
+}
+async function saveGroups() {
+  try {
+    const resp = await fetch('/api/save-review-groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ groups: GROUPS }),
+    });
+    const result = await resp.json();
+    if (!resp.ok || result.error) { alert('Ошибка: ' + (result.error || result.detail || resp.status)); return; }
+    GROUPS = result.groups || GROUPS;
+    REV_DATA.groups = GROUPS;
+    const n = document.getElementById('savedNote');
+    if (n) { n.style.display = 'inline'; setTimeout(() => n.style.display = 'none', 2000); }
+    drawRatings();
+  } catch (e) { alert('Ошибка: ' + e.message); }
 }
 
 /* ── Реклама ── */
