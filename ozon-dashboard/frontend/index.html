@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1400, initial-scale=1, minimum-scale=0.15, maximum-scale=4, user-scalable=yes">
+<title>Ozon Partners — Дашборд</title>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --oz-blue:#005BFF;--oz-blue-dark:#0047CC;--oz-blue-light:#E8F0FF;
+  --oz-bg:#F4F5F7;--oz-surface:#FFFFFF;--oz-border:#E3E6EB;
+  --oz-text:#1A1A1A;--oz-muted:#6B7280;--oz-faint:#9CA3AF;
+  --green:#12B76A;--red:#F04438;--amber:#F79009;
+  --r:8px;--rs:6px;
+}
+html{-webkit-text-size-adjust:100%}
+body{font-family:'Manrope',sans-serif;background:var(--oz-bg);color:var(--oz-text);min-height:100vh;min-width:1400px;overflow-x:auto}
+.topbar{background:#001A4D;padding:0 24px;display:flex;align-items:center;height:52px;gap:0;border-bottom:3px solid var(--oz-blue)}
+.tb-logo{display:flex;align-items:center;gap:10px;margin-right:32px}
+.tb-logo-mark{width:28px;height:28px;border-radius:8px;background:var(--oz-blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700}
+.tb-logo-text{color:#fff;font-size:13px;font-weight:600;letter-spacing:.3px}
+.tb-nav{display:flex;height:100%}
+.tb-nav-item{display:flex;align-items:center;padding:0 16px;color:rgba(255,255,255,.7);font-size:13px;cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap}
+.tb-nav-item:hover{color:#fff;background:rgba(255,255,255,.08)}
+.tb-nav-item.on{color:#fff;border-bottom-color:#fff;font-weight:600}
+.tb-nav-item.soon{opacity:.45;cursor:default}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.tb-sync{display:flex;align-items:center;gap:6px;color:rgba(255,255,255,.7);font-size:12px}
+.tb-dot{width:6px;height:6px;border-radius:50%;background:#6CE9A6;flex-shrink:0}
+.tb-dot.loading{background:var(--amber);animation:pulse 1s infinite}
+.tb-dot.error{background:var(--red)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.tb-btn{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.2);color:#fff;padding:5px 14px;border-radius:var(--rs);font-size:12px;cursor:pointer;font-family:inherit;transition:all .15s}
+.tb-btn:hover{background:rgba(255,255,255,.25)}
+.tb-btn:disabled{opacity:.5;cursor:wait}
+
+.page{display:none;padding:24px}.page.on{display:block}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+.card{background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);padding:16px 18px}
+.card-l{font-size:11px;color:var(--oz-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.card-v{font-size:24px;font-weight:600;color:var(--oz-text)}
+.card-sub{font-size:12px;color:var(--oz-faint);margin-top:3px}
+
+.toolbar{display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.search{display:flex;align-items:center;gap:8px;background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--rs);padding:6px 12px;width:280px}
+.search input{border:none;outline:none;font-size:13px;font-family:inherit;color:var(--oz-text);width:100%;background:transparent}
+.search input::placeholder{color:var(--oz-faint)}
+.filter-btn{border:1px solid var(--oz-border);border-radius:var(--rs);padding:6px 12px;font-size:12px;background:var(--oz-surface);color:var(--oz-muted);cursor:pointer;font-family:inherit;white-space:nowrap;transition:all .15s}
+.filter-btn:hover,.filter-btn.on{border-color:var(--oz-blue);color:var(--oz-blue);background:var(--oz-blue-light)}
+.ml-auto{margin-left:auto}
+.action-btn{border:1px solid var(--oz-border);border-radius:var(--rs);padding:6px 14px;font-size:12px;background:var(--oz-surface);color:var(--oz-text);cursor:pointer;font-family:inherit}
+.action-btn.primary{background:var(--oz-blue);color:#fff;border-color:var(--oz-blue)}
+.action-btn.primary:hover{background:var(--oz-blue-dark)}
+.action-btn:disabled{opacity:.55;cursor:wait}
+
+.banner{background:#EEF4FF;border:1px solid #C7D9FF;border-radius:var(--r);padding:12px 16px;margin-bottom:16px;font-size:13px;color:#1E3A8A;line-height:1.45}
+.banner.warn{background:#FFFBEB;border-color:#FDE68A;color:#92400E}
+.banner.err{background:#FEF3F2;border-color:#FECDCA;color:#912018}
+
+.tbl-wrap{background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);overflow:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:10px 12px;background:#FAFBFC;border-bottom:1px solid var(--oz-border);color:var(--oz-muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap}
+td{padding:10px 12px;border-bottom:1px solid var(--oz-border);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#F8FAFF}
+.prod{display:flex;align-items:center;gap:10px;min-width:280px}
+.prod img{width:40px;height:40px;object-fit:cover;border-radius:6px;background:#F0F2F5;border:1px solid var(--oz-border)}
+.prod-ph{width:40px;height:40px;border-radius:6px;background:#EEF1F5;display:flex;align-items:center;justify-content:center;color:var(--oz-faint);font-size:11px;flex-shrink:0}
+.prod-name{font-weight:500;line-height:1.3;max-width:360px}
+.prod-meta{font-size:11px;color:var(--oz-faint);margin-top:2px}
+.mono{font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.tag{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;background:#F3F4F6;color:var(--oz-muted)}
+.tag.ok{background:#ECFDF3;color:#027A48}
+.tag.arc{background:#F3F4F6;color:#6B7280}
+.tag.stock{background:var(--oz-blue-light);color:var(--oz-blue)}
+.empty{padding:48px 24px;text-align:center;color:var(--oz-muted);font-size:14px}
+.empty b{display:block;color:var(--oz-text);margin-bottom:6px;font-size:15px}
+.stub{padding:64px 24px;text-align:center;background:var(--oz-surface);border:1px dashed var(--oz-border);border-radius:var(--r);color:var(--oz-muted)}
+.stub h2{color:var(--oz-text);font-size:18px;margin-bottom:8px}
+.stub p{max-width:420px;margin:0 auto;line-height:1.5;font-size:13px}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="tb-logo">
+    <div class="tb-logo-mark">O</div>
+    <div class="tb-logo-text">OZON PARTNERS</div>
+  </div>
+  <div class="tb-nav">
+    <div class="tb-nav-item on" data-sec="products" onclick="showSection('products',this)">Товары</div>
+    <div class="tb-nav-item soon" title="Скоро">Остатки</div>
+    <div class="tb-nav-item soon" title="Скоро">Заказы</div>
+    <div class="tb-nav-item soon" title="Скоро">Отзывы</div>
+    <div class="tb-nav-item soon" title="Скоро">Реклама</div>
+    <div class="tb-nav-item soon" title="Скоро">Финансы</div>
+  </div>
+  <div class="tb-right">
+    <div class="tb-sync"><div class="tb-dot" id="syncDot"></div><span id="syncLabel">—</span></div>
+    <button class="tb-btn" id="btnSync" onclick="syncProducts()">Обновить товары</button>
+  </div>
+</div>
+
+<div class="page on" id="page-products">
+  <div class="banner" id="setupBanner" style="display:none"></div>
+
+  <div class="cards">
+    <div class="card">
+      <div class="card-l">Товаров в базе</div>
+      <div class="card-v" id="statTotal">—</div>
+      <div class="card-sub" id="statFilter">все</div>
+    </div>
+    <div class="card">
+      <div class="card-l">Последний синк</div>
+      <div class="card-v" id="statSync" style="font-size:16px">—</div>
+      <div class="card-sub">Seller API → Supabase</div>
+    </div>
+    <div class="card">
+      <div class="card-l">API</div>
+      <div class="card-v" id="statApi" style="font-size:16px">—</div>
+      <div class="card-sub">Client-Id + Api-Key</div>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="search">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3-3"/></svg>
+      <input id="q" placeholder="Артикул, название, product_id…" onkeydown="if(event.key==='Enter')loadProducts()">
+    </div>
+    <button class="filter-btn on" data-arch="active" onclick="setArchived('active',this)">Активные</button>
+    <button class="filter-btn" data-arch="archived" onclick="setArchived('archived',this)">Архив</button>
+    <button class="filter-btn" data-arch="all" onclick="setArchived('all',this)">Все</button>
+    <button class="action-btn primary ml-auto" onclick="loadProducts()">Найти</button>
+  </div>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Товар</th>
+          <th>Артикул</th>
+          <th>SKU</th>
+          <th>Цена</th>
+          <th>Остатки</th>
+          <th>Статус</th>
+        </tr>
+      </thead>
+      <tbody id="tbody">
+        <tr><td colspan="6"><div class="empty">Загрузка…</div></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const money = (v) => {
+  if (v == null || v === '') return '—';
+  const n = Number(v);
+  if (Number.isNaN(n)) return '—';
+  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(n);
+};
+
+const fmtDt = (s) => {
+  if (!s) return '—';
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return String(s).slice(0, 19);
+  return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+};
+
+let ARCHIVED = 'active';
+
+function setArchived(v, el) {
+  ARCHIVED = v;
+  document.querySelectorAll('.filter-btn[data-arch]').forEach(b => b.classList.toggle('on', b === el));
+  loadProducts();
+}
+
+function showSection(sec, el) {
+  document.querySelectorAll('.tb-nav-item').forEach(t => t.classList.remove('on'));
+  if (el) el.classList.add('on');
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
+  const page = document.getElementById('page-' + sec);
+  if (page) page.classList.add('on');
+}
+
+async function refreshStatus() {
+  const dot = document.getElementById('syncDot');
+  const label = document.getElementById('syncLabel');
+  const banner = document.getElementById('setupBanner');
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    document.getElementById('statTotal').textContent = d.products_count ?? 0;
+    document.getElementById('statSync').textContent = fmtDt(d.last_products_sync);
+    document.getElementById('statApi').textContent = d.has_ozon_creds ? 'подключён' : 'нет ключей';
+
+    if (d.sync?.running) {
+      dot.className = 'tb-dot loading';
+      label.textContent = 'синк…';
+    } else if (d.sync?.last_error) {
+      dot.className = 'tb-dot error';
+      label.textContent = 'ошибка синка';
+    } else if (!d.configured) {
+      dot.className = 'tb-dot error';
+      label.textContent = 'нет конфига';
+    } else {
+      dot.className = 'tb-dot';
+      label.textContent = d.last_products_sync ? 'ок' : 'ждёт первый синк';
+    }
+
+    if (!d.configured) {
+      banner.style.display = 'block';
+      banner.className = 'banner warn';
+      banner.innerHTML = '<b>Нужна настройка.</b> Задай в Railway: <code>OZON_CLIENT_ID</code>, <code>OZON_API_KEY</code>, <code>SUPABASE_URL</code>, <code>SUPABASE_KEY</code> и накати <code>supabase/schema.sql</code>.';
+    } else if (!d.db_ok) {
+      banner.style.display = 'block';
+      banner.className = 'banner warn';
+      banner.innerHTML = '<b>Supabase недоступен или нет таблицы products.</b> Выполни <code>ozon-dashboard/supabase/schema.sql</code> в SQL Editor.';
+    } else if ((d.products_count || 0) === 0) {
+      banner.style.display = 'block';
+      banner.className = 'banner';
+      banner.innerHTML = 'База пустая. Нажми <b>Обновить товары</b> — подтянем карточки из Seller API.';
+    } else {
+      banner.style.display = 'none';
+    }
+  } catch (e) {
+    dot.className = 'tb-dot error';
+    label.textContent = 'нет связи';
+  }
+}
+
+async function loadProducts() {
+  const tbody = document.getElementById('tbody');
+  const q = document.getElementById('q').value.trim();
+  tbody.innerHTML = '<tr><td colspan="6"><div class="empty">Загрузка…</div></td></tr>';
+  try {
+    const url = new URL('/api/products', location.origin);
+    url.searchParams.set('archived', ARCHIVED);
+    url.searchParams.set('limit', '200');
+    if (q) url.searchParams.set('q', q);
+    const r = await fetch(url);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.statusText);
+
+    document.getElementById('statFilter').textContent =
+      ARCHIVED === 'active' ? 'активные' : ARCHIVED === 'archived' ? 'архив' : 'все';
+    if (typeof d.total === 'number') {
+      document.getElementById('statTotal').textContent = d.total;
+    }
+
+    const items = d.items || [];
+    if (!items.length) {
+      tbody.innerHTML = `<tr><td colspan="6"><div class="empty"><b>Ничего не найдено</b>Синкни товары или измени фильтр.</div></td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = items.map(it => {
+      const img = it.primary_image
+        ? `<img src="${esc(it.primary_image)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+        : `<div class="prod-ph">n/a</div>`;
+      const stocks = [];
+      if (it.has_fbo_stocks) stocks.push('<span class="tag stock">FBO</span>');
+      if (it.has_fbs_stocks) stocks.push('<span class="tag stock">FBS</span>');
+      const stockHtml = stocks.length ? stocks.join(' ') : '<span class="tag">нет</span>';
+      const status = it.archived
+        ? '<span class="tag arc">архив</span>'
+        : `<span class="tag ok">${esc(it.visibility || 'active')}</span>`;
+      return `<tr>
+        <td><div class="prod">${img}<div><div class="prod-name">${esc(it.name || '—')}</div><div class="prod-meta">id ${esc(it.product_id)}</div></div></div></td>
+        <td class="mono">${esc(it.offer_id || '—')}</td>
+        <td class="mono">${esc(it.sku ?? '—')}</td>
+        <td class="mono">${money(it.marketing_price ?? it.price)}</td>
+        <td>${stockHtml}</td>
+        <td>${status}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty"><b>Ошибка загрузки</b>${esc(e.message || e)}</div></td></tr>`;
+  }
+}
+
+async function syncProducts() {
+  const btn = document.getElementById('btnSync');
+  btn.disabled = true;
+  btn.textContent = 'Синк…';
+  document.getElementById('syncDot').className = 'tb-dot loading';
+  document.getElementById('syncLabel').textContent = 'синк…';
+  try {
+    const r = await fetch('/api/sync-products', { method: 'POST' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail || d));
+    await refreshStatus();
+    await loadProducts();
+  } catch (e) {
+    const banner = document.getElementById('setupBanner');
+    banner.style.display = 'block';
+    banner.className = 'banner err';
+    banner.innerHTML = '<b>Синк не удался.</b> ' + esc(e.message || e);
+    document.getElementById('syncDot').className = 'tb-dot error';
+    document.getElementById('syncLabel').textContent = 'ошибка';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Обновить товары';
+  }
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+refreshStatus();
+loadProducts();
+</script>
+</body>
+</html>
