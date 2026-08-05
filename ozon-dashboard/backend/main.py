@@ -14,13 +14,14 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 import ads
 import coinvest as coin
+import competitors as comp
 import finance as fin
 import orders as ordmod
 import reviews as revs
@@ -1319,6 +1320,57 @@ def save_review_groups(body: dict = Body(...)):
         raise HTTPException(status_code=400, detail="groups must be object")
     saved = revs.save_groups(save_setting, groups)
     return {"ok": True, "groups": saved, "count": len(saved)}
+
+
+@app.get("/api/competitors")
+def get_competitors():
+    cached = comp.get_cached()
+    if not cached.get("rows") and not cached.get("uploaded_at"):
+        try:
+            cached = comp.load_report(get_setting)
+            # помечаем свои, если каталог уже есть
+            try:
+                products = load_products_from_db()
+                payload = {
+                    "period": cached.get("period"),
+                    "category": cached.get("category"),
+                    "uploaded_at": cached.get("uploaded_at"),
+                    "filename": cached.get("filename"),
+                    "rows": cached.get("rows") or [],
+                }
+                comp.mark_own_rows(payload, products)
+                comp.COMP_CACHE["rows"] = payload["rows"]
+                cached = comp.get_cached()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning("competitors load: %s", e)
+    return cached
+
+
+@app.post("/api/upload-competitors")
+async def upload_competitors(file: UploadFile = File(...)):
+    """Загрузка Excel «Конкурентная позиция» из кабинета Ozon."""
+    name = file.filename or "competitors.xlsx"
+    if not name.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="нужен файл .xlsx")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="пустой файл")
+    try:
+        payload = comp.parse_competitor_xlsx(content, filename=name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("competitors parse")
+        raise HTTPException(status_code=400, detail=f"не удалось прочитать файл: {e}") from e
+    try:
+        products = load_products_from_db()
+        comp.mark_own_rows(payload, products)
+    except Exception as e:
+        logger.warning("competitors mark own: %s", e)
+    saved = comp.save_report(save_setting, payload)
+    return {"ok": True, **saved}
 
 
 def _run_ads_sync(days: int = 7):

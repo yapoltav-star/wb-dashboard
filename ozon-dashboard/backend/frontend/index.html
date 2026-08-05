@@ -297,6 +297,7 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
     <div class="tb-nav-item" data-sec="stocks" onclick="showSection('stocks',this)">Остатки</div>
     <div class="tb-nav-item" data-sec="orders" onclick="showSection('orders',this)">Заказы</div>
     <div class="tb-nav-item" data-sec="reviews" onclick="showSection('reviews',this)">Отзывы</div>
+    <div class="tb-nav-item" data-sec="competitors" onclick="showSection('competitors',this)">Конкуренты</div>
     <div class="tb-nav-item" data-sec="ads" onclick="showSection('ads',this)">Реклама</div>
     <div class="tb-nav-item" data-sec="finance" onclick="showSection('finance',this)">Финансы</div>
   </div>
@@ -518,6 +519,30 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
   </div>
 </div>
 
+<!-- COMPETITORS -->
+<div class="page" id="page-competitors">
+  <div class="banner" id="compBanner" style="display:none"></div>
+  <div class="cards" id="compCards"></div>
+  <div class="toolbar">
+    <div class="search">
+      <input id="compSearch" placeholder="Название / SKU / артикул…" oninput="drawCompetitors()">
+    </div>
+    <button class="filter-btn on" id="compFltAll" onclick="setCompFilter('all')">Все</button>
+    <button class="filter-btn" id="compFltOwn" onclick="setCompFilter('own')">Мои</button>
+    <button class="filter-btn" id="compFltOther" onclick="setCompFilter('other')">Чужие</button>
+    <span style="font-size:12px;color:var(--oz-muted);margin-left:8px">Сорт:</span>
+    <button class="filter-btn on" id="compSortSum" onclick="setCompSort('ordered_sum')">Сумма</button>
+    <button class="filter-btn" id="compSortQty" onclick="setCompSort('ordered_qty')">Шт</button>
+    <button class="filter-btn" id="compSortRank" onclick="setCompSort('rank')">Место</button>
+    <span id="compInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center">
+      <button class="action-btn primary" onclick="document.getElementById('compFileInput').click()">📊 Загрузить Excel</button>
+      <input type="file" id="compFileInput" accept=".xlsx,.xls" style="display:none" onchange="uploadCompetitors(this.files[0])">
+    </div>
+  </div>
+  <div id="compRoot"><div class="empty"><b>Конкуренты</b>Загрузи Excel из Ozon: <b>Аналитика → Конкурентная позиция → Скачать</b>.</div></div>
+</div>
+
 <!-- ADS -->
 <div class="page" id="page-ads">
   <div class="banner" id="adsBanner" style="display:none"></div>
@@ -625,6 +650,9 @@ function showSection(sec, el) {
   } else if (sec === 'orders') {
     btn.textContent = 'Обновить заказы';
     renderOrders(true);
+  } else if (sec === 'competitors') {
+    btn.textContent = 'Загрузить Excel';
+    renderCompetitors(true);
   } else if (sec === 'ads') {
     btn.textContent = 'Обновить рекламу';
     renderAds(true);
@@ -659,6 +687,7 @@ function topSync() {
   else if (CURRENT === 'prices') triggerCoinvestSync();
   else if (CURRENT === 'orders') triggerOrdersSync();
   else if (CURRENT === 'reviews') triggerReviewsSync();
+  else if (CURRENT === 'competitors') document.getElementById('compFileInput')?.click();
   else if (CURRENT === 'ads') triggerAdsSync();
   else if (CURRENT === 'finance') triggerFinanceSync();
   else syncProducts();
@@ -2490,6 +2519,153 @@ async function saveGroups() {
     if (n) { n.style.display = 'inline'; setTimeout(() => n.style.display = 'none', 2000); }
     drawRatings();
   } catch (e) { alert('Ошибка: ' + e.message); }
+}
+
+/* ── Конкуренты ── */
+let COMP_DATA = { rows: [], count: 0 };
+let COMP_FILTER = 'all';
+let COMP_SORT = 'ordered_sum';
+
+function setCompFilter(f) {
+  COMP_FILTER = f;
+  ['All','Own','Other'].forEach((id, i) => {
+    const el = document.getElementById('compFlt' + id);
+    if (el) el.classList.toggle('on', ['all','own','other'][i] === f);
+  });
+  drawCompetitors();
+}
+function setCompSort(k) {
+  COMP_SORT = k;
+  [['Sum','ordered_sum'],['Qty','ordered_qty'],['Rank','rank']].forEach(([id, v]) => {
+    const el = document.getElementById('compSort' + id);
+    if (el) el.classList.toggle('on', v === k);
+  });
+  drawCompetitors();
+}
+function money(n) {
+  const v = Number(n) || 0;
+  if (v >= 1e6) return (v / 1e6).toFixed(1).replace('.0', '') + ' млн';
+  if (v >= 1e3) return Math.round(v / 1e3) + ' тыс';
+  return fmt(v);
+}
+async function renderCompetitors(force) {
+  if (force || !(COMP_DATA.rows || []).length) await loadCompetitors();
+  else drawCompetitors();
+}
+async function loadCompetitors() {
+  try {
+    const r = await fetch('/api/competitors');
+    COMP_DATA = await r.json();
+  } catch (e) {
+    COMP_DATA = { rows: [], error: String(e) };
+  }
+  drawCompetitors();
+}
+async function uploadCompetitors(file) {
+  if (!file) return;
+  const info = document.getElementById('compInfo');
+  const root = document.getElementById('compRoot');
+  if (info) info.textContent = 'Загружаем…';
+  if (root) root.innerHTML = '<div class="loading"><div class="spinner"></div>Парсим Excel…</div>';
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch('/api/upload-competitors', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error || ('HTTP ' + r.status));
+    COMP_DATA = d;
+    drawCompetitors();
+  } catch (e) {
+    if (info) info.textContent = 'Ошибка';
+    if (root) root.innerHTML = `<div class="empty"><b>Ошибка загрузки</b>${esc(e.message || e)}</div>`;
+  } finally {
+    const inp = document.getElementById('compFileInput');
+    if (inp) inp.value = '';
+  }
+}
+function drawCompetitors() {
+  const root = document.getElementById('compRoot');
+  const cards = document.getElementById('compCards');
+  const info = document.getElementById('compInfo');
+  const ban = document.getElementById('compBanner');
+  if (!root) return;
+
+  const rowsAll = COMP_DATA.rows || [];
+  if (ban) {
+    if (COMP_DATA.period || COMP_DATA.category) {
+      ban.style.display = 'block';
+      ban.className = 'banner';
+      ban.innerHTML = `Отчёт <b>Конкурентная позиция</b>`
+        + (COMP_DATA.category ? ` · ${esc(COMP_DATA.category)}` : '')
+        + (COMP_DATA.period ? ` · ${esc(COMP_DATA.period)}` : '')
+        + (COMP_DATA.filename ? ` · файл ${esc(COMP_DATA.filename)}` : '')
+        + `. Мои товары подсвечены, если совпал SKU/артикул из каталога.`;
+    } else ban.style.display = 'none';
+  }
+
+  cards.innerHTML = [
+    ['Товаров', fmt(COMP_DATA.count || rowsAll.length), ''],
+    ['Заказано, ₽', money(COMP_DATA.total_sum), ''],
+    ['Заказано, шт', fmt(COMP_DATA.total_qty), ''],
+    ['Моих в отчёте', fmt(COMP_DATA.own_count || 0), COMP_DATA.own_count ? 'color:var(--oz-blue)' : ''],
+  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div></div>`).join('');
+
+  if (info) {
+    info.textContent = COMP_DATA.uploaded_at
+      ? ('загружено ' + fmtDt(COMP_DATA.uploaded_at))
+      : (rowsAll.length ? '' : 'нет данных');
+  }
+
+  if (!rowsAll.length) {
+    root.innerHTML = '<div class="empty"><b>Нет данных</b>Загрузи Excel: Аналитика → Конкурентная позиция → Скачать</div>';
+    return;
+  }
+
+  let rows = [...rowsAll];
+  if (COMP_FILTER === 'own') rows = rows.filter(r => r.is_own);
+  else if (COMP_FILTER === 'other') rows = rows.filter(r => !r.is_own);
+  const q = ((document.getElementById('compSearch') || {}).value || '').toLowerCase().trim();
+  if (q) {
+    rows = rows.filter(r =>
+      String(r.name || '').toLowerCase().includes(q) ||
+      String(r.sku || '').includes(q) ||
+      String(r.offer_id || '').toLowerCase().includes(q) ||
+      String(r.competitor || '').toLowerCase().includes(q)
+    );
+  }
+  rows.sort((a, b) => {
+    if (COMP_SORT === 'rank') return (a.rank || 0) - (b.rank || 0);
+    if (COMP_SORT === 'ordered_qty') return (b.ordered_qty || 0) - (a.ordered_qty || 0);
+    return (b.ordered_sum || 0) - (a.ordered_sum || 0);
+  });
+
+  const maxSum = Math.max(...rows.map(r => r.ordered_sum || 0), 1);
+  const body = rows.slice(0, 500).map(r => {
+    const pct = Math.round((r.ordered_sum || 0) / maxSum * 100);
+    const own = r.is_own ? ' style="background:#EEF4FF"' : '';
+    const name = r.url
+      ? `<a class="prod-link" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name || '—')}</a>`
+      : esc(r.name || '—');
+    return `<tr${own}>
+      <td class="num mono">${fmt(r.rank)}</td>
+      <td>${esc(r.competitor || '—')}${r.is_own ? ' <span class="tag stock">мой</span>' : ''}</td>
+      <td style="max-width:360px;white-space:normal">${name}<div class="prod-meta">${esc(r.offer_id || '')}</div></td>
+      <td class="mono">${esc(r.sku || '—')}</td>
+      <td class="num" title="${fmt(r.ordered_sum)} ₽">
+        <div>${fmt(Math.round(r.ordered_sum || 0))}</div>
+        <div style="height:3px;background:#E8EEF7;border-radius:2px;margin-top:4px"><div style="height:100%;width:${pct}%;background:var(--oz-blue);border-radius:2px"></div></div>
+      </td>
+      <td class="num">${fmt(r.ordered_qty)}</td>
+    </tr>`;
+  }).join('');
+
+  root.innerHTML = `<div class="tbl-wrap"><table>
+    <thead><tr>
+      <th>#</th><th>Конкурент</th><th>Товар</th><th>SKU</th><th>Заказано, ₽</th><th>Шт</th>
+    </tr></thead>
+    <tbody>${body}</tbody>
+  </table></div>
+  <div class="hint">Показаны до 500 строк из ${fmt(rows.length)}. Источник: Excel «Конкурентная позиция» из кабинета Ozon.</div>`;
 }
 
 /* ── Реклама ── */
