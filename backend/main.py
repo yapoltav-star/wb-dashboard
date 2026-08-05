@@ -782,9 +782,9 @@ def stock_wh_geo_compare(nm_id, cur_by_nm: dict, prev_snap: dict) -> dict:
 # ---------- Остатки нашего склада (Google Sheets) ----------
 OWN_WAREHOUSE_SHEET_ID = os.getenv(
     "OWN_WAREHOUSE_SHEET_ID",
-    "1Lhoy4s_KX0pWndsd3Y5oCOjTFCtfEfVUM4AgtBv4Crc",
+    "",
 )
-OWN_WAREHOUSE_GID = os.getenv("OWN_WAREHOUSE_GID", "1829622647")
+OWN_WAREHOUSE_GID = os.getenv("OWN_WAREHOUSE_GID", "0")
 OWN_WAREHOUSE_CACHE = {
     "title": None,
     "as_of": None,
@@ -5972,9 +5972,6 @@ def _cfo_num(v, default=0.0):
 def _cfo_interest_month(loan: dict) -> float:
     if loan.get("interest_only"):
         return _cfo_num(loan.get("payment"))
-    # факт по ВТБ крупному из июня
-    if loan.get("id") == "vtb_big":
-        return 88000.0 + _cfo_num(loan.get("fee_month"))
     rate = _cfo_num(loan.get("rate"))
     bal = _cfo_num(loan.get("balance"))
     fee = _cfo_num(loan.get("fee_month"))
@@ -5983,71 +5980,8 @@ def _cfo_interest_month(loan: dict) -> float:
 
 
 def _migrate_cfo_loans_jul30(data: dict) -> tuple:
-    """Разово: закрыт Сбер#1, Сбер#2 −2.8млн/платёж 40к, линия 6 млн,
-    новая дебиторка WB и долг поставщикам 21 344 400."""
-    changed = False
-    loans = data.get("loans")
-    if isinstance(loans, list) and loans:
-        ids = {l.get("id") for l in loans if isinstance(l, dict)}
-        sber1 = next((l for l in loans if isinstance(l, dict) and l.get("id") == "sber1"), None)
-        need_loans = ("line6m" not in ids) and sber1 is not None and _cfo_num(sber1.get("payment")) >= 150000
-        if need_loans:
-            new_loans = []
-            for l in loans:
-                if not isinstance(l, dict):
-                    continue
-                if l.get("id") == "sber1":
-                    continue
-                item = dict(l)
-                if item.get("id") == "sber2":
-                    bal = _cfo_num(item.get("balance"))
-                    if bal >= 2_500_000:
-                        item["balance"] = round(bal - 2_800_000, 2)
-                    item["payment"] = 40000
-                    item["notes"] = "после досрочки −2.8 млн, платёж 40к"
-                item["fee_month"] = _cfo_num(item.get("fee_month"))
-                new_loans.append(item)
-            if not any(l.get("id") == "line6m" for l in new_loans):
-                line = {
-                    "id": "line6m",
-                    "name": "Кредитная линия 6 млн",
-                    "contract": "",
-                    "balance": 6_000_000,
-                    "rate": 0.189,
-                    "payment": 243600,
-                    "fee_month": 24000,
-                    "close": "2029-07",
-                    "early_repay": "",
-                    "interest_only": False,
-                    "notes": "18.9%/год + 0.4% лимита (24к). 36 мес. Переплата 2.77 млн (46.2%)",
-                }
-                idx = next((i for i, l in enumerate(new_loans) if l.get("id") == "sber2"), -1)
-                new_loans.insert(idx + 1, line)
-            data["loans"] = new_loans
-            changed = True
-
-    # дебиторка/поставщики — только для уже существующего среза Ярослава (старые значения)
-    new_wb = [5719189.43, 30441.68, 5963238.65, 6034075.99, 21484.81, 4382878.38, 31802.27]
-    new_suppliers = 21344400
-    old_suppliers = _cfo_num(data.get("suppliers"))
-    old_wb = data.get("wb_receivables") or []
-    looks_like_legacy = (
-        data.get("cfo_recv_jul30") != True
-        and (
-            abs(old_suppliers - 22_680_000) < 1
-            or (isinstance(old_wb, list) and any(abs(_cfo_num(x) - 5_400_759.27) < 1 for x in old_wb))
-            or (isinstance(loans, list) and any(isinstance(l, dict) and l.get("id") == "sber1" for l in loans))
-        )
-    )
-    if looks_like_legacy:
-        data["wb_receivables"] = list(new_wb)
-        data["suppliers"] = new_suppliers
-        data["cfo_recv_jul30"] = True
-        changed = True
-
-    if changed:
-        data["as_of"] = data.get("as_of") or "2026-07-30"
-    return data, changed
+    """Раньше здесь была разовая миграция личных кредитов — для шаблона отключена."""
+    return data, False
 
 
 def enrich_cfo_snapshot(raw: dict) -> dict:
@@ -6095,7 +6029,7 @@ def enrich_cfo_snapshot(raw: dict) -> dict:
     salary = _cfo_num(data.get("salary_month"))
     realization = _cfo_num(data.get("realization_month"))
     target_margin = _cfo_num(data.get("target_margin"), 0.15) or 0.15
-    cash_floor = _cfo_num(data.get("cash_floor"), 4000000)
+    cash_floor = _cfo_num(data.get("cash_floor"), 0)
     wb_comp = _cfo_num(data.get("wb_compensation_pending"))
     pnl_channels = pnl_wb + pnl_oz
     pnl_real = pnl_channels - salary - bank_int
