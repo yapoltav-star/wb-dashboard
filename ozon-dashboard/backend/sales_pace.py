@@ -43,23 +43,35 @@ def _parse_ymd(s: str | None) -> date | None:
 
 
 def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> dict:
+    """Окна cur/prev как на WB: для day — сегодня 00:00→сейчас vs вчера 00:00→то же время."""
     today0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     if period == "day":
         dc = _parse_ymd(date_cur)
         if dc:
-            cur_start = datetime(dc.year, dc.month, dc.day, tzinfo=MSK)
-            cur_end = cur_start + timedelta(days=1) - timedelta(seconds=1)
             dp = _parse_ymd(date_prev) or (dc - timedelta(days=1))
+            if dp >= dc:
+                dp = dc - timedelta(days=1)
+            cur_start = datetime(dc.year, dc.month, dc.day, tzinfo=MSK)
             prev_start = datetime(dp.year, dp.month, dp.day, tzinfo=MSK)
-            prev_end = prev_start + timedelta(days=1) - timedelta(seconds=1)
+            # выбран сегодня — режем до текущего времени, вчера — до того же часов:минут
+            if dc == now.date():
+                cur_end = now
+                prev_end = prev_start + (now - cur_start)
+                label_cur = f"{dc.strftime('%d.%m.%Y')} до {now.strftime('%H:%M')}"
+                label_prev = f"{dp.strftime('%d.%m.%Y')} до {now.strftime('%H:%M')}"
+            else:
+                cur_end = cur_start + timedelta(days=1) - timedelta(seconds=1)
+                prev_end = prev_start + timedelta(days=1) - timedelta(seconds=1)
+                label_cur = dc.strftime("%d.%m.%Y")
+                label_prev = dp.strftime("%d.%m.%Y")
             return {
                 "cur_start": cur_start,
                 "cur_end": cur_end,
                 "prev_start": prev_start,
                 "prev_end": prev_end,
-                "label_cur": dc.strftime("%d.%m.%Y"),
-                "label_prev": dp.strftime("%d.%m.%Y"),
+                "label_cur": label_cur,
+                "label_prev": label_prev,
                 "col_cur": dc.strftime("%d.%m"),
                 "col_prev": dp.strftime("%d.%m"),
                 "custom_dates": True,
@@ -147,21 +159,35 @@ def _iso_z(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
+def _posting_event_dt(p: dict) -> datetime | None:
+    """Момент заказа для same-time окон.
+
+    Ozon filter since/to на list-ручках режет по in_process_at — берём его первым,
+    иначе сравнение «до HH:MM» плывёт относительно кабинета.
+    """
+    raw = p.get("in_process_at") or p.get("created_at")
+    if not raw:
+        return None
+    try:
+        d = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return d.astimezone(MSK)
+    except Exception:
+        return None
+
+
 def _count_posting_products(postings: list, since: datetime, until: datetime) -> dict[str, int]:
-    """Сумма quantity по offer_id в окне (по created_at если есть)."""
+    """Сумма quantity по offer_id строго внутри [since, until] по in_process_at."""
     out: dict[str, int] = {}
+    skipped = 0
     for p in postings:
-        created = p.get("created_at") or p.get("in_process_at")
-        if created:
-            try:
-                d = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
-                if d.tzinfo is None:
-                    d = d.replace(tzinfo=timezone.utc)
-                d = d.astimezone(MSK)
-                if d < since or d > until:
-                    continue
-            except Exception:
-                pass
+        d = _posting_event_dt(p)
+        if d is None:
+            skipped += 1
+            continue
+        if d < since or d > until:
+            continue
         for prod in p.get("products") or []:
             offer = str(prod.get("offer_id") or "").strip()
             if not offer:
@@ -172,6 +198,8 @@ def _count_posting_products(postings: list, since: datetime, until: datetime) ->
                     continue
             qty = int(prod.get("quantity") or 1)
             out[offer] = out.get(offer, 0) + qty
+    if skipped:
+        logger.info("pace: skipped %s postings without in_process_at/created_at", skipped)
     return out
 
 
@@ -325,10 +353,20 @@ def sync_sales_pace(
         cur_start, cur_end = win["cur_start"], win["cur_end"]
         prev_start, prev_end = win["prev_start"], win["prev_end"]
 
+        logger.info(
+            "pace windows %s: cur=%s…%s prev=%s…%s (%s vs %s)",
+            period,
+            cur_start.isoformat(),
+            cur_end.isoformat(),
+            prev_start.isoformat(),
+            prev_end.isoformat(),
+            win.get("label_cur"),
+            win.get("label_prev"),
+        )
         cur_ord, prev_ord = fetch_orders_windows(ozon_post, cur_start, cur_end, prev_start, prev_end)
 
-        # Воронка Premium: показы, сессии на карточке (=переходы), корзина
-        funnel_metrics = ["hits_view", "session_view_pdp", "hits_tocart", "ordered_units"]
+        # Воронка Premium: показы / переходы / корзина (сутки аналитики; заказы — только из postings)
+        funnel_metrics = ["hits_view", "session_view_pdp", "hits_tocart"]
         funnel_cur, funnel_prev = {}, {}
         funnel_ready = True
         try:
@@ -438,11 +476,9 @@ def sync_sales_pace(
         for offer in all_offers:
             o_t = int(cur_ord.get(offer, 0))
             o_y = int(prev_ord.get(offer, 0))
-            # fallback orders from analytics if postings empty for this offer
+            # заказы только из FBO/FBS postings в same-time окнах — без analytics ordered_units
+            # (аналитика даёт целые сутки и ломает «сегодня до HH:MM vs вчера до HH:MM»)
             fc, fp = funnel_for_offer(offer)
-            if o_t == 0 and o_y == 0:
-                o_t = int(fc.get("ordered_units") or 0)
-                o_y = int(fp.get("ordered_units") or 0)
             if o_t <= 0 and o_y <= 0:
                 continue
 
