@@ -12,6 +12,7 @@
 4. **Railway** → Deploy from GitHub → репо `wb-dashboard`.
    - **Root Directory:** `ozon-dashboard/backend`  ← обязательно, не `ozon-dashboard`
    - **Branch:** `cursor/ozon-dashboard-skeleton-74b8` (пока не смержили в main)
+   - Регион: **EU West (Amsterdam)** — задан в `railway.toml` (`europe-west4-drams3a`)
 5. Variables:
 
 ```

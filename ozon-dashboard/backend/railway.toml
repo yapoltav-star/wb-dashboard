@@ -5,3 +5,7 @@ dockerfilePath = "Dockerfile"
 [deploy]
 startCommand = "python main.py"
 restartPolicyType = "ON_FAILURE"
+
+# EU West (Amsterdam) — ближе к Ozon, витрина ozon.ru реже режется антиботом
+[deploy.multiRegionConfig."europe-west4-drams3a"]
+numReplicas = 1
