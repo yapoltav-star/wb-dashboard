@@ -146,12 +146,10 @@ def normalize_price_item(item: dict, action_by_pid: dict[int, list[dict]]) -> di
 
     seller_disc = _pct(msp, price) if msp is not None else None
     total_disc = _pct(mp, price) if mp is not None else None
-    if mp is not None and msp is not None and price and price > 0 and msp >= mp:
-        coinvest_pct = round((msp - mp) / price * 100.0, 1)
-        coinvest_rub = round(msp - mp, 2)
+    if mp is not None and msp is not None and msp > 0 and msp >= mp:
+        coinvest_rub, coinvest_pct = _coinvest_from_site(msp, mp)
     elif mp is not None and price is not None and price > 0 and (msp is None or msp == price):
-        coinvest_pct = _pct(mp, price)
-        coinvest_rub = round(price - mp, 2) if mp is not None else None
+        coinvest_rub, coinvest_pct = _coinvest_from_site(price, mp)
     else:
         coinvest_pct = None
         coinvest_rub = None
@@ -165,11 +163,10 @@ def normalize_price_item(item: dict, action_by_pid: dict[int, list[dict]]) -> di
             continue
         best_action_price = apv if best_action_price is None else min(best_action_price, apv)
 
-    if coinvest_pct is None and best_action_price is not None and price and price > 0:
+    if coinvest_pct is None and best_action_price is not None:
         base = msp if msp is not None else price
-        if base > best_action_price:
-            coinvest_rub = round(base - best_action_price, 2)
-            coinvest_pct = round((base - best_action_price) / price * 100.0, 1)
+        if base is not None and base > best_action_price:
+            coinvest_rub, coinvest_pct = _coinvest_from_site(base, best_action_price)
             if mp is None:
                 mp = best_action_price
                 total_disc = _pct(mp, price)
@@ -302,23 +299,19 @@ def apply_manual_to_article(article: dict, site_price: float | None) -> None:
         article["client_price"] = None
         article["price_source"] = None
         article["manual_site_price"] = False
-        # вернём оценку по акции, если была
-        if article.get("action_price") is not None and article.get("price"):
-            base = article.get("marketing_seller_price")
-            if base is None:
-                base = article["price"]
-            ap = float(article["action_price"])
-            if base is not None and base > ap:
-                article["coinvest_rub"] = round(float(base) - ap, 2)
-                article["coinvest_pct"] = round((float(base) - ap) / float(article["price"]) * 100.0, 1)
-                article["marketing_price"] = ap
-            else:
-                article["coinvest_rub"] = None
-                article["coinvest_pct"] = None
+        article["ozon_discount_pct"] = None
+        base = article.get("marketing_seller_price")
+        if base is None:
+            base = article.get("price")
+        if article.get("action_price") is not None:
+            rub, pct = _coinvest_from_site(base, float(article["action_price"]))
+            article["coinvest_rub"] = rub
+            article["coinvest_pct"] = pct
+            article["marketing_price"] = article["action_price"]
         else:
             article["coinvest_rub"] = None
             article["coinvest_pct"] = None
-            article["ozon_discount_pct"] = None
+            article["marketing_price"] = None
         return
     _apply_site_price(article, float(site_price), source="manual")
     article["manual_site_price"] = True
