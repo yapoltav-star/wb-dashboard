@@ -311,12 +311,40 @@ td.tc{text-align:center}
 .matrix .own-bad{background:#FEE4E2!important;color:#B42318;font-weight:700}
 .matrix .own-warn{background:#FEF0C7!important;color:#B54708;font-weight:700}
 .matrix .own-ok{background:#D1FADF!important;color:#027A48;font-weight:600}
-.ow-model-btn{display:inline-flex;align-items:center;gap:4px;max-width:220px;border:1px solid var(--wb-border);background:#fff;border-radius:6px;padding:4px 8px;font-size:12px;font-family:inherit;color:var(--wb-text);cursor:pointer;text-align:left;line-height:1.3}
+.ow-model-btn{display:inline-flex;align-items:center;gap:4px;max-width:100%;border:1px solid var(--wb-border);background:#fff;border-radius:6px;padding:4px 8px;font-size:12px;font-family:inherit;color:var(--wb-text);cursor:pointer;text-align:left;line-height:1.3}
 .ow-model-btn:hover{border-color:var(--wb-purple);background:var(--wb-purple-light)}
-.ow-model-btn .ow-mname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px}
+.ow-model-btn .ow-mname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px}
 .ow-model-btn.manual{border-color:#F79009;background:#FFFAEB}
 .ow-model-btn .ow-hint{font-size:10px;color:var(--wb-faint)}
 .ow-model-select{max-width:260px;border:1px solid var(--wb-purple);border-radius:6px;padding:4px 6px;font-size:12px;font-family:inherit;background:#fff}
+/* Сводка приход/WB/FBS — артикул и qty в одной строке без гориз. скролла */
+.ow-sum-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;align-items:stretch}
+.ow-sum-card{border:1px solid var(--wb-border);border-radius:var(--rs);overflow:hidden;background:#fff;min-width:0;display:flex;flex-direction:column}
+.ow-sum-head{padding:10px 12px;border-bottom:1px solid var(--wb-border);background:#FAFAF8}
+.ow-sum-head .t{font-size:13px;font-weight:600}
+.ow-sum-head .s{font-size:11px;color:var(--wb-muted);margin-top:2px;line-height:1.35}
+.ow-sum-body{max-height:320px;overflow-y:auto;overflow-x:hidden}
+.ow-sum-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-bottom:1px solid var(--wb-border);min-width:0}
+.ow-sum-row:last-child{border-bottom:0}
+.ow-sum-row:hover{background:#FAFAF9}
+.ow-sum-art{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;font-size:12px;text-align:left;color:var(--wb-text)}
+.ow-sum-qty{flex:0 0 auto;font-weight:700;font-variant-numeric:tabular-nums;font-size:13px;white-space:nowrap}
+.ow-sum-empty{padding:14px 12px;font-size:12px;color:var(--wb-faint)}
+/* Основная таблица склада */
+.ow-stock-wrap{overflow-x:auto;max-width:100%}
+.ow-stock-tbl{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}
+.ow-stock-tbl th,.ow-stock-tbl td{padding:8px 10px;border-bottom:1px solid var(--wb-border);vertical-align:middle}
+.ow-stock-tbl th{background:#FAFAF9;font-size:10px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;position:sticky;top:0;z-index:2;text-align:left}
+.ow-stock-tbl th.num,.ow-stock-tbl td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ow-stock-tbl col.c-art{width:28%}
+.ow-stock-tbl col.c-model{width:26%}
+.ow-stock-tbl col.c-stock{width:12%}
+.ow-stock-tbl col.c-in{width:10%}
+.ow-stock-tbl col.c-out{width:10%}
+.ow-stock-tbl col.c-note{width:14%}
+.ow-stock-tbl .ow-art{font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;display:block}
+.ow-stock-tbl tr:hover td{background:#FAFAF9}
+.ow-stock-tbl td.note{color:var(--wb-muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .matrix tbody tr.pinned td{background:#FFFBEB}
 .matrix tbody tr.pinned td.mcol-art{background:#FFFBEB}
 .matrix tbody tr.dragging{opacity:.4}
@@ -1885,28 +1913,26 @@ function drawOwnWhChannelTables() {
   const renderCol = (title, sub, data, color, sign) => {
     const items = data.items || [];
     const body = items.length
-      ? items.map(it => `<tr>
-          <td style="text-align:left"><div class="art">${escapeHtml(it.vendor_code)}</div></td>
-          <td style="text-align:right;font-weight:600;color:${color}">${sign}${fmt(it.qty)}</td>
-        </tr>`).join('')
-      : `<tr><td colspan="2" style="text-align:left;color:var(--wb-faint);padding:12px">Пока пусто</td></tr>`;
-    return `<div style="flex:1;min-width:240px;border:1px solid var(--wb-border);border-radius:var(--rs);overflow:hidden;background:#fff">
-      <div style="padding:10px 12px;border-bottom:1px solid var(--wb-border);background:#FAFAF8">
-        <div style="font-size:13px;font-weight:600">${title}</div>
-        <div style="font-size:11px;color:var(--wb-muted);margin-top:2px">${sub} · ${sign}${fmt(data.total_qty||0)} шт · ${fmt(data.articles||0)} арт.${data.files?` · ${data.files} файл(ов)`:''}</div>
+      ? items.map(it => {
+          const vc = String(it.vendor_code || '');
+          return `<div class="ow-sum-row" title="${escapeHtml(vc)}">
+            <span class="ow-sum-art">${escapeHtml(vc)}</span>
+            <span class="ow-sum-qty" style="color:${color}">${sign}${fmt(it.qty)}</span>
+          </div>`;
+        }).join('')
+      : `<div class="ow-sum-empty">Пока пусто</div>`;
+    return `<div class="ow-sum-card">
+      <div class="ow-sum-head">
+        <div class="t">${title}</div>
+        <div class="s">${sub} · ${sign}${fmt(data.total_qty||0)} шт · ${fmt(data.articles||0)} арт.${data.files?` · ${data.files} файл(ов)`:''}</div>
       </div>
-      <div style="max-height:280px;overflow:auto">
-        <table class="comp-tbl" style="width:100%">
-          <thead><tr><th style="text-align:left">Артикул</th><th style="text-align:right">Кол-во</th></tr></thead>
-          <tbody>${body}</tbody>
-        </table>
-      </div>
+      <div class="ow-sum-body">${body}</div>
     </div>`;
   };
   box.style.display = 'block';
   box.innerHTML = `
     <div style="font-size:12px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:8px">Сводка по артикулам (весь период)</div>
-    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:stretch">
+    <div class="ow-sum-grid">
       ${renderCol('Поступления', 'Excel / ручной список', {items: recvItems, total_qty: recvTotal, articles: recvItems.length, files: receipts.length}, '#027A48', '+')}
       ${renderCol('На склады WB', 'shk-excel / лист подбора', fbw, '#B54708', '−')}
       ${renderCol('Отгрузки FBS', 'со склада продавца', fbs, '#026AA2', '−')}
@@ -2038,23 +2064,26 @@ function drawOwnWarehouse() {
       overlayBits.push(`<div style="font-size:10px;color:#B54708">${line}</div>`);
     }
     return `<tr>
-      <td><div class="art">${vc ? escapeHtml(vc) : '<span style="color:var(--wb-faint)">—</span>'}</div></td>
+      <td><span class="ow-art" title="${vc ? escapeHtml(vc) : ''}">${vc ? escapeHtml(vc) : '<span style="color:var(--wb-faint)">—</span>'}</span></td>
       <td style="text-align:left">${modelBtn}</td>
-      <td${stockCls}><b>${fmt(stock)}</b>${famStock!==stock?`<div style="font-size:10px;color:var(--wb-muted)">семья ${fmt(famStock)}</div>`:''}${overlayBits.join('')}</td>
-      <td style="text-align:right;color:${received?'#027A48':'var(--wb-faint)'}">${received?('+'+fmt(received)):'—'}</td>
-      <td style="text-align:right;color:${shipped?'#B54708':'var(--wb-faint)'}">${shipped?('−'+fmt(shipped)):'—'}</td>
-      <td style="text-align:left;color:var(--wb-muted);font-size:12px">${r.note ? escapeHtml(r.note) : ''}</td>
+      <td class="num"${stockCls}><b>${fmt(stock)}</b>${famStock!==stock?`<div style="font-size:10px;color:var(--wb-muted)">семья ${fmt(famStock)}</div>`:''}${overlayBits.join('')}</td>
+      <td class="num" style="color:${received?'#027A48':'var(--wb-faint)'}">${received?('+'+fmt(received)):'—'}</td>
+      <td class="num" style="color:${shipped?'#B54708':'var(--wb-faint)'}">${shipped?('−'+fmt(shipped)):'—'}</td>
+      <td class="note" title="${r.note ? escapeHtml(r.note) : ''}">${r.note ? escapeHtml(r.note) : ''}</td>
     </tr>`;
   }).join('');
 
-  root.innerHTML = `<div style="overflow-x:auto"><table class="comp-tbl">
+  root.innerHTML = `<div class="ow-stock-wrap"><table class="ow-stock-tbl">
+    <colgroup>
+      <col class="c-art"><col class="c-model"><col class="c-stock"><col class="c-in"><col class="c-out"><col class="c-note">
+    </colgroup>
     <thead><tr>
-      <th class="metric-col">Артикул продавца</th>
-      <th>Модель (общий склад)</th>
-      <th>Остаток</th>
-      <th>Приход</th>
-      <th>Отгрузка</th>
-      <th>Примечание</th>
+      <th>Артикул</th>
+      <th>Модель</th>
+      <th class="num">Остаток</th>
+      <th class="num">Приход</th>
+      <th class="num">Отгрузка</th>
+      <th>Прим.</th>
     </tr></thead>
     <tbody>${body}</tbody>
   </table></div>`;
