@@ -217,7 +217,9 @@ async function refreshStatus() {
     } else if (!d.db_ok) {
       banner.style.display = 'block';
       banner.className = 'banner warn';
-      banner.innerHTML = '<b>Supabase недоступен или нет таблицы products.</b> Выполни <code>ozon-dashboard/supabase/schema.sql</code> в SQL Editor.';
+      const extra = d.db_error ? `<br><code>${esc(d.db_error)}</code>` : '';
+      const urlHint = d.supabase_url ? `<br>URL в Railway: <code>${esc(d.supabase_url)}</code>` : '';
+      banner.innerHTML = '<b>Supabase недоступен или нет таблицы products.</b> Проверь Project URL / service_role в Railway и Table Editor (таблица <code>products</code>).' + urlHint + extra;
     } else if ((d.products_count || 0) === 0) {
       banner.style.display = 'block';
       banner.className = 'banner';

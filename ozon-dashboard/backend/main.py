@@ -308,6 +308,7 @@ def status():
     last_sync = None
     products_count = 0
     db_ok = False
+    db_error = None
     if SUPABASE_URL and SUPABASE_KEY:
         try:
             last_sync = get_setting("last_products_sync")
@@ -327,14 +328,21 @@ def status():
                 cr = resp.headers.get("content-range", "")
                 if "/" in cr:
                     products_count = int(cr.split("/")[-1] or products_count)
+            else:
+                db_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
         except Exception as e:
+            db_error = str(e)
             logger.warning("status db check: %s", e)
+    elif not SUPABASE_URL or not SUPABASE_KEY:
+        db_error = "Нет SUPABASE_URL или SUPABASE_KEY в Railway Variables"
 
     return {
         "status": "ok",
         "marketplace": "ozon",
         "configured": configured,
         "db_ok": db_ok,
+        "db_error": db_error,
+        "supabase_url": SUPABASE_URL or None,
         "has_ozon_creds": bool(OZON_CLIENT_ID and OZON_API_KEY),
         "last_products_sync": last_sync,
         "products_count": products_count,
@@ -376,12 +384,18 @@ def list_products(
         else:
             params["or"] = f"(offer_id.ilike.*{qq}*,name.ilike.*{qq}*)"
 
-    resp = httpx.get(
-        f"{SUPABASE_URL}/rest/v1/products",
-        headers={**sb_headers(None), "Prefer": "count=exact"},
-        params=params,
-        timeout=30,
-    )
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/products",
+            headers={**sb_headers(None), "Prefer": "count=exact"},
+            params=params,
+            timeout=30,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Не достучались до Supabase ({SUPABASE_URL}): {e}",
+        ) from e
     if not resp.is_success:
         raise HTTPException(status_code=502, detail=f"Supabase: {resp.status_code} {resp.text[:300]}")
 
