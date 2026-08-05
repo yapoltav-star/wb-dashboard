@@ -53,20 +53,27 @@ def normalize_proxy_url(raw: str | None) -> str | None:
         return None
     if "://" in s:
         return s
-    # user:pass@host:port
-    if "@" in s and s.count(":") >= 2:
+
+    def _hostport(part: str) -> bool:
+        if ":" not in part:
+            return False
+        host, port = part.rsplit(":", 1)
+        return bool(host) and port.isdigit()
+
+    # user:pass@host:port  ИЛИ  host:port@user:pass
+    if "@" in s:
         left, right = s.split("@", 1)
-        # host:port@user:pass  (формат из FAQ proxy.market)
-        if left.count(":") == 1 and right.count(":") == 1:
-            hostport, userpass = left, right
-            return f"http://{userpass}@{hostport}"
-        # user:pass@host:port
+        if _hostport(left) and not _hostport(right):
+            return f"http://{right}@{left}"
+        if _hostport(right):
+            return f"http://{left}@{right}"
         return f"http://{s}"
+
     parts = s.split(":")
-    if len(parts) == 4:
+    if len(parts) == 4 and parts[1].isdigit():
         host, port, user, password = parts
         return f"http://{user}:{password}@{host}:{port}"
-    if len(parts) == 2:
+    if len(parts) == 2 and parts[1].isdigit():
         return f"http://{s}"
     logger.warning("OZON_CLIENT_PROXY: нераспознанный формат")
     return s

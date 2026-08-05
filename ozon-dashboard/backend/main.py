@@ -854,6 +854,7 @@ def status():
         "supabase_url": SUPABASE_URL or None,
         "has_ozon_creds": bool(OZON_CLIENT_ID and OZON_API_KEY),
         "has_perf_creds": ads.perf_configured(),
+        "has_client_proxy": cprices.proxy_configured(),
         "last_products_sync": last_sync,
         "last_stocks_sync": last_stocks,
         "products_count": products_count,

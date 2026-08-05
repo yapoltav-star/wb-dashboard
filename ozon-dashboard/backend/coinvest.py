@@ -417,7 +417,8 @@ def sync_coinvest(
         elif n_site == 0:
             note = (
                 "Цена на сайте не получена: витрина ozon.ru недоступна с этого сервера. "
-                "Соинвест считаем по action_price акций. При необходимости задай OZON_CLIENT_PROXY."
+                "Соинвест считаем по action_price акций. "
+                "Возьми RU-прокси (proxy.market → резидентские/для Ozon) и задай OZON_CLIENT_PROXY в Railway."
             )
 
         COINVEST_CACHE.update({
