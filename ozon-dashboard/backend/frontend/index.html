@@ -79,22 +79,35 @@ tr:hover td{background:#F8FAFF}
 .empty{padding:48px 24px;text-align:center;color:var(--oz-muted);font-size:14px}
 .empty b{display:block;color:var(--oz-text);margin-bottom:6px;font-size:15px}
 
-.matrix-wrap{overflow:auto;background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r)}
-.matrix{border-collapse:collapse;font-size:12px;min-width:100%}
-.matrix th,.matrix td{border-bottom:1px solid var(--oz-border);border-right:1px solid var(--oz-border);padding:6px 8px;white-space:nowrap}
+.matrix-wrap{overflow:auto;background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);max-height:calc(100vh - 280px)}
+.matrix{border-collapse:collapse;font-size:12px;min-width:100%;table-layout:fixed}
+.matrix th,.matrix td{border-bottom:1px solid var(--oz-border);border-right:1px solid var(--oz-border);padding:6px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative}
 .matrix th{background:#FAFBFC;position:sticky;top:0;z-index:2;font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--oz-muted)}
-.matrix th.sticky,.matrix td.sticky{position:sticky;left:0;background:var(--oz-surface);z-index:1;min-width:200px}
+.matrix thead tr:nth-child(2) th{top:28px}
+.matrix th.sticky,.matrix td.sticky{position:sticky;left:0;background:var(--oz-surface);z-index:1}
 .matrix th.sticky{z-index:3;background:#FAFBFC}
-.matrix .wh-head{text-align:center;background:#F0F4FF}
+.matrix .wh-head{text-align:center;background:#F0F4FF;cursor:grab;user-select:none}
+.matrix .wh-head:active{cursor:grabbing}
 .matrix .wh-sub{font-size:10px;font-weight:500;text-align:center;background:#F7F9FC}
 .matrix .num{text-align:right;font-variant-numeric:tabular-nums}
 .matrix .m-urgent{color:var(--red);font-weight:600}
 .matrix .m-ok{color:var(--green)}
 .matrix .muted{color:var(--oz-faint)}
 .matrix .tot-col{background:#F8FAFF}
-.wh-toggle{display:inline-flex;align-items:center;gap:4px;cursor:pointer;user-select:none}
-.wh-toggle input{accent-color:var(--oz-blue)}
-.wh-off td.cell-off,.wh-off th.cell-off{opacity:.35}
+.matrix tr.pinned td{background:#FFFBEB}
+.matrix tr.pinned td.sticky{background:#FFFBEB}
+.matrix tr.dragging{opacity:.45}
+.matrix tr.wh-drag-over th{outline:2px solid var(--oz-blue)}
+.wh-toggle{display:inline-flex;align-items:center;gap:4px;cursor:pointer;user-select:none;max-width:100%}
+.wh-toggle input{accent-color:var(--oz-blue);flex-shrink:0}
+.wh-grip{opacity:.45;margin-right:2px}
+.pin-btn{border:none;background:transparent;cursor:pointer;font-size:14px;padding:0 4px 0 0;opacity:.35;line-height:1;vertical-align:middle}
+.pin-btn.on{opacity:1}
+.pin-btn:hover{opacity:.8}
+.col-resizer{position:absolute;top:0;right:0;width:5px;height:100%;cursor:col-resize;user-select:none;z-index:5}
+.col-resizer:hover,.col-resizer.active{background:rgba(0,91,255,.35)}
+.hint{margin-top:10px;font-size:12px;color:var(--oz-muted);line-height:1.45}
+.cell-off{opacity:.35}
 </style>
 </head>
 <body>
@@ -212,6 +225,11 @@ let TARGET_DAYS = 30;
 let STOCK_TOTALS = [];
 let STOCK_WH = [];
 let WH_DISABLED = JSON.parse(localStorage.getItem('oz_wh_disabled') || '[]');
+let WH_ORDER = JSON.parse(localStorage.getItem('oz_wh_order') || 'null') || [];
+let STOCK_PINNED = JSON.parse(localStorage.getItem('oz_stock_pinned') || 'null') || [];
+let COL_WIDTHS = JSON.parse(localStorage.getItem('oz_col_widths') || 'null') || { product: 260, metric: 72 };
+let dragWh = null;
+let dragPinArt = null;
 
 function showSection(sec, el) {
   if (el && el.classList.contains('soon')) return;
@@ -372,6 +390,107 @@ function toggleWh(w) {
   renderStocks();
 }
 
+function reconcileWhOrder(all, defaultSorted) {
+  const known = WH_ORDER.filter(w => all.includes(w));
+  const fresh = defaultSorted.filter(w => !known.includes(w));
+  WH_ORDER = [...known, ...fresh];
+  localStorage.setItem('oz_wh_order', JSON.stringify(WH_ORDER));
+  return WH_ORDER.filter(w => all.includes(w));
+}
+
+function toggleStockPin(offer, e) {
+  if (e) e.stopPropagation();
+  const i = STOCK_PINNED.indexOf(offer);
+  if (i > -1) STOCK_PINNED.splice(i, 1);
+  else STOCK_PINNED.push(offer);
+  localStorage.setItem('oz_stock_pinned', JSON.stringify(STOCK_PINNED));
+  renderStocks();
+}
+
+function whDS(e, name) {
+  dragWh = name;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', name);
+}
+function whDrop(e, target) {
+  e.preventDefault();
+  if (!dragWh || dragWh === target) { dragWh = null; return; }
+  let order = WH_ORDER.filter(w => w !== dragWh);
+  const idx = order.indexOf(target);
+  order.splice(idx === -1 ? order.length : idx, 0, dragWh);
+  WH_ORDER = order;
+  localStorage.setItem('oz_wh_order', JSON.stringify(WH_ORDER));
+  dragWh = null;
+  renderStocks();
+}
+
+function pinDS(e, offer) {
+  if (!STOCK_PINNED.includes(offer)) { e.preventDefault(); return; }
+  dragPinArt = offer;
+  e.currentTarget.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+}
+function pinDE(e) { e.currentTarget.classList.remove('dragging'); }
+function pinDrop(e, target) {
+  e.preventDefault();
+  if (!dragPinArt || dragPinArt === target) { dragPinArt = null; return; }
+  if (!STOCK_PINNED.includes(dragPinArt) || !STOCK_PINNED.includes(target)) { dragPinArt = null; return; }
+  let order = STOCK_PINNED.filter(a => a !== dragPinArt);
+  const idx = order.indexOf(target);
+  order.splice(idx === -1 ? order.length : idx, 0, dragPinArt);
+  STOCK_PINNED = order;
+  localStorage.setItem('oz_stock_pinned', JSON.stringify(STOCK_PINNED));
+  dragPinArt = null;
+  renderStocks();
+}
+
+function saveColWidths() {
+  localStorage.setItem('oz_col_widths', JSON.stringify(COL_WIDTHS));
+}
+
+function attachColResizers(table) {
+  const cols = table.querySelectorAll('colgroup col');
+  table.querySelectorAll('th[data-col]').forEach(th => {
+    if (th.querySelector('.col-resizer')) return;
+    const handle = document.createElement('div');
+    handle.className = 'col-resizer';
+    handle.title = 'Тяни, чтобы изменить ширину';
+    handle.addEventListener('mousedown', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      handle.classList.add('active');
+      const idx = parseInt(th.getAttribute('data-col'), 10);
+      const col = cols[idx];
+      if (!col) return;
+      const startX = ev.clientX;
+      const startW = col.getBoundingClientRect().width;
+      const key = th.getAttribute('data-wkey') || 'metric';
+      const onMove = (e2) => {
+        const w = Math.max(44, Math.round(startW + (e2.clientX - startX)));
+        col.style.width = w + 'px';
+        if (key === 'product') {
+          COL_WIDTHS.product = w;
+        } else if (key === 'metric') {
+          // одинаковая ширина для всех metric-колонок
+          COL_WIDTHS.metric = w;
+          cols.forEach((c, i) => {
+            if (i > 0) c.style.width = w + 'px';
+          });
+        }
+      };
+      const onUp = () => {
+        handle.classList.remove('active');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        saveColWidths();
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+    th.appendChild(handle);
+  });
+}
+
 async function setSalesWindow(v) {
   const days = Math.max(1, parseInt(v, 10) || 14);
   await fetch('/api/save-setting', {
@@ -450,12 +569,13 @@ async function syncStocks() {
 
 function buildStockMatrix() {
   const q = (document.getElementById('stSearch').value || '').toLowerCase();
-  const whNames = [...new Set(STOCK_WH.map(w => w.warehouse_name).filter(Boolean))];
-  // сортировка складов: больше суммарного стока выше
+  const allWh = [...new Set(STOCK_WH.map(w => w.warehouse_name).filter(Boolean))];
   const whStock = {};
   STOCK_WH.forEach(w => { whStock[w.warehouse_name] = (whStock[w.warehouse_name] || 0) + (w.free_to_sell || w.present || 0); });
-  whNames.sort((a, b) => (whStock[b] || 0) - (whStock[a] || 0));
+  const defaultSorted = [...allWh].sort((a, b) => (whStock[b] || 0) - (whStock[a] || 0));
+  const whNames = reconcileWhOrder(allWh, defaultSorted);
   WH_DISABLED = WH_DISABLED.filter(w => whNames.includes(w));
+  STOCK_PINNED = STOCK_PINNED.filter(o => STOCK_TOTALS.some(t => t.offer_id === o));
 
   const byOfferWh = {};
   STOCK_WH.forEach(w => {
@@ -480,7 +600,6 @@ function buildStockMatrix() {
       cells[w] = { stock, orders, daily, daysLeft, recommend, enabled, channel: r.channel, reserved: r.reserved || 0 };
       if (enabled) { rawRec += recommend; ozStock += stock; }
     });
-    // Итог «весь Ozon» из totals (FBO+FBS present)
     const totalStock = t.stock_total != null ? t.stock_total : ((t.fbo_present || 0) + (t.fbs_present || 0));
     const dailyAll = period ? ozOrders / period : 0;
     const daysAll = dailyAll > 0 ? totalStock / dailyAll : null;
@@ -499,6 +618,7 @@ function buildStockMatrix() {
       recAll,
       totalRecommend: rawRec,
       ozStockEnabled: ozStock,
+      isPinned: STOCK_PINNED.includes(t.offer_id),
       cells,
     };
   });
@@ -511,7 +631,9 @@ function buildStockMatrix() {
     );
   }
   articles.sort((a, b) => b.recAll - a.recAll || b.totalRecommend - a.totalRecommend);
-  return { warehouses: whNames, articles };
+  const pinned = STOCK_PINNED.map(o => articles.find(a => a.offer_id === o)).filter(Boolean);
+  const unpinned = articles.filter(a => !a.isPinned);
+  return { warehouses: whNames, articles: [...pinned, ...unpinned] };
 }
 
 function renderStocks() {
@@ -544,17 +666,40 @@ function renderStocks() {
     return;
   }
 
-  let head1 = `<th class="sticky">Товар</th>
-    <th>Весь Ozon</th><th></th><th></th><th></th>`;
+  const pw = COL_WIDTHS.product || 260;
+  const mw = COL_WIDTHS.metric || 72;
+  const colCount = 1 + 4 + warehouses.length * 4;
+  let colgroup = `<colgroup><col style="width:${pw}px">`;
+  for (let i = 1; i < colCount; i++) colgroup += `<col style="width:${mw}px">`;
+  colgroup += '</colgroup>';
+
+  let head1 = `<th class="sticky" data-col="0" data-wkey="product">Товар</th>
+    <th class="wh-head" colspan="4">Весь Ozon</th>`;
   warehouses.forEach(w => {
     const on = isWhEnabled(w);
-    head1 += `<th class="wh-head cell-off" colspan="4"><label class="wh-toggle"><input type="checkbox" ${on?'checked':''} onchange='toggleWh(${JSON.stringify(w)})'> ${esc(w)}</label></th>`;
+    head1 += `<th class="wh-head${!on?' cell-off':''}" colspan="4" draggable="true"
+      ondragstart='whDS(event,${JSON.stringify(w)})'
+      ondragover="event.preventDefault()"
+      ondrop='whDrop(event,${JSON.stringify(w)})'
+      title="Перетащи, чтобы поменять порядок складов">
+      <label class="wh-toggle" onclick="event.stopPropagation()">
+        <input type="checkbox" ${on?'checked':''} onchange='toggleWh(${JSON.stringify(w)})'>
+        <span class="wh-grip">⠿</span> ${esc(w)}
+      </label>
+    </th>`;
   });
 
-  let head2 = `<th class="sticky"></th>
-    <th class="wh-sub tot-col">Остаток</th><th class="wh-sub tot-col">Заказы</th><th class="wh-sub tot-col">Дн.</th><th class="wh-sub tot-col">Поставить</th>`;
-  warehouses.forEach(() => {
-    head2 += `<th class="wh-sub">Ост.</th><th class="wh-sub">Зак.</th><th class="wh-sub">Дн.</th><th class="wh-sub">Пост.</th>`;
+  const subLabels = ['Остаток','Заказы','Дн.','Поставить'];
+  let head2 = `<th class="sticky" data-col="0" data-wkey="product"></th>`;
+  for (let i = 0; i < 4; i++) {
+    head2 += `<th class="wh-sub tot-col" data-col="${1+i}" data-wkey="metric">${subLabels[i]}</th>`;
+  }
+  warehouses.forEach((w, wi) => {
+    const off = isWhEnabled(w) ? '' : ' cell-off';
+    ['Ост.','Зак.','Дн.','Пост.'].forEach((lab, j) => {
+      const idx = 1 + 4 + wi * 4 + j;
+      head2 += `<th class="wh-sub${off}" data-col="${idx}" data-wkey="metric">${lab}</th>`;
+    });
   });
 
   const rows = articles.map(a => {
@@ -563,8 +708,15 @@ function renderStocks() {
       : `<div class="prod-ph">n/a</div>`;
     const dlCls = a.daysAll == null ? 'muted' : (a.daysAll < TARGET_DAYS ? 'm-urgent' : 'm-ok');
     const dl = a.daysAll == null ? '—' : Math.round(a.daysAll);
-    let html = `<tr>
-      <td class="sticky"><div class="prod">${img}<div>
+    const pinCls = a.isPinned ? 'on' : '';
+    const dragAttrs = a.isPinned
+      ? `draggable="true" ondragstart='pinDS(event,${JSON.stringify(a.offer_id)})' ondragend="pinDE(event)" ondragover="event.preventDefault()" ondrop='pinDrop(event,${JSON.stringify(a.offer_id)})'`
+      : `ondragover="event.preventDefault()" ondrop='pinDrop(event,${JSON.stringify(a.offer_id)})'`;
+    let html = `<tr class="${a.isPinned?'pinned':''}" ${dragAttrs}>
+      <td class="sticky"><div class="prod">
+        <button class="pin-btn ${pinCls}" title="${a.isPinned?'Открепить':'Закрепить'}"
+          onclick='toggleStockPin(${JSON.stringify(a.offer_id)}, event)'>📌</button>
+        ${img}<div>
         <div class="prod-name">${esc(a.offer_id)}</div>
         <div class="prod-meta">${esc((a.name||'').slice(0,60))} · sku ${esc(a.sku ?? '—')} · FBO ${fmt(a.fbo)} / FBS ${fmt(a.fbs)}</div>
       </div></div></td>
@@ -592,16 +744,19 @@ function renderStocks() {
 
   document.getElementById('stocksRoot').innerHTML = `
     <div class="matrix-wrap">
-      <table class="matrix">
+      <table class="matrix" id="stocksMatrix">
+        ${colgroup}
         <thead><tr>${head1}</tr><tr>${head2}</tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <div style="margin-top:10px;font-size:12px;color:var(--oz-muted)">
-      Логика как на WB: <b>дневной темп = заказы / окно</b>, <b>дней хватит = остаток / темп</b>,
-      <b>поставить = темп × целевой запас − остаток</b>. Заказы по складам — пропорционально остатку.
-      Колонка «Весь Ozon» = FBO + FBS.
+    <div class="hint">
+      <b>📌</b> закрепить товар сверху · перетащи закреплённые строки, чтобы поменять порядок ·
+      <b>⠿</b> перетащи заголовок склада · тяни край колонки для ширины ·
+      галочка склада — включить/выключить из расчёта.
+      Формулы: темп = заказы/окно · дней = остаток/темп · поставить = темп×цель − остаток.
     </div>`;
+  attachColResizers(document.getElementById('stocksMatrix'));
 }
 
 refreshStatus();
