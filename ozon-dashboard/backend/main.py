@@ -1324,33 +1324,23 @@ def save_review_groups(body: dict = Body(...)):
 
 @app.get("/api/competitors")
 def get_competitors():
-    cached = comp.get_cached()
-    if not cached.get("rows") and not cached.get("uploaded_at"):
-        try:
-            cached = comp.load_report(get_setting)
-            # помечаем свои, если каталог уже есть
-            try:
-                products = load_products_from_db()
-                payload = {
-                    "period": cached.get("period"),
-                    "category": cached.get("category"),
-                    "uploaded_at": cached.get("uploaded_at"),
-                    "filename": cached.get("filename"),
-                    "rows": cached.get("rows") or [],
-                }
-                comp.mark_own_rows(payload, products)
-                comp.COMP_CACHE["rows"] = payload["rows"]
-                cached = comp.get_cached()
-            except Exception:
-                pass
-        except Exception as e:
-            logger.warning("competitors load: %s", e)
-    return cached
+    """Все отчёты конкурентов из общей базы (Supabase settings)."""
+    products = []
+    try:
+        products = load_products_from_db()
+    except Exception:
+        pass
+    try:
+        data = comp.load_all(get_setting, products=products)
+    except Exception as e:
+        logger.warning("competitors load: %s", e)
+        data = {"position": None, "brands": None, "brand_details": [], "brand_detail_map": {}}
+    return data
 
 
 @app.post("/api/upload-competitors")
 async def upload_competitors(file: UploadFile = File(...)):
-    """Загрузка Excel «Конкурентная позиция» из кабинета Ozon."""
+    """Автодетект: конкурентная позиция / бренды / детальный отчёт бренда → Supabase."""
     name = file.filename or "competitors.xlsx"
     if not name.lower().endswith((".xlsx", ".xls")):
         raise HTTPException(status_code=400, detail="нужен файл .xlsx")
@@ -1358,19 +1348,31 @@ async def upload_competitors(file: UploadFile = File(...)):
     if not content:
         raise HTTPException(status_code=400, detail="пустой файл")
     try:
-        payload = comp.parse_competitor_xlsx(content, filename=name)
+        payload = comp.detect_and_parse(content, filename=name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("competitors parse")
         raise HTTPException(status_code=400, detail=f"не удалось прочитать файл: {e}") from e
+    products = []
     try:
         products = load_products_from_db()
-        comp.mark_own_rows(payload, products)
     except Exception as e:
-        logger.warning("competitors mark own: %s", e)
-    saved = comp.save_report(save_setting, payload)
-    return {"ok": True, **saved}
+        logger.warning("competitors products: %s", e)
+    data = comp.save_parsed(save_setting, get_setting, payload, products=products)
+    return {"ok": True, "uploaded_type": payload.get("type"), "brand": payload.get("brand"), **data}
+
+
+@app.post("/api/delete-competitors")
+def delete_competitors(body: dict = Body(...)):
+    """Удалить отчёт. kind=position|brands|brand_detail, для brand_detail нужен brand."""
+    kind = str(body.get("kind") or "").strip()
+    brand = body.get("brand")
+    try:
+        data = comp.delete_report(save_setting, get_setting, kind=kind, brand=brand)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, **data}
 
 
 def _run_ads_sync(days: int = 7):

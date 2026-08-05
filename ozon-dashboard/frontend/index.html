@@ -315,6 +315,11 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
   <div class="sn-item" data-rev="ratings" onclick="showRevPage('ratings',this)">Оценки</div>
   <div class="sn-item" data-rev="groups" onclick="showRevPage('groups',this)">Склейки</div>
 </div>
+<div class="subnav" id="subnav-competitors">
+  <div class="sn-item on" data-comp="position" onclick="showCompPage('position',this)">Товары категории</div>
+  <div class="sn-item" data-comp="brands" onclick="showCompPage('brands',this)">Бренды</div>
+  <div class="sn-item" data-comp="brand" onclick="showCompPage('brand',this)">Отчёт бренда</div>
+</div>
 
 <!-- GROWTH / SALES PACE -->
 <div class="page" id="page-growth">
@@ -519,13 +524,13 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
   </div>
 </div>
 
-<!-- COMPETITORS -->
+<!-- COMPETITORS: товары категории -->
 <div class="page" id="page-competitors">
   <div class="banner" id="compBanner" style="display:none"></div>
   <div class="cards" id="compCards"></div>
   <div class="toolbar">
     <div class="search">
-      <input id="compSearch" placeholder="Название / SKU / артикул…" oninput="drawCompetitors()">
+      <input id="compSearch" placeholder="Название / SKU / артикул…" oninput="drawCompPosition()">
     </div>
     <button class="filter-btn on" id="compFltAll" onclick="setCompFilter('all')">Все</button>
     <button class="filter-btn" id="compFltOwn" onclick="setCompFilter('own')">Мои</button>
@@ -535,12 +540,49 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
     <button class="filter-btn" id="compSortQty" onclick="setCompSort('ordered_qty')">Шт</button>
     <button class="filter-btn" id="compSortRank" onclick="setCompSort('rank')">Место</button>
     <span id="compInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
-    <div class="ml-auto" style="display:flex;gap:8px;align-items:center">
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="action-btn" id="compDelPosBtn" onclick="deleteCompReport('position')" style="display:none">🗑 Удалить</button>
       <button class="action-btn primary" onclick="document.getElementById('compFileInput').click()">📊 Загрузить Excel</button>
       <input type="file" id="compFileInput" accept=".xlsx,.xls" style="display:none" onchange="uploadCompetitors(this.files[0])">
     </div>
   </div>
-  <div id="compRoot"><div class="empty"><b>Конкуренты</b>Загрузи Excel из Ozon: <b>Аналитика → Конкурентная позиция → Скачать</b>.</div></div>
+  <div id="compRoot"><div class="empty"><b>Товары категории</b>Excel «Конкурентная позиция». Сохраняется в общую базу.</div></div>
+</div>
+
+<!-- COMPETITORS: бренды -->
+<div class="page" id="page-comp-brands">
+  <div class="banner" id="brandsBanner" style="display:none"></div>
+  <div class="cards" id="brandsCards"></div>
+  <div class="toolbar">
+    <div class="search">
+      <input id="brandsSearch" placeholder="Бренд…" oninput="drawCompBrands()">
+    </div>
+    <button class="filter-btn" id="brandsFltDetail" onclick="toggleBrandsOnlyDetail()">Только с отчётом</button>
+    <span id="brandsInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="action-btn" id="brandsDelBtn" onclick="deleteCompReport('brands')" style="display:none">🗑 Удалить сводку</button>
+      <button class="action-btn primary" onclick="document.getElementById('compFileInput').click()">📊 Загрузить Excel брендов</button>
+    </div>
+  </div>
+  <div id="brandsRoot"><div class="empty"><b>Бренды</b>Excel аналитики с листом «Бренды». Кликни бренд — откроется его детальный отчёт, если загружен.</div></div>
+</div>
+
+<!-- COMPETITORS: детальный отчёт бренда -->
+<div class="page" id="page-comp-brand">
+  <div class="banner" id="brandBanner" style="display:none"></div>
+  <div class="cards" id="brandCards"></div>
+  <div class="toolbar">
+    <select class="neg-sel" id="brandSelect" onchange="selectBrandDetail(this.value)" style="max-width:220px"></select>
+    <div class="search">
+      <input id="brandSearch" placeholder="Товар / SKU…" oninput="drawBrandDetail()">
+    </div>
+    <span id="brandInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="action-btn" id="brandDelBtn" onclick="deleteCurrentBrandDetail()" style="display:none">🗑 Удалить отчёт</button>
+      <button class="action-btn primary" onclick="document.getElementById('compFileInput').click()">📊 Загрузить отчёт бренда</button>
+    </div>
+  </div>
+  <div id="brandRoot"><div class="empty"><b>Отчёт бренда</b>Загрузи Excel по бренду (как AmibiX) — воронка, остатки, реклама. Лежит в общей базе.</div></div>
 </div>
 
 <!-- ADS -->
@@ -629,10 +671,17 @@ function showSection(sec, el) {
   if (subG) subG.classList.toggle('on', sec === 'growth');
   const subR = document.getElementById('subnav-reviews');
   if (subR) subR.classList.toggle('on', sec === 'reviews');
+  const subC = document.getElementById('subnav-competitors');
+  if (subC) subC.classList.toggle('on', sec === 'competitors');
   const btn = document.getElementById('btnTopSync');
   if (sec === 'reviews') {
     btn.textContent = 'Обновить отзывы';
     showRevPage(REV_PAGE || 'reviews');
+    return;
+  }
+  if (sec === 'competitors') {
+    btn.textContent = 'Загрузить Excel';
+    showCompPage(COMP_PAGE || 'position');
     return;
   }
   const page = document.getElementById('page-' + sec);
@@ -650,9 +699,6 @@ function showSection(sec, el) {
   } else if (sec === 'orders') {
     btn.textContent = 'Обновить заказы';
     renderOrders(true);
-  } else if (sec === 'competitors') {
-    btn.textContent = 'Загрузить Excel';
-    renderCompetitors(true);
   } else if (sec === 'ads') {
     btn.textContent = 'Обновить рекламу';
     renderAds(true);
@@ -2521,10 +2567,107 @@ async function saveGroups() {
   } catch (e) { alert('Ошибка: ' + e.message); }
 }
 
-/* ── Конкуренты ── */
-let COMP_DATA = { rows: [], count: 0 };
+/* ── Конкуренты (общая база Supabase) ── */
+let COMP_ALL = { position: null, brands: null, brand_details: [], brand_detail_map: {} };
+let COMP_PAGE = 'position'; // position | brands | brand
 let COMP_FILTER = 'all';
 let COMP_SORT = 'ordered_sum';
+let COMP_BRAND = '';
+let BRANDS_ONLY_DETAIL = false;
+
+function pct1(n) {
+  if (n == null || n === '') return '—';
+  const v = Number(n);
+  if (Math.abs(v) <= 1 && Math.abs(v) > 0) return (v * 100).toFixed(1) + '%';
+  return v.toFixed(1) + '%';
+}
+function showCompPage(id, el) {
+  COMP_PAGE = id || 'position';
+  document.querySelectorAll('#subnav-competitors .sn-item').forEach(n => {
+    n.classList.toggle('on', n.getAttribute('data-comp') === COMP_PAGE);
+  });
+  if (el) {
+    document.querySelectorAll('#subnav-competitors .sn-item').forEach(n => n.classList.remove('on'));
+    el.classList.add('on');
+  }
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
+  const map = { position: 'page-competitors', brands: 'page-comp-brands', brand: 'page-comp-brand' };
+  const page = document.getElementById(map[COMP_PAGE] || 'page-competitors');
+  if (page) page.classList.add('on');
+  renderCompetitors(true);
+}
+async function renderCompetitors(force) {
+  if (force || !COMP_ALL._loaded) await loadCompetitors();
+  drawCompPosition();
+  drawCompBrands();
+  fillBrandSelect();
+  drawBrandDetail();
+}
+async function loadCompetitors() {
+  try {
+    const r = await fetch('/api/competitors');
+    COMP_ALL = await r.json();
+    COMP_ALL._loaded = true;
+    if (!COMP_BRAND) {
+      const keys = Object.keys(COMP_ALL.brand_detail_map || {});
+      if (keys.length) COMP_BRAND = keys[0];
+    }
+  } catch (e) {
+    COMP_ALL = { position: null, brands: null, brand_details: [], brand_detail_map: {}, _loaded: true, error: String(e) };
+  }
+}
+async function uploadCompetitors(file) {
+  if (!file) return;
+  const roots = ['compRoot', 'brandsRoot', 'brandRoot'].map(id => document.getElementById(id)).filter(Boolean);
+  roots.forEach(r => { r.innerHTML = '<div class="loading"><div class="spinner"></div>Парсим и сохраняем в базу…</div>'; });
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch('/api/upload-competitors', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : (d.error || ('HTTP ' + r.status)));
+    COMP_ALL = d;
+    COMP_ALL._loaded = true;
+    if (d.uploaded_type === 'brands') showCompPage('brands');
+    else if (d.uploaded_type === 'brand_detail') {
+      COMP_BRAND = d.brand || COMP_BRAND;
+      showCompPage('brand');
+    } else showCompPage('position');
+    renderCompetitors(false);
+  } catch (e) {
+    const msg = `<div class="empty"><b>Ошибка загрузки</b>${esc(e.message || e)}</div>`;
+    roots.forEach(r => { r.innerHTML = msg; });
+  } finally {
+    const inp = document.getElementById('compFileInput');
+    if (inp) inp.value = '';
+  }
+}
+async function deleteCompReport(kind, brand) {
+  const labels = { position: 'отчёт по товарам категории', brands: 'сводку по брендам', brand_detail: `отчёт бренда «${brand || ''}»` };
+  if (!confirm('Удалить ' + (labels[kind] || kind) + ' из общей базы?')) return;
+  try {
+    const r = await fetch('/api/delete-competitors', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, brand }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error || ('HTTP ' + r.status));
+    COMP_ALL = d;
+    COMP_ALL._loaded = true;
+    if (kind === 'brand_detail') {
+      const keys = Object.keys(COMP_ALL.brand_detail_map || {});
+      COMP_BRAND = keys[0] || '';
+    }
+    renderCompetitors(false);
+  } catch (e) {
+    alert('Ошибка удаления: ' + (e.message || e));
+  }
+}
+function deleteCurrentBrandDetail() {
+  if (!COMP_BRAND) return;
+  deleteCompReport('brand_detail', COMP_BRAND);
+}
 
 function setCompFilter(f) {
   COMP_FILTER = f;
@@ -2532,7 +2675,7 @@ function setCompFilter(f) {
     const el = document.getElementById('compFlt' + id);
     if (el) el.classList.toggle('on', ['all','own','other'][i] === f);
   });
-  drawCompetitors();
+  drawCompPosition();
 }
 function setCompSort(k) {
   COMP_SORT = k;
@@ -2540,105 +2683,56 @@ function setCompSort(k) {
     const el = document.getElementById('compSort' + id);
     if (el) el.classList.toggle('on', v === k);
   });
-  drawCompetitors();
+  drawCompPosition();
 }
-function money(n) {
-  const v = Number(n) || 0;
-  if (v >= 1e6) return (v / 1e6).toFixed(1).replace('.0', '') + ' млн';
-  if (v >= 1e3) return Math.round(v / 1e3) + ' тыс';
-  return fmt(v);
-}
-async function renderCompetitors(force) {
-  if (force || !(COMP_DATA.rows || []).length) await loadCompetitors();
-  else drawCompetitors();
-}
-async function loadCompetitors() {
-  try {
-    const r = await fetch('/api/competitors');
-    COMP_DATA = await r.json();
-  } catch (e) {
-    COMP_DATA = { rows: [], error: String(e) };
-  }
-  drawCompetitors();
-}
-async function uploadCompetitors(file) {
-  if (!file) return;
-  const info = document.getElementById('compInfo');
-  const root = document.getElementById('compRoot');
-  if (info) info.textContent = 'Загружаем…';
-  if (root) root.innerHTML = '<div class="loading"><div class="spinner"></div>Парсим Excel…</div>';
-  try {
-    const fd = new FormData();
-    fd.append('file', file);
-    const r = await fetch('/api/upload-competitors', { method: 'POST', body: fd });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || d.error || ('HTTP ' + r.status));
-    COMP_DATA = d;
-    drawCompetitors();
-  } catch (e) {
-    if (info) info.textContent = 'Ошибка';
-    if (root) root.innerHTML = `<div class="empty"><b>Ошибка загрузки</b>${esc(e.message || e)}</div>`;
-  } finally {
-    const inp = document.getElementById('compFileInput');
-    if (inp) inp.value = '';
-  }
-}
-function drawCompetitors() {
+function drawCompPosition() {
   const root = document.getElementById('compRoot');
   const cards = document.getElementById('compCards');
   const info = document.getElementById('compInfo');
   const ban = document.getElementById('compBanner');
+  const delBtn = document.getElementById('compDelPosBtn');
   if (!root) return;
+  const pos = COMP_ALL.position;
+  const rowsAll = (pos && pos.rows) || [];
+  if (delBtn) delBtn.style.display = rowsAll.length ? '' : 'none';
 
-  const rowsAll = COMP_DATA.rows || [];
   if (ban) {
-    if (COMP_DATA.period || COMP_DATA.category) {
+    if (pos && (pos.period || pos.category)) {
       ban.style.display = 'block';
       ban.className = 'banner';
-      ban.innerHTML = `Отчёт <b>Конкурентная позиция</b>`
-        + (COMP_DATA.category ? ` · ${esc(COMP_DATA.category)}` : '')
-        + (COMP_DATA.period ? ` · ${esc(COMP_DATA.period)}` : '')
-        + (COMP_DATA.filename ? ` · файл ${esc(COMP_DATA.filename)}` : '')
-        + `. Мои товары подсвечены, если совпал SKU/артикул из каталога.`;
+      ban.innerHTML = `Отчёт в <b>общей базе</b>`
+        + (pos.category ? ` · ${esc(pos.category)}` : '')
+        + (pos.period ? ` · ${esc(pos.period)}` : '')
+        + (pos.filename ? ` · ${esc(pos.filename)}` : '');
     } else ban.style.display = 'none';
   }
-
   cards.innerHTML = [
-    ['Товаров', fmt(COMP_DATA.count || rowsAll.length), ''],
-    ['Заказано, ₽', money(COMP_DATA.total_sum), ''],
-    ['Заказано, шт', fmt(COMP_DATA.total_qty), ''],
-    ['Моих в отчёте', fmt(COMP_DATA.own_count || 0), COMP_DATA.own_count ? 'color:var(--oz-blue)' : ''],
+    ['Товаров', fmt(pos?.count || 0), ''],
+    ['Заказано, ₽', money(pos?.total_sum), ''],
+    ['Заказано, шт', fmt(pos?.total_qty), ''],
+    ['Моих', fmt(pos?.own_count || 0), pos?.own_count ? 'color:var(--oz-blue)' : ''],
   ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div></div>`).join('');
-
-  if (info) {
-    info.textContent = COMP_DATA.uploaded_at
-      ? ('загружено ' + fmtDt(COMP_DATA.uploaded_at))
-      : (rowsAll.length ? '' : 'нет данных');
-  }
+  if (info) info.textContent = pos?.uploaded_at ? ('в базе ' + fmtDt(pos.uploaded_at)) : 'нет в базе';
 
   if (!rowsAll.length) {
-    root.innerHTML = '<div class="empty"><b>Нет данных</b>Загрузи Excel: Аналитика → Конкурентная позиция → Скачать</div>';
+    root.innerHTML = '<div class="empty"><b>Нет данных</b>Загрузи Excel «Конкурентная позиция» — сохранится для всех устройств.</div>';
     return;
   }
-
   let rows = [...rowsAll];
   if (COMP_FILTER === 'own') rows = rows.filter(r => r.is_own);
   else if (COMP_FILTER === 'other') rows = rows.filter(r => !r.is_own);
   const q = ((document.getElementById('compSearch') || {}).value || '').toLowerCase().trim();
-  if (q) {
-    rows = rows.filter(r =>
-      String(r.name || '').toLowerCase().includes(q) ||
-      String(r.sku || '').includes(q) ||
-      String(r.offer_id || '').toLowerCase().includes(q) ||
-      String(r.competitor || '').toLowerCase().includes(q)
-    );
-  }
+  if (q) rows = rows.filter(r =>
+    String(r.name || '').toLowerCase().includes(q) ||
+    String(r.sku || '').includes(q) ||
+    String(r.offer_id || '').toLowerCase().includes(q) ||
+    String(r.competitor || '').toLowerCase().includes(q)
+  );
   rows.sort((a, b) => {
     if (COMP_SORT === 'rank') return (a.rank || 0) - (b.rank || 0);
     if (COMP_SORT === 'ordered_qty') return (b.ordered_qty || 0) - (a.ordered_qty || 0);
     return (b.ordered_sum || 0) - (a.ordered_sum || 0);
   });
-
   const maxSum = Math.max(...rows.map(r => r.ordered_sum || 0), 1);
   const body = rows.slice(0, 500).map(r => {
     const pct = Math.round((r.ordered_sum || 0) / maxSum * 100);
@@ -2651,21 +2745,175 @@ function drawCompetitors() {
       <td>${esc(r.competitor || '—')}${r.is_own ? ' <span class="tag stock">мой</span>' : ''}</td>
       <td style="max-width:360px;white-space:normal">${name}<div class="prod-meta">${esc(r.offer_id || '')}</div></td>
       <td class="mono">${esc(r.sku || '—')}</td>
-      <td class="num" title="${fmt(r.ordered_sum)} ₽">
-        <div>${fmt(Math.round(r.ordered_sum || 0))}</div>
-        <div style="height:3px;background:#E8EEF7;border-radius:2px;margin-top:4px"><div style="height:100%;width:${pct}%;background:var(--oz-blue);border-radius:2px"></div></div>
-      </td>
+      <td class="num"><div>${fmt(Math.round(r.ordered_sum || 0))}</div>
+        <div style="height:3px;background:#E8EEF7;border-radius:2px;margin-top:4px"><div style="height:100%;width:${pct}%;background:var(--oz-blue);border-radius:2px"></div></div></td>
       <td class="num">${fmt(r.ordered_qty)}</td>
     </tr>`;
   }).join('');
+  root.innerHTML = `<div class="tbl-wrap"><table>
+    <thead><tr><th>#</th><th>Конкурент</th><th>Товар</th><th>SKU</th><th>Заказано, ₽</th><th>Шт</th></tr></thead>
+    <tbody>${body}</tbody></table></div>
+    <div class="hint">До 500 строк · данные из общей базы Supabase</div>`;
+}
 
+function toggleBrandsOnlyDetail() {
+  BRANDS_ONLY_DETAIL = !BRANDS_ONLY_DETAIL;
+  document.getElementById('brandsFltDetail')?.classList.toggle('on', BRANDS_ONLY_DETAIL);
+  drawCompBrands();
+}
+function drawCompBrands() {
+  const root = document.getElementById('brandsRoot');
+  const cards = document.getElementById('brandsCards');
+  const info = document.getElementById('brandsInfo');
+  const ban = document.getElementById('brandsBanner');
+  const delBtn = document.getElementById('brandsDelBtn');
+  if (!root) return;
+  const br = COMP_ALL.brands;
+  const rowsAll = (br && br.rows) || [];
+  if (delBtn) delBtn.style.display = rowsAll.length ? '' : 'none';
+  if (ban) {
+    if (br && (br.period || br.category)) {
+      ban.style.display = 'block';
+      ban.className = 'banner';
+      ban.innerHTML = `Сводка брендов в <b>общей базе</b>`
+        + (br.category ? ` · ${esc(br.category)}` : '')
+        + (br.period ? ` · ${esc(br.period)}` : '')
+        + `. Кликни бренд с отчётом → вкладка «Отчёт бренда».`;
+    } else ban.style.display = 'none';
+  }
+  cards.innerHTML = [
+    ['Брендов', fmt(br?.count || 0), ''],
+    ['Оборот, ₽', money(br?.total_sum), ''],
+    ['С детальным отчётом', fmt(br?.with_detail || 0), 'color:var(--oz-blue)'],
+  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+  if (info) info.textContent = br?.uploaded_at ? ('в базе ' + fmtDt(br.uploaded_at)) : 'нет в базе';
+
+  if (!rowsAll.length) {
+    root.innerHTML = '<div class="empty"><b>Нет сводки</b>Загрузи Excel аналитики с листом «Бренды».</div>';
+    return;
+  }
+  let rows = [...rowsAll];
+  if (BRANDS_ONLY_DETAIL) rows = rows.filter(r => r.has_detail);
+  const q = ((document.getElementById('brandsSearch') || {}).value || '').toLowerCase().trim();
+  if (q) rows = rows.filter(r => String(r.brand || '').toLowerCase().includes(q));
+  const body = rows.map(r => {
+    const dyn = r.dynamics || 0;
+    const dynCls = dyn > 0 ? 'pace-delta-up' : (dyn < 0 ? 'pace-delta-down' : 'pace-delta-flat');
+    // Ozon: доля часто 0.12 (=12%), иногда уже в процентах > 1
+    const dynShow = Math.abs(dyn) <= 2 ? ((dyn * 100).toFixed(0) + '%') : (dyn.toFixed(0) + '%');
+    const openBtn = r.has_detail
+      ? `<button class="action-btn" style="padding:3px 8px;font-size:11px" onclick="openBrandDetail(${JSON.stringify(r.brand)})">Отчёт →</button>`
+      : `<span class="tag">нет отчёта</span>`;
+    return `<tr style="${r.has_detail ? 'background:#F8FAFF' : ''}">
+      <td class="num mono">${fmt(r.rank)}</td>
+      <td><b>${esc(r.brand)}</b></td>
+      <td class="num">${fmt(Math.round(r.ordered_sum || 0))}</td>
+      <td class="num ${dynCls}">${dynShow}</td>
+      <td class="num">${fmt(r.ordered_qty)}</td>
+      <td class="num">${fmt(Math.round(r.avg_price || 0))}</td>
+      <td class="num">${pct1(r.buyout_share)}</td>
+      <td class="num">${pct1(r.category_share)}</td>
+      <td>${openBtn}</td>
+    </tr>`;
+  }).join('');
+  root.innerHTML = `<div class="tbl-wrap"><table>
+    <thead><tr><th>#</th><th>Бренд</th><th>Сумма, ₽</th><th>Динамика</th><th>Шт</th><th>Ср. цена</th><th>Выкуп</th><th>Доля</th><th></th></tr></thead>
+    <tbody>${body}</tbody></table></div>`;
+}
+function openBrandDetail(brand) {
+  COMP_BRAND = brand;
+  showCompPage('brand');
+}
+function fillBrandSelect() {
+  const sel = document.getElementById('brandSelect');
+  if (!sel) return;
+  const map = COMP_ALL.brand_detail_map || {};
+  const keys = Object.keys(map).sort((a, b) => {
+    const sa = (map[a].rows || []).reduce((s, r) => s + (r.ordered_sum || 0), 0);
+    const sb = (map[b].rows || []).reduce((s, r) => s + (r.ordered_sum || 0), 0);
+    return sb - sa;
+  });
+  sel.innerHTML = keys.length
+    ? keys.map(k => `<option value="${esc(k)}" ${k === COMP_BRAND ? 'selected' : ''}>${esc(k)}</option>`).join('')
+    : '<option value="">нет загруженных отчётов</option>';
+  if (COMP_BRAND && !keys.includes(COMP_BRAND) && keys.length) COMP_BRAND = keys[0];
+}
+function selectBrandDetail(v) {
+  COMP_BRAND = v;
+  drawBrandDetail();
+}
+function drawBrandDetail() {
+  const root = document.getElementById('brandRoot');
+  const cards = document.getElementById('brandCards');
+  const info = document.getElementById('brandInfo');
+  const ban = document.getElementById('brandBanner');
+  const delBtn = document.getElementById('brandDelBtn');
+  if (!root) return;
+  fillBrandSelect();
+  const map = COMP_ALL.brand_detail_map || {};
+  const rep = COMP_BRAND ? map[COMP_BRAND] : null;
+  if (delBtn) delBtn.style.display = rep ? '' : 'none';
+
+  if (!rep) {
+    if (ban) ban.style.display = 'none';
+    cards.innerHTML = '';
+    if (info) info.textContent = '';
+    root.innerHTML = '<div class="empty"><b>Нет отчёта бренда</b>Загрузи Excel по бренду (с колонками показы / воронка) — сохранится в общую базу.</div>';
+    return;
+  }
+  const rowsAll = rep.rows || [];
+  const totalSum = rowsAll.reduce((s, r) => s + (r.ordered_sum || 0), 0);
+  const totalQty = rowsAll.reduce((s, r) => s + (r.ordered_qty || 0), 0);
+  const totalShows = rowsAll.reduce((s, r) => s + (r.shows || 0), 0);
+  if (ban) {
+    ban.style.display = 'block';
+    ban.className = 'banner';
+    ban.innerHTML = `<b>${esc(rep.brand)}</b> в общей базе`
+      + (rep.category ? ` · ${esc(rep.category)}` : '')
+      + (rep.period ? ` · ${esc(rep.period)}` : '')
+      + (rep.filename ? ` · ${esc(rep.filename)}` : '');
+  }
+  cards.innerHTML = [
+    ['Товаров', fmt(rep.count || rowsAll.length), ''],
+    ['Заказано, ₽', money(totalSum), ''],
+    ['Шт', fmt(totalQty), ''],
+    ['Показы', fmt(totalShows), ''],
+  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+  if (info) info.textContent = rep.uploaded_at ? ('в базе ' + fmtDt(rep.uploaded_at)) : '';
+
+  let rows = [...rowsAll];
+  const q = ((document.getElementById('brandSearch') || {}).value || '').toLowerCase().trim();
+  if (q) rows = rows.filter(r =>
+    String(r.name || '').toLowerCase().includes(q) ||
+    String(r.sku || '').includes(q)
+  );
+  const body = rows.slice(0, 400).map(r => {
+    const name = r.url
+      ? `<a class="prod-link" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name || '—')}</a>`
+      : esc(r.name || '—');
+    return `<tr>
+      <td class="num mono">${fmt(r.rank)}</td>
+      <td style="max-width:320px;white-space:normal">${name}
+        <div class="prod-meta">${esc(r.flag || '')} · ${esc(r.scheme || '')}</div></td>
+      <td class="mono">${esc(r.sku || '—')}</td>
+      <td class="num">${fmt(Math.round(r.ordered_sum || 0))}</td>
+      <td class="num">${fmt(r.ordered_qty)}</td>
+      <td class="num">${fmt(Math.round(r.avg_price || 0))}</td>
+      <td class="num">${fmt(r.stock)}</td>
+      <td class="num">${fmt(r.shows)}</td>
+      <td class="num">${fmt(r.card_views)}</td>
+      <td class="num">${r.cr_order != null ? r.cr_order : '—'}</td>
+      <td class="num">${r.ads_share != null ? r.ads_share : '—'}</td>
+      <td class="num">${r.buyout != null ? r.buyout : '—'}</td>
+    </tr>`;
+  }).join('');
   root.innerHTML = `<div class="tbl-wrap"><table>
     <thead><tr>
-      <th>#</th><th>Конкурент</th><th>Товар</th><th>SKU</th><th>Заказано, ₽</th><th>Шт</th>
+      <th>#</th><th>Товар</th><th>SKU</th><th>Сумма</th><th>Шт</th><th>Ср. цена</th>
+      <th>Остаток</th><th>Показы</th><th>Карточка</th><th>CR заказ %</th><th>Рекл. %</th><th>Выкуп %</th>
     </tr></thead>
-    <tbody>${body}</tbody>
-  </table></div>
-  <div class="hint">Показаны до 500 строк из ${fmt(rows.length)}. Источник: Excel «Конкурентная позиция» из кабинета Ozon.</div>`;
+    <tbody>${body}</tbody></table></div>
+    <div class="hint">До 400 строк · отчёт бренда из общей базы</div>`;
 }
 
 /* ── Реклама ── */
