@@ -1,6 +1,6 @@
 """Ozon Partners dashboard.
 
-Разделы: товары + остатки/поставки (FBO/FBS по складам, заказы, дни запаса).
+Разделы: товары, остатки/поставки, рост продаж, цены и соинвест.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+import coinvest as coin
 import sales_pace as pace
 
 logging.basicConfig(level=logging.INFO)
@@ -145,11 +146,11 @@ def get_setting_int(key: str, default: int) -> int:
         return default
 
 
-def ozon_post(path: str, body: dict, timeout: float = 90, retries: int = 3) -> dict:
+def ozon_post(path: str, body: dict | None = None, timeout: float = 90, retries: int = 3) -> dict:
     url = f"{OZON_API}{path}"
     last_err = None
     for attempt in range(retries):
-        resp = httpx.post(url, headers=ozon_headers(), json=body, timeout=timeout)
+        resp = httpx.post(url, headers=ozon_headers(), json=body if body is not None else {}, timeout=timeout)
         if resp.status_code == 429:
             time.sleep(1.5 * (attempt + 1))
             last_err = f"429 {resp.text[:200]}"
@@ -157,6 +158,23 @@ def ozon_post(path: str, body: dict, timeout: float = 90, retries: int = 3) -> d
         if resp.status_code >= 400:
             detail = resp.text[:500]
             logger.error("Ozon %s → %s %s", path, resp.status_code, detail)
+            raise HTTPException(status_code=502, detail=f"Ozon API {path}: {resp.status_code} {detail}")
+        return resp.json()
+    raise HTTPException(status_code=502, detail=f"Ozon API {path}: {last_err}")
+
+
+def ozon_get(path: str, params: dict | None = None, timeout: float = 60, retries: int = 3) -> dict:
+    url = f"{OZON_API}{path}"
+    last_err = None
+    for attempt in range(retries):
+        resp = httpx.get(url, headers=ozon_headers(), params=params or {}, timeout=timeout)
+        if resp.status_code == 429:
+            time.sleep(1.5 * (attempt + 1))
+            last_err = f"429 {resp.text[:200]}"
+            continue
+        if resp.status_code >= 400:
+            detail = resp.text[:500]
+            logger.error("Ozon GET %s → %s %s", path, resp.status_code, detail)
             raise HTTPException(status_code=502, detail=f"Ozon API {path}: {resp.status_code} {detail}")
         return resp.json()
     raise HTTPException(status_code=502, detail=f"Ozon API {path}: {last_err}")
@@ -1002,6 +1020,38 @@ def _run_pace_sync(period: str = "day", date_cur: str | None = None, date_prev: 
         logger.exception("pace sync thread: %s", e)
         pace.SALES_PACE_CACHE["error"] = str(e)
         pace.SALES_PACE_CACHE["syncing"] = False
+
+
+def _run_coinvest_sync():
+    try:
+        coin.sync_coinvest(
+            ozon_post=ozon_post,
+            ozon_get=ozon_get,
+            load_products=load_products_from_db,
+        )
+    except Exception as e:
+        logger.exception("coinvest sync thread: %s", e)
+        coin.COINVEST_CACHE["error"] = str(e)
+        coin.COINVEST_CACHE["syncing"] = False
+
+
+@app.get("/api/coinvest")
+def get_coinvest(refresh: str = ""):
+    cached = coin.get_cached()
+    if refresh or (not cached["articles"] and not cached["syncing"] and not cached["error"]):
+        if not coin.COINVEST_CACHE.get("syncing"):
+            threading.Thread(target=_run_coinvest_sync, daemon=True).start()
+        cached = coin.get_cached()
+        cached["syncing"] = True
+    return cached
+
+
+@app.post("/api/sync-coinvest")
+def trigger_coinvest():
+    if coin.COINVEST_CACHE.get("syncing"):
+        return {"ok": True, "syncing": True}
+    threading.Thread(target=_run_coinvest_sync, daemon=True).start()
+    return {"ok": True, "syncing": True}
 
 
 @app.get("/")

@@ -140,6 +140,18 @@ tr:hover td{background:#F8FAFF}
 .pace-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:#FEE4E2;color:#B42318}
 .matrix tr.pace-down td.sticky{background:#FFF8F7}
 .matrix tr.pace-up td.sticky{background:#F6FEF9}
+.idx{display:inline-flex;align-items:center;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+.idx-GREEN{background:#D1FADF;color:#027A48}
+.idx-YELLOW{background:#FEF0C7;color:#B54708}
+.idx-RED{background:#FEE4E2;color:#B42318}
+.idx-WITHOUT_INDEX,.idx-none{background:#F3F4F6;color:#6B7280}
+.coin-pct{font-weight:700;color:#B54708}
+.coin-pct.zero{font-weight:400;color:var(--oz-faint)}
+.actions-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;margin-bottom:16px}
+.action-card{background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);padding:12px 14px}
+.action-card .ac-title{font-size:13px;font-weight:600;margin-bottom:6px;line-height:1.3}
+.action-card .ac-meta{font-size:12px;color:var(--oz-muted);display:flex;flex-wrap:wrap;gap:8px}
+.action-card.on{border-color:#86EFAC;background:#F0FDF4}
 .subnav{background:var(--oz-surface);border-bottom:1px solid var(--oz-border);padding:0 24px;display:none;align-items:center;height:40px;gap:0}
 .subnav.on{display:flex}
 .sn-item{display:flex;align-items:center;height:100%;padding:0 14px;font-size:13px;color:var(--oz-muted);cursor:pointer;border-bottom:2px solid transparent}
@@ -159,6 +171,7 @@ tr:hover td{background:#F8FAFF}
   </div>
   <div class="tb-nav">
     <div class="tb-nav-item" data-sec="growth" onclick="showSection('growth',this)">Рост продаж</div>
+    <div class="tb-nav-item" data-sec="prices" onclick="showSection('prices',this)">Цены и соинвест</div>
     <div class="tb-nav-item on" data-sec="products" onclick="showSection('products',this)">Товары</div>
     <div class="tb-nav-item" data-sec="stocks" onclick="showSection('stocks',this)">Остатки</div>
     <div class="tb-nav-item soon" title="Скоро">Заказы</div>
@@ -203,6 +216,26 @@ tr:hover td{background:#F8FAFF}
   </div>
   <div class="cards" id="paceCards"></div>
   <div id="paceRoot"><div class="empty"><b>Рост продаж</b>Нажми «Обновить» — сравним текущий период с прошлым (то же время).</div></div>
+</div>
+
+<!-- PRICES / COINVEST -->
+<div class="page" id="page-prices">
+  <div class="banner" id="coinBanner" style="display:none"></div>
+  <div class="toolbar">
+    <div class="search">
+      <input id="coinSearch" placeholder="Артикул продавца…" oninput="drawCoinvest()">
+    </div>
+    <button class="filter-btn on" id="coinFltAll" onclick="setCoinFilter('all')">Все</button>
+    <button class="filter-btn" id="coinFltCoin" onclick="setCoinFilter('coin')">С соинвестом</button>
+    <button class="filter-btn" id="coinFltAct" onclick="setCoinFilter('action')">В акциях</button>
+    <button class="filter-btn" id="coinFltRed" onclick="setCoinFilter('red')">Индекс RED</button>
+    <button class="filter-btn" id="coinFltYellow" onclick="setCoinFilter('yellow')">Индекс YELLOW</button>
+    <span id="coinInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+    <button class="action-btn primary ml-auto" id="coinSyncBtn" onclick="triggerCoinvestSync()">↻ Обновить</button>
+  </div>
+  <div class="cards" id="coinCards"></div>
+  <div id="coinActions" class="actions-list"></div>
+  <div id="coinRoot"><div class="empty"><b>Цены и соинвест</b>Нажми «Обновить» — подтянем цены кабинета, индекс и акции Ozon.</div></div>
 </div>
 
 <!-- PRODUCTS -->
@@ -330,6 +363,9 @@ function showSection(sec, el) {
   } else if (sec === 'growth') {
     btn.textContent = 'Обновить темп';
     renderSalesPace(true);
+  } else if (sec === 'prices') {
+    btn.textContent = 'Обновить цены';
+    renderCoinvest(true);
   } else {
     btn.textContent = 'Обновить товары';
   }
@@ -338,6 +374,7 @@ function showSection(sec, el) {
 function topSync() {
   if (CURRENT === 'stocks') syncStocks();
   else if (CURRENT === 'growth') triggerSalesPaceSync();
+  else if (CURRENT === 'prices') triggerCoinvestSync();
   else syncProducts();
 }
 
@@ -1139,6 +1176,224 @@ function drawSalesPace() {
     </div>
     <div class="hint">Как на WB: сравниваем <b>то же время</b> текущего периода с прошлым. Δ — абсолютная разница заказов (не %). Тяни край заголовка колонки — шире/уже. Заказы из FBO/FBS отправлений, показы/корзина — из аналитики Ozon.</div>`;
   attachColResizers(document.getElementById('paceMatrix'), 'pace');
+}
+
+/* ── Цены и соинвест ── */
+let COIN_DATA = { articles: [], actions: [], syncing: false, error: null, note: null };
+let COIN_FILTER = 'all';
+let COIN_SORT = { key: 'coinvest_pct', dir: -1 };
+let coinPoll = null;
+
+function setCoinFilter(f) {
+  COIN_FILTER = f;
+  ['All', 'Coin', 'Act', 'Red', 'Yellow'].forEach(k => {
+    const el = document.getElementById('coinFlt' + k);
+    if (!el) return;
+    const map = { All: 'all', Coin: 'coin', Act: 'action', Red: 'red', Yellow: 'yellow' };
+    el.classList.toggle('on', map[k] === f);
+  });
+  drawCoinvest();
+}
+function coinSort(key) {
+  if (COIN_SORT.key === key) COIN_SORT.dir *= -1;
+  else {
+    COIN_SORT.key = key;
+    COIN_SORT.dir = key === 'offer_id' ? 1 : -1;
+  }
+  drawCoinvest();
+}
+function coinSortMark(key) {
+  if (COIN_SORT.key !== key) return '';
+  return COIN_SORT.dir === 1 ? ' ↑' : ' ↓';
+}
+function coinTh(label, key) {
+  return `<th style="cursor:pointer" onclick="coinSort('${key}')">${label}${coinSortMark(key)}</th>`;
+}
+function idxBadge(c) {
+  const k = (c || 'WITHOUT_INDEX').replace(/[^A-Z_]/g, '') || 'WITHOUT_INDEX';
+  const map = { GREEN: 'Выгодный', YELLOW: 'Средний', RED: 'Невыгодный', WITHOUT_INDEX: 'Нет' };
+  return `<span class="idx idx-${k}">${map[k] || k}</span>`;
+}
+function pctCell(v, cls) {
+  if (v == null || !isFinite(Number(v))) return '<span class="coin-pct zero">—</span>';
+  const n = Number(v);
+  if (Math.abs(n) < 0.05) return `<span class="coin-pct zero">0%</span>`;
+  return `<span class="coin-pct ${cls || ''}">${n.toLocaleString('ru-RU', { maximumFractionDigits: 1 })}%</span>`;
+}
+
+async function renderCoinvest(force) {
+  if (force || !COIN_DATA.articles.length) await loadCoinvest();
+  else drawCoinvest();
+}
+async function loadCoinvest() {
+  try {
+    const r = await fetch('/api/coinvest');
+    COIN_DATA = await r.json();
+  } catch (e) {
+    COIN_DATA = { articles: [], actions: [], syncing: false, error: String(e), note: null };
+  }
+  drawCoinvest();
+  clearTimeout(coinPoll);
+  if (COIN_DATA.syncing) coinPoll = setTimeout(loadCoinvest, 3500);
+}
+async function triggerCoinvestSync() {
+  const btn = document.getElementById('coinSyncBtn');
+  if (btn) btn.disabled = true;
+  COIN_DATA.syncing = true;
+  drawCoinvest();
+  try {
+    await fetch('/api/sync-coinvest', { method: 'POST' });
+  } catch (_) {}
+  clearTimeout(coinPoll);
+  coinPoll = setTimeout(loadCoinvest, 2500);
+}
+
+function drawCoinvest() {
+  const info = document.getElementById('coinInfo');
+  const root = document.getElementById('coinRoot');
+  const cards = document.getElementById('coinCards');
+  const acts = document.getElementById('coinActions');
+  const btn = document.getElementById('coinSyncBtn');
+  const banner = document.getElementById('coinBanner');
+  if (!root) return;
+
+  if (COIN_DATA.note) {
+    banner.style.display = 'block';
+    banner.className = 'banner warn';
+    banner.textContent = COIN_DATA.note;
+  } else {
+    banner.style.display = 'none';
+  }
+
+  if (COIN_DATA.error) {
+    if (info) info.textContent = 'Ошибка: ' + COIN_DATA.error;
+    if (btn) btn.disabled = false;
+  } else if (COIN_DATA.syncing) {
+    if (info) info.textContent = 'Считаем цены и акции…';
+    if (btn) btn.disabled = true;
+  } else {
+    if (info) info.textContent = COIN_DATA.updated_at ? ('обновлено ' + fmtDt(COIN_DATA.updated_at)) : '';
+    if (btn) btn.disabled = false;
+  }
+
+  let arts = [...(COIN_DATA.articles || [])];
+  const q = ((document.getElementById('coinSearch') || {}).value || '').toLowerCase().trim();
+  if (q) arts = arts.filter(a =>
+    String(a.offer_id || '').toLowerCase().includes(q) ||
+    String(a.product_id || '').includes(q) ||
+    String(a.name || '').toLowerCase().includes(q)
+  );
+  if (COIN_FILTER === 'coin') arts = arts.filter(a => (a.coinvest_pct || 0) > 0.05);
+  else if (COIN_FILTER === 'action') arts = arts.filter(a => (a.in_actions_count || 0) > 0 || (a.action_titles || []).length);
+  else if (COIN_FILTER === 'red') arts = arts.filter(a => a.color_index === 'RED');
+  else if (COIN_FILTER === 'yellow') arts = arts.filter(a => a.color_index === 'YELLOW');
+
+  const sk = COIN_SORT.key, sd = COIN_SORT.dir;
+  arts.sort((a, b) => {
+    let va = a[sk], vb = b[sk];
+    if (typeof va === 'string') va = va.toLowerCase();
+    if (typeof vb === 'string') vb = vb.toLowerCase();
+    if (va == null) va = sd === 1 ? Infinity : -Infinity;
+    if (vb == null) vb = sd === 1 ? Infinity : -Infinity;
+    if (va < vb) return -sd;
+    if (va > vb) return sd;
+    return 0;
+  });
+
+  const nCoin = arts.filter(a => (a.coinvest_pct || 0) > 0.05).length;
+  const nAct = arts.filter(a => (a.in_actions_count || 0) > 0 || (a.action_titles || []).length).length;
+  const nGreen = arts.filter(a => a.color_index === 'GREEN').length;
+  const nYellow = arts.filter(a => a.color_index === 'YELLOW').length;
+  const nRed = arts.filter(a => a.color_index === 'RED').length;
+  const withPct = arts.filter(a => a.coinvest_pct != null);
+  const avgCoin = withPct.length
+    ? withPct.reduce((s, a) => s + (a.coinvest_pct || 0), 0) / withPct.length
+    : null;
+  const actions = COIN_DATA.actions || [];
+  const nPart = actions.filter(a => a.is_participating).length;
+
+  cards.innerHTML = [
+    ['Артикулов', fmt(arts.length), ''],
+    ['С соинвестом', fmt(nCoin), nCoin ? 'color:var(--amber)' : ''],
+    ['Средний соинвест', avgCoin == null ? '—' : (avgCoin.toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + '%'), avgCoin ? 'color:var(--amber)' : ''],
+    ['В акциях', fmt(nAct), ''],
+    ['Акций участвуем', fmt(nPart) + ' / ' + fmt(actions.length), ''],
+    ['Индекс G / Y / R', `${fmt(nGreen)} / ${fmt(nYellow)} / ${fmt(nRed)}`, nRed ? 'color:var(--red)' : ''],
+  ].map(([l, v, s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div></div>`).join('');
+
+  const topActs = [...actions].sort((a, b) => {
+    if (a.is_participating !== b.is_participating) return a.is_participating ? -1 : 1;
+    return (b.participating_products_count || 0) - (a.participating_products_count || 0);
+  }).slice(0, 8);
+  acts.innerHTML = topActs.map(a => {
+    const dates = [a.date_start, a.date_end].filter(Boolean).map(x => String(x).slice(0, 10)).join(' → ');
+    return `<div class="action-card ${a.is_participating ? 'on' : ''}">
+      <div class="ac-title">${esc(a.title || ('Акция #' + a.id))}</div>
+      <div class="ac-meta">
+        <span>${a.is_participating ? '✓ участвуем' : 'доступна'}</span>
+        <span>в акции: ${fmt(a.participating_products_count)}</span>
+        <span>кандидаты: ${fmt(a.potential_products_count)}</span>
+        ${dates ? `<span>${esc(dates)}</span>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  if (COIN_DATA.syncing && !arts.length) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div>Тянем /v5/product/info/prices и акции…</div>';
+    return;
+  }
+  if (!arts.length) {
+    root.innerHTML = `<div class="empty"><b>Нет данных</b>${COIN_DATA.error ? esc(COIN_DATA.error) : 'Нажми «Обновить» или смени фильтр'}</div>`;
+    return;
+  }
+
+  const rows = arts.map(a => {
+    const titles = (a.action_titles || []).join(', ') || (a.in_actions_count ? (a.in_actions_count + ' акц.') : '—');
+    return `<tr>
+      <td class="sticky"><span class="prod-name">${esc(a.offer_id)}</span></td>
+      <td class="num mono">${money(a.old_price)}</td>
+      <td class="num mono">${money(a.price)}</td>
+      <td class="num mono">${money(a.marketing_seller_price)}</td>
+      <td class="num mono">${money(a.action_price ?? a.marketing_price)}</td>
+      <td class="num">${pctCell(a.seller_discount_pct)}</td>
+      <td class="num">${pctCell(a.coinvest_pct)}</td>
+      <td class="num mono">${a.coinvest_rub == null ? '—' : money(a.coinvest_rub)}</td>
+      <td>${idxBadge(a.color_index)}</td>
+      <td class="num mono">${money(a.ozon_min_price)}</td>
+      <td class="num mono">${money(a.min_price)}</td>
+      <td title="${esc(titles)}">${esc(String(titles).slice(0, 40))}${String(titles).length > 40 ? '…' : ''}</td>
+      <td>${a.auto_action_enabled ? '<span class="tag ok">авто</span>' : '<span class="tag">выкл</span>'}</td>
+    </tr>`;
+  }).join('');
+
+  root.innerHTML = `
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          ${coinTh('Артикул', 'offer_id')}
+          ${coinTh('До скидки', 'old_price')}
+          ${coinTh('Цена продавца', 'price')}
+          ${coinTh('С уч. акций продавца', 'marketing_seller_price')}
+          ${coinTh('Цена акции / витрина', 'action_price')}
+          ${coinTh('Скидка продавца %', 'seller_discount_pct')}
+          ${coinTh('Соинвест %', 'coinvest_pct')}
+          ${coinTh('Соинвест ₽', 'coinvest_rub')}
+          ${coinTh('Индекс', 'color_index')}
+          ${coinTh('Мин. на Ozon', 'ozon_min_price')}
+          ${coinTh('Твой min', 'min_price')}
+          <th>Акции</th>
+          <th>Автоакции</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="hint">
+      <b>Соинвест</b> на Ozon — совместное финансирование скидки: Ozon снижает цену покупателю, часть берёт на себя, часть — продавец (через участие в акциях).
+      Это не WB СПП: там скидка постоянного покупателя сверху от маркетплейса.
+      Здесь: <b>цена продавца</b> из кабинета, <b>marketing_seller_price</b> — с акциями продавца,
+      <b>цена акции</b> — action_price из акций Ozon (прокси соинвеста, если витринная цена API больше не отдаёт).
+      Индекс цен — GREEN/YELLOW/RED относительно конкурентов на Ozon.
+    </div>`;
 }
 
 refreshStatus();
