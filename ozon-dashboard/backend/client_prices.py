@@ -304,6 +304,45 @@ def _fetch_sku(sess: _Session, sku: int) -> tuple[dict | None, dict]:
     return info, meta
 
 
+def _geo_via_proxy(proxy_url: str | None) -> dict:
+    """Какая страна у выходного IP прокси (без секретов)."""
+    if not proxy_url:
+        return {"ok": False, "error": "no_proxy"}
+    try:
+        from curl_cffi import requests as creq  # type: ignore
+
+        r = creq.get(
+            "https://ipinfo.io/json",
+            proxies={"http": proxy_url, "https": proxy_url},
+            timeout=25,
+            impersonate="chrome124",
+        )
+        data = r.json() if r.status_code == 200 else {}
+        return {
+            "ok": r.status_code == 200,
+            "status": r.status_code,
+            "ip": data.get("ip"),
+            "country": data.get("country"),
+            "city": data.get("city"),
+            "org": data.get("org"),
+        }
+    except Exception as e:
+        try:
+            with httpx.Client(proxy=proxy_url, timeout=25.0, follow_redirects=True) as c:
+                r = c.get("https://ipinfo.io/json")
+                data = r.json() if r.status_code == 200 else {}
+                return {
+                    "ok": r.status_code == 200,
+                    "status": r.status_code,
+                    "ip": data.get("ip"),
+                    "country": data.get("country"),
+                    "city": data.get("city"),
+                    "org": data.get("org"),
+                }
+        except Exception as e2:
+            return {"ok": False, "error": str(e2)[:200]}
+
+
 def probe_client_access(sample_sku: int | None = None) -> dict:
     """Диагностика прокси + одной карточки ozon.ru (без секретов)."""
     info = proxy_public_info()
