@@ -778,6 +778,15 @@ td.tc{text-align:center}
 </div>
 
 <div class="page" id="page-own-warehouse">
+  <div class="upload-banner hint" id="ownWhHowTo">
+    <span>
+      ⚠️ <b>Как вести учёт:</b>
+      1) <b>+ Поступление</b> — Excel с приходом (Артикул + Количество) или ручной список.
+      2) <b>Поставка на WB</b> — файлы shk-excel / лист подбора (отгрузка на склады WB).
+      3) <b>Отгрузка FBS</b> — файлы отгрузок со своего склада покупателям.
+      Всё сохраняется на сервере; ниже — <b>учёт по неделям</b>. Google Sheets — база остатка; файлы накладываются сверху, пока не внесёшь то же в таблицу и не сбросишь оверлеи.
+    </span>
+  </div>
   <div class="toolbar">
     <div class="search">
       <span style="color:var(--wb-faint);font-size:14px">🔍</span>
@@ -790,16 +799,33 @@ td.tc{text-align:center}
     <span id="ownWhInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
     <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <a class="action-btn" href="https://docs.google.com/spreadsheets/d/1Lhoy4s_KX0pWndsd3Y5oCOjTFCtfEfVUM4AgtBv4Crc/edit?gid=1829622647" target="_blank" rel="noopener" style="text-decoration:none">↗ Таблица</a>
+      <button class="action-btn primary" onclick="startOwnWhReceiptUpload()" title="Excel: артикул + количество">＋ Поступление</button>
+      <button class="action-btn" onclick="openOwnWhReceiptManual()" title="Ввести артикулы вручную">✏️ Список</button>
       <button class="action-btn" onclick="startOwnWhUpload('fbw')" title="shk-excel или лист подбора WB-GI">📦 Поставка на WB</button>
       <button class="action-btn" onclick="startOwnWhUpload('fbs')" title="Отгрузка со склада продавца (FBS)">📦 Отгрузка FBS</button>
       <input type="file" id="ownWhShipInput" accept=".xlsx,.xls" multiple style="display:none" onchange="uploadOwnWhShipments(this.files)">
+      <input type="file" id="ownWhReceiptInput" accept=".xlsx,.xls" multiple style="display:none" onchange="uploadOwnWhReceipts(this.files)">
       <button class="action-btn" id="ownWhSyncBtn" onclick="triggerOwnWarehouseSync()">↻ Обновить</button>
     </div>
   </div>
   <div class="cards" id="ownWhCards"></div>
+  <div id="ownWhWeekly" style="display:none;padding:12px 20px;border-bottom:1px solid var(--wb-border);background:#F8FAFC"></div>
   <div id="ownWhChannelTables" style="display:none;padding:12px 20px;border-bottom:1px solid var(--wb-border);background:var(--wb-surface)"></div>
   <div id="ownWhShipLog" style="display:none;padding:10px 20px;border-bottom:1px solid var(--wb-border);background:#FFFBEB"></div>
   <div id="ownWhRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить», чтобы подтянуть остатки из Google Sheets</div></div>
+</div>
+
+<div id="ownWhReceiptModal" class="modal-overlay" onclick="if(event.target===this) closeOwnWhReceiptManual()">
+  <div class="modal" style="width:520px;max-width:94vw" onclick="event.stopPropagation()">
+    <h3>Поступление товара (вручную)</h3>
+    <p>Каждая строка: <b>артикул количество</b>. Можно вставить из Excel.</p>
+    <input id="ownWhReceiptNote" placeholder="Комментарий (необязательно)" style="width:100%;box-sizing:border-box;border:1px solid var(--wb-border);border-radius:var(--rs);padding:8px 10px;margin-bottom:8px;font:inherit;font-size:13px">
+    <textarea id="ownWhReceiptText" rows="10" placeholder="044_LK_GT5Pro_black_O 120&#10;037_G7Pro_black_O 50" style="width:100%;box-sizing:border-box;border:1px solid var(--wb-border);border-radius:var(--rs);padding:10px;font:inherit;font-size:13px;resize:vertical"></textarea>
+    <div class="modal-btns" style="margin-top:12px">
+      <button class="action-btn" onclick="closeOwnWhReceiptManual()">Отмена</button>
+      <button class="action-btn primary" onclick="submitOwnWhReceiptManual()">Сохранить поступление</button>
+    </div>
+  </div>
 </div>
 
 <div class="page" id="page-ads">
@@ -1506,8 +1532,46 @@ function startOwnWhUpload(channel) {
   if(inp) inp.click();
 }
 
+function startOwnWhReceiptUpload() {
+  const inp = document.getElementById('ownWhReceiptInput');
+  if(inp) inp.click();
+}
+
+function openOwnWhReceiptManual() {
+  const m = document.getElementById('ownWhReceiptModal');
+  if(m) m.classList.add('on');
+  const t = document.getElementById('ownWhReceiptText');
+  if(t) t.focus();
+}
+
+function closeOwnWhReceiptManual() {
+  const m = document.getElementById('ownWhReceiptModal');
+  if(m) m.classList.remove('on');
+}
+
 function ownWhChannelLabel(ch) {
-  return ch === 'fbs' ? 'FBS' : 'Поставка на WB';
+  if(ch === 'fbs') return 'FBS';
+  if(ch === 'in' || ch === 'receipt') return 'Поступление';
+  return 'Поставка на WB';
+}
+
+function applyOwnWhPayload(d) {
+  if(!d) return;
+  OWN_WH = {
+    ...OWN_WH,
+    rows: d.rows != null ? d.rows : OWN_WH.rows,
+    by_vendor: d.by_vendor || OWN_WH.by_vendor,
+    shipments: d.shipments != null ? d.shipments : (OWN_WH.shipments || []),
+    receipts: d.receipts != null ? d.receipts : (OWN_WH.receipts || []),
+    weekly_ledger: d.weekly_ledger != null ? d.weekly_ledger : (OWN_WH.weekly_ledger || []),
+    channel_summaries: d.channel_summaries || OWN_WH.channel_summaries,
+    as_of: d.as_of || OWN_WH.as_of,
+    updated_at: d.updated_at || OWN_WH.updated_at,
+    error: null,
+    syncing: false,
+  };
+  OWN_WH_BY_VENDOR = OWN_WH.by_vendor || {};
+  OWN_WH_LOADED = true;
 }
 
 async function renderOwnWarehouse(forceLoad) {
@@ -1546,21 +1610,7 @@ async function uploadOwnWhShipments(fileList) {
     const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-upload-shipment`, { method: 'POST', body: fd });
     const d = await r.json().catch(() => ({}));
     if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
-    if(d.rows) {
-      OWN_WH = {
-        ...OWN_WH,
-        rows: d.rows,
-        by_vendor: d.by_vendor || OWN_WH.by_vendor,
-        shipments: d.shipments || [],
-        channel_summaries: d.channel_summaries || OWN_WH.channel_summaries,
-        as_of: d.as_of || OWN_WH.as_of,
-        updated_at: d.updated_at || OWN_WH.updated_at,
-        error: null,
-        syncing: false,
-      };
-      OWN_WH_BY_VENDOR = OWN_WH.by_vendor || {};
-      OWN_WH_LOADED = true;
-    }
+    applyOwnWhPayload(d);
     const applied = d.applied || [];
     const errs = d.errors || [];
     const sumQty = applied.reduce((s,a) => s + (a.total_qty||0), 0);
@@ -1580,6 +1630,60 @@ async function uploadOwnWhShipments(fileList) {
   }
 }
 
+async function uploadOwnWhReceipts(fileList) {
+  const files = Array.from(fileList || []);
+  const inp = document.getElementById('ownWhReceiptInput');
+  if(inp) inp.value = '';
+  if(!files.length) return;
+  const info = document.getElementById('ownWhInfo');
+  if(info) info.textContent = `Учитываем поступление (${files.length} файл)…`;
+  const fd = new FormData();
+  files.forEach(f => fd.append('files', f));
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-upload-receipt`, { method: 'POST', body: fd });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+    applyOwnWhPayload(d);
+    const applied = d.applied || [];
+    const sumQty = applied.reduce((s,a) => s + (a.total_qty||0), 0);
+    let msg = applied.length
+      ? `Поступление: +${sumQty} шт из ${applied.length} файл(ов)`
+      : 'Ничего не добавлено';
+    if((d.errors || []).length) msg += `\n\nОшибки: ${d.errors.map(e => e.filename + ': ' + e.error).join('; ')}`;
+    alert(msg + (d.note ? '\n\n' + d.note : ''));
+    drawOwnWarehouse();
+  } catch(e) {
+    alert('Ошибка поступления: ' + e.message);
+    if(info) info.textContent = 'Ошибка поступления';
+  }
+}
+
+async function submitOwnWhReceiptManual() {
+  const text = (document.getElementById('ownWhReceiptText') || {}).value || '';
+  const note = (document.getElementById('ownWhReceiptNote') || {}).value || '';
+  if(!text.trim()) { alert('Введи хотя бы одну строку: артикул количество'); return; }
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-add-receipt`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text, note}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+    applyOwnWhPayload(d);
+    closeOwnWhReceiptManual();
+    const ta = document.getElementById('ownWhReceiptText');
+    if(ta) ta.value = '';
+    const n = document.getElementById('ownWhReceiptNote');
+    if(n) n.value = '';
+    const q = ((d.applied || [])[0] || {}).total_qty || 0;
+    alert(`Поступление сохранено: +${fmt(q)} шт`);
+    drawOwnWarehouse();
+  } catch(e) {
+    alert('Не удалось сохранить: ' + e.message);
+  }
+}
+
 async function undoOwnWhShipment(id) {
   if(!id) return;
   if(!confirm('Вернуть это списание обратно в остаток?')) return;
@@ -1591,14 +1695,25 @@ async function undoOwnWhShipment(id) {
     });
     const d = await r.json().catch(() => ({}));
     if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
-    OWN_WH = {
-      ...OWN_WH,
-      rows: d.rows || OWN_WH.rows,
-      by_vendor: d.by_vendor || OWN_WH.by_vendor,
-      shipments: d.shipments || [],
-      channel_summaries: d.channel_summaries || OWN_WH.channel_summaries,
-    };
-    OWN_WH_BY_VENDOR = OWN_WH.by_vendor || {};
+    applyOwnWhPayload(d);
+    drawOwnWarehouse();
+  } catch(e) {
+    alert('Не удалось отменить: ' + e.message);
+  }
+}
+
+async function undoOwnWhReceipt(id) {
+  if(!id) return;
+  if(!confirm('Отменить это поступление (убрать из остатка)?')) return;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-undo-receipt`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+    applyOwnWhPayload(d);
     drawOwnWarehouse();
   } catch(e) {
     alert('Не удалось отменить: ' + e.message);
@@ -1615,14 +1730,24 @@ async function clearOwnWhShipments() {
     });
     const d = await r.json().catch(() => ({}));
     if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
-    OWN_WH = {
-      ...OWN_WH,
-      rows: d.rows || OWN_WH.rows,
-      by_vendor: d.by_vendor || OWN_WH.by_vendor,
-      shipments: [],
-      channel_summaries: d.channel_summaries || {fbw:{items:[]}, fbs:{items:[]}},
-    };
-    OWN_WH_BY_VENDOR = OWN_WH.by_vendor || {};
+    applyOwnWhPayload(d);
+    drawOwnWarehouse();
+  } catch(e) {
+    alert('Не удалось сбросить: ' + e.message);
+  }
+}
+
+async function clearOwnWhReceipts() {
+  if(!confirm('Сбросить все поступления?\nДелай так, когда уже внёс приходы в Google Sheets.')) return;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-undo-receipt`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({all: true}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+    applyOwnWhPayload(d);
     drawOwnWarehouse();
   } catch(e) {
     alert('Не удалось сбросить: ' + e.message);
@@ -1653,29 +1778,113 @@ function buildOwnWhChannelSummaryFromShipments(ships) {
   return out;
 }
 
+function drawOwnWhWeekly() {
+  const box = document.getElementById('ownWhWeekly');
+  if(!box) return;
+  const weeks = OWN_WH.weekly_ledger || [];
+  if(!weeks.length) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  const openKey = window._owWeekOpen || weeks[0].week_key;
+  const cards = weeks.map(w => {
+    const open = w.week_key === openKey;
+    const net = w.net_qty || 0;
+    const netColor = net > 0 ? '#027A48' : (net < 0 ? '#B42318' : 'var(--wb-muted)');
+    const netSign = net > 0 ? '+' : '';
+    const docs = (w.docs || []).map(d => {
+      const isIn = d.doc_type === 'receipt';
+      const ch = isIn ? 'receipt' : (d.channel === 'fbs' ? 'fbs' : 'fbw');
+      const sign = isIn ? '+' : '−';
+      const color = isIn ? '#027A48' : (ch === 'fbs' ? '#026AA2' : '#B54708');
+      const label = isIn ? 'Приход' : (ch === 'fbs' ? 'FBS' : 'На склады WB');
+      const safeId = String(d.id || '').replace(/'/g, '');
+      const undo = isIn
+        ? `undoOwnWhReceipt('${safeId}')`
+        : `undoOwnWhShipment('${safeId}')`;
+      return `<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 8px;background:#fff;border:1px solid var(--wb-border);border-radius:6px;font-size:12px">
+        <div>
+          <span style="display:inline-block;min-width:92px;font-weight:600;color:${color}">${label}</span>
+          <b>${escapeHtml(d.filename || '')}</b>
+          <span style="color:var(--wb-muted)"> · ${sign}${fmt(d.total_qty||0)} шт · ${fmt(d.articles||0)} арт.${d.created_at ? ' · ' + escapeHtml(d.created_at) : ''}</span>
+        </div>
+        <button class="action-btn" style="padding:3px 8px;font-size:11px" onclick="${undo}">↩</button>
+      </div>`;
+    }).join('');
+    return `<div style="border:1px solid var(--wb-border);border-radius:var(--rs);overflow:hidden;background:#fff;margin-bottom:8px">
+      <button type="button" onclick="setOwnWhWeekOpen('${escapeHtml(w.week_key)}')" style="width:100%;text-align:left;border:0;background:${open?'#EEF2FF':'#FAFAF8'};padding:12px 14px;cursor:pointer;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">
+        <div>
+          <div style="font-size:14px;font-weight:700">${escapeHtml(w.label || w.week_key)}</div>
+          <div style="font-size:11px;color:var(--wb-muted);margin-top:2px">${escapeHtml(w.week_key)} · ${(w.docs||[]).length} док.</div>
+        </div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;align-items:center">
+          <span title="Поступления">＋ <b style="color:#027A48">${fmt(w.receipts_qty||0)}</b></span>
+          <span title="На склады WB">WB <b style="color:#B54708">−${fmt(w.fbw_qty||0)}</b></span>
+          <span title="FBS">FBS <b style="color:#026AA2">−${fmt(w.fbs_qty||0)}</b></span>
+          <span title="Нетто">Δ <b style="color:${netColor}">${netSign}${fmt(net)}</b></span>
+          <span style="color:var(--wb-faint)">${open ? '▾' : '▸'}</span>
+        </div>
+      </button>
+      ${open ? `<div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--wb-border)">${docs || '<div style="color:var(--wb-faint);font-size:12px">Нет документов</div>'}</div>` : ''}
+    </div>`;
+  }).join('');
+  box.style.display = 'block';
+  box.innerHTML = `
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;margin-bottom:10px">
+      <div>
+        <div style="font-size:12px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px">Учёт по неделям</div>
+        <div style="font-size:12px;color:var(--wb-muted);margin-top:2px">Приход + поступления · расход на склады WB и FBS. Данные сохраняются.</div>
+      </div>
+    </div>
+    ${cards}`;
+}
+
+function setOwnWhWeekOpen(key) {
+  window._owWeekOpen = (window._owWeekOpen === key) ? '' : key;
+  if(!window._owWeekOpen && (OWN_WH.weekly_ledger || [])[0]) {
+    // повторный клик сворачивает — оставим свернутым
+  }
+  drawOwnWhWeekly();
+}
+
 function drawOwnWhChannelTables() {
   const box = document.getElementById('ownWhChannelTables');
   if(!box) return;
   const summaries = OWN_WH.channel_summaries || buildOwnWhChannelSummaryFromShipments(OWN_WH.shipments || []);
   const fbw = summaries.fbw || {items: [], total_qty: 0, articles: 0, files: 0};
   const fbs = summaries.fbs || {items: [], total_qty: 0, articles: 0, files: 0};
-  if(!(fbw.items && fbw.items.length) && !(fbs.items && fbs.items.length)) {
+  const receipts = OWN_WH.receipts || [];
+  const recvMap = {};
+  receipts.forEach(rc => {
+    (rc.items || []).forEach(it => {
+      const vc = String(it.vendor_code || '').trim();
+      const qty = Number(it.qty) || 0;
+      if(!vc || qty <= 0) return;
+      recvMap[vc] = (recvMap[vc] || 0) + qty;
+    });
+  });
+  const recvItems = Object.entries(recvMap)
+    .map(([vendor_code, qty]) => ({vendor_code, qty}))
+    .sort((a,b) => b.qty - a.qty || a.vendor_code.localeCompare(b.vendor_code, 'ru'));
+  const recvTotal = recvItems.reduce((s, it) => s + it.qty, 0);
+  if(!fbw.items.length && !fbs.items.length && !recvItems.length) {
     box.style.display = 'none';
     box.innerHTML = '';
     return;
   }
-  const renderCol = (title, sub, data, color) => {
+  const renderCol = (title, sub, data, color, sign) => {
     const items = data.items || [];
     const body = items.length
       ? items.map(it => `<tr>
           <td style="text-align:left"><div class="art">${escapeHtml(it.vendor_code)}</div></td>
-          <td style="text-align:right;font-weight:600;color:${color}">−${fmt(it.qty)}</td>
+          <td style="text-align:right;font-weight:600;color:${color}">${sign}${fmt(it.qty)}</td>
         </tr>`).join('')
-      : `<tr><td colspan="2" style="text-align:left;color:var(--wb-faint);padding:12px">Пока пусто — загрузи Excel кнопкой выше</td></tr>`;
-    return `<div style="flex:1;min-width:280px;border:1px solid var(--wb-border);border-radius:var(--rs);overflow:hidden;background:#fff">
+      : `<tr><td colspan="2" style="text-align:left;color:var(--wb-faint);padding:12px">Пока пусто</td></tr>`;
+    return `<div style="flex:1;min-width:240px;border:1px solid var(--wb-border);border-radius:var(--rs);overflow:hidden;background:#fff">
       <div style="padding:10px 12px;border-bottom:1px solid var(--wb-border);background:#FAFAF8">
         <div style="font-size:13px;font-weight:600">${title}</div>
-        <div style="font-size:11px;color:var(--wb-muted);margin-top:2px">${sub} · −${fmt(data.total_qty||0)} шт · ${fmt(data.articles||0)} арт.${data.files?` · ${data.files} файл(ов)`:''}</div>
+        <div style="font-size:11px;color:var(--wb-muted);margin-top:2px">${sub} · ${sign}${fmt(data.total_qty||0)} шт · ${fmt(data.articles||0)} арт.${data.files?` · ${data.files} файл(ов)`:''}</div>
       </div>
       <div style="max-height:280px;overflow:auto">
         <table class="comp-tbl" style="width:100%">
@@ -1687,10 +1896,11 @@ function drawOwnWhChannelTables() {
   };
   box.style.display = 'block';
   box.innerHTML = `
-    <div style="font-size:12px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:8px">Поставки и отгрузки</div>
+    <div style="font-size:12px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:8px">Сводка по артикулам (весь период)</div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:stretch">
-      ${renderCol('Поставки на склады WB', 'shk-excel / лист подбора WB-GI', fbw, '#B54708')}
-      ${renderCol('Отгрузки FBS', 'со склада продавца', fbs, '#026AA2')}
+      ${renderCol('Поступления', 'Excel / ручной список', {items: recvItems, total_qty: recvTotal, articles: recvItems.length, files: receipts.length}, '#027A48', '+')}
+      ${renderCol('На склады WB', 'shk-excel / лист подбора', fbw, '#B54708', '−')}
+      ${renderCol('Отгрузки FBS', 'со склада продавца', fbs, '#026AA2', '−')}
     </div>`;
 }
 
@@ -1698,34 +1908,25 @@ function drawOwnWhShipLog() {
   const box = document.getElementById('ownWhShipLog');
   if(!box) return;
   const ships = OWN_WH.shipments || [];
-  if(!ships.length) {
+  const receipts = OWN_WH.receipts || [];
+  if(!ships.length && !receipts.length) {
     box.style.display = 'none';
     box.innerHTML = '';
     return;
   }
-  const total = ships.reduce((s, sh) => s + (sh.total_qty || 0), 0);
+  const shipTotal = ships.reduce((s, sh) => s + (sh.total_qty || 0), 0);
+  const recvTotal = receipts.reduce((s, sh) => s + (sh.total_qty || 0), 0);
   box.style.display = 'block';
   box.innerHTML = `
     <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
       <div>
-        <div style="font-size:12px;font-weight:600;color:#92400E">Файлы списаний · ${ships.length} · −${fmt(total)} шт</div>
-        <div style="font-size:11px;color:#B54708;margin-top:2px">Остаток на сайте = Google Sheets минус эти файлы. Сам Sheets не меняется.</div>
+        <div style="font-size:12px;font-weight:600;color:#92400E">Оверлеи на Sheets · приход +${fmt(recvTotal)} · списано −${fmt(shipTotal)}</div>
+        <div style="font-size:11px;color:#B54708;margin-top:2px">Остаток = Google Sheets + поступления − отгрузки. Сам Sheets не меняется.</div>
       </div>
-      <button class="action-btn" onclick="clearOwnWhShipments()">Сбросить все списания</button>
-    </div>
-    <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px">
-      ${ships.slice(0, 12).map(sh => {
-        const kind = sh.kind === 'picking' ? 'лист подбора' : (sh.kind === 'shk' ? 'shk-excel' : (sh.kind || 'excel'));
-        const ch = ownWhChannelLabel(sh.channel === 'fbs' ? 'fbs' : 'fbw');
-        const safeId = String(sh.id || '').replace(/'/g, '');
-        return `<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 8px;background:#fff;border:1px solid #F8E3B0;border-radius:6px;font-size:12px">
-          <div>
-            <b>${escapeHtml(sh.filename || 'файл')}</b>
-            <span style="color:var(--wb-muted)"> · ${escapeHtml(ch)} · ${escapeHtml(kind)} · −${fmt(sh.total_qty||0)} шт · ${fmt(sh.articles||0)} арт.${sh.created_at ? ' · ' + escapeHtml(sh.created_at) : ''}</span>
-          </div>
-          <button class="action-btn" style="padding:3px 8px;font-size:11px" onclick="undoOwnWhShipment('${safeId}')">↩ Отменить</button>
-        </div>`;
-      }).join('')}
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${receipts.length ? `<button class="action-btn" onclick="clearOwnWhReceipts()">Сбросить поступления</button>` : ''}
+        ${ships.length ? `<button class="action-btn" onclick="clearOwnWhShipments()">Сбросить списания</button>` : ''}
+      </div>
     </div>`;
 }
 
@@ -1734,6 +1935,7 @@ function drawOwnWarehouse() {
   const root = document.getElementById('ownWhRoot');
   const cards = document.getElementById('ownWhCards');
   if(!root) return;
+  drawOwnWhWeekly();
   drawOwnWhChannelTables();
   drawOwnWhShipLog();
 
@@ -1747,9 +1949,14 @@ function drawOwnWarehouse() {
     else if(OWN_WH.title) bits.push(OWN_WH.title);
     if(OWN_WH.updated_at) bits.push('подтянуто ' + OWN_WH.updated_at);
     const ships = OWN_WH.shipments || [];
+    const receipts = OWN_WH.receipts || [];
+    if(receipts.length) {
+      const t = receipts.reduce((s, sh) => s + (sh.total_qty || 0), 0);
+      bits.push(`приход +${t}`);
+    }
     if(ships.length) {
       const t = ships.reduce((s, sh) => s + (sh.total_qty || 0), 0);
-      bits.push(`списано отгрузками −${t}`);
+      bits.push(`списано −${t}`);
     }
     if(info) info.textContent = bits.join(' · ') || '';
   }
@@ -1769,6 +1976,7 @@ function drawOwnWarehouse() {
 
   const totalQty = rows.reduce((s,r) => s + (r.stock||0), 0);
   const shippedQty = rows.reduce((s,r) => s + (r.shipped||0), 0);
+  const receivedQty = rows.reduce((s,r) => s + (r.received||0), 0);
   const withArt = rows.filter(r => r.vendor_code).length;
   const summaries = OWN_WH.channel_summaries || buildOwnWhChannelSummaryFromShipments(OWN_WH.shipments || []);
   if(cards) {
@@ -1777,7 +1985,8 @@ function drawOwnWarehouse() {
       ['С артикулом', fmt(withArt)],
       ['Сумма остатков', fmt(totalQty)],
     ];
-    if((summaries.fbw || {}).total_qty) cardItems.push(['Поставки WB', '−' + fmt(summaries.fbw.total_qty)]);
+    if(receivedQty || (OWN_WH.receipts || []).length) cardItems.push(['Поступления', '+' + fmt(receivedQty || (OWN_WH.receipts||[]).reduce((s,x)=>s+(x.total_qty||0),0))]);
+    if((summaries.fbw || {}).total_qty) cardItems.push(['На склады WB', '−' + fmt(summaries.fbw.total_qty)]);
     if((summaries.fbs || {}).total_qty) cardItems.push(['Отгрузки FBS', '−' + fmt(summaries.fbs.total_qty)]);
     else if(shippedQty) cardItems.push(['Списано Excel', '−' + fmt(shippedQty)]);
     if(OWN_WH.as_of) cardItems.unshift(['Остатки на', OWN_WH.as_of]);
@@ -1795,6 +2004,7 @@ function drawOwnWarehouse() {
     const stock = r.stock||0;
     const famStock = r.family_stock != null ? r.family_stock : stock;
     const shipped = r.shipped || 0;
+    const received = r.received || 0;
     const sheetQty = r.stock_sheet != null ? r.stock_sheet : null;
     const stockCls = stock > 0 ? '' : ' style="color:var(--wb-faint)"';
     const vc = r.vendor_code || '';
@@ -1811,10 +2021,18 @@ function drawOwnWarehouse() {
         ${famHint?`<div style="font-size:10px;color:var(--wb-faint);margin-top:3px">${escapeHtml(famHint)}</div>`:''}
         <div id="owModelEdit_${safeVc}"></div>`
       : '—';
+    const overlayBits = [];
+    if(sheetQty != null && (shipped || received)) {
+      let line = `Sheets ${fmt(sheetQty)}`;
+      if(received) line += ` + ${fmt(received)}`;
+      if(shipped) line += ` − ${fmt(shipped)}`;
+      overlayBits.push(`<div style="font-size:10px;color:#B54708">${line}</div>`);
+    }
     return `<tr>
       <td><div class="art">${vc ? escapeHtml(vc) : '<span style="color:var(--wb-faint)">—</span>'}</div></td>
       <td style="text-align:left">${modelBtn}</td>
-      <td${stockCls}><b>${fmt(stock)}</b>${famStock!==stock?`<div style="font-size:10px;color:var(--wb-muted)">семья ${fmt(famStock)}</div>`:''}${shipped?`<div style="font-size:10px;color:#B54708">Sheets ${fmt(sheetQty)} − ${fmt(shipped)}</div>`:''}</td>
+      <td${stockCls}><b>${fmt(stock)}</b>${famStock!==stock?`<div style="font-size:10px;color:var(--wb-muted)">семья ${fmt(famStock)}</div>`:''}${overlayBits.join('')}</td>
+      <td style="text-align:right;color:${received?'#027A48':'var(--wb-faint)'}">${received?('+'+fmt(received)):'—'}</td>
       <td style="text-align:right;color:${shipped?'#B54708':'var(--wb-faint)'}">${shipped?('−'+fmt(shipped)):'—'}</td>
       <td style="text-align:left;color:var(--wb-muted);font-size:12px">${r.note ? escapeHtml(r.note) : ''}</td>
     </tr>`;
@@ -1825,6 +2043,7 @@ function drawOwnWarehouse() {
       <th class="metric-col">Артикул продавца</th>
       <th>Модель (общий склад)</th>
       <th>Остаток</th>
+      <th>Приход</th>
       <th>Отгрузка</th>
       <th>Примечание</th>
     </tr></thead>
