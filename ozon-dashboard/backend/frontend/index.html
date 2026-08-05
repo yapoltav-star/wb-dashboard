@@ -37,7 +37,7 @@ body{font-family:'Manrope',sans-serif;background:var(--oz-bg);color:var(--oz-tex
 
 .page{display:none;padding:24px}.page.on{display:block}
 
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
 .card{background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);padding:16px 18px}
 .card-l{font-size:11px;color:var(--oz-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
 .card-v{font-size:24px;font-weight:600;color:var(--oz-text)}
@@ -54,6 +54,7 @@ body{font-family:'Manrope',sans-serif;background:var(--oz-bg);color:var(--oz-tex
 .action-btn.primary{background:var(--oz-blue);color:#fff;border-color:var(--oz-blue)}
 .action-btn.primary:hover{background:var(--oz-blue-dark)}
 .action-btn:disabled{opacity:.55;cursor:wait}
+.num-inp{width:56px;border:1px solid var(--oz-border);border-radius:var(--rs);padding:6px 8px;font-size:12px;font-family:inherit}
 
 .banner{background:#EEF4FF;border:1px solid #C7D9FF;border-radius:var(--r);padding:12px 16px;margin-bottom:16px;font-size:13px;color:#1E3A8A;line-height:1.45}
 .banner.warn{background:#FFFBEB;border-color:#FDE68A;color:#92400E}
@@ -65,10 +66,10 @@ th{text-align:left;padding:10px 12px;background:#FAFBFC;border-bottom:1px solid 
 td{padding:10px 12px;border-bottom:1px solid var(--oz-border);vertical-align:middle}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:#F8FAFF}
-.prod{display:flex;align-items:center;gap:10px;min-width:280px}
+.prod{display:flex;align-items:center;gap:10px;min-width:240px}
 .prod img{width:40px;height:40px;object-fit:cover;border-radius:6px;background:#F0F2F5;border:1px solid var(--oz-border)}
 .prod-ph{width:40px;height:40px;border-radius:6px;background:#EEF1F5;display:flex;align-items:center;justify-content:center;color:var(--oz-faint);font-size:11px;flex-shrink:0}
-.prod-name{font-weight:500;line-height:1.3;max-width:360px}
+.prod-name{font-weight:500;line-height:1.3;max-width:320px}
 .prod-meta{font-size:11px;color:var(--oz-faint);margin-top:2px}
 .mono{font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 .tag{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500;background:#F3F4F6;color:var(--oz-muted)}
@@ -77,9 +78,23 @@ tr:hover td{background:#F8FAFF}
 .tag.stock{background:var(--oz-blue-light);color:var(--oz-blue)}
 .empty{padding:48px 24px;text-align:center;color:var(--oz-muted);font-size:14px}
 .empty b{display:block;color:var(--oz-text);margin-bottom:6px;font-size:15px}
-.stub{padding:64px 24px;text-align:center;background:var(--oz-surface);border:1px dashed var(--oz-border);border-radius:var(--r);color:var(--oz-muted)}
-.stub h2{color:var(--oz-text);font-size:18px;margin-bottom:8px}
-.stub p{max-width:420px;margin:0 auto;line-height:1.5;font-size:13px}
+
+.matrix-wrap{overflow:auto;background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r)}
+.matrix{border-collapse:collapse;font-size:12px;min-width:100%}
+.matrix th,.matrix td{border-bottom:1px solid var(--oz-border);border-right:1px solid var(--oz-border);padding:6px 8px;white-space:nowrap}
+.matrix th{background:#FAFBFC;position:sticky;top:0;z-index:2;font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--oz-muted)}
+.matrix th.sticky,.matrix td.sticky{position:sticky;left:0;background:var(--oz-surface);z-index:1;min-width:200px}
+.matrix th.sticky{z-index:3;background:#FAFBFC}
+.matrix .wh-head{text-align:center;background:#F0F4FF}
+.matrix .wh-sub{font-size:10px;font-weight:500;text-align:center;background:#F7F9FC}
+.matrix .num{text-align:right;font-variant-numeric:tabular-nums}
+.matrix .m-urgent{color:var(--red);font-weight:600}
+.matrix .m-ok{color:var(--green)}
+.matrix .muted{color:var(--oz-faint)}
+.matrix .tot-col{background:#F8FAFF}
+.wh-toggle{display:inline-flex;align-items:center;gap:4px;cursor:pointer;user-select:none}
+.wh-toggle input{accent-color:var(--oz-blue)}
+.wh-off td.cell-off,.wh-off th.cell-off{opacity:.35}
 </style>
 </head>
 <body>
@@ -91,7 +106,7 @@ tr:hover td{background:#F8FAFF}
   </div>
   <div class="tb-nav">
     <div class="tb-nav-item on" data-sec="products" onclick="showSection('products',this)">Товары</div>
-    <div class="tb-nav-item soon" title="Скоро">Остатки</div>
+    <div class="tb-nav-item" data-sec="stocks" onclick="showSection('stocks',this)">Остатки</div>
     <div class="tb-nav-item soon" title="Скоро">Заказы</div>
     <div class="tb-nav-item soon" title="Скоро">Отзывы</div>
     <div class="tb-nav-item soon" title="Скоро">Реклама</div>
@@ -99,13 +114,13 @@ tr:hover td{background:#F8FAFF}
   </div>
   <div class="tb-right">
     <div class="tb-sync"><div class="tb-dot" id="syncDot"></div><span id="syncLabel">—</span></div>
-    <button class="tb-btn" id="btnSync" onclick="syncProducts()">Обновить товары</button>
+    <button class="tb-btn" id="btnTopSync" onclick="topSync()">Обновить</button>
   </div>
 </div>
 
+<!-- PRODUCTS -->
 <div class="page on" id="page-products">
   <div class="banner" id="setupBanner" style="display:none"></div>
-
   <div class="cards">
     <div class="card">
       <div class="card-l">Товаров в базе</div>
@@ -123,35 +138,45 @@ tr:hover td{background:#F8FAFF}
       <div class="card-sub">Client-Id + Api-Key</div>
     </div>
   </div>
-
   <div class="toolbar">
     <div class="search">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3-3"/></svg>
       <input id="q" placeholder="Артикул, название, product_id…" onkeydown="if(event.key==='Enter')loadProducts()">
     </div>
     <button class="filter-btn on" data-arch="active" onclick="setArchived('active',this)">Активные</button>
     <button class="filter-btn" data-arch="archived" onclick="setArchived('archived',this)">Архив</button>
     <button class="filter-btn" data-arch="all" onclick="setArchived('all',this)">Все</button>
-    <button class="action-btn primary ml-auto" onclick="loadProducts()">Найти</button>
+    <button class="action-btn primary ml-auto" onclick="syncProducts()">Обновить товары</button>
   </div>
-
   <div class="tbl-wrap">
     <table>
       <thead>
         <tr>
-          <th>Товар</th>
-          <th>Артикул</th>
-          <th>SKU</th>
-          <th>Цена</th>
-          <th>Остатки</th>
-          <th>Статус</th>
+          <th>Товар</th><th>Артикул</th><th>SKU</th><th>Цена</th><th>Остатки</th><th>Статус</th>
         </tr>
       </thead>
-      <tbody id="tbody">
-        <tr><td colspan="6"><div class="empty">Загрузка…</div></td></tr>
-      </tbody>
+      <tbody id="tbody"><tr><td colspan="6"><div class="empty">Загрузка…</div></td></tr></tbody>
     </table>
   </div>
+</div>
+
+<!-- STOCKS -->
+<div class="page" id="page-stocks">
+  <div class="banner" id="stocksBanner" style="display:none"></div>
+  <div class="toolbar">
+    <div class="search">
+      <input id="stSearch" placeholder="Артикул / название / SKU…" oninput="renderStocks()">
+    </div>
+    <span style="font-size:12px;color:var(--oz-muted)">Окно продаж:</span>
+    <input class="num-inp" id="salesWindowInput" type="number" min="1" value="14" onchange="setSalesWindow(this.value)">
+    <span style="font-size:12px;color:var(--oz-muted)">дней</span>
+    <span style="font-size:12px;color:var(--oz-muted);margin-left:8px">Целевой запас:</span>
+    <input class="num-inp" id="targetDaysInput" type="number" min="1" value="30" onchange="setTargetDays(this.value)">
+    <span style="font-size:12px;color:var(--oz-muted)">дней</span>
+    <span id="stocksSyncInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+    <button class="action-btn primary ml-auto" id="stocksSyncBtn" onclick="syncStocks()">↻ Обновить остатки</button>
+  </div>
+  <div class="cards" id="stocksCards"></div>
+  <div id="stocksRoot"><div class="empty"><b>Нет данных</b>Нажми «Обновить остатки»</div></div>
 </div>
 
 <script>
@@ -161,28 +186,60 @@ const money = (v) => {
   if (Number.isNaN(n)) return '—';
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(n);
 };
-
+const fmt = (n) => new Intl.NumberFormat('ru-RU').format(n || 0);
 const fmtDt = (s) => {
   if (!s) return '—';
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return String(s).slice(0, 19);
   return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
-
-let ARCHIVED = 'active';
-
-function setArchived(v, el) {
-  ARCHIVED = v;
-  document.querySelectorAll('.filter-btn[data-arch]').forEach(b => b.classList.toggle('on', b === el));
-  loadProducts();
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+async function readErr(r) {
+  const t = await r.text();
+  try {
+    const j = JSON.parse(t);
+    return typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail || j);
+  } catch {
+    return t.slice(0, 300) || r.statusText;
+  }
 }
 
+let ARCHIVED = 'active';
+let CURRENT = 'products';
+let TARGET_DAYS = 30;
+let STOCK_TOTALS = [];
+let STOCK_WH = [];
+let WH_DISABLED = JSON.parse(localStorage.getItem('oz_wh_disabled') || '[]');
+
 function showSection(sec, el) {
+  if (el && el.classList.contains('soon')) return;
+  CURRENT = sec;
   document.querySelectorAll('.tb-nav-item').forEach(t => t.classList.remove('on'));
   if (el) el.classList.add('on');
   document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
   const page = document.getElementById('page-' + sec);
   if (page) page.classList.add('on');
+  const btn = document.getElementById('btnTopSync');
+  if (sec === 'stocks') {
+    btn.textContent = 'Обновить остатки';
+    if (!STOCK_TOTALS.length) loadStocks();
+    else renderStocks();
+  } else {
+    btn.textContent = 'Обновить товары';
+  }
+}
+
+function topSync() {
+  if (CURRENT === 'stocks') syncStocks();
+  else syncProducts();
+}
+
+function setArchived(v, el) {
+  ARCHIVED = v;
+  document.querySelectorAll('.filter-btn[data-arch]').forEach(b => b.classList.toggle('on', b === el));
+  loadProducts();
 }
 
 async function refreshStatus() {
@@ -195,13 +252,20 @@ async function refreshStatus() {
     document.getElementById('statTotal').textContent = d.products_count ?? 0;
     document.getElementById('statSync').textContent = fmtDt(d.last_products_sync);
     document.getElementById('statApi').textContent = d.has_ozon_creds ? 'подключён' : 'нет ключей';
+    if (d.sales_window_days) document.getElementById('salesWindowInput').value = d.sales_window_days;
+    if (d.target_coverage_days) {
+      TARGET_DAYS = d.target_coverage_days;
+      document.getElementById('targetDaysInput').value = TARGET_DAYS;
+    }
+    const info = document.getElementById('stocksSyncInfo');
+    if (info) info.textContent = d.last_stocks_sync ? ('синк: ' + fmtDt(d.last_stocks_sync)) : '';
 
     if (d.sync?.running) {
       dot.className = 'tb-dot loading';
       label.textContent = 'синк…';
     } else if (d.sync?.last_error) {
       dot.className = 'tb-dot error';
-      label.textContent = 'ошибка синка';
+      label.textContent = 'ошибка';
     } else if (!d.configured) {
       dot.className = 'tb-dot error';
       label.textContent = 'нет конфига';
@@ -213,17 +277,16 @@ async function refreshStatus() {
     if (!d.configured) {
       banner.style.display = 'block';
       banner.className = 'banner warn';
-      banner.innerHTML = '<b>Нужна настройка.</b> Задай в Railway: <code>OZON_CLIENT_ID</code>, <code>OZON_API_KEY</code>, <code>SUPABASE_URL</code>, <code>SUPABASE_KEY</code> и накати <code>supabase/schema.sql</code>.';
+      banner.innerHTML = '<b>Нужна настройка.</b> Railway: OZON_CLIENT_ID, OZON_API_KEY, SUPABASE_URL, SUPABASE_KEY.';
     } else if (!d.db_ok) {
       banner.style.display = 'block';
       banner.className = 'banner warn';
       const extra = d.db_error ? `<br><code>${esc(d.db_error)}</code>` : '';
-      const urlHint = d.supabase_url ? `<br>URL в Railway: <code>${esc(d.supabase_url)}</code>` : '';
-      banner.innerHTML = '<b>Supabase недоступен или нет таблицы products.</b> Проверь Project URL / service_role в Railway и Table Editor (таблица <code>products</code>).' + urlHint + extra;
+      banner.innerHTML = '<b>Supabase недоступен.</b> Проверь URL / service_role и таблицы.' + extra;
     } else if ((d.products_count || 0) === 0) {
       banner.style.display = 'block';
       banner.className = 'banner';
-      banner.innerHTML = 'База пустая. Нажми <b>Обновить товары</b> — подтянем карточки из Seller API.';
+      banner.innerHTML = 'База пустая. Нажми <b>Обновить товары</b>.';
     } else {
       banner.style.display = 'none';
     }
@@ -243,21 +306,16 @@ async function loadProducts() {
     url.searchParams.set('limit', '200');
     if (q) url.searchParams.set('q', q);
     const r = await fetch(url);
+    if (!r.ok) throw new Error(await readErr(r));
     const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || r.statusText);
-
     document.getElementById('statFilter').textContent =
       ARCHIVED === 'active' ? 'активные' : ARCHIVED === 'archived' ? 'архив' : 'все';
-    if (typeof d.total === 'number') {
-      document.getElementById('statTotal').textContent = d.total;
-    }
-
+    if (typeof d.total === 'number') document.getElementById('statTotal').textContent = d.total;
     const items = d.items || [];
     if (!items.length) {
-      tbody.innerHTML = `<tr><td colspan="6"><div class="empty"><b>Ничего не найдено</b>Синкни товары или измени фильтр.</div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="6"><div class="empty"><b>Ничего не найдено</b></div></td></tr>`;
       return;
     }
-
     tbody.innerHTML = items.map(it => {
       const img = it.primary_image
         ? `<img src="${esc(it.primary_image)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
@@ -265,7 +323,6 @@ async function loadProducts() {
       const stocks = [];
       if (it.has_fbo_stocks) stocks.push('<span class="tag stock">FBO</span>');
       if (it.has_fbs_stocks) stocks.push('<span class="tag stock">FBS</span>');
-      const stockHtml = stocks.length ? stocks.join(' ') : '<span class="tag">нет</span>';
       const status = it.archived
         ? '<span class="tag arc">архив</span>'
         : `<span class="tag ok">${esc(it.visibility || 'active')}</span>`;
@@ -274,7 +331,7 @@ async function loadProducts() {
         <td class="mono">${esc(it.offer_id || '—')}</td>
         <td class="mono">${esc(it.sku ?? '—')}</td>
         <td class="mono">${money(it.marketing_price ?? it.price)}</td>
-        <td>${stockHtml}</td>
+        <td>${stocks.length ? stocks.join(' ') : '<span class="tag">нет</span>'}</td>
         <td>${status}</td>
       </tr>`;
     }).join('');
@@ -284,15 +341,13 @@ async function loadProducts() {
 }
 
 async function syncProducts() {
-  const btn = document.getElementById('btnSync');
+  const btn = document.getElementById('btnTopSync');
   btn.disabled = true;
-  btn.textContent = 'Синк…';
   document.getElementById('syncDot').className = 'tb-dot loading';
-  document.getElementById('syncLabel').textContent = 'синк…';
+  document.getElementById('syncLabel').textContent = 'синк товаров…';
   try {
     const r = await fetch('/api/sync-products', { method: 'POST' });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail || d));
+    if (!r.ok) throw new Error(await readErr(r));
     await refreshStatus();
     await loadProducts();
   } catch (e) {
@@ -304,12 +359,249 @@ async function syncProducts() {
     document.getElementById('syncLabel').textContent = 'ошибка';
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Обновить товары';
   }
 }
 
-function esc(s) {
-  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+/* ── Stocks matrix (как WB: заказы / дни / поставить) ── */
+
+function isWhEnabled(w) { return !WH_DISABLED.includes(w); }
+function toggleWh(w) {
+  if (WH_DISABLED.includes(w)) WH_DISABLED = WH_DISABLED.filter(x => x !== w);
+  else WH_DISABLED.push(w);
+  localStorage.setItem('oz_wh_disabled', JSON.stringify(WH_DISABLED));
+  renderStocks();
+}
+
+async function setSalesWindow(v) {
+  const days = Math.max(1, parseInt(v, 10) || 14);
+  await fetch('/api/save-setting', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ key: 'sales_window_days', value: days }),
+  });
+  await syncStocks();
+}
+
+async function setTargetDays(v) {
+  TARGET_DAYS = Math.max(1, parseInt(v, 10) || 30);
+  await fetch('/api/save-setting', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ key: 'target_coverage_days', value: TARGET_DAYS }),
+  });
+  renderStocks();
+}
+
+async function loadStocks() {
+  const root = document.getElementById('stocksRoot');
+  root.innerHTML = '<div class="empty">Загрузка…</div>';
+  try {
+    const r = await fetch('/api/stocks');
+    if (!r.ok) throw new Error(await readErr(r));
+    const d = await r.json();
+    STOCK_TOTALS = d.totals || [];
+    STOCK_WH = d.warehouses || [];
+    if (d.target_coverage_days) TARGET_DAYS = d.target_coverage_days;
+    document.getElementById('targetDaysInput').value = TARGET_DAYS;
+    document.getElementById('salesWindowInput').value = d.sales_window_days || 14;
+    document.getElementById('stocksSyncInfo').textContent = d.last_stocks_sync ? ('синк: ' + fmtDt(d.last_stocks_sync)) : '';
+    const ban = document.getElementById('stocksBanner');
+    if (!STOCK_TOTALS.length) {
+      ban.style.display = 'block';
+      ban.className = 'banner';
+      ban.innerHTML = 'Нет остатков в базе. Нажми <b>Обновить остатки</b>. Если таблицы нет — выполни <code>stocks_migration.sql</code> в Supabase.';
+    } else {
+      ban.style.display = 'none';
+    }
+    renderStocks();
+  } catch (e) {
+    root.innerHTML = `<div class="empty"><b>Ошибка</b>${esc(e.message || e)}<br><span style="font-size:12px">Если нет таблицы stock_totals — накати supabase/stocks_migration.sql</span></div>`;
+  }
+}
+
+async function syncStocks() {
+  const btn = document.getElementById('stocksSyncBtn');
+  const top = document.getElementById('btnTopSync');
+  btn.disabled = true; top.disabled = true;
+  btn.textContent = 'Синк…';
+  document.getElementById('syncDot').className = 'tb-dot loading';
+  document.getElementById('syncLabel').textContent = 'синк остатков…';
+  const ban = document.getElementById('stocksBanner');
+  try {
+    const r = await fetch('/api/sync-stocks', { method: 'POST' });
+    if (!r.ok) throw new Error(await readErr(r));
+    const d = await r.json();
+    ban.style.display = 'block';
+    ban.className = 'banner';
+    ban.innerHTML = `Готово: артикулов <b>${fmt(d.totals)}</b>, строк складов <b>${fmt(d.warehouses)}</b>, окно ${d.period_days} дн.`;
+    await refreshStatus();
+    await loadStocks();
+  } catch (e) {
+    ban.style.display = 'block';
+    ban.className = 'banner err';
+    ban.innerHTML = '<b>Синк остатков не удался.</b> ' + esc(e.message || e);
+    document.getElementById('syncDot').className = 'tb-dot error';
+    document.getElementById('syncLabel').textContent = 'ошибка';
+  } finally {
+    btn.disabled = false; top.disabled = false;
+    btn.textContent = '↻ Обновить остатки';
+  }
+}
+
+function buildStockMatrix() {
+  const q = (document.getElementById('stSearch').value || '').toLowerCase();
+  const whNames = [...new Set(STOCK_WH.map(w => w.warehouse_name).filter(Boolean))];
+  // сортировка складов: больше суммарного стока выше
+  const whStock = {};
+  STOCK_WH.forEach(w => { whStock[w.warehouse_name] = (whStock[w.warehouse_name] || 0) + (w.free_to_sell || w.present || 0); });
+  whNames.sort((a, b) => (whStock[b] || 0) - (whStock[a] || 0));
+  WH_DISABLED = WH_DISABLED.filter(w => whNames.includes(w));
+
+  const byOfferWh = {};
+  STOCK_WH.forEach(w => {
+    const k = w.offer_id;
+    if (!byOfferWh[k]) byOfferWh[k] = {};
+    byOfferWh[k][w.warehouse_name] = w;
+  });
+
+  let articles = STOCK_TOTALS.map(t => {
+    const period = t.period_days || 14;
+    const cells = {};
+    let rawRec = 0, ozStock = 0, ozOrders = t.ordered_qty || 0;
+    whNames.forEach(w => {
+      const r = (byOfferWh[t.offer_id] || {})[w];
+      const enabled = isWhEnabled(w);
+      if (!r) { cells[w] = null; return; }
+      const stock = r.free_to_sell != null ? r.free_to_sell : (r.present || 0);
+      const orders = r.ordered_qty || 0;
+      const daily = period ? orders / period : 0;
+      const daysLeft = daily > 0 ? stock / daily : null;
+      const recommend = daily > 0 ? Math.max(0, Math.round(daily * TARGET_DAYS - stock)) : 0;
+      cells[w] = { stock, orders, daily, daysLeft, recommend, enabled, channel: r.channel, reserved: r.reserved || 0 };
+      if (enabled) { rawRec += recommend; ozStock += stock; }
+    });
+    // Итог «весь Ozon» из totals (FBO+FBS present)
+    const totalStock = t.stock_total != null ? t.stock_total : ((t.fbo_present || 0) + (t.fbs_present || 0));
+    const dailyAll = period ? ozOrders / period : 0;
+    const daysAll = dailyAll > 0 ? totalStock / dailyAll : null;
+    const recAll = dailyAll > 0 ? Math.max(0, Math.round(dailyAll * TARGET_DAYS - totalStock)) : 0;
+    return {
+      offer_id: t.offer_id,
+      sku: t.sku,
+      name: t.name,
+      primary_image: t.primary_image,
+      fbo: t.fbo_present || 0,
+      fbs: t.fbs_present || 0,
+      totalStock,
+      ordered_qty: ozOrders,
+      period_days: period,
+      daysAll,
+      recAll,
+      totalRecommend: rawRec,
+      ozStockEnabled: ozStock,
+      cells,
+    };
+  });
+
+  if (q) {
+    articles = articles.filter(a =>
+      (a.offer_id || '').toLowerCase().includes(q) ||
+      (a.name || '').toLowerCase().includes(q) ||
+      String(a.sku || '').includes(q)
+    );
+  }
+  articles.sort((a, b) => b.recAll - a.recAll || b.totalRecommend - a.totalRecommend);
+  return { warehouses: whNames, articles };
+}
+
+function renderStocks() {
+  const matrix = buildStockMatrix();
+  const { warehouses, articles } = matrix;
+
+  let critical = 0;
+  articles.forEach(a => {
+    if (a.daysAll != null && a.daysAll < TARGET_DAYS) critical++;
+    Object.entries(a.cells).forEach(([w, c]) => {
+      if (!c || !isWhEnabled(w)) return;
+      if (c.daysLeft != null && c.daysLeft < TARGET_DAYS) critical++;
+    });
+  });
+  const totalStock = articles.reduce((s, a) => s + (a.totalStock || 0), 0);
+  const totalRec = articles.reduce((s, a) => s + (a.recAll || 0), 0);
+  const enabledN = warehouses.filter(isWhEnabled).length;
+
+  document.getElementById('stocksCards').innerHTML = [
+    ['Артикулов', fmt(articles.length)],
+    ['Складов', enabledN === warehouses.length ? fmt(warehouses.length) : `${enabledN}/${warehouses.length}`],
+    ['Остаток на Ozon, шт', fmt(totalStock)],
+    ['FBO / FBS', `${fmt(articles.reduce((s,a)=>s+a.fbo,0))} / ${fmt(articles.reduce((s,a)=>s+a.fbs,0))}`],
+    ['Рекомендовано поставить', fmt(totalRec), 'color:var(--oz-blue)'],
+    [`Критичных (<${TARGET_DAYS} дн.)`, fmt(critical), critical ? 'color:var(--red)' : ''],
+  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+
+  if (!articles.length) {
+    document.getElementById('stocksRoot').innerHTML = '<div class="empty"><b>Пусто</b>Обнови остатки или измени поиск</div>';
+    return;
+  }
+
+  let head1 = `<th class="sticky">Товар</th>
+    <th>Весь Ozon</th><th></th><th></th><th></th>`;
+  warehouses.forEach(w => {
+    const on = isWhEnabled(w);
+    head1 += `<th class="wh-head cell-off" colspan="4"><label class="wh-toggle"><input type="checkbox" ${on?'checked':''} onchange='toggleWh(${JSON.stringify(w)})'> ${esc(w)}</label></th>`;
+  });
+
+  let head2 = `<th class="sticky"></th>
+    <th class="wh-sub tot-col">Остаток</th><th class="wh-sub tot-col">Заказы</th><th class="wh-sub tot-col">Дн.</th><th class="wh-sub tot-col">Поставить</th>`;
+  warehouses.forEach(() => {
+    head2 += `<th class="wh-sub">Ост.</th><th class="wh-sub">Зак.</th><th class="wh-sub">Дн.</th><th class="wh-sub">Пост.</th>`;
+  });
+
+  const rows = articles.map(a => {
+    const img = a.primary_image
+      ? `<img src="${esc(a.primary_image)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+      : `<div class="prod-ph">n/a</div>`;
+    const dlCls = a.daysAll == null ? 'muted' : (a.daysAll < TARGET_DAYS ? 'm-urgent' : 'm-ok');
+    const dl = a.daysAll == null ? '—' : Math.round(a.daysAll);
+    let html = `<tr>
+      <td class="sticky"><div class="prod">${img}<div>
+        <div class="prod-name">${esc(a.offer_id)}</div>
+        <div class="prod-meta">${esc((a.name||'').slice(0,60))} · sku ${esc(a.sku ?? '—')} · FBO ${fmt(a.fbo)} / FBS ${fmt(a.fbs)}</div>
+      </div></div></td>
+      <td class="num tot-col">${fmt(a.totalStock)}</td>
+      <td class="num tot-col">${fmt(a.ordered_qty)}</td>
+      <td class="num tot-col ${dlCls}">${dl}</td>
+      <td class="num tot-col"><b>${fmt(a.recAll)}</b></td>`;
+    warehouses.forEach(w => {
+      const c = a.cells[w];
+      const off = isWhEnabled(w) ? '' : 'cell-off';
+      if (!c) {
+        html += `<td class="num muted ${off}">—</td><td class="num muted ${off}">—</td><td class="num muted ${off}">—</td><td class="num muted ${off}">—</td>`;
+        return;
+      }
+      const dcls = c.daysLeft == null ? 'muted' : (c.daysLeft < TARGET_DAYS ? 'm-urgent' : 'm-ok');
+      const d = c.daysLeft == null ? '—' : Math.round(c.daysLeft);
+      html += `<td class="num ${off}">${fmt(c.stock)}</td>
+        <td class="num ${off}">${fmt(c.orders)}</td>
+        <td class="num ${dcls} ${off}">${d}</td>
+        <td class="num ${off}">${fmt(c.recommend)}</td>`;
+    });
+    html += '</tr>';
+    return html;
+  }).join('');
+
+  document.getElementById('stocksRoot').innerHTML = `
+    <div class="matrix-wrap">
+      <table class="matrix">
+        <thead><tr>${head1}</tr><tr>${head2}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div style="margin-top:10px;font-size:12px;color:var(--oz-muted)">
+      Логика как на WB: <b>дневной темп = заказы / окно</b>, <b>дней хватит = остаток / темп</b>,
+      <b>поставить = темп × целевой запас − остаток</b>. Заказы по складам — пропорционально остатку.
+      Колонка «Весь Ozon» = FBO + FBS.
+    </div>`;
 }
 
 refreshStatus();
