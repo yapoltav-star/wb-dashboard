@@ -140,6 +140,17 @@ tr:hover td{background:#F8FAFF}
 .pace-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:#FEE4E2;color:#B42318}
 .matrix tr.pace-down td.sticky{background:#FFF8F7}
 .matrix tr.pace-up td.sticky{background:#F6FEF9}
+#paceMatrix tr.total-row td{
+  background:#EEF4FF!important;font-weight:700;border-top:2px solid #9AA3B2;border-bottom:2px solid #9AA3B2;
+}
+#paceMatrix tr.total-row td.sticky{background:#D6E4FF!important;z-index:4}
+#paceMatrix tr.total-row td.pg-stock{background:#E2E6ED!important}
+#paceMatrix tr.total-row td.pg-orders{background:#D6E4FF!important}
+#paceMatrix tr.total-row td.pg-opens{background:#FDECC8!important}
+#paceMatrix tr.total-row td.pg-cart{background:#D1FADF!important}
+#paceMatrix tr.total-row td.pg-cr{background:#CCFBF1!important}
+.total-label{font-weight:700}
+.total-sub{font-size:11px;color:var(--oz-muted);font-weight:500;margin-top:2px}
 .idx{display:inline-flex;align-items:center;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
 .idx-GREEN{background:#D1FADF;color:#027A48}
 .idx-YELLOW{background:#FEF0C7;color:#B54708}
@@ -1146,6 +1157,11 @@ function drawSalesPace() {
   }
 
   let arts = [...(PACE_DATA.articles || [])].filter(a => (a.orders_today || 0) > 0 || (a.orders_yesterday || 0) > 0);
+  // Итого по кабинету — до поиска/фильтра
+  const allCabinet = arts.map(a => ({
+    ...a,
+    vendor_code: a.vendor_code || a.offer_id,
+  }));
   const q = ((document.getElementById('paceSearch') || {}).value || '').toLowerCase().trim();
   if (q) arts = arts.filter(a =>
     String(a.vendor_code || a.offer_id || '').toLowerCase().includes(q) ||
@@ -1227,6 +1243,44 @@ function drawSalesPace() {
     ${paceTh('Δ', 'cart_cr_delta', 12, 'pg-cr')}
   </tr>`;
 
+  // Итого по всему кабинету (все артикулы с заказами, без поиска/фильтра)
+  const tot = {
+    stock: allCabinet.reduce((s, a) => s + (a.stock || 0), 0),
+    orders_today: allCabinet.reduce((s, a) => s + (a.orders_today || 0), 0),
+    orders_yesterday: allCabinet.reduce((s, a) => s + (a.orders_yesterday || 0), 0),
+    opens_today: allCabinet.reduce((s, a) => s + (a.opens_today || 0), 0),
+    opens_yesterday: allCabinet.reduce((s, a) => s + (a.opens_yesterday || 0), 0),
+    cart_today: allCabinet.reduce((s, a) => s + (a.cart_today || 0), 0),
+    cart_yesterday: allCabinet.reduce((s, a) => s + (a.cart_yesterday || 0), 0),
+  };
+  tot.orders_delta = tot.orders_today - tot.orders_yesterday;
+  const funnelOk = allCabinet.some(a => a.opens_today != null || a.cart_today != null);
+  tot.opens_delta = funnelOk ? tot.opens_today - tot.opens_yesterday : null;
+  tot.cart_delta = funnelOk ? tot.cart_today - tot.cart_yesterday : null;
+  const crT = (funnelOk && tot.opens_today > 0) ? Math.round(1000 * tot.cart_today / tot.opens_today) / 10 : null;
+  const crY = (funnelOk && tot.opens_yesterday > 0) ? Math.round(1000 * tot.cart_yesterday / tot.opens_yesterday) / 10 : null;
+  tot.cart_cr_today = crT;
+  tot.cart_cr_delta = (crT != null && crY != null) ? Math.round((crT - crY) * 10) / 10 : null;
+
+  const totalRow = `<tr class="total-row">
+      <td class="sticky">
+        <div class="total-label">Весь кабинет</div>
+        <div class="total-sub">${fmt(allCabinet.length)} арт.</div>
+      </td>
+      <td class="num pg-start pg-stock">${fmt(tot.stock)}</td>
+      <td class="num pg-start pg-orders">${fmt(tot.orders_today)}</td>
+      <td class="num pg-orders">${fmt(tot.orders_yesterday)}</td>
+      <td class="num pg-orders">${paceDeltaHtml(tot.orders_delta)}</td>
+      <td class="num pg-start pg-opens">${funnelOk ? fmt(tot.opens_today) : '—'}</td>
+      <td class="num pg-opens">${funnelOk ? fmt(tot.opens_yesterday) : '—'}</td>
+      <td class="num pg-opens">${paceDeltaHtml(tot.opens_delta)}</td>
+      <td class="num pg-start pg-cart">${funnelOk ? fmt(tot.cart_today) : '—'}</td>
+      <td class="num pg-cart">${funnelOk ? fmt(tot.cart_yesterday) : '—'}</td>
+      <td class="num pg-cart">${paceDeltaHtml(tot.cart_delta)}</td>
+      <td class="num pg-start pg-cr">${tot.cart_cr_today == null ? '—' : tot.cart_cr_today + '%'}</td>
+      <td class="num pg-cr">${paceCrDeltaHtml(tot.cart_cr_delta)}</td>
+    </tr>`;
+
   const rows = ordered.map(a => {
     const offer = a.vendor_code || a.offer_id;
     const cls = a.isPinned ? 'pinned' : ((a.orders_delta || 0) < 0 || a.stock_linked ? 'pace-down' : ((a.orders_delta || 0) > 0 ? 'pace-up' : ''));
@@ -1255,10 +1309,10 @@ function drawSalesPace() {
       <table class="matrix" id="paceMatrix">
         ${colgroup}
         <thead>${head}</thead>
-        <tbody>${rows}</tbody>
+        <tbody>${totalRow}${rows}</tbody>
       </table>
     </div>
-    <div class="hint">Как на WB: сравниваем <b>то же время</b> текущего периода с прошлым. Δ — абсолютная разница заказов (не %). Тяни край заголовка колонки — шире/уже. Заказы из FBO/FBS отправлений, показы/корзина — из аналитики Ozon.</div>`;
+    <div class="hint">Первая строка — <b>весь кабинет</b> (суммы по всем артикулам с заказами, без учёта поиска/фильтра). Сравниваем <b>то же время</b> текущего периода с прошлым. Δ — абсолютная разница. CR корзины = корзина ÷ показы.</div>`;
   attachColResizers(document.getElementById('paceMatrix'), 'pace');
 }
 
