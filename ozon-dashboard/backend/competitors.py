@@ -213,6 +213,9 @@ def parse_competitive_position(rows: list[list], filename: str = "") -> dict:
         url = str(_g(row, c_url) or "").strip()
         if not url and sku:
             url = f"https://www.ozon.ru/product/{sku}/"
+        ordered_sum = _to_float(_g(row, c_sum))
+        ordered_qty = _to_int(_g(row, c_qty))
+        avg_price = round(ordered_sum / ordered_qty, 2) if ordered_qty > 0 else 0.0
         items.append({
             "rank": _to_int(_g(row, c_rank)) if _g(row, c_rank) not in (None, "") else len(items) + 1,
             "competitor": str(_g(row, c_comp) or "").strip(),
@@ -222,8 +225,9 @@ def parse_competitive_position(rows: list[list], filename: str = "") -> dict:
             "sku": sku,
             "cat2": str(_g(row, c_cat2) or "").strip(),
             "cat3": str(_g(row, c_cat3) or "").strip(),
-            "ordered_sum": _to_float(_g(row, c_sum)),
-            "ordered_qty": _to_int(_g(row, c_qty)),
+            "ordered_sum": ordered_sum,
+            "ordered_qty": ordered_qty,
+            "avg_price": avg_price,
             "is_own": False,
         })
     if not items:

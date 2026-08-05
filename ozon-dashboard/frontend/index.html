@@ -2743,6 +2743,9 @@ function drawCompPosition() {
     const name = r.url
       ? `<a class="prod-link" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name || '—')}</a>`
       : esc(r.name || '—');
+    const avg = (r.avg_price != null && r.avg_price !== '')
+      ? Number(r.avg_price)
+      : ((r.ordered_qty > 0) ? (r.ordered_sum || 0) / r.ordered_qty : 0);
     return `<tr${own}>
       <td class="num mono">${fmt(r.rank)}</td>
       <td>${esc(r.competitor || '—')}${r.is_own ? ' <span class="tag stock">мой</span>' : ''}</td>
@@ -2751,12 +2754,13 @@ function drawCompPosition() {
       <td class="num"><div>${fmt(Math.round(r.ordered_sum || 0))}</div>
         <div style="height:3px;background:#E8EEF7;border-radius:2px;margin-top:4px"><div style="height:100%;width:${pct}%;background:var(--oz-blue);border-radius:2px"></div></div></td>
       <td class="num">${fmt(r.ordered_qty)}</td>
+      <td class="num">${avg ? fmt(Math.round(avg)) : '—'}</td>
     </tr>`;
   }).join('');
   root.innerHTML = `<div class="tbl-wrap"><table>
-    <thead><tr><th>#</th><th>Конкурент</th><th>Товар</th><th>SKU</th><th>Заказано, ₽</th><th>Шт</th></tr></thead>
+    <thead><tr><th>#</th><th>Конкурент</th><th>Товар</th><th>SKU</th><th>Заказано, ₽</th><th>Шт</th><th>Ср. цена</th></tr></thead>
     <tbody>${body}</tbody></table></div>
-    <div class="hint">До 500 строк · данные из общей базы Supabase</div>`;
+    <div class="hint">До 500 строк · ср. цена = сумма ÷ шт · данные из общей базы</div>`;
 }
 
 function toggleBrandsOnlyDetail() {
