@@ -3617,17 +3617,91 @@ async function triggerSalesPaceSync() {
 }
 
 // ─────────── Акции (Excel из Календаря акций WB) ───────────
-let PROMO_SESSIONS = JSON.parse(localStorage.getItem('promo_excel_sessions') || '[]');
-let PROMO_ACTIVE_ID = localStorage.getItem('promo_excel_active') || null;
+// Сессии общие на всех устройствах (Supabase settings), не localStorage.
+let PROMO_SESSIONS = [];
+let PROMO_ACTIVE_ID = null;
 let PROMO_XLS_FILTER = 'all';
+let PROMO_LOADED = false;
+let PROMO_LOADING = false;
+let PROMO_SAVE_TIMER = null;
+let PROMO_SAVE_SEQ = 0;
 
-function savePromoSessions() {
-  localStorage.setItem('promo_excel_sessions', JSON.stringify(PROMO_SESSIONS));
-  if(PROMO_ACTIVE_ID) localStorage.setItem('promo_excel_active', PROMO_ACTIVE_ID);
-  else localStorage.removeItem('promo_excel_active');
+async function loadPromoSessions() {
+  if(PROMO_LOADING) return;
+  PROMO_LOADING = true;
+  const info = document.getElementById('promoSyncInfo');
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/promo-sessions`);
+    const d = await r.json();
+    let sessions = Array.isArray(d.sessions) ? d.sessions : [];
+    let activeId = d.active_id || null;
+
+    // разовый перенос со старого localStorage этого браузера
+    let local = [];
+    try { local = JSON.parse(localStorage.getItem('promo_excel_sessions') || '[]'); } catch(e) { local = []; }
+    if(!Array.isArray(local)) local = [];
+    if(!sessions.length && local.length) {
+      if(info) info.textContent = 'Переносим акции в общую базу…';
+      sessions = local;
+      activeId = localStorage.getItem('promo_excel_active') || (local[0] && local[0].id) || null;
+      const ok = await persistPromoSessions(sessions, activeId);
+      if(ok) {
+        localStorage.removeItem('promo_excel_sessions');
+        localStorage.removeItem('promo_excel_active');
+      }
+    } else if(sessions.length) {
+      localStorage.removeItem('promo_excel_sessions');
+      localStorage.removeItem('promo_excel_active');
+    }
+
+    PROMO_SESSIONS = sessions;
+    PROMO_ACTIVE_ID = activeId;
+    PROMO_LOADED = true;
+  } catch(e) {
+    console.error('loadPromoSessions', e);
+    if(info) info.textContent = 'Не удалось загрузить акции с сервера';
+  } finally {
+    PROMO_LOADING = false;
+  }
 }
 
-function renderPromotions() {
+async function persistPromoSessions(sessions, activeId) {
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/promo-sessions`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ sessions: sessions || [], active_id: activeId || null }),
+    });
+    const d = await r.json();
+    if(d.error) {
+      console.error('persistPromoSessions', d.error);
+      return false;
+    }
+    return true;
+  } catch(e) {
+    console.error('persistPromoSessions', e);
+    return false;
+  }
+}
+
+function savePromoSessions() {
+  const seq = ++PROMO_SAVE_SEQ;
+  clearTimeout(PROMO_SAVE_TIMER);
+  PROMO_SAVE_TIMER = setTimeout(async () => {
+    const info = document.getElementById('promoSyncInfo');
+    if(info) info.textContent = 'Сохраняем…';
+    const ok = await persistPromoSessions(PROMO_SESSIONS, PROMO_ACTIVE_ID);
+    if(seq !== PROMO_SAVE_SEQ) return;
+    if(info) info.textContent = ok ? '' : 'Ошибка сохранения акций';
+  }, 250);
+}
+
+async function renderPromotions() {
+  const root = document.getElementById('promoRoot');
+  if(!PROMO_LOADED) {
+    if(root) root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Загружаем акции…</span></div>';
+    await loadPromoSessions();
+  }
   drawPromoExcel();
 }
 
