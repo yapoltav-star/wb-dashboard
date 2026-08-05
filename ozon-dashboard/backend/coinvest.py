@@ -410,15 +410,14 @@ def sync_coinvest(
             note = "Витрина ozon.ru недоступна с сервера. Цена на сайте из Premium /v1/product/prices/details."
         elif premium_note:
             note = (
-                "Не удалось открыть клиентский ozon.ru с сервера (антибот/гео). "
+                "Не удалось открыть клиентский ozon.ru с сервера (антибот). "
                 "Premium Pro тоже не отдал customer_price. "
-                "Соинвест — оценка по акциям / marketing_seller_price. "
-                "На Railway в RU/EU или с OZON_CLIENT_PROXY витрина обычно открывается."
+                "Соинвест — оценка по акциям. При необходимости задай OZON_CLIENT_PROXY."
             )
         elif n_site == 0:
             note = (
                 "Цена на сайте не получена: витрина ozon.ru недоступна с этого сервера. "
-                "Соинвест считаем по action_price акций. Задай OZON_CLIENT_PROXY или задеплой ближе к RU."
+                "Соинвест считаем по action_price акций. При необходимости задай OZON_CLIENT_PROXY."
             )
 
         COINVEST_CACHE.update({

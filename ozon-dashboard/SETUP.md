@@ -43,8 +43,9 @@ SUPABASE_KEY=...   # service_role, не anon
 (composer-api), как `card.wb.ru` на WB. Соинвест = цена продавца (с акциями) − цена на сайте.
 
 Seller API больше не отдаёт `marketing_price`. Premium `/v1/product/prices/details` —
-запасной путь, если витрина с сервера недоступна (антибот/гео). Тогда задай `OZON_CLIENT_PROXY`
-или задеплой ближе к RU.
+запасной путь, если витрина с сервера недоступна (антибот). Сервис в **EU West**;
+если всё равно блок — задай `OZON_CLIENT_PROXY`.
+
 ### Реклама
 
 Отдельные переменные Railway:
