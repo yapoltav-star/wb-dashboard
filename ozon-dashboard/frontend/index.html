@@ -558,6 +558,8 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
       <input id="brandsSearch" placeholder="Бренд…" oninput="drawCompBrands()">
     </div>
     <button class="filter-btn" id="brandsFltDetail" onclick="toggleBrandsOnlyDetail()">Только с отчётом</button>
+    <button class="filter-btn" id="brandsFltHidden" onclick="toggleBrandsShowHidden()">Скрытые</button>
+    <button class="action-btn" id="brandsUnhideAllBtn" onclick="unhideAllBrands()" style="display:none;padding:4px 10px;font-size:12px">Показать все</button>
     <span id="brandsInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
     <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button class="action-btn" id="brandsDelBtn" onclick="deleteCompReport('brands')" style="display:none">🗑 Удалить сводку</button>
@@ -2568,12 +2570,13 @@ async function saveGroups() {
 }
 
 /* ── Конкуренты (общая база Supabase) ── */
-let COMP_ALL = { position: null, brands: null, brand_details: [], brand_detail_map: {} };
+let COMP_ALL = { position: null, brands: null, brand_details: [], brand_detail_map: {}, hidden_brands: [] };
 let COMP_PAGE = 'position'; // position | brands | brand
 let COMP_FILTER = 'all';
 let COMP_SORT = 'ordered_sum';
 let COMP_BRAND = '';
 let BRANDS_ONLY_DETAIL = false;
+let BRANDS_SHOW_HIDDEN = false;
 
 function pct1(n) {
   if (n == null || n === '') return '—';
@@ -2761,16 +2764,65 @@ function toggleBrandsOnlyDetail() {
   document.getElementById('brandsFltDetail')?.classList.toggle('on', BRANDS_ONLY_DETAIL);
   drawCompBrands();
 }
+function toggleBrandsShowHidden() {
+  BRANDS_SHOW_HIDDEN = !BRANDS_SHOW_HIDDEN;
+  document.getElementById('brandsFltHidden')?.classList.toggle('on', BRANDS_SHOW_HIDDEN);
+  drawCompBrands();
+}
+async function setBrandHidden(brand, hide) {
+  if (!brand) return;
+  try {
+    const r = await fetch('/api/competitors-hide-brand', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ brand, hide: !!hide }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error || ('HTTP ' + r.status));
+    COMP_ALL = d;
+    COMP_ALL._loaded = true;
+    drawCompBrands();
+  } catch (e) {
+    alert('Не удалось обновить скрытие: ' + (e.message || e));
+  }
+}
+async function unhideAllBrands() {
+  if (!confirm('Показать все скрытые бренды?')) return;
+  try {
+    const r = await fetch('/api/competitors-hide-brand', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clear_all: true }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || d.error || ('HTTP ' + r.status));
+    COMP_ALL = d;
+    COMP_ALL._loaded = true;
+    BRANDS_SHOW_HIDDEN = false;
+    document.getElementById('brandsFltHidden')?.classList.remove('on');
+    drawCompBrands();
+  } catch (e) {
+    alert('Ошибка: ' + (e.message || e));
+  }
+}
 function drawCompBrands() {
   const root = document.getElementById('brandsRoot');
   const cards = document.getElementById('brandsCards');
   const info = document.getElementById('brandsInfo');
   const ban = document.getElementById('brandsBanner');
   const delBtn = document.getElementById('brandsDelBtn');
+  const unhideBtn = document.getElementById('brandsUnhideAllBtn');
+  const fltHidden = document.getElementById('brandsFltHidden');
   if (!root) return;
   const br = COMP_ALL.brands;
   const rowsAll = (br && br.rows) || [];
+  const hiddenCount = br?.hidden_count || (COMP_ALL.hidden_brands || []).length || 0;
   if (delBtn) delBtn.style.display = rowsAll.length ? '' : 'none';
+  if (unhideBtn) unhideBtn.style.display = hiddenCount ? '' : 'none';
+  if (fltHidden) {
+    fltHidden.textContent = hiddenCount ? ('Скрытые (' + hiddenCount + ')') : 'Скрытые';
+    fltHidden.classList.toggle('on', BRANDS_SHOW_HIDDEN);
+  }
   if (ban) {
     if (br && (br.period || br.category)) {
       ban.style.display = 'block';
@@ -2778,13 +2830,15 @@ function drawCompBrands() {
       ban.innerHTML = `Сводка брендов в <b>общей базе</b>`
         + (br.category ? ` · ${esc(br.category)}` : '')
         + (br.period ? ` · ${esc(br.period)}` : '')
-        + `. Кликни бренд с отчётом → вкладка «Отчёт бренда».`;
+        + (hiddenCount ? ` · скрыто ${hiddenCount}` : '')
+        + `. Скрытие брендов общее для всех устройств.`;
     } else ban.style.display = 'none';
   }
   cards.innerHTML = [
     ['Брендов', fmt(br?.count || 0), ''],
     ['Оборот, ₽', money(br?.total_sum), ''],
     ['С детальным отчётом', fmt(br?.with_detail || 0), 'color:var(--oz-blue)'],
+    ['Скрыто', fmt(hiddenCount), hiddenCount ? 'color:var(--oz-muted)' : ''],
   ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
   if (info) info.textContent = br?.uploaded_at ? ('в базе ' + fmtDt(br.uploaded_at)) : 'нет в базе';
 
@@ -2793,9 +2847,17 @@ function drawCompBrands() {
     return;
   }
   let rows = [...rowsAll];
+  if (!BRANDS_SHOW_HIDDEN) rows = rows.filter(r => !r.is_hidden);
+  else rows = rows.filter(r => r.is_hidden);
   if (BRANDS_ONLY_DETAIL) rows = rows.filter(r => r.has_detail);
   const q = ((document.getElementById('brandsSearch') || {}).value || '').toLowerCase().trim();
   if (q) rows = rows.filter(r => String(r.brand || '').toLowerCase().includes(q));
+  if (!rows.length) {
+    root.innerHTML = BRANDS_SHOW_HIDDEN
+      ? '<div class="empty"><b>Нет скрытых</b>Все бренды на виду. Нажми «Скрытые», чтобы вернуться к списку.</div>'
+      : '<div class="empty"><b>Пусто</b>Нет брендов по фильтру. Возможно, они скрыты — открой «Скрытые».</div>';
+    return;
+  }
   const body = rows.map(r => {
     const dyn = r.dynamics || 0;
     const dynCls = dyn > 0 ? 'pace-delta-up' : (dyn < 0 ? 'pace-delta-down' : 'pace-delta-flat');
@@ -2804,21 +2866,26 @@ function drawCompBrands() {
     const openBtn = r.has_detail
       ? `<button class="action-btn" style="padding:3px 8px;font-size:11px" onclick="openBrandDetail(${JSON.stringify(r.brand)})">Отчёт →</button>`
       : `<span class="tag">нет отчёта</span>`;
-    return `<tr style="${r.has_detail ? 'background:#F8FAFF' : ''}">
+    const hideBtn = r.is_hidden
+      ? `<button class="action-btn" style="padding:3px 8px;font-size:11px" onclick="setBrandHidden(${JSON.stringify(r.brand)}, false)">Показать</button>`
+      : `<button class="action-btn" style="padding:3px 8px;font-size:11px" onclick="setBrandHidden(${JSON.stringify(r.brand)}, true)">Скрыть</button>`;
+    const rowStyle = r.is_hidden ? 'opacity:.55' : (r.has_detail ? 'background:#F8FAFF' : '');
+    return `<tr style="${rowStyle}">
       <td class="num mono">${fmt(r.rank)}</td>
-      <td><b>${esc(r.brand)}</b></td>
+      <td><b>${esc(r.brand)}</b>${r.is_hidden ? ' <span class="tag">скрыт</span>' : ''}</td>
       <td class="num">${fmt(Math.round(r.ordered_sum || 0))}</td>
       <td class="num ${dynCls}">${dynShow}</td>
       <td class="num">${fmt(r.ordered_qty)}</td>
       <td class="num">${fmt(Math.round(r.avg_price || 0))}</td>
       <td class="num">${pct1(r.buyout_share)}</td>
       <td class="num">${pct1(r.category_share)}</td>
-      <td>${openBtn}</td>
+      <td style="white-space:nowrap;display:flex;gap:6px;align-items:center">${hideBtn}${openBtn}</td>
     </tr>`;
   }).join('');
   root.innerHTML = `<div class="tbl-wrap"><table>
     <thead><tr><th>#</th><th>Бренд</th><th>Сумма, ₽</th><th>Динамика</th><th>Шт</th><th>Ср. цена</th><th>Выкуп</th><th>Доля</th><th></th></tr></thead>
-    <tbody>${body}</tbody></table></div>`;
+    <tbody>${body}</tbody></table></div>
+    <div class="hint">Скрытые бренды не попадают в карточки оборота · список общий для всех устройств</div>`;
 }
 function openBrandDetail(brand) {
   COMP_BRAND = brand;

@@ -22,12 +22,14 @@ logger = logging.getLogger("ozon-dashboard.competitors")
 KEY_POSITION = "ozon_competitor_position"
 KEY_BRANDS = "ozon_competitor_brands"
 KEY_BRAND_DETAILS = "ozon_competitor_brand_details"
+KEY_HIDDEN_BRANDS = "ozon_competitor_hidden_brands"
 NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
 CACHE: dict = {
     "position": None,
     "brands": None,
     "brand_details": {},  # brand -> report
+    "hidden_brands": [],  # list of brand names (exact casing from hide action)
     "loaded": False,
 }
 
@@ -522,10 +524,36 @@ def mark_own_rows(rows: list[dict], products: list[dict] | None) -> None:
         r["is_own"] = (str(r.get("sku") or "") in own_sku) or (str(r.get("offer_id") or "") in own_offer)
 
 
+def _normalize_hidden(raw) -> list[str]:
+    if not raw:
+        return []
+    if isinstance(raw, dict):
+        raw = raw.get("brands") or raw.get("hidden") or []
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for b in raw:
+        name = str(b or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
+def _hidden_set(hidden: list[str] | None) -> set[str]:
+    return {str(b).lower() for b in (hidden or []) if b}
+
+
 def load_all(get_setting: Callable, products: list[dict] | None = None) -> dict:
     position = _load_json(get_setting, KEY_POSITION, None)
     brands = _load_json(get_setting, KEY_BRANDS, None)
     details = _load_json(get_setting, KEY_BRAND_DETAILS, {}) or {}
+    hidden = _normalize_hidden(_load_json(get_setting, KEY_HIDDEN_BRANDS, []))
     if not isinstance(details, dict):
         details = {}
     if position is not None and not (position.get("rows") or []):
@@ -535,14 +563,18 @@ def load_all(get_setting: Callable, products: list[dict] | None = None) -> dict:
 
     if position and products is not None:
         mark_own_rows(position.get("rows") or [], products)
+    hidden_l = _hidden_set(hidden)
     if brands:
         detail_keys = {k.lower() for k in details}
         for r in brands.get("rows") or []:
-            r["has_detail"] = str(r.get("brand") or "").lower() in detail_keys
+            b = str(r.get("brand") or "")
+            r["has_detail"] = b.lower() in detail_keys
+            r["is_hidden"] = b.lower() in hidden_l
 
     CACHE["position"] = position
     CACHE["brands"] = brands
     CACHE["brand_details"] = details
+    CACHE["hidden_brands"] = hidden
     CACHE["loaded"] = True
     return summarize()
 
@@ -551,9 +583,14 @@ def summarize() -> dict:
     position = CACHE.get("position")
     brands = CACHE.get("brands")
     details = CACHE.get("brand_details") or {}
+    hidden = list(CACHE.get("hidden_brands") or [])
+    hidden_l = _hidden_set(hidden)
 
     pos_rows = (position or {}).get("rows") or []
     brand_rows = (brands or {}).get("rows") or []
+    for r in brand_rows:
+        r["is_hidden"] = str(r.get("brand") or "").lower() in hidden_l
+    visible_rows = [r for r in brand_rows if not r.get("is_hidden")]
 
     return {
         "position": {
@@ -573,10 +610,13 @@ def summarize() -> dict:
             "uploaded_at": (brands or {}).get("uploaded_at"),
             "filename": (brands or {}).get("filename"),
             "rows": brand_rows,
-            "count": len(brand_rows),
-            "total_sum": sum(float(r.get("ordered_sum") or 0) for r in brand_rows),
-            "with_detail": sum(1 for r in brand_rows if r.get("has_detail")),
+            "count": len(visible_rows),
+            "total_count": len(brand_rows),
+            "hidden_count": len(brand_rows) - len(visible_rows),
+            "total_sum": sum(float(r.get("ordered_sum") or 0) for r in visible_rows),
+            "with_detail": sum(1 for r in visible_rows if r.get("has_detail")),
         } if brands else None,
+        "hidden_brands": hidden,
         "brand_details": [
             {
                 "brand": d.get("brand"),
@@ -586,6 +626,7 @@ def summarize() -> dict:
                 "filename": d.get("filename"),
                 "count": d.get("count") or len(d.get("rows") or []),
                 "total_sum": sum(float(r.get("ordered_sum") or 0) for r in (d.get("rows") or [])),
+                "is_hidden": str(d.get("brand") or "").lower() in hidden_l,
             }
             for d in sorted(details.values(), key=lambda x: -(sum(float(r.get("ordered_sum") or 0) for r in (x.get("rows") or []))))
         ],
@@ -607,11 +648,17 @@ def save_parsed(save_setting: Callable, get_setting: Callable, payload: dict, pr
         })
         CACHE["position"] = payload
     elif typ == "brands":
-        # preserve has_detail flags from existing details
+        # preserve has_detail flags from existing details; hidden list stays as-is
         details = CACHE.get("brand_details") or _load_json(get_setting, KEY_BRAND_DETAILS, {}) or {}
+        hidden = _normalize_hidden(
+            CACHE.get("hidden_brands") or _load_json(get_setting, KEY_HIDDEN_BRANDS, [])
+        )
         detail_keys = {k.lower() for k in details}
+        hidden_l = _hidden_set(hidden)
         for r in payload.get("rows") or []:
-            r["has_detail"] = str(r.get("brand") or "").lower() in detail_keys
+            b = str(r.get("brand") or "")
+            r["has_detail"] = b.lower() in detail_keys
+            r["is_hidden"] = b.lower() in hidden_l
         save_setting(KEY_BRANDS, {
             "period": payload.get("period"),
             "category": payload.get("category"),
@@ -622,6 +669,7 @@ def save_parsed(save_setting: Callable, get_setting: Callable, payload: dict, pr
             "rows": payload.get("rows") or [],
         })
         CACHE["brands"] = payload
+        CACHE["hidden_brands"] = hidden
     elif typ == "brand_detail":
         brand = payload.get("brand") or "Без бренда"
         details = CACHE.get("brand_details") or _load_json(get_setting, KEY_BRAND_DETAILS, {}) or {}
@@ -642,9 +690,13 @@ def save_parsed(save_setting: Callable, get_setting: Callable, payload: dict, pr
                 r["has_detail"] = str(r.get("brand") or "").lower() == brand.lower() or str(r.get("brand") or "").lower() in {x.lower() for x in details}
             save_setting(KEY_BRANDS, brands)
             CACHE["brands"] = brands
+        if CACHE.get("hidden_brands") is None:
+            CACHE["hidden_brands"] = _normalize_hidden(_load_json(get_setting, KEY_HIDDEN_BRANDS, []))
     else:
         raise ValueError(f"unknown type {typ}")
     CACHE["loaded"] = True
+    if CACHE.get("hidden_brands") is None:
+        CACHE["hidden_brands"] = _normalize_hidden(_load_json(get_setting, KEY_HIDDEN_BRANDS, []))
     return summarize()
 
 
@@ -673,6 +725,45 @@ def delete_report(save_setting: Callable, get_setting: Callable, kind: str, bran
             CACHE["brands"] = brands
     else:
         raise ValueError("kind: position | brands | brand_detail")
+    return summarize()
+
+
+def set_brand_hidden(
+    save_setting: Callable,
+    get_setting: Callable,
+    brand: str | None = None,
+    *,
+    hide: bool = True,
+    brands: list[str] | None = None,
+    clear_all: bool = False,
+) -> dict:
+    """Скрыть / показать бренды. Список в общей базе (все устройства)."""
+    if not CACHE.get("loaded"):
+        load_all(get_setting)
+
+    if clear_all:
+        hidden: list[str] = []
+    else:
+        hidden = _normalize_hidden(
+            CACHE.get("hidden_brands") or _load_json(get_setting, KEY_HIDDEN_BRANDS, [])
+        )
+        names: list[str] = []
+        if brands:
+            names.extend(str(b).strip() for b in brands if str(b).strip())
+        if brand and str(brand).strip():
+            names.append(str(brand).strip())
+        if not names:
+            raise ValueError("нужен brand или brands")
+        for name in names:
+            key = name.lower()
+            if hide:
+                if key not in _hidden_set(hidden):
+                    hidden.append(name)
+            else:
+                hidden = [b for b in hidden if b.lower() != key]
+
+    save_setting(KEY_HIDDEN_BRANDS, hidden)
+    CACHE["hidden_brands"] = hidden
     return summarize()
 
 

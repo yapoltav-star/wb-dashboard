@@ -1334,7 +1334,7 @@ def get_competitors():
         data = comp.load_all(get_setting, products=products)
     except Exception as e:
         logger.warning("competitors load: %s", e)
-        data = {"position": None, "brands": None, "brand_details": [], "brand_detail_map": {}}
+        data = {"position": None, "brands": None, "brand_details": [], "brand_detail_map": {}, "hidden_brands": []}
     return data
 
 
@@ -1370,6 +1370,27 @@ def delete_competitors(body: dict = Body(...)):
     brand = body.get("brand")
     try:
         data = comp.delete_report(save_setting, get_setting, kind=kind, brand=brand)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, **data}
+
+
+@app.post("/api/competitors-hide-brand")
+def competitors_hide_brand(body: dict = Body(...)):
+    """Скрыть/показать бренд(ы) в общей базе. body: {brand|brands, hide?: bool, clear_all?: bool}."""
+    brand = body.get("brand")
+    brands = body.get("brands")
+    hide = body.get("hide", True)
+    clear_all = bool(body.get("clear_all"))
+    try:
+        data = comp.set_brand_hidden(
+            save_setting,
+            get_setting,
+            brand=brand,
+            hide=bool(hide),
+            brands=brands if isinstance(brands, list) else None,
+            clear_all=clear_all,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"ok": True, **data}
