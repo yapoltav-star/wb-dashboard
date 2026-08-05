@@ -2777,9 +2777,10 @@ function persistWhDisabled(immediate) {
 }
 
 function applyWhDisabledFromSettings(settings) {
-  const srv = parseSupplyWhDisabled((settings || {}).supply_wh_disabled);
+  const hasKey = settings && Object.prototype.hasOwnProperty.call(settings, 'supply_wh_disabled');
+  const srv = hasKey ? (parseSupplyWhDisabled(settings.supply_wh_disabled) || []) : null;
   const local = parseSupplyWhDisabled(localStorage.getItem('wb_supply_wh_disabled'));
-  if(srv && srv.length) {
+  if(srv !== null) {
     WH_DISABLED = srv;
     localStorage.setItem('wb_supply_wh_disabled', JSON.stringify(WH_DISABLED));
   } else if(local && local.length) {
@@ -2787,7 +2788,7 @@ function applyWhDisabledFromSettings(settings) {
     WH_DISABLED = local;
     persistWhDisabled(true);
   } else {
-    WH_DISABLED = srv || local || [];
+    WH_DISABLED = local || [];
   }
 }
 
