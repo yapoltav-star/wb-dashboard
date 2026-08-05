@@ -20,7 +20,6 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 import ads
-import client_prices as cprices
 import coinvest as coin
 import finance as fin
 import orders as ordmod
@@ -854,8 +853,6 @@ def status():
         "supabase_url": SUPABASE_URL or None,
         "has_ozon_creds": bool(OZON_CLIENT_ID and OZON_API_KEY),
         "has_perf_creds": ads.perf_configured(),
-        "has_client_proxy": cprices.proxy_configured(),
-        "client_proxy": cprices.proxy_public_info(),
         "last_products_sync": last_sync,
         "last_stocks_sync": last_stocks,
         "products_count": products_count,
@@ -1037,11 +1034,40 @@ def _run_coinvest_sync():
             ozon_post=ozon_post,
             ozon_get=ozon_get,
             load_products=load_products_from_db,
+            load_manual_prices=load_manual_site_prices,
         )
     except Exception as e:
         logger.exception("coinvest sync thread: %s", e)
         coin.COINVEST_CACHE["error"] = str(e)
         coin.COINVEST_CACHE["syncing"] = False
+
+
+def load_manual_site_prices() -> dict[str, float]:
+    raw = get_setting(coin.MANUAL_PRICES_KEY, "{}")
+    try:
+        data = json.loads(raw or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        data = {}
+    out: dict[str, float] = {}
+    if not isinstance(data, dict):
+        return out
+    for k, v in data.items():
+        try:
+            out[str(k)] = float(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def save_manual_site_price(offer_id: str, site_price: float | None) -> dict[str, float]:
+    data = load_manual_site_prices()
+    offer_id = str(offer_id).strip()
+    if site_price is None:
+        data.pop(offer_id, None)
+    else:
+        data[offer_id] = float(site_price)
+    save_setting(coin.MANUAL_PRICES_KEY, json.dumps(data, ensure_ascii=False))
+    return data
 
 
 @app.get("/api/coinvest")
@@ -1063,18 +1089,30 @@ def trigger_coinvest():
     return {"ok": True, "syncing": True}
 
 
-@app.get("/api/client-proxy-probe")
-def client_proxy_probe(sku: int | None = None):
-    """Проверка OZON_CLIENT_PROXY + одной карточки ozon.ru (без секретов)."""
-    sample = sku
-    if sample is None:
-        # любой sku из последнего синка / products
-        arts = coin.COINVEST_CACHE.get("articles") or []
-        for a in arts:
-            if a.get("sku"):
-                sample = int(a["sku"])
-                break
-    return cprices.probe_client_access(sample_sku=sample)
+@app.post("/api/coinvest/site-price")
+def set_coinvest_site_price(payload: dict = Body(...)):
+    """Ручная цена на сайте (то, что видишь на ozon.ru)."""
+    offer_id = str(payload.get("offer_id") or "").strip()
+    if not offer_id:
+        raise HTTPException(status_code=400, detail="offer_id обязателен")
+    raw = payload.get("site_price", payload.get("customer_price"))
+    if raw is None or raw == "":
+        site_price = None
+    else:
+        try:
+            site_price = float(str(raw).replace(" ", "").replace(",", "."))
+        except (TypeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail="Некорректная цена") from e
+        if site_price <= 0:
+            site_price = None
+    save_manual_site_price(offer_id, site_price)
+    article = coin.apply_manual_price_cached(offer_id, site_price)
+    return {
+        "ok": True,
+        "offer_id": offer_id,
+        "site_price": site_price,
+        "article": article,
+    }
 
 
 def _run_orders_sync(days: int = 7):

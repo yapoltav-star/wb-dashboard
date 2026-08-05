@@ -1448,8 +1448,7 @@ function drawCoinvest() {
 
   if (COIN_DATA.note) {
     banner.style.display = 'block';
-    const ok = !!(COIN_DATA.client_source || COIN_DATA.client_count);
-    banner.className = ok ? 'banner ok' : 'banner warn';
+    banner.className = 'banner ok';
     banner.textContent = COIN_DATA.note;
   } else {
     banner.style.display = 'none';
@@ -1529,7 +1528,7 @@ function drawCoinvest() {
   }).join('');
 
   if (COIN_DATA.syncing && !arts.length) {
-    root.innerHTML = '<div class="loading"><div class="spinner"></div>Тянем цены кабинета + витрину ozon.ru…</div>';
+    root.innerHTML = '<div class="loading"><div class="spinner"></div>Тянем цены кабинета и акции…</div>';
     return;
   }
   if (!arts.length) {
@@ -1539,17 +1538,24 @@ function drawCoinvest() {
 
   const rows = arts.map(a => {
     const titles = (a.action_titles || []).join(', ') || (a.in_actions_count ? (a.in_actions_count + ' акц.') : '—');
-    const sitePrice = a.customer_price != null ? a.customer_price : (a.client_price ?? a.action_price ?? a.marketing_price);
+    const sitePrice = a.customer_price != null ? a.customer_price : '';
     const coinPct = a.coinvest_pct != null ? a.coinvest_pct : a.ozon_discount_pct;
-    const src = a.price_source || (a.premium_details ? 'premium' : '');
-    const srcTag = src === 'ozon.ru' ? ' <span class="tag ok">витрина</span>'
-      : src === 'premium' ? ' <span class="tag ok">premium</span>' : '';
+    const offer = a.offer_id || '';
+    const srcTag = (a.manual_site_price || a.price_source === 'manual')
+      ? ' <span class="tag ok">ручная</span>' : '';
     return `<tr>
       <td class="sticky"><span class="prod-name">${esc(a.offer_id)}</span></td>
       <td class="num mono">${money(a.old_price)}</td>
       <td class="num mono">${money(a.price)}</td>
       <td class="num mono">${money(a.marketing_seller_price)}</td>
-      <td class="num mono">${money(sitePrice)}</td>
+      <td class="num">
+        <input class="site-price-inp" type="text" inputmode="decimal"
+          value="${sitePrice === '' ? '' : sitePrice}"
+          placeholder="с ozon.ru"
+          title="Цена с карточки на сайте — введи вручную"
+          onkeydown="if(event.key==='Enter'){this.blur()}"
+          onchange='saveCoinSitePrice(${JSON.stringify(offer)}, this)'>
+      </td>
       <td class="num">${pctCell(a.seller_discount_pct)}</td>
       <td class="num">${pctCell(coinPct)}</td>
       <td class="num mono">${a.coinvest_rub == null ? '—' : money(a.coinvest_rub)}</td>
@@ -1583,9 +1589,45 @@ function drawCoinvest() {
       </table>
     </div>
     <div class="hint">
-      <b>Цена на сайте</b> — с клиентской карточки ozon.ru (composer-api), как <code>card.wb.ru</code> на WB.
-      <b>Соинвест</b> = цена продавца (с акциями) − цена на сайте. Индекс: SUPER/GREEN/YELLOW/RED.
+      <b>Цена на сайте</b> — впиши вручную с карточки ozon.ru. Сохраняется сама.
+      <b>Соинвест</b> = цена продавца (с акциями) − цена на сайте. Пустое поле = сбросить.
     </div>`;
+}
+
+async function saveCoinSitePrice(offerId, inputEl) {
+  const raw = (inputEl.value || '').trim().replace(/\s/g, '').replace(',', '.');
+  let site_price = null;
+  if (raw !== '') {
+    const n = Number(raw);
+    if (!isFinite(n) || n <= 0) {
+      inputEl.classList.add('err');
+      return;
+    }
+    site_price = n;
+  }
+  inputEl.classList.remove('err');
+  inputEl.disabled = true;
+  try {
+    const r = await fetch('/api/coinvest/site-price', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ offer_id: offerId, site_price }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'save failed');
+    const art = (COIN_DATA.articles || []).find(a => String(a.offer_id) === String(offerId));
+    if (art && data.article) Object.assign(art, data.article);
+    else if (art) {
+      art.customer_price = site_price;
+      art.manual_site_price = site_price != null;
+    }
+    drawCoinvest();
+  } catch (e) {
+    inputEl.classList.add('err');
+    console.warn(e);
+  } finally {
+    inputEl.disabled = false;
+  }
 }
 
 /* ── Заказы ── */

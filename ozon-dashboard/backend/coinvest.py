@@ -1,8 +1,8 @@
 """Цены и соинвест Ozon — аналог раздела «Цены и СПП» на WB.
 
-Цена на сайте — с клиентской витрины ozon.ru (composer-api), как card.wb.ru на WB.
-Seller API больше не отдаёт marketing_price; Premium /v1/product/prices/details — запасной путь.
-Соинвест ≈ цена продавца (с учётом акций продавца) − цена на сайте.
+Цена на сайте — вручную (смотришь карточку на ozon.ru и вписываешь).
+Соинвест = цена продавца (с акциями) − цена на сайте.
+Автозабор с витрины ozon.ru отключён (антибот).
 """
 
 from __future__ import annotations
@@ -12,8 +12,6 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Callable
-
-import client_prices as cprices
 
 logger = logging.getLogger("ozon-dashboard.coinvest")
 
@@ -26,6 +24,9 @@ COINVEST_CACHE: dict = {
     "note": None,
     "client_source": None,
 }
+
+MANUAL_PRICES_KEY = "coinvest_manual_site_prices"
+
 
 _lock = threading.Lock()
 
@@ -276,12 +277,54 @@ def fetch_prices_details(ozon_post: Callable, skus: list[int]) -> tuple[dict[int
     return by_sku, None
 
 
+def apply_manual_to_article(article: dict, site_price: float | None) -> None:
+    """Проставить/сбросить ручную цену на сайте и пересчитать соинвест."""
+    if site_price is None:
+        article["customer_price"] = None
+        article["client_price"] = None
+        article["price_source"] = None
+        article["manual_site_price"] = False
+        # вернём оценку по акции, если была
+        if article.get("action_price") is not None and article.get("price"):
+            base = article.get("marketing_seller_price")
+            if base is None:
+                base = article["price"]
+            ap = float(article["action_price"])
+            if base is not None and base > ap:
+                article["coinvest_rub"] = round(float(base) - ap, 2)
+                article["coinvest_pct"] = round((float(base) - ap) / float(article["price"]) * 100.0, 1)
+                article["marketing_price"] = ap
+            else:
+                article["coinvest_rub"] = None
+                article["coinvest_pct"] = None
+        else:
+            article["coinvest_rub"] = None
+            article["coinvest_pct"] = None
+            article["ozon_discount_pct"] = None
+        return
+    _apply_site_price(article, float(site_price), source="manual")
+    article["manual_site_price"] = True
+
+
+def apply_manual_price_cached(offer_id: str, site_price: float | None) -> dict | None:
+    """Обновить одну строку в кэше без полного синка."""
+    offer_id = str(offer_id or "").strip()
+    if not offer_id:
+        return None
+    for a in COINVEST_CACHE.get("articles") or []:
+        if str(a.get("offer_id") or "") == offer_id:
+            apply_manual_to_article(a, site_price)
+            return a
+    return None
+
+
 def sync_coinvest(
     ozon_post: Callable,
     ozon_get: Callable | None = None,
     load_products: Callable | None = None,
+    load_manual_prices: Callable | None = None,
 ) -> dict:
-    """Синк цен + акций → COINVEST_CACHE."""
+    """Синк цен + акций → COINVEST_CACHE. Цена на сайте — из ручного ввода."""
     if not _lock.acquire(blocking=False):
         COINVEST_CACHE["syncing"] = True
         return {"ok": False, "error": "sync already running", "syncing": True}
@@ -297,7 +340,6 @@ def sync_coinvest(
         except Exception as e:
             logger.warning("actions list failed: %s", e)
 
-        # продукты в участвующих акциях (ограничим топ по числу участников)
         participating = [a for a in actions if a.get("is_participating") and a.get("id")]
         participating.sort(key=lambda a: -int(a.get("participating_products_count") or 0))
         action_by_pid: dict[int, list[dict]] = {}
@@ -317,7 +359,6 @@ def sync_coinvest(
                 action_by_pid.setdefault(pid, []).append(row)
             time.sleep(0.1)
 
-        # имена + sku из products
         name_by_offer = {}
         name_by_pid = {}
         sku_by_pid: dict[int, int] = {}
@@ -343,90 +384,31 @@ def sync_coinvest(
             except Exception as e:
                 logger.warning("load_products for coinvest: %s", e)
 
+        manual: dict[str, float] = {}
+        if load_manual_prices:
+            try:
+                manual = load_manual_prices() or {}
+            except Exception as e:
+                logger.warning("load_manual_prices: %s", e)
+
         articles = []
         for it in prices:
             row = normalize_price_item(it, action_by_pid)
             row["name"] = name_by_pid.get(row["product_id"]) or name_by_offer.get(row["offer_id"]) or ""
             sku = sku_by_pid.get(row["product_id"]) or sku_by_offer.get(row["offer_id"])
             row["sku"] = sku
+            row["manual_site_price"] = False
+            offer = str(row.get("offer_id") or "")
+            if offer and offer in manual:
+                apply_manual_to_article(row, float(manual[offer]))
             articles.append(row)
 
-        # 1) Главное — цена с клиентской витрины ozon.ru (как card.wb.ru)
-        skus = [a["sku"] for a in articles if a.get("sku")]
-        client_map, client_source = {}, None
-        client_diag: dict = {}
-        try:
-            client_map, client_source, client_diag = cprices.fetch_client_prices(skus)
-        except Exception as e:
-            logger.warning("client prices failed: %s", e)
-            client_diag = {"error": str(e)[:300]}
-        client_ok = bool(client_map)
-        if client_ok:
-            for a in articles:
-                info = client_map.get(a.get("sku")) if a.get("sku") else None
-                if not info or info.get("client_price") is None:
-                    continue
-                _apply_site_price(a, float(info["client_price"]), source="ozon.ru")
-                if info.get("card_price") is not None:
-                    a["client_price_card"] = info["card_price"]
-                if info.get("regular_price") is not None:
-                    a["client_price_regular"] = info["regular_price"]
-
-        # 2) Запасной путь — Premium Pro /v1/product/prices/details (только где витрина не ответила)
-        premium_ok = False
-        premium_note = None
-        need_premium = [a["sku"] for a in articles if a.get("sku") and a.get("customer_price") is None]
-        details, derr = ({}, None)
-        if need_premium:
-            details, derr = fetch_prices_details(ozon_post, need_premium)
-        if derr == "premium":
-            premium_note = None  # не пугаем, если витрина уже дала цены
-        elif derr:
-            premium_note = f"prices/details: {derr}"
-        elif details:
-            for a in articles:
-                if a.get("customer_price") is not None:
-                    continue
-                d = details.get(a.get("sku")) if a.get("sku") else None
-                if not d or d.get("customer_price") is None:
-                    continue
-                premium_ok = True
-                _apply_site_price(
-                    a,
-                    float(d["customer_price"]),
-                    source="premium",
-                    ozon_disc=d.get("ozon_discount_pct"),
-                )
-
-        # 3) Совсем без витрины/Premium — action_price уже в normalize_price_item
-        n_site = sum(1 for a in articles if a.get("customer_price") is not None)
-        fail = (client_diag or {}).get("last_fail") or (client_diag or {}).get("error")
-        proxy_on = bool((client_diag or {}).get("proxy", {}).get("configured"))
-        note = None
-        if client_ok:
-            note = (
-                f"Цена на сайте с ozon.ru ({len(client_map)}/{len(articles)} арт.) — как card.wb.ru на WB. "
-                "Соинвест = цена продавца (с акциями) − цена на сайте."
-            )
-            if premium_ok:
-                note += " Часть артикулов дополнена Premium prices/details."
-        elif premium_ok:
-            note = "Витрина ozon.ru недоступна. Цена на сайте из Premium /v1/product/prices/details."
-        else:
-            bits = ["Цена на сайте не получена с ozon.ru."]
-            if fail == "proxy_auth":
-                bits.append("Прокси отклонил логин/пароль — проверь OZON_CLIENT_PROXY.")
-            elif fail == "ozon_antibot":
-                bits.append(
-                    "Прокси достучался, но Ozon антибот. В proxy.market: Россия + липкая, "
-                    "возьми строку из «Создать список прокси»."
-                )
-            elif not proxy_on:
-                bits.append("OZON_CLIENT_PROXY не задан.")
-            elif fail:
-                bits.append(f"Диагностика: {fail}.")
-            bits.append("Проверка: /api/client-proxy-probe")
-            note = " ".join(bits)
+        n_manual = sum(1 for a in articles if a.get("manual_site_price"))
+        note = (
+            f"Цена на сайте — вручную ({n_manual} арт. заполнено). "
+            "Открой карточку на ozon.ru, впиши цену в колонку «Цена на сайте». "
+            "Соинвест = цена продавца (с акциями) − цена на сайте."
+        )
 
         COINVEST_CACHE.update({
             "articles": articles,
@@ -435,23 +417,21 @@ def sync_coinvest(
             "syncing": False,
             "error": None,
             "note": note,
-            "premium_details": premium_ok,
-            "client_source": client_source,
-            "client_count": len(client_map),
-            "client_diag": client_diag,
+            "premium_details": False,
+            "client_source": "manual" if n_manual else None,
+            "client_count": n_manual,
+            "client_diag": {},
             "count": len(articles),
         })
         logger.info(
-            "coinvest sync done: %s prices, %s actions, client=%s premium=%s fail=%s",
-            len(articles), len(actions), len(client_map), premium_ok, fail,
+            "coinvest sync done: %s prices, %s actions, manual=%s",
+            len(articles), len(actions), n_manual,
         )
         return {
             "ok": True,
             "count": len(articles),
             "actions": len(actions),
-            "premium_details": premium_ok,
-            "client_source": client_source,
-            "client_count": len(client_map),
+            "manual_count": n_manual,
         }
     except Exception as e:
         logger.exception("coinvest sync failed")
@@ -500,10 +480,8 @@ def get_cached() -> dict:
         "syncing": bool(COINVEST_CACHE.get("syncing")),
         "error": COINVEST_CACHE.get("error"),
         "note": COINVEST_CACHE.get("note"),
-        "premium_details": bool(COINVEST_CACHE.get("premium_details")),
+        "premium_details": False,
         "client_source": COINVEST_CACHE.get("client_source"),
         "client_count": COINVEST_CACHE.get("client_count") or 0,
-        "client_diag": COINVEST_CACHE.get("client_diag") or {},
-        "proxy_configured": cprices.proxy_configured(),
         "count": len(COINVEST_CACHE.get("articles") or []),
     }
