@@ -2447,10 +2447,74 @@ def _parse_promo_excel_name(filename: str) -> str:
         return m.group(1).strip(" _-")
     return name or "Акция"
 
+PROMO_SESSIONS_KEY = "promo_excel_sessions"
+
+
+def _promo_sessions_payload(raw=None) -> dict:
+    data = raw if isinstance(raw, dict) else {}
+    sessions = data.get("sessions") if isinstance(data.get("sessions"), list) else []
+    # только словари с id
+    clean = []
+    for s in sessions:
+        if isinstance(s, dict) and s.get("id"):
+            clean.append(s)
+    active_id = data.get("active_id")
+    if active_id and not any(s.get("id") == active_id for s in clean):
+        active_id = clean[0]["id"] if clean else None
+    if not active_id and clean:
+        active_id = clean[0]["id"]
+    return {
+        "sessions": clean,
+        "active_id": active_id,
+        "updated_at": data.get("updated_at"),
+    }
+
+
+def _save_promo_sessions(payload: dict) -> bool:
+    """Отдельный таймаут — Excel акций может быть большим."""
+    import json as _json
+    body = {
+        "key": PROMO_SESSIONS_KEY,
+        "value": _json.dumps(payload, ensure_ascii=False),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        resp = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/settings?on_conflict=key",
+            json=body,
+            headers=sb_headers(),
+            timeout=60,
+        )
+        return resp.is_success
+    except Exception as e:
+        logger.error(f"save promo sessions error: {e}")
+        return False
+
+
+@app.get("/api/promo-sessions")
+def get_promo_sessions():
+    """Общие сессии загруженных Excel акций (видны со всех устройств)."""
+    raw = get_setting_json(PROMO_SESSIONS_KEY, {}) or {}
+    return _promo_sessions_payload(raw)
+
+
+@app.put("/api/promo-sessions")
+def put_promo_sessions(request: dict):
+    """Сохранить список сессий акций + активную."""
+    payload = _promo_sessions_payload({
+        "sessions": request.get("sessions") if isinstance(request.get("sessions"), list) else [],
+        "active_id": request.get("active_id"),
+    })
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    if not _save_promo_sessions(payload):
+        return {"error": "Не удалось сохранить акции в базу"}
+    return {"status": "ok", **payload}
+
+
 @app.post("/api/upload-promo-excel")
 async def upload_promo_excel(file: UploadFile = File(...)):
     """Парсит xlsx «Все товары подходящие для акции_…» из Календаря акций WB.
-    Возвращает список артикулов с ценами/участием — фронт сам сортирует и хранит сессии."""
+    Возвращает список артикулов с ценами/участием — фронт сохраняет сессии через /api/promo-sessions."""
     try:
         from openpyxl import load_workbook
         import re as _re
