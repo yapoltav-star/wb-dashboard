@@ -305,7 +305,7 @@ def _fetch_sku(sess: _Session, sku: int) -> tuple[dict | None, dict]:
 
 
 def probe_client_access(sample_sku: int | None = None) -> dict:
-    """Диагностика прокси + одного SKU. Без секретов."""
+    """Диагностика прокси + одной карточки ozon.ru (без секретов)."""
     info = proxy_public_info()
     result = {
         "proxy": info,
@@ -340,33 +340,54 @@ def probe_client_access(sample_sku: int | None = None) -> dict:
                     result["tried"].append(entry)
                     break
             elif warm.get("kind") == "ok" or (warm.get("status") == 200 and warm.get("kind") != "ozon_antibot"):
-                # без sku — хотя бы home
                 if warm.get("kind") != "ozon_antibot" and warm.get("kind") != "proxy_auth":
                     result["ok"] = warm.get("status") == 200
             result["tried"].append(entry)
             if entry.get("home", {}).get("kind") == "proxy_auth":
-                result["hint"] = "Прокси не принял логин/пароль (401/407). Сверь строку OZON_CLIENT_PROXY."
+                result["hint"] = "Прокси не принял логин/пароль. Проверь OZON_CLIENT_PROXY."
                 break
-            if entry.get("product", {}).get("kind") == "ozon_antibot" or entry.get("home", {}).get("kind") == "ozon_antibot":
-                result["hint"] = (
-                    "Прокси жив, но Ozon антибот. Нужны: страна Россия, липкая сессия, "
-                    "и строка из «Создать список прокси» (не сырой логин пула)."
-                )
         except Exception as e:
             entry["error"] = str(e)[:300]
             result["tried"].append(entry)
-            err = str(e).lower()
-            if "407" in err or "auth" in err or "proxy" in err:
-                result["hint"] = "Ошибка авторизации/подключения к прокси. Проверь логин, пароль, порт."
         finally:
             if sess:
                 sess.close()
+
+    # Браузерный fallback в пробе
+    if not result["ok"] and sku and info.get("configured"):
+        try:
+            import client_browser as cb
+
+            if cb.browser_available():
+                proxy = (candidates[0] if candidates else None)
+                bmap, bdiag = cb.fetch_pages_via_browser(
+                    [f"/product/{int(sku)}/"],
+                    proxy_url=proxy,
+                    parse_page=_parse_composer_page,
+                    sku_of_path=lambda p: int(sku),
+                )
+                result["browser"] = bdiag
+                if bmap:
+                    result["ok"] = True
+                    result["client_price"] = next(iter(bmap.values())).get("client_price")
+                    result["hint"] = "Ок через браузер (Playwright)."
+                else:
+                    result["hint"] = (
+                        "Прокси жив, Ozon режет и HTTP, и браузер. "
+                        "Проверь: Россия + липкая сессия + есть трафик на пакете."
+                    )
+            else:
+                result["browser"] = {"error": "playwright_not_installed"}
+                result["hint"] = "Нужен браузерный режим — дождись нового деплоя."
+        except Exception as e:
+            result["browser"] = {"error": str(e)[:300]}
+            result["hint"] = f"Браузер не смог: {e}"
 
     if not result["ok"] and not result["hint"]:
         if not info.get("configured"):
             result["hint"] = "OZON_CLIENT_PROXY не задан."
         else:
-            result["hint"] = "Витрина не открылась. Открой /api/client-proxy-probe после Redeploy."
+            result["hint"] = "Витрина не открылась."
 
     with _lock:
         LAST_PROBE.clear()
@@ -444,6 +465,40 @@ def fetch_client_prices(
             pass
     source = "ozon.ru" if by_sku else None
     logger.info("client prices: %s/%s skus (fail=%s)", len(by_sku), len(uniq), last_fail)
+
+    # Если HTTP антибот — пробуем настоящий браузер через тот же прокси
+    need_browser = not by_sku and (
+        last_fail in ("ozon_antibot", "forbidden") or bool(diag.get("proxy", {}).get("configured"))
+    )
+    if need_browser:
+        try:
+            import client_browser as cb
+
+            if cb.browser_available():
+                paths = [f"/product/{s}/" for s in uniq]
+                proxy = (_proxy_candidates() or [None])[0]
+                bmap, bdiag = cb.fetch_pages_via_browser(
+                    paths,
+                    proxy_url=proxy,
+                    parse_page=_parse_composer_page,
+                    sku_of_path=lambda p: int(re.search(r"(\d+)", p).group(1)),
+                )
+                diag["browser"] = bdiag
+                if bmap:
+                    by_sku = bmap
+                    source = "ozon.ru"
+                    last_fail = None
+                    diag["fetched"] = len(by_sku)
+                    diag["last_fail"] = None
+                    logger.info("client prices via browser: %s/%s", len(by_sku), len(uniq))
+                else:
+                    diag["last_fail"] = bdiag.get("error") or last_fail or "ozon_antibot"
+            else:
+                diag["browser"] = {"error": "playwright_not_installed"}
+        except Exception as e:
+            logger.warning("browser fallback failed: %s", e)
+            diag["browser"] = {"error": str(e)[:300]}
+
     with _lock:
         LAST_PROBE["last_sync"] = diag
     return by_sku, source, diag
