@@ -176,56 +176,60 @@ def _count_posting_products(postings: list, since: datetime, until: datetime) ->
 
 
 def fetch_fbo_postings(ozon_post: Callable, since: datetime, until: datetime, max_pages: int = 40) -> list:
+    """POST /v3/posting/fbo/list (v2 отключат 1 июня 2026)."""
     items = []
-    offset = 0
+    cursor = ""
     limit = 1000
     body_filter = {"since": _iso_z(since), "to": _iso_z(until)}
     for _ in range(max_pages):
-        payload = ozon_post(
-            "/v2/posting/fbo/list",
-            {
-                "dir": "ASC",
-                "filter": body_filter,
-                "limit": limit,
-                "offset": offset,
-                "with": {"analytics_data": False, "financial_data": False},
-            },
-        )
-        result = payload.get("result") or payload
-        batch = result.get("postings") or result.get("items") or []
+        body: dict = {
+            "filter": body_filter,
+            "limit": limit,
+            "sort_dir": "ASC",
+            "with": {"analytics_data": False, "financial_data": False},
+        }
+        if cursor:
+            body["cursor"] = cursor
+        payload = ozon_post("/v3/posting/fbo/list", body)
+        batch = payload.get("postings") or (payload.get("result") or {}).get("postings") or []
         items.extend(batch)
-        if len(batch) < limit:
+        cursor = payload.get("cursor") or (payload.get("result") or {}).get("cursor") or ""
+        has_next = payload.get("has_next")
+        if has_next is None:
+            has_next = bool(cursor) and len(batch) >= limit
+        if not batch or not has_next:
             break
-        offset += limit
         time.sleep(0.2)
     return items
 
 
 def fetch_fbs_postings(ozon_post: Callable, since: datetime, until: datetime, max_pages: int = 40) -> list:
+    """POST /v4/posting/fbs/list (v3 отключат 1 июня 2026)."""
     items = []
-    offset = 0
+    cursor = ""
     limit = 1000
     body_filter = {
         "since": _iso_z(since),
         "to": _iso_z(until),
     }
     for _ in range(max_pages):
-        payload = ozon_post(
-            "/v3/posting/fbs/list",
-            {
-                "dir": "ASC",
-                "filter": body_filter,
-                "limit": limit,
-                "offset": offset,
-                "with": {"analytics_data": False, "financial_data": False, "translit": False},
-            },
-        )
-        result = payload.get("result") or payload
-        batch = result.get("postings") or []
+        body: dict = {
+            "filter": body_filter,
+            "limit": limit,
+            "sort_dir": "ASC",
+            "with": {"analytics_data": False, "financial_data": False, "translit": False},
+        }
+        if cursor:
+            body["cursor"] = cursor
+        payload = ozon_post("/v4/posting/fbs/list", body)
+        batch = payload.get("postings") or []
         items.extend(batch)
-        if len(batch) < limit:
+        cursor = payload.get("cursor") or ""
+        has_next = payload.get("has_next")
+        if has_next is None:
+            has_next = bool(cursor) and len(batch) >= limit
+        if not batch or not has_next:
             break
-        offset += limit
         time.sleep(0.2)
     return items
 

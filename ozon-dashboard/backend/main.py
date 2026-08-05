@@ -19,7 +19,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+import ads
 import coinvest as coin
+import finance as fin
+import orders as ordmod
+import reviews as revs
 import sales_pace as pace
 
 logging.basicConfig(level=logging.INFO)
@@ -848,6 +852,7 @@ def status():
         "db_error": db_error,
         "supabase_url": SUPABASE_URL or None,
         "has_ozon_creds": bool(OZON_CLIENT_ID and OZON_API_KEY),
+        "has_perf_creds": ads.perf_configured(),
         "last_products_sync": last_sync,
         "last_stocks_sync": last_stocks,
         "products_count": products_count,
@@ -1051,6 +1056,118 @@ def trigger_coinvest():
     if coin.COINVEST_CACHE.get("syncing"):
         return {"ok": True, "syncing": True}
     threading.Thread(target=_run_coinvest_sync, daemon=True).start()
+    return {"ok": True, "syncing": True}
+
+
+def _run_orders_sync(days: int = 7):
+    try:
+        ordmod.sync_orders(ozon_post=ozon_post, days=days)
+    except Exception as e:
+        logger.exception("orders sync thread: %s", e)
+        ordmod.ORDERS_CACHE["error"] = str(e)
+        ordmod.ORDERS_CACHE["syncing"] = False
+
+
+@app.get("/api/orders")
+def get_orders(days: int = 7):
+    cached = ordmod.get_cached()
+    if not cached["postings"] and not cached["syncing"] and not cached["error"]:
+        if not ordmod.ORDERS_CACHE.get("syncing"):
+            threading.Thread(target=_run_orders_sync, kwargs={"days": days}, daemon=True).start()
+        cached = ordmod.get_cached()
+        cached["syncing"] = True
+    return cached
+
+
+@app.post("/api/sync-orders")
+def trigger_orders(days: int = 7):
+    if ordmod.ORDERS_CACHE.get("syncing"):
+        return {"ok": True, "syncing": True}
+    threading.Thread(target=_run_orders_sync, kwargs={"days": days}, daemon=True).start()
+    return {"ok": True, "syncing": True}
+
+
+def _run_finance_sync(period_days: int = 7):
+    try:
+        fin.sync_finance(ozon_post=ozon_post, period_days=period_days, with_compensation=True)
+    except Exception as e:
+        logger.exception("finance sync thread: %s", e)
+        fin.FINANCE_CACHE["error"] = str(e)
+        fin.FINANCE_CACHE["syncing"] = False
+
+
+@app.get("/api/finance")
+def get_finance(days: int = 7):
+    cached = fin.get_cached()
+    if not cached["days"] and not cached["syncing"] and not cached["error"]:
+        if not fin.FINANCE_CACHE.get("syncing"):
+            threading.Thread(target=_run_finance_sync, kwargs={"period_days": days}, daemon=True).start()
+        cached = fin.get_cached()
+        cached["syncing"] = True
+    return cached
+
+
+@app.post("/api/sync-finance")
+def trigger_finance(days: int = 7):
+    if fin.FINANCE_CACHE.get("syncing"):
+        return {"ok": True, "syncing": True}
+    threading.Thread(target=_run_finance_sync, kwargs={"period_days": days}, daemon=True).start()
+    return {"ok": True, "syncing": True}
+
+
+def _run_reviews_sync(status: str = "ALL"):
+    try:
+        revs.sync_reviews(ozon_post=ozon_post, status=status)
+    except Exception as e:
+        logger.exception("reviews sync thread: %s", e)
+        revs.REVIEWS_CACHE["error"] = str(e)
+        revs.REVIEWS_CACHE["syncing"] = False
+
+
+@app.get("/api/reviews")
+def get_reviews(status: str = "ALL"):
+    cached = revs.get_cached()
+    if not cached["reviews"] and not cached["syncing"] and not cached["error"] and not cached["premium_required"]:
+        if not revs.REVIEWS_CACHE.get("syncing"):
+            threading.Thread(target=_run_reviews_sync, kwargs={"status": status}, daemon=True).start()
+        cached = revs.get_cached()
+        cached["syncing"] = True
+    return cached
+
+
+@app.post("/api/sync-reviews")
+def trigger_reviews(status: str = "ALL"):
+    if revs.REVIEWS_CACHE.get("syncing"):
+        return {"ok": True, "syncing": True}
+    threading.Thread(target=_run_reviews_sync, kwargs={"status": status}, daemon=True).start()
+    return {"ok": True, "syncing": True}
+
+
+def _run_ads_sync(days: int = 7):
+    try:
+        ads.sync_ads(period_days=days)
+    except Exception as e:
+        logger.exception("ads sync thread: %s", e)
+        ads.ADS_CACHE["error"] = str(e)
+        ads.ADS_CACHE["syncing"] = False
+
+
+@app.get("/api/ads")
+def get_ads(days: int = 7):
+    cached = ads.get_cached()
+    if not cached["campaigns"] and not cached["syncing"] and not cached["error"] and cached["configured"]:
+        if not ads.ADS_CACHE.get("syncing"):
+            threading.Thread(target=_run_ads_sync, kwargs={"days": days}, daemon=True).start()
+        cached = ads.get_cached()
+        cached["syncing"] = True
+    return cached
+
+
+@app.post("/api/sync-ads")
+def trigger_ads(days: int = 7):
+    if ads.ADS_CACHE.get("syncing"):
+        return {"ok": True, "syncing": True}
+    threading.Thread(target=_run_ads_sync, kwargs={"days": days}, daemon=True).start()
     return {"ok": True, "syncing": True}
 
 

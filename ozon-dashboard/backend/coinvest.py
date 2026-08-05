@@ -194,7 +194,57 @@ def normalize_price_item(item: dict, action_by_pid: dict[int, list[dict]]) -> di
         "ozon_min_price": idx["ozon_min_price"],
         "ozon_index": idx["ozon_index"],
         "commissions": item.get("commissions") if isinstance(item.get("commissions"), dict) else {},
+        "customer_price": None,
+        "ozon_discount_pct": None,
+        "premium_details": False,
     }
+
+
+def fetch_prices_details(ozon_post: Callable, skus: list[int]) -> tuple[dict[int, dict], str | None]:
+    """Premium Pro: /v1/product/prices/details → customer_price + discount_percent (скидка за счёт Ozon).
+
+    Returns (by_sku, error_or_none). error='premium' если нет доступа.
+    """
+    by_sku: dict[int, dict] = {}
+    if not skus:
+        return by_sku, None
+    uniq = []
+    seen = set()
+    for s in skus:
+        try:
+            si = int(s)
+        except (TypeError, ValueError):
+            continue
+        if si and si not in seen:
+            seen.add(si)
+            uniq.append(si)
+    for i in range(0, len(uniq), 100):
+        batch = uniq[i : i + 100]
+        try:
+            payload = ozon_post("/v1/product/prices/details", {"skus": batch}, timeout=90)
+        except Exception as e:
+            msg = str(e)
+            if any(x in msg for x in ("403", "402", "Premium", "подписк", "Permission", "7 ")):
+                return {}, "premium"
+            logger.warning("prices/details batch failed: %s", e)
+            return by_sku, msg
+        for p in payload.get("prices") or []:
+            sku = p.get("sku")
+            if sku is None:
+                continue
+            sku = int(sku)
+            cust = p.get("customer_price") or {}
+            price = p.get("price") or {}
+            cust_amt = _to_num(cust.get("amount") if isinstance(cust, dict) else cust)
+            price_amt = _to_num(price.get("amount") if isinstance(price, dict) else price)
+            disc = _to_num(p.get("discount_percent"))
+            by_sku[sku] = {
+                "customer_price": cust_amt,
+                "promo_price": price_amt,
+                "ozon_discount_pct": disc,
+            }
+        time.sleep(0.1)
+    return by_sku, None
 
 
 def sync_coinvest(
@@ -238,16 +288,29 @@ def sync_coinvest(
                 action_by_pid.setdefault(pid, []).append(row)
             time.sleep(0.1)
 
-        # имена из products, если есть
+        # имена + sku из products
         name_by_offer = {}
         name_by_pid = {}
+        sku_by_pid: dict[int, int] = {}
+        sku_by_offer: dict[str, int] = {}
         if load_products:
             try:
                 for pr in load_products() or []:
                     if pr.get("offer_id"):
                         name_by_offer[pr["offer_id"]] = pr.get("name") or ""
+                        if pr.get("sku") is not None:
+                            try:
+                                sku_by_offer[pr["offer_id"]] = int(pr["sku"])
+                            except (TypeError, ValueError):
+                                pass
                     if pr.get("product_id") is not None:
-                        name_by_pid[int(pr["product_id"])] = pr.get("name") or ""
+                        pid = int(pr["product_id"])
+                        name_by_pid[pid] = pr.get("name") or ""
+                        if pr.get("sku") is not None:
+                            try:
+                                sku_by_pid[pid] = int(pr["sku"])
+                            except (TypeError, ValueError):
+                                pass
             except Exception as e:
                 logger.warning("load_products for coinvest: %s", e)
 
@@ -255,15 +318,53 @@ def sync_coinvest(
         for it in prices:
             row = normalize_price_item(it, action_by_pid)
             row["name"] = name_by_pid.get(row["product_id"]) or name_by_offer.get(row["offer_id"]) or ""
+            sku = sku_by_pid.get(row["product_id"]) or sku_by_offer.get(row["offer_id"])
+            row["sku"] = sku
             articles.append(row)
 
-        has_mp = any(a.get("marketing_price") is not None for a in articles)
+        # Premium Pro: точная цена на сайте + % скидки за счёт Ozon
+        premium_ok = False
+        premium_note = None
+        skus = [a["sku"] for a in articles if a.get("sku")]
+        details, derr = fetch_prices_details(ozon_post, skus)
+        if derr == "premium":
+            premium_note = (
+                "Premium Pro недоступен — /v1/product/prices/details не отдал customer_price. "
+                "Соинвест считаем по акциям / marketing_seller_price."
+            )
+        elif derr:
+            premium_note = f"prices/details: {derr}"
+        elif details:
+            premium_ok = True
+            for a in articles:
+                d = details.get(a.get("sku")) if a.get("sku") else None
+                if not d:
+                    continue
+                a["customer_price"] = d.get("customer_price")
+                a["ozon_discount_pct"] = d.get("ozon_discount_pct")
+                a["premium_details"] = True
+                # пересчёт соинвеста от официального % / цены сайта
+                if d.get("ozon_discount_pct") is not None:
+                    a["coinvest_pct"] = round(float(d["ozon_discount_pct"]), 1)
+                if a.get("price") and d.get("customer_price") is not None and a["price"] > 0:
+                    a["marketing_price"] = d["customer_price"]
+                    a["total_discount_pct"] = _pct(d["customer_price"], a["price"])
+                    base = a.get("marketing_seller_price") if a.get("marketing_seller_price") is not None else a["price"]
+                    if base is not None and base >= d["customer_price"]:
+                        a["coinvest_rub"] = round(base - d["customer_price"], 2)
+                        if a.get("coinvest_pct") is None:
+                            a["coinvest_pct"] = round((base - d["customer_price"]) / a["price"] * 100.0, 1)
+
+        has_mp = any(a.get("marketing_price") is not None or a.get("customer_price") is not None for a in articles)
         note = None
-        if not has_mp:
+        if premium_ok:
+            note = "Premium Pro: цена на сайте и «скидка за счёт Ozon» из /v1/product/prices/details."
+        elif premium_note:
+            note = premium_note
+        elif not has_mp:
             note = (
-                "Ozon с ноября 2025 не отдаёт marketing_price (цену на витрине) в Seller API. "
-                "Соинвест % считаем по action_price акций и marketing_seller_price; "
-                "полная цена покупателя — только с витрины/финансов."
+                "Ozon в /v5/product/info/prices не отдаёт marketing_price. "
+                "Соинвест % считаем по action_price акций и marketing_seller_price."
             )
 
         COINVEST_CACHE.update({
@@ -273,10 +374,14 @@ def sync_coinvest(
             "syncing": False,
             "error": None,
             "note": note,
+            "premium_details": premium_ok,
             "count": len(articles),
         })
-        logger.info("coinvest sync done: %s prices, %s actions", len(articles), len(actions))
-        return {"ok": True, "count": len(articles), "actions": len(actions)}
+        logger.info(
+            "coinvest sync done: %s prices, %s actions, premium=%s",
+            len(articles), len(actions), premium_ok,
+        )
+        return {"ok": True, "count": len(articles), "actions": len(actions), "premium_details": premium_ok}
     except Exception as e:
         logger.exception("coinvest sync failed")
         COINVEST_CACHE["error"] = str(e)
@@ -324,5 +429,6 @@ def get_cached() -> dict:
         "syncing": bool(COINVEST_CACHE.get("syncing")),
         "error": COINVEST_CACHE.get("error"),
         "note": COINVEST_CACHE.get("note"),
+        "premium_details": bool(COINVEST_CACHE.get("premium_details")),
         "count": len(COINVEST_CACHE.get("articles") or []),
     }

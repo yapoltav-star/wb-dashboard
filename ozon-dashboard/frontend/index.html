@@ -174,10 +174,10 @@ tr:hover td{background:#F8FAFF}
     <div class="tb-nav-item" data-sec="prices" onclick="showSection('prices',this)">Цены и соинвест</div>
     <div class="tb-nav-item on" data-sec="products" onclick="showSection('products',this)">Товары</div>
     <div class="tb-nav-item" data-sec="stocks" onclick="showSection('stocks',this)">Остатки</div>
-    <div class="tb-nav-item soon" title="Скоро">Заказы</div>
-    <div class="tb-nav-item soon" title="Скоро">Отзывы</div>
-    <div class="tb-nav-item soon" title="Скоро">Реклама</div>
-    <div class="tb-nav-item soon" title="Скоро">Финансы</div>
+    <div class="tb-nav-item" data-sec="orders" onclick="showSection('orders',this)">Заказы</div>
+    <div class="tb-nav-item" data-sec="reviews" onclick="showSection('reviews',this)">Отзывы</div>
+    <div class="tb-nav-item" data-sec="ads" onclick="showSection('ads',this)">Реклама</div>
+    <div class="tb-nav-item" data-sec="finance" onclick="showSection('finance',this)">Финансы</div>
   </div>
   <div class="tb-right">
     <div class="tb-sync"><div class="tb-dot" id="syncDot"></div><span id="syncLabel">—</span></div>
@@ -299,6 +299,74 @@ tr:hover td{background:#F8FAFF}
   <div id="stocksRoot"><div class="empty"><b>Нет данных</b>Нажми «Обновить остатки»</div></div>
 </div>
 
+<!-- ORDERS -->
+<div class="page" id="page-orders">
+  <div class="toolbar">
+    <div class="search">
+      <input id="ordSearch" placeholder="Артикул / номер отправления…" oninput="drawOrders()">
+    </div>
+    <span style="font-size:12px;color:var(--oz-muted)">Дней:</span>
+    <button class="filter-btn on" id="ordDays7" onclick="setOrdDays(7)">7</button>
+    <button class="filter-btn" id="ordDays14" onclick="setOrdDays(14)">14</button>
+    <button class="filter-btn" id="ordDays30" onclick="setOrdDays(30)">30</button>
+    <button class="filter-btn on" id="ordChAll" onclick="setOrdChannel('all')">Все</button>
+    <button class="filter-btn" id="ordChFbo" onclick="setOrdChannel('FBO')">FBO</button>
+    <button class="filter-btn" id="ordChFbs" onclick="setOrdChannel('FBS')">FBS</button>
+    <span id="ordInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+    <button class="action-btn primary ml-auto" id="ordSyncBtn" onclick="triggerOrdersSync()">↻ Обновить</button>
+  </div>
+  <div class="cards" id="ordCards"></div>
+  <div id="ordRoot"><div class="empty"><b>Заказы</b>FBO v3 + FBS v4. Нажми «Обновить».</div></div>
+</div>
+
+<!-- REVIEWS -->
+<div class="page" id="page-reviews">
+  <div class="banner" id="revBanner" style="display:none"></div>
+  <div class="toolbar">
+    <div class="search">
+      <input id="revSearch" placeholder="SKU / текст…" oninput="drawReviews()">
+    </div>
+    <button class="filter-btn on" id="revStALL" onclick="setRevStatus('ALL')">Все</button>
+    <button class="filter-btn" id="revStNEW" onclick="setRevStatus('NEW')">Новые</button>
+    <button class="filter-btn" id="revStVIEWED" onclick="setRevStatus('VIEWED')">Просмотренные</button>
+    <button class="filter-btn" id="revStPROCESSED" onclick="setRevStatus('PROCESSED')">Обработанные</button>
+    <span id="revInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+    <button class="action-btn primary ml-auto" id="revSyncBtn" onclick="triggerReviewsSync()">↻ Обновить</button>
+  </div>
+  <div class="cards" id="revCards"></div>
+  <div id="revRoot"><div class="empty"><b>Отзывы</b>ReviewAPI v2. Нужна подписка «Управление отзывами» или Premium Pro.</div></div>
+</div>
+
+<!-- ADS -->
+<div class="page" id="page-ads">
+  <div class="banner" id="adsBanner" style="display:none"></div>
+  <div class="toolbar">
+    <span style="font-size:12px;color:var(--oz-muted)">Дней:</span>
+    <button class="filter-btn on" id="adsDays7" onclick="setAdsDays(7)">7</button>
+    <button class="filter-btn" id="adsDays14" onclick="setAdsDays(14)">14</button>
+    <button class="filter-btn" id="adsDays30" onclick="setAdsDays(30)">30</button>
+    <span id="adsInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+    <button class="action-btn primary ml-auto" id="adsSyncBtn" onclick="triggerAdsSync()">↻ Обновить</button>
+  </div>
+  <div class="cards" id="adsCards"></div>
+  <div id="adsRoot"><div class="empty"><b>Реклама</b>Performance API. Нужны OZON_PERF_CLIENT_ID и OZON_PERF_CLIENT_SECRET.</div></div>
+</div>
+
+<!-- FINANCE -->
+<div class="page" id="page-finance">
+  <div class="banner" id="finBanner" style="display:none"></div>
+  <div class="toolbar">
+    <span style="font-size:12px;color:var(--oz-muted)">Дней начислений:</span>
+    <button class="filter-btn on" id="finDays7" onclick="setFinDays(7)">7</button>
+    <button class="filter-btn" id="finDays14" onclick="setFinDays(14)">14</button>
+    <button class="filter-btn" id="finDays30" onclick="setFinDays(30)">30</button>
+    <span id="finInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+    <button class="action-btn primary ml-auto" id="finSyncBtn" onclick="triggerFinanceSync()">↻ Обновить</button>
+  </div>
+  <div class="cards" id="finCards"></div>
+  <div id="finRoot"><div class="empty"><b>Финансы</b>Начисления accrual + отчёт компенсаций. Соинвест ₽ — по типам начислений (скидка/компенсация/баллы).</div></div>
+</div>
+
 <script>
 const money = (v) => {
   if (v == null || v === '') return '—';
@@ -366,6 +434,18 @@ function showSection(sec, el) {
   } else if (sec === 'prices') {
     btn.textContent = 'Обновить цены';
     renderCoinvest(true);
+  } else if (sec === 'orders') {
+    btn.textContent = 'Обновить заказы';
+    renderOrders(true);
+  } else if (sec === 'reviews') {
+    btn.textContent = 'Обновить отзывы';
+    renderReviews(true);
+  } else if (sec === 'ads') {
+    btn.textContent = 'Обновить рекламу';
+    renderAds(true);
+  } else if (sec === 'finance') {
+    btn.textContent = 'Обновить финансы';
+    renderFinance(true);
   } else {
     btn.textContent = 'Обновить товары';
   }
@@ -375,6 +455,10 @@ function topSync() {
   if (CURRENT === 'stocks') syncStocks();
   else if (CURRENT === 'growth') triggerSalesPaceSync();
   else if (CURRENT === 'prices') triggerCoinvestSync();
+  else if (CURRENT === 'orders') triggerOrdersSync();
+  else if (CURRENT === 'reviews') triggerReviewsSync();
+  else if (CURRENT === 'ads') triggerAdsSync();
+  else if (CURRENT === 'finance') triggerFinanceSync();
   else syncProducts();
 }
 
@@ -1211,8 +1295,8 @@ function coinTh(label, key) {
 }
 function idxBadge(c) {
   const k = (c || 'WITHOUT_INDEX').replace(/[^A-Z_]/g, '') || 'WITHOUT_INDEX';
-  const map = { GREEN: 'Выгодный', YELLOW: 'Средний', RED: 'Невыгодный', WITHOUT_INDEX: 'Нет' };
-  return `<span class="idx idx-${k}">${map[k] || k}</span>`;
+  const map = { SUPER: 'Супер', GREEN: 'Выгодный', YELLOW: 'Средний', RED: 'Невыгодный', WITHOUT_INDEX: 'Нет' };
+  return `<span class="idx idx-${k === 'SUPER' ? 'GREEN' : k}">${map[k] || k}</span>`;
 }
 function pctCell(v, cls) {
   if (v == null || !isFinite(Number(v))) return '<span class="coin-pct zero">—</span>';
@@ -1349,20 +1433,22 @@ function drawCoinvest() {
 
   const rows = arts.map(a => {
     const titles = (a.action_titles || []).join(', ') || (a.in_actions_count ? (a.in_actions_count + ' акц.') : '—');
+    const sitePrice = a.customer_price != null ? a.customer_price : (a.action_price ?? a.marketing_price);
+    const coinPct = a.ozon_discount_pct != null ? a.ozon_discount_pct : a.coinvest_pct;
     return `<tr>
       <td class="sticky"><span class="prod-name">${esc(a.offer_id)}</span></td>
       <td class="num mono">${money(a.old_price)}</td>
       <td class="num mono">${money(a.price)}</td>
       <td class="num mono">${money(a.marketing_seller_price)}</td>
-      <td class="num mono">${money(a.action_price ?? a.marketing_price)}</td>
+      <td class="num mono">${money(sitePrice)}</td>
       <td class="num">${pctCell(a.seller_discount_pct)}</td>
-      <td class="num">${pctCell(a.coinvest_pct)}</td>
+      <td class="num">${pctCell(coinPct)}</td>
       <td class="num mono">${a.coinvest_rub == null ? '—' : money(a.coinvest_rub)}</td>
       <td>${idxBadge(a.color_index)}</td>
       <td class="num mono">${money(a.ozon_min_price)}</td>
       <td class="num mono">${money(a.min_price)}</td>
       <td title="${esc(titles)}">${esc(String(titles).slice(0, 40))}${String(titles).length > 40 ? '…' : ''}</td>
-      <td>${a.auto_action_enabled ? '<span class="tag ok">авто</span>' : '<span class="tag">выкл</span>'}</td>
+      <td>${a.auto_action_enabled ? '<span class="tag ok">авто</span>' : '<span class="tag">выкл</span>'}${a.premium_details ? ' <span class="tag ok">premium</span>' : ''}</td>
     </tr>`;
   }).join('');
 
@@ -1374,7 +1460,7 @@ function drawCoinvest() {
           ${coinTh('До скидки', 'old_price')}
           ${coinTh('Цена продавца', 'price')}
           ${coinTh('С уч. акций продавца', 'marketing_seller_price')}
-          ${coinTh('Цена акции / витрина', 'action_price')}
+          ${coinTh('Цена на сайте', 'customer_price')}
           ${coinTh('Скидка продавца %', 'seller_discount_pct')}
           ${coinTh('Соинвест %', 'coinvest_pct')}
           ${coinTh('Соинвест ₽', 'coinvest_rub')}
@@ -1382,18 +1468,391 @@ function drawCoinvest() {
           ${coinTh('Мин. на Ozon', 'ozon_min_price')}
           ${coinTh('Твой min', 'min_price')}
           <th>Акции</th>
-          <th>Автоакции</th>
+          <th>Авто / Premium</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
     <div class="hint">
-      <b>Соинвест</b> на Ozon — совместное финансирование скидки: Ozon снижает цену покупателю, часть берёт на себя, часть — продавец (через участие в акциях).
-      Это не WB СПП: там скидка постоянного покупателя сверху от маркетплейса.
-      Здесь: <b>цена продавца</b> из кабинета, <b>marketing_seller_price</b> — с акциями продавца,
-      <b>цена акции</b> — action_price из акций Ozon (прокси соинвеста, если витринная цена API больше не отдаёт).
-      Индекс цен — GREEN/YELLOW/RED относительно конкурентов на Ozon.
+      <b>Соинвест</b> — скидка за счёт Ozon. При Premium Pro берём <code>customer_price</code> и <code>discount_percent</code> из /v1/product/prices/details.
+      Без Premium — прокси по action_price акций. Индекс: SUPER/GREEN/YELLOW/RED.
     </div>`;
+}
+
+/* ── Заказы ── */
+let ORD_DATA = { postings: [], syncing: false };
+let ORD_DAYS = 7, ORD_CHANNEL = 'all';
+let ordPoll = null;
+function setOrdDays(d) {
+  ORD_DAYS = d;
+  ['7','14','30'].forEach(x => {
+    const el = document.getElementById('ordDays' + x);
+    if (el) el.classList.toggle('on', Number(x) === d);
+  });
+  triggerOrdersSync();
+}
+function setOrdChannel(c) {
+  ORD_CHANNEL = c;
+  [['All','all'],['Fbo','FBO'],['Fbs','FBS']].forEach(([id, v]) => {
+    const el = document.getElementById('ordCh' + id);
+    if (el) el.classList.toggle('on', v === c);
+  });
+  drawOrders();
+}
+async function renderOrders(force) {
+  if (force || !(ORD_DATA.postings || []).length) await loadOrders();
+  else drawOrders();
+}
+async function loadOrders() {
+  try {
+    const r = await fetch('/api/orders?days=' + ORD_DAYS);
+    ORD_DATA = await r.json();
+  } catch (e) {
+    ORD_DATA = { postings: [], syncing: false, error: String(e) };
+  }
+  drawOrders();
+  clearTimeout(ordPoll);
+  if (ORD_DATA.syncing) ordPoll = setTimeout(loadOrders, 3000);
+}
+async function triggerOrdersSync() {
+  const btn = document.getElementById('ordSyncBtn');
+  if (btn) btn.disabled = true;
+  ORD_DATA.syncing = true;
+  drawOrders();
+  try { await fetch('/api/sync-orders?days=' + ORD_DAYS, { method: 'POST' }); } catch (_) {}
+  clearTimeout(ordPoll);
+  ordPoll = setTimeout(loadOrders, 2500);
+}
+function drawOrders() {
+  const root = document.getElementById('ordRoot');
+  const cards = document.getElementById('ordCards');
+  const info = document.getElementById('ordInfo');
+  const btn = document.getElementById('ordSyncBtn');
+  if (!root) return;
+  if (ORD_DATA.error) { if (info) info.textContent = 'Ошибка: ' + ORD_DATA.error; if (btn) btn.disabled = false; }
+  else if (ORD_DATA.syncing) { if (info) info.textContent = 'Тянем FBO v3 + FBS v4…'; if (btn) btn.disabled = true; }
+  else { if (info) info.textContent = ORD_DATA.updated_at ? ('обновлено ' + fmtDt(ORD_DATA.updated_at)) : ''; if (btn) btn.disabled = false; }
+
+  let rows = [...(ORD_DATA.postings || [])];
+  const q = ((document.getElementById('ordSearch') || {}).value || '').toLowerCase().trim();
+  if (ORD_CHANNEL !== 'all') rows = rows.filter(r => r.channel === ORD_CHANNEL);
+  if (q) rows = rows.filter(r =>
+    String(r.posting_number || '').toLowerCase().includes(q) ||
+    String(r.order_number || '').toLowerCase().includes(q) ||
+    (r.offer_ids || []).some(o => String(o).toLowerCase().includes(q)) ||
+    (r.products || []).some(p => String(p.name || '').toLowerCase().includes(q))
+  );
+
+  const nFbo = (ORD_DATA.postings || []).filter(r => r.channel === 'FBO').length;
+  const nFbs = (ORD_DATA.postings || []).filter(r => r.channel === 'FBS').length;
+  const qty = rows.reduce((s, r) => s + (r.qty || 0), 0);
+  cards.innerHTML = [
+    ['Отправлений', fmt(rows.length), ''],
+    ['FBO / FBS', `${fmt(ORD_DATA.count_fbo || nFbo)} / ${fmt(ORD_DATA.count_fbs || nFbs)}`, ''],
+    ['Единиц товара', fmt(qty), ''],
+    ['Окно', (ORD_DATA.days || ORD_DAYS) + ' дн.', ''],
+  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div></div>`).join('');
+
+  if (ORD_DATA.syncing && !rows.length) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div>Загружаем отправления…</div>';
+    return;
+  }
+  if (!rows.length) {
+    root.innerHTML = `<div class="empty"><b>Нет отправлений</b>${ORD_DATA.error ? esc(ORD_DATA.error) : 'Смени фильтр или обнови'}</div>`;
+    return;
+  }
+  const body = rows.slice(0, 500).map(r => {
+    const arts = (r.offer_ids || []).slice(0, 3).join(', ') || '—';
+    return `<tr>
+      <td>${esc(r.channel)}</td>
+      <td class="mono">${esc(r.posting_number)}</td>
+      <td class="mono">${esc(r.order_number)}</td>
+      <td>${esc(r.status)}${r.substatus ? ' / ' + esc(r.substatus) : ''}</td>
+      <td>${esc(fmtDt(r.created_at))}</td>
+      <td class="prod-name" title="${esc((r.offer_ids||[]).join(', '))}">${esc(arts)}</td>
+      <td class="num">${fmt(r.qty)}</td>
+      <td>${esc(r.warehouse || '—')}</td>
+    </tr>`;
+  }).join('');
+  root.innerHTML = `<div class="tbl-wrap"><table>
+    <thead><tr><th>Схема</th><th>Отправление</th><th>Заказ</th><th>Статус</th><th>Дата</th><th>Артикулы</th><th>Кол-во</th><th>Склад</th></tr></thead>
+    <tbody>${body}</tbody></table></div>
+    <div class="hint">Показаны до 500 строк. Источники: <code>/v3/posting/fbo/list</code> и <code>/v4/posting/fbs/list</code>.</div>`;
+}
+
+/* ── Отзывы ── */
+let REV_DATA = { reviews: [], counts: {}, syncing: false };
+let REV_STATUS = 'ALL';
+let revPoll = null;
+function setRevStatus(s) {
+  REV_STATUS = s;
+  ['ALL','NEW','VIEWED','PROCESSED'].forEach(x => {
+    const el = document.getElementById('revSt' + x);
+    if (el) el.classList.toggle('on', x === s);
+  });
+  triggerReviewsSync();
+}
+async function renderReviews(force) {
+  if (force || !(REV_DATA.reviews || []).length) await loadReviews();
+  else drawReviews();
+}
+async function loadReviews() {
+  try {
+    const r = await fetch('/api/reviews?status=' + encodeURIComponent(REV_STATUS));
+    REV_DATA = await r.json();
+  } catch (e) {
+    REV_DATA = { reviews: [], counts: {}, syncing: false, error: String(e) };
+  }
+  drawReviews();
+  clearTimeout(revPoll);
+  if (REV_DATA.syncing) revPoll = setTimeout(loadReviews, 3000);
+}
+async function triggerReviewsSync() {
+  const btn = document.getElementById('revSyncBtn');
+  if (btn) btn.disabled = true;
+  REV_DATA.syncing = true;
+  drawReviews();
+  try { await fetch('/api/sync-reviews?status=' + encodeURIComponent(REV_STATUS), { method: 'POST' }); } catch (_) {}
+  clearTimeout(revPoll);
+  revPoll = setTimeout(loadReviews, 2500);
+}
+function drawReviews() {
+  const root = document.getElementById('revRoot');
+  const cards = document.getElementById('revCards');
+  const info = document.getElementById('revInfo');
+  const btn = document.getElementById('revSyncBtn');
+  const banner = document.getElementById('revBanner');
+  if (!root) return;
+  if (REV_DATA.premium_required) {
+    banner.style.display = 'block';
+    banner.className = 'banner warn';
+    banner.innerHTML = '<b>Нужна подписка.</b> ReviewAPI v2 доступен с «Управление отзывами» или Premium Pro.';
+  } else {
+    banner.style.display = 'none';
+  }
+  if (REV_DATA.error && !REV_DATA.premium_required) { if (info) info.textContent = 'Ошибка: ' + REV_DATA.error; if (btn) btn.disabled = false; }
+  else if (REV_DATA.syncing) { if (info) info.textContent = 'Тянем отзывы…'; if (btn) btn.disabled = true; }
+  else { if (info) info.textContent = REV_DATA.updated_at ? ('обновлено ' + fmtDt(REV_DATA.updated_at)) : ''; if (btn) btn.disabled = false; }
+
+  const c = REV_DATA.counts || {};
+  cards.innerHTML = [
+    ['Всего', fmt(c.total), ''],
+    ['Новые', fmt(c.new), c.new ? 'color:var(--amber)' : ''],
+    ['Просмотренные', fmt(c.viewed), ''],
+    ['Обработанные', fmt(c.processed), ''],
+  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div></div>`).join('');
+
+  let rows = [...(REV_DATA.reviews || [])];
+  const q = ((document.getElementById('revSearch') || {}).value || '').toLowerCase().trim();
+  if (q) rows = rows.filter(r => String(r.sku||'').includes(q) || String(r.text||'').toLowerCase().includes(q));
+
+  if (REV_DATA.syncing && !rows.length) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div>Загружаем отзывы v2…</div>';
+    return;
+  }
+  if (!rows.length) {
+    root.innerHTML = `<div class="empty"><b>Нет отзывов</b>${REV_DATA.error ? esc(REV_DATA.error) : 'Обнови или смени фильтр'}</div>`;
+    return;
+  }
+  const body = rows.slice(0, 300).map(r => `<tr>
+    <td class="num">${r.rating ?? '—'}</td>
+    <td class="mono">${esc(r.sku)}</td>
+    <td>${esc(r.status)}</td>
+    <td>${esc(fmtDt(r.published_at))}</td>
+    <td style="max-width:480px;white-space:normal">${esc((r.text||'').slice(0,240))}</td>
+    <td class="num">${fmt(r.comments_amount)}</td>
+  </tr>`).join('');
+  root.innerHTML = `<div class="tbl-wrap"><table>
+    <thead><tr><th>★</th><th>SKU</th><th>Статус</th><th>Дата</th><th>Текст</th><th>Комменты</th></tr></thead>
+    <tbody>${body}</tbody></table></div>`;
+}
+
+/* ── Реклама ── */
+let ADS_DATA = { campaigns: [], daily: [], expense: [], syncing: false };
+let ADS_DAYS = 7;
+let adsPoll = null;
+function setAdsDays(d) {
+  ADS_DAYS = d;
+  ['7','14','30'].forEach(x => {
+    const el = document.getElementById('adsDays' + x);
+    if (el) el.classList.toggle('on', Number(x) === d);
+  });
+  triggerAdsSync();
+}
+async function renderAds(force) {
+  if (force || !(ADS_DATA.campaigns || []).length) await loadAds();
+  else drawAds();
+}
+async function loadAds() {
+  try {
+    const r = await fetch('/api/ads?days=' + ADS_DAYS);
+    ADS_DATA = await r.json();
+  } catch (e) {
+    ADS_DATA = { campaigns: [], syncing: false, error: String(e), configured: false };
+  }
+  drawAds();
+  clearTimeout(adsPoll);
+  if (ADS_DATA.syncing) adsPoll = setTimeout(loadAds, 3000);
+}
+async function triggerAdsSync() {
+  const btn = document.getElementById('adsSyncBtn');
+  if (btn) btn.disabled = true;
+  ADS_DATA.syncing = true;
+  drawAds();
+  try { await fetch('/api/sync-ads?days=' + ADS_DAYS, { method: 'POST' }); } catch (_) {}
+  clearTimeout(adsPoll);
+  adsPoll = setTimeout(loadAds, 2500);
+}
+function drawAds() {
+  const root = document.getElementById('adsRoot');
+  const cards = document.getElementById('adsCards');
+  const info = document.getElementById('adsInfo');
+  const btn = document.getElementById('adsSyncBtn');
+  const banner = document.getElementById('adsBanner');
+  if (!root) return;
+  if (!ADS_DATA.configured) {
+    banner.style.display = 'block';
+    banner.className = 'banner warn';
+    banner.innerHTML = '<b>Performance API.</b> Railway: <code>OZON_PERF_CLIENT_ID</code> и <code>OZON_PERF_CLIENT_SECRET</code> (кабинет → API-ключи → Performance API).';
+  } else {
+    banner.style.display = 'none';
+  }
+  if (ADS_DATA.error) { if (info) info.textContent = 'Ошибка: ' + ADS_DATA.error; if (btn) btn.disabled = false; }
+  else if (ADS_DATA.syncing) { if (info) info.textContent = 'Тянем кампании…'; if (btn) btn.disabled = true; }
+  else { if (info) info.textContent = ADS_DATA.updated_at ? ('обновлено ' + fmtDt(ADS_DATA.updated_at)) : ''; if (btn) btn.disabled = false; }
+
+  const camps = ADS_DATA.campaigns || [];
+  const running = camps.filter(c => String(c.state || '').includes('RUNNING') || String(c.state || '').includes('ACTIVE')).length;
+  cards.innerHTML = [
+    ['Кампаний', fmt(camps.length), ''],
+    ['Активных', fmt(running), ''],
+    ['Период', (ADS_DATA.date_from || '—') + ' → ' + (ADS_DATA.date_to || '—'), ''],
+  ].map(([l,v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="font-size:18px">${v}</div></div>`).join('');
+
+  if (ADS_DATA.syncing && !camps.length) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div>Performance API…</div>';
+    return;
+  }
+  if (!camps.length) {
+    root.innerHTML = `<div class="empty"><b>Нет кампаний</b>${ADS_DATA.error ? esc(ADS_DATA.error) : 'Проверь ключи Performance'}</div>`;
+    return;
+  }
+  const body = camps.map(c => `<tr>
+    <td class="mono">${esc(c.id)}</td>
+    <td>${esc(c.title || '—')}</td>
+    <td>${esc(c.advObjectType || '—')}</td>
+    <td>${esc(c.state || '—')}</td>
+    <td class="num mono">${c.dailyBudget != null ? money(c.dailyBudget) : '—'}</td>
+  </tr>`).join('');
+  let dailyHtml = '';
+  const daily = ADS_DATA.daily || [];
+  if (daily.length) {
+    dailyHtml = `<div class="hint" style="margin-top:16px"><b>Дневная статистика</b> — ${fmt(daily.length)} строк с API (сырой ответ).</div>
+      <div class="tbl-wrap" style="margin-top:8px"><table><thead><tr><th>Строка</th></tr></thead><tbody>
+      ${daily.slice(0, 40).map(r => `<tr><td style="white-space:normal;font-size:11px">${esc(JSON.stringify(r).slice(0, 220))}</td></tr>`).join('')}
+      </tbody></table></div>`;
+  }
+  root.innerHTML = `<div class="tbl-wrap"><table>
+    <thead><tr><th>ID</th><th>Название</th><th>Тип</th><th>Статус</th><th>Дневной бюджет</th></tr></thead>
+    <tbody>${body}</tbody></table></div>${dailyHtml}
+    <div class="hint">Host: <code>api-performance.ozon.ru</code>, OAuth client_credentials. Seller Api-Key сюда не подходит.</div>`;
+}
+
+/* ── Финансы ── */
+let FIN_DATA = { days: [], by_type: [], syncing: false };
+let FIN_DAYS = 7;
+let finPoll = null;
+function setFinDays(d) {
+  FIN_DAYS = d;
+  ['7','14','30'].forEach(x => {
+    const el = document.getElementById('finDays' + x);
+    if (el) el.classList.toggle('on', Number(x) === d);
+  });
+  triggerFinanceSync();
+}
+async function renderFinance(force) {
+  if (force || !(FIN_DATA.days || []).length) await loadFinance();
+  else drawFinance();
+}
+async function loadFinance() {
+  try {
+    const r = await fetch('/api/finance?days=' + FIN_DAYS);
+    FIN_DATA = await r.json();
+  } catch (e) {
+    FIN_DATA = { days: [], syncing: false, error: String(e) };
+  }
+  drawFinance();
+  clearTimeout(finPoll);
+  if (FIN_DATA.syncing) finPoll = setTimeout(loadFinance, 4000);
+}
+async function triggerFinanceSync() {
+  const btn = document.getElementById('finSyncBtn');
+  if (btn) btn.disabled = true;
+  FIN_DATA.syncing = true;
+  drawFinance();
+  try { await fetch('/api/sync-finance?days=' + FIN_DAYS, { method: 'POST' }); } catch (_) {}
+  clearTimeout(finPoll);
+  finPoll = setTimeout(loadFinance, 3000);
+}
+function drawFinance() {
+  const root = document.getElementById('finRoot');
+  const cards = document.getElementById('finCards');
+  const info = document.getElementById('finInfo');
+  const btn = document.getElementById('finSyncBtn');
+  const banner = document.getElementById('finBanner');
+  if (!root) return;
+  if (FIN_DATA.error) { if (info) info.textContent = 'Ошибка: ' + FIN_DATA.error; if (btn) btn.disabled = false; }
+  else if (FIN_DATA.syncing) { if (info) info.textContent = 'Считаем начисления (может занять минуту)…'; if (btn) btn.disabled = true; }
+  else { if (info) info.textContent = FIN_DATA.updated_at ? ('обновлено ' + fmtDt(FIN_DATA.updated_at)) : ''; if (btn) btn.disabled = false; }
+
+  const comp = FIN_DATA.compensation || {};
+  if (comp.file) {
+    banner.style.display = 'block';
+    banner.className = 'banner';
+    banner.innerHTML = `Отчёт компенсаций (${esc(comp.period || '')}): <a href="${esc(comp.file)}" target="_blank" rel="noopener">скачать XLSX</a>`;
+  } else if (comp.error && comp.status !== 'success') {
+    banner.style.display = 'block';
+    banner.className = 'banner warn';
+    banner.textContent = 'Компенсации: ' + (comp.error || comp.status || '—');
+  } else {
+    banner.style.display = 'none';
+  }
+
+  cards.innerHTML = [
+    ['Начислено всего', money(FIN_DATA.total), ''],
+    ['Соинвест / скидки (оценка)', money(FIN_DATA.coinvest_total), 'color:var(--amber)'],
+    ['Типов соинвеста', fmt((FIN_DATA.coinvest_types || []).length), ''],
+    ['Дней', fmt((FIN_DATA.days || []).length), ''],
+  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div></div>`).join('');
+
+  if (FIN_DATA.syncing && !(FIN_DATA.days || []).length) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div>Accrual by-day + compensation report…</div>';
+    return;
+  }
+
+  const dayRows = (FIN_DATA.days || []).map(d => `<tr>
+    <td>${esc(d.date)}</td>
+    <td class="num mono">${money(d.total)}</td>
+    <td class="num mono" style="color:var(--amber)">${money(d.coinvest)}</td>
+    <td class="num">${fmt(d.count)}</td>
+  </tr>`).join('');
+  const typeRows = (FIN_DATA.by_type || []).slice(0, 40).map(t => `<tr>
+    <td class="mono">${esc(t.id)}</td>
+    <td>${t.is_coinvest ? '✓' : ''}</td>
+    <td>${esc(t.name)}</td>
+    <td class="num mono">${money(t.amount)}</td>
+  </tr>`).join('');
+
+  root.innerHTML = `
+    <div class="tbl-wrap" style="margin-bottom:16px"><table>
+      <thead><tr><th>День</th><th>Всего</th><th>Соинвест*</th><th>Записей</th></tr></thead>
+      <tbody>${dayRows || '<tr><td colspan="4">Нет данных</td></tr>'}</tbody>
+    </table></div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>type_id</th><th>Соинвест?</th><th>Название</th><th>Сумма</th></tr></thead>
+      <tbody>${typeRows || '<tr><td colspan="4">Нет разбивки</td></tr>'}</tbody>
+    </table></div>
+    <div class="hint">*Соинвест ₽ — сумма начислений, у которых в названии/описании есть «скидк / соинвест / компенсац / балл / акци». Справочник: <code>/v1/finance/accrual/types</code>. Транзакции v3 устаревают — используем accrual.</div>`;
 }
 
 refreshStatus();
