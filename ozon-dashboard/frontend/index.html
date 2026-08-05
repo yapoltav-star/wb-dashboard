@@ -304,10 +304,10 @@ a.prod-link:hover .prod-name{color:var(--oz-blue);text-decoration:underline}
     <table>
       <thead>
         <tr>
-          <th>Товар</th><th>Артикул</th><th>SKU</th><th>Цена</th><th>Остатки</th><th>Статус</th>
+          <th>Товар</th><th>Артикул</th><th>SKU</th><th>Цена</th><th>Остаток</th><th>Канал</th><th>Статус</th>
         </tr>
       </thead>
-      <tbody id="tbody"><tr><td colspan="6"><div class="empty">Загрузка…</div></td></tr></tbody>
+      <tbody id="tbody"><tr><td colspan="7"><div class="empty">Загрузка…</div></td></tr></tbody>
     </table>
   </div>
 </div>
@@ -558,7 +558,7 @@ async function refreshStatus() {
 async function loadProducts() {
   const tbody = document.getElementById('tbody');
   const q = document.getElementById('q').value.trim();
-  tbody.innerHTML = '<tr><td colspan="6"><div class="empty">Загрузка…</div></td></tr>';
+  tbody.innerHTML = '<tr><td colspan="7"><div class="empty">Загрузка…</div></td></tr>';
   try {
     const url = new URL('/api/products', location.origin);
     url.searchParams.set('archived', ARCHIVED);
@@ -572,7 +572,7 @@ async function loadProducts() {
     if (typeof d.total === 'number') document.getElementById('statTotal').textContent = d.total;
     const items = d.items || [];
     if (!items.length) {
-      tbody.innerHTML = `<tr><td colspan="6"><div class="empty"><b>Ничего не найдено</b></div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7"><div class="empty"><b>Ничего не найдено</b></div></td></tr>`;
       return;
     }
     tbody.innerHTML = items.map(it => {
@@ -585,17 +585,24 @@ async function loadProducts() {
       const status = it.archived
         ? '<span class="tag arc">архив</span>'
         : `<span class="tag ok">${esc(it.visibility || 'active')}</span>`;
+      const stockQty = it.stock != null ? fmt(it.stock) : '—';
+      const whN = it.warehouses != null ? fmt(it.warehouses) : '—';
+      const ozUrl = it.sku ? `https://www.ozon.ru/product/${it.sku}/` : '';
+      const title = ozUrl
+        ? `<a class="prod-link" href="${esc(ozUrl)}" target="_blank" rel="noopener"><div class="prod">${img}<div><div class="prod-name">${esc(it.name || '—')}</div><div class="prod-meta">id ${esc(it.product_id)}</div></div></div></a>`
+        : `<div class="prod">${img}<div><div class="prod-name">${esc(it.name || '—')}</div><div class="prod-meta">id ${esc(it.product_id)}</div></div></div>`;
       return `<tr>
-        <td><div class="prod">${img}<div><div class="prod-name">${esc(it.name || '—')}</div><div class="prod-meta">id ${esc(it.product_id)}</div></div></div></td>
+        <td>${title}</td>
         <td class="mono">${esc(it.offer_id || '—')}</td>
         <td class="mono">${esc(it.sku ?? '—')}</td>
         <td class="mono">${money(it.marketing_price ?? it.price)}</td>
+        <td class="num mono" title="Остаток / складов">${stockQty}<div class="prod-meta">${whN} скл.</div></td>
         <td>${stocks.length ? stocks.join(' ') : '<span class="tag">нет</span>'}</td>
         <td>${status}</td>
       </tr>`;
     }).join('');
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="6"><div class="empty"><b>Ошибка загрузки</b>${esc(e.message || e)}</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7"><div class="empty"><b>Ошибка загрузки</b>${esc(e.message || e)}</div></td></tr>`;
   }
 }
 
@@ -852,6 +859,10 @@ function buildStockMatrix() {
     const dailyAll = period ? ozOrders / period : 0;
     const daysAll = dailyAll > 0 ? totalStock / dailyAll : null;
     const recAll = dailyAll > 0 ? Math.max(0, Math.round(dailyAll * TARGET_DAYS - totalStock)) : 0;
+    const whWithStock = whNames.filter(w => {
+      const c = cells[w];
+      return c && (c.stock || 0) > 0;
+    }).length;
     return {
       offer_id: t.offer_id,
       sku: t.sku,
@@ -860,6 +871,7 @@ function buildStockMatrix() {
       fbo: t.fbo_present || 0,
       fbs: t.fbs_present || 0,
       totalStock,
+      warehouses: whWithStock,
       ordered_qty: ozOrders,
       period_days: period,
       daysAll,
@@ -1125,7 +1137,8 @@ function paceStockHtml(a) {
   const flag = a.stock_flag || (stock <= 0 ? 'oos' : 'ok');
   const color = flag === 'oos' ? '#B42318' : (flag === 'low' ? '#B54708' : 'var(--oz-text)');
   const days = a.days_left != null ? ` · ~${Number(a.days_left).toLocaleString('ru-RU', { maximumFractionDigits: 1 })}д` : '';
-  return `<span style="font-weight:600;color:${color}">${fmt(stock)}${days}</span>`;
+  const wh = a.warehouses != null ? `<div class="prod-meta">${fmt(a.warehouses)} скл.</div>` : '';
+  return `<span style="font-weight:600;color:${color}">${fmt(stock)}${days}</span>${wh}`;
 }
 function paceStockBadge(a) {
   if (!a.stock_linked) return '';
@@ -1566,6 +1579,7 @@ function drawCoinvest() {
       : `<div class="coin-prod">${img}<div><div class="prod-name">${esc(offer)}</div></div></div>`;
     return `<tr>
       <td class="sticky">${nameBlock}</td>
+      <td class="num mono">${fmt(a.stock != null ? a.stock : 0)}<div class="prod-meta">${fmt(a.warehouses != null ? a.warehouses : 0)} скл.</div></td>
       <td class="num mono">${money(a.old_price)}</td>
       <td class="num mono">${money(a.price)}</td>
       <td class="num mono">${money(a.marketing_seller_price)}</td>
@@ -1593,6 +1607,7 @@ function drawCoinvest() {
       <table>
         <thead><tr>
           ${coinTh('Артикул', 'offer_id')}
+          ${coinTh('Остаток', 'stock')}
           ${coinTh('До скидки', 'old_price')}
           ${coinTh('Цена продавца', 'price')}
           ${coinTh('С уч. акций продавца', 'marketing_seller_price')}

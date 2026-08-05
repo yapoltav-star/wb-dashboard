@@ -307,6 +307,7 @@ def sync_sales_pace(
     date_cur: str | None = None,
     date_prev: str | None = None,
     load_ads_sku: Callable | None = None,
+    load_stock_index: Callable | None = None,
 ) -> dict:
     period = period if period in SALES_PACE_PERIODS else "day"
     if period != "day":
@@ -363,12 +364,29 @@ def sync_sales_pace(
                 if offer:
                     stock_by_offer[offer] = {
                         "stock": int(r.get("stock_total") or 0),
+                        "warehouses": 0,
                         "sku": r.get("sku"),
                         "name": r.get("name") or "",
                         "product_id": r.get("product_id"),
                     }
         except Exception as e:
             logger.warning("pace stock: %s", e)
+        if load_stock_index:
+            try:
+                for offer, info in (load_stock_index() or {}).items():
+                    entry = stock_by_offer.setdefault(
+                        str(offer),
+                        {"stock": 0, "warehouses": 0, "sku": None, "name": "", "product_id": None},
+                    )
+                    if info.get("stock") is not None:
+                        entry["stock"] = int(info.get("stock") or 0)
+                    entry["warehouses"] = int(info.get("warehouses") or 0)
+                    if info.get("sku") is not None:
+                        entry["sku"] = info.get("sku")
+                    if info.get("name"):
+                        entry["name"] = info.get("name")
+            except Exception as e:
+                logger.warning("pace stock index: %s", e)
 
         sku_to_offer: dict[str, str] = {}
         name_by_offer: dict[str, str] = {}
@@ -469,6 +487,7 @@ def sync_sales_pace(
                 cpm_delta = round(cpm_t - cpm_y, 1)
 
             stock_qty = int(meta.get("stock") or 0)
+            wh_count = int(meta.get("warehouses") or 0)
             daily_orders = max(o_t, o_y, 0) / period_days if period_days else 0
             days_left = round(stock_qty / daily_orders, 1) if daily_orders > 0 else None
             if stock_qty <= 0:
@@ -524,6 +543,7 @@ def sync_sales_pace(
                     "cpm_yesterday": cpm_y if ads_ready else None,
                     "cpm_delta": cpm_delta,
                     "stock": stock_qty,
+                    "warehouses": wh_count,
                     "days_left": days_left,
                     "stock_flag": stock_flag,
                     "stock_linked": stock_linked,

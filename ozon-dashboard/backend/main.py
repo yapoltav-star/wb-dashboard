@@ -370,6 +370,55 @@ def sync_products() -> dict:
 # ── Stocks ─────────────────────────────────────────────────────────────────
 
 
+def load_stock_index() -> dict[str, dict]:
+    """offer_id → {stock, warehouses} из stock_totals + stocks.
+
+    warehouses = число складов, где free_to_sell/present > 0.
+    """
+    by_offer: dict[str, dict] = {}
+    try:
+        for r in _sb_select_all(
+            "stock_totals",
+            "offer_id,product_id,sku,name,stock_total,primary_image",
+        ) or []:
+            offer = str(r.get("offer_id") or "")
+            if not offer:
+                continue
+            by_offer[offer] = {
+                "stock": int(r.get("stock_total") or 0),
+                "warehouses": 0,
+                "sku": r.get("sku"),
+                "name": r.get("name") or "",
+                "primary_image": r.get("primary_image") or "",
+                "product_id": r.get("product_id"),
+            }
+    except Exception as e:
+        logger.warning("load_stock_index totals: %s", e)
+        return by_offer
+    try:
+        for r in _sb_select_all(
+            "stocks",
+            "offer_id,free_to_sell,present",
+        ) or []:
+            offer = str(r.get("offer_id") or "")
+            if not offer:
+                continue
+            qty = r.get("free_to_sell")
+            if qty is None:
+                qty = r.get("present") or 0
+            try:
+                qty = int(qty or 0)
+            except (TypeError, ValueError):
+                qty = 0
+            if qty <= 0:
+                continue
+            entry = by_offer.setdefault(offer, {"stock": 0, "warehouses": 0})
+            entry["warehouses"] = int(entry.get("warehouses") or 0) + 1
+    except Exception as e:
+        logger.warning("load_stock_index warehouses: %s", e)
+    return by_offer
+
+
 def load_products_from_db() -> list[dict]:
     """Все неархивные товары с sku из Supabase (пагинация)."""
     out: list[dict] = []
@@ -938,7 +987,18 @@ def list_products(
     else:
         total = len(resp.json())
 
-    return {"items": resp.json(), "total": total, "limit": limit, "offset": offset}
+    items = resp.json() or []
+    try:
+        stock_idx = load_stock_index()
+    except Exception:
+        stock_idx = {}
+    for it in items:
+        offer = str(it.get("offer_id") or "")
+        st = stock_idx.get(offer) or {}
+        it["stock"] = int(st.get("stock") or 0)
+        it["warehouses"] = int(st.get("warehouses") or 0)
+
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @app.get("/api/stocks")
@@ -1016,6 +1076,7 @@ def _run_pace_sync(period: str = "day", date_cur: str | None = None, date_prev: 
                 "stock_totals",
                 "offer_id,product_id,sku,name,stock_total",
             ),
+            load_stock_index=load_stock_index,
             load_products=load_products_from_db,
             period=period,
             date_cur=date_cur,
@@ -1035,6 +1096,7 @@ def _run_coinvest_sync():
             ozon_get=ozon_get,
             load_products=load_products_from_db,
             load_manual_prices=load_manual_site_prices,
+            load_stock_index=load_stock_index,
         )
     except Exception as e:
         logger.exception("coinvest sync thread: %s", e)

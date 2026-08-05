@@ -334,6 +334,7 @@ def sync_coinvest(
     ozon_get: Callable | None = None,
     load_products: Callable | None = None,
     load_manual_prices: Callable | None = None,
+    load_stock_index: Callable | None = None,
 ) -> dict:
     """Синк цен + акций → COINVEST_CACHE. Цена на сайте — из ручного ввода."""
     if not _lock.acquire(blocking=False):
@@ -409,6 +410,13 @@ def sync_coinvest(
             except Exception as e:
                 logger.warning("load_manual_prices: %s", e)
 
+        stock_idx: dict[str, dict] = {}
+        if load_stock_index:
+            try:
+                stock_idx = load_stock_index() or {}
+            except Exception as e:
+                logger.warning("load_stock_index: %s", e)
+
         articles = []
         for it in prices:
             row = normalize_price_item(it, action_by_pid)
@@ -419,6 +427,11 @@ def sync_coinvest(
             row["ozon_url"] = f"https://www.ozon.ru/product/{sku}/" if sku else None
             row["manual_site_price"] = False
             offer = str(row.get("offer_id") or "")
+            st = stock_idx.get(offer) or {}
+            row["stock"] = int(st.get("stock") or 0)
+            row["warehouses"] = int(st.get("warehouses") or 0)
+            if not row["primary_image"] and st.get("primary_image"):
+                row["primary_image"] = st["primary_image"]
             if offer and offer in manual:
                 apply_manual_to_article(row, float(manual[offer]))
             articles.append(row)
