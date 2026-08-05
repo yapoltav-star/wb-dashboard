@@ -494,5 +494,6 @@ def get_cached() -> dict:
         "premium_details": bool(COINVEST_CACHE.get("premium_details")),
         "client_source": COINVEST_CACHE.get("client_source"),
         "client_count": COINVEST_CACHE.get("client_count") or 0,
+        "proxy_configured": cprices.proxy_configured(),
         "count": len(COINVEST_CACHE.get("articles") or []),
     }

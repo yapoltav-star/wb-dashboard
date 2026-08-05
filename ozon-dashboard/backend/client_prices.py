@@ -37,6 +37,45 @@ _BROWSER_HEADERS = {
 }
 
 
+def normalize_proxy_url(raw: str | None) -> str | None:
+    """Приводит строку прокси к URL для httpx/curl_cffi.
+
+    Поддерживает форматы proxy.market и аналоги:
+      http://user:pass@host:port
+      socks5://user:pass@host:port
+      user:pass@host:port
+      host:port:user:pass
+      host:port@user:pass
+      host:port
+    """
+    s = (raw or "").strip()
+    if not s:
+        return None
+    if "://" in s:
+        return s
+    # user:pass@host:port
+    if "@" in s and s.count(":") >= 2:
+        left, right = s.split("@", 1)
+        # host:port@user:pass  (формат из FAQ proxy.market)
+        if left.count(":") == 1 and right.count(":") == 1:
+            hostport, userpass = left, right
+            return f"http://{userpass}@{hostport}"
+        # user:pass@host:port
+        return f"http://{s}"
+    parts = s.split(":")
+    if len(parts) == 4:
+        host, port, user, password = parts
+        return f"http://{user}:{password}@{host}:{port}"
+    if len(parts) == 2:
+        return f"http://{s}"
+    logger.warning("OZON_CLIENT_PROXY: нераспознанный формат")
+    return s
+
+
+def proxy_configured() -> bool:
+    return bool(normalize_proxy_url(os.environ.get("OZON_CLIENT_PROXY")))
+
+
 def _price_text_to_num(text) -> float | None:
     if text is None:
         return None
@@ -113,7 +152,7 @@ def _parse_composer_page(page: dict, sku: int) -> dict | None:
 
 def _http_get(url: str, timeout: float = 25.0) -> tuple[int, str]:
     """GET с curl_cffi (если есть) или httpx. Учитывает OZON_CLIENT_PROXY."""
-    proxy = (os.environ.get("OZON_CLIENT_PROXY") or "").strip() or None
+    proxy = normalize_proxy_url(os.environ.get("OZON_CLIENT_PROXY"))
     try:
         from curl_cffi import requests as creq  # type: ignore
 
@@ -131,12 +170,11 @@ def _http_get(url: str, timeout: float = 25.0) -> tuple[int, str]:
     except Exception as e:
         logger.debug("curl_cffi get failed: %s", e)
 
-    proxies = proxy
     with httpx.Client(
         headers=_BROWSER_HEADERS,
         timeout=timeout,
         follow_redirects=True,
-        proxy=proxies,
+        proxy=proxy,
     ) as client:
         r = client.get(url)
         return int(r.status_code), r.text or ""

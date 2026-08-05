@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 import ads
+import client_prices as cprices
 import coinvest as coin
 import finance as fin
 import orders as ordmod
