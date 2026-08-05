@@ -973,8 +973,9 @@ function renderStocks() {
         <button class="pin-btn ${pinCls}" title="${a.isPinned?'Открепить':'Закрепить'}"
           onclick='toggleStockPin(${JSON.stringify(a.offer_id)}, event)'>📌</button>
         <span class="prod-name">${esc(a.offer_id)}</span>
+        <div class="prod-meta">${fmt(a.warehouses || 0)} скл.</div>
       </td>
-      <td class="num tot-col">${fmt(a.totalStock)}</td>
+      <td class="num tot-col">${fmt(a.totalStock)}<div class="prod-meta">${fmt(a.warehouses || 0)} скл.</div></td>
       <td class="num tot-col">${fmt(a.ordered_qty)}</td>
       <td class="num tot-col ${dlCls}">${dl}</td>
       <td class="num tot-col"><b>${fmt(a.recAll)}</b></td>`;
