@@ -645,6 +645,37 @@ STOCK_WH_SNAPS_KEY = "stock_warehouse_snaps"
 STOCK_WH_SNAPS_KEEP_DAYS = 7
 # Если живых складов меньше — считаем географию узкой (срок доставки бьёт по конверсии)
 STOCK_WH_NARROW_LIVE = 2
+# Склады, отключённые в «Рекомендациях поставок» (общие для всех устройств)
+SUPPLY_WH_DISABLED_KEY = "supply_wh_disabled"
+
+
+def get_disabled_warehouses() -> set:
+    """Имена складов, снятых галкой в матрице поставок — не участвуют в расчётах темпа."""
+    raw = get_setting_json(SUPPLY_WH_DISABLED_KEY, []) or []
+    if isinstance(raw, str):
+        try:
+            import json as _json
+            raw = _json.loads(raw)
+        except Exception:
+            raw = []
+    if not isinstance(raw, list):
+        return set()
+    return {str(x).strip() for x in raw if str(x).strip()}
+
+
+def _filter_wh_map(wh_map: dict, disabled: set) -> dict:
+    """Оставляет только включённые склады (qty > 0)."""
+    if not wh_map:
+        return {}
+    if not disabled:
+        return {str(k): int(v or 0) for k, v in wh_map.items() if int(v or 0) > 0}
+    out = {}
+    for name, qty in wh_map.items():
+        n = str(name).strip()
+        q = int(qty or 0)
+        if q > 0 and n not in disabled:
+            out[n] = q
+    return out
 
 
 def _stock_wh_by_nm_from_rows(warehouses: list) -> dict:
@@ -748,25 +779,27 @@ def get_stock_warehouse_snap_for_day(day: str):
     return best
 
 
-def stock_wh_geo_compare(nm_id, cur_by_nm: dict, prev_snap: dict) -> dict:
-    """Сравнивает текущую географию складов с вчерашним снимком."""
+def stock_wh_geo_compare(nm_id, cur_by_nm: dict, prev_snap: dict, disabled: set = None) -> dict:
+    """Сравнивает текущую географию складов с вчерашним снимком (без отключённых складов)."""
+    disabled = disabled if disabled is not None else set()
     key = str(int(nm_id))
     cur = (cur_by_nm or {}).get(key) or {}
-    cur_w = cur.get("w") or {}
+    cur_w = _filter_wh_map(cur.get("w") or {}, disabled)
     prev = ((prev_snap or {}).get("by_nm") or {}).get(key) or {}
-    prev_w = prev.get("w") or {}
+    prev_w = _filter_wh_map(prev.get("w") or {}, disabled)
     cur_live = sorted([n for n, q in cur_w.items() if int(q or 0) > 0])
     prev_live = sorted([n for n, q in prev_w.items() if int(q or 0) > 0])
     emptied = [n for n in prev_live if n not in cur_w or int(cur_w.get(n) or 0) <= 0]
     added = [n for n in cur_live if n not in prev_w]
     live_now = len(cur_live)
     live_prev = len(prev_live)
+    total = sum(cur_w.values())
     geo_flag = "ok"
     if live_now <= 0:
         geo_flag = "oos"
     elif emptied and live_now < live_prev:
         geo_flag = "emptied"
-    elif live_now <= STOCK_WH_NARROW_LIVE and (cur.get("t") or sum(cur_w.values()) or 0) > 0:
+    elif live_now <= STOCK_WH_NARROW_LIVE and total > 0:
         geo_flag = "narrow"
     return {
         "wh_live": live_now,
@@ -774,6 +807,7 @@ def stock_wh_geo_compare(nm_id, cur_by_nm: dict, prev_snap: dict) -> dict:
         "wh_emptied": emptied[:8],
         "wh_added": added[:8],
         "wh_names": cur_live[:12],
+        "stock_qty_enabled": total,
         "stock_geo_flag": geo_flag,
         "wh_snap_prev_as_of": (prev_snap or {}).get("as_of"),
     }
@@ -4041,7 +4075,9 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
 
         # Текущая география складов + вчерашний снимок (для «обнулился склад»)
         stock_wh_by_nm = _fetch_stock_wh_by_nm()
+        disabled_wh = get_disabled_warehouses()
         try:
+            # в снимках храним все склады; отключённые фильтруем при сравнении
             save_stock_warehouse_snapshot_by_nm(stock_wh_by_nm)
         except Exception as e:
             logger.warning(f"sales-pace stock WH snapshot: {e}")
@@ -4092,8 +4128,15 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 if cart_cr_t is not None and cart_cr_y is not None else None
             )
             st_info = stock_by_nm.get(int(nm)) or {}
-            stock_qty = int(st_info.get("stock") or 0)
+            stock_qty_raw = int(st_info.get("stock") or 0)
             in_way = int(st_info.get("in_way") or 0)
+            geo = stock_wh_geo_compare(nm, stock_wh_by_nm, stock_wh_prev_snap, disabled_wh)
+            # остаток для темпа = сумма по включённым складам, если есть детализация
+            nm_slot = (stock_wh_by_nm or {}).get(str(int(nm))) or {}
+            if nm_slot.get("w"):
+                stock_qty = int(geo.get("stock_qty_enabled") or 0)
+            else:
+                stock_qty = stock_qty_raw
             # дней запаса ≈ остаток / среднесут. заказам в окне
             daily_orders = max(o_t, o_y, 0) / float(period_days or 1)
             days_left = round(stock_qty / daily_orders, 1) if daily_orders > 0 else None
@@ -4103,7 +4146,6 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 stock_flag = "low"
             else:
                 stock_flag = "ok"
-            geo = stock_wh_geo_compare(nm, stock_wh_by_nm, stock_wh_prev_snap)
             opens_delta = opens_t - opens_y if funnel_ready else None
             cart_delta = cart_t - cart_y if funnel_ready else None
             funnel_down = (
@@ -4183,6 +4225,7 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             "updated_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
             "funnel_ready": funnel_ready,
             "ads_ready": ads_ready,
+            "disabled_warehouses": sorted(disabled_wh),
             "error": None,
         }
         SALES_PACE_CACHE.setdefault("by_period", {})[cache_key] = payload
@@ -4225,6 +4268,7 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
         if need_stock:
             return articles
     stock_wh_by_nm = _fetch_stock_wh_by_nm() if need_geo else {}
+    disabled_wh = get_disabled_warehouses() if (need_geo or need_stock) else set()
     prev_day = (_msk_now() - timedelta(days=1)).strftime("%Y-%m-%d")
     prev_snap = get_stock_warehouse_snap_for_day(prev_day) if need_geo else None
     period_days = {"day": 1, "week": 7, "weeks2": 14, "month": 30}.get(period, 1)
@@ -4243,6 +4287,17 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
         else:
             stock_qty = int(item.get("stock") if item.get("stock") is not None else (st_info.get("stock") or 0))
             in_way = int(item.get("in_way") if item.get("in_way") is not None else (st_info.get("in_way") or 0))
+        geo = stock_wh_geo_compare(nm, stock_wh_by_nm, prev_snap, disabled_wh) if need_geo else {
+            "wh_live": item.get("wh_live"),
+            "wh_live_prev": item.get("wh_live_prev"),
+            "wh_emptied": item.get("wh_emptied") or [],
+            "wh_names": item.get("wh_names") or [],
+            "stock_geo_flag": item.get("stock_geo_flag") or "ok",
+            "stock_qty_enabled": None,
+        }
+        nm_slot = (stock_wh_by_nm or {}).get(str(nm)) or {}
+        if need_stock and nm_slot.get("w"):
+            stock_qty = int(geo.get("stock_qty_enabled") or 0)
         o_t = int(item.get("orders_today") or 0)
         o_y = int(item.get("orders_yesterday") or 0)
         daily_orders = max(o_t, o_y, 0) / float(period_days or 1)
@@ -4276,13 +4331,6 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
             or (cr_d is not None and cr_d <= -1)
         )
         orders_down = (item.get("orders_delta") or 0) < 0
-        geo = stock_wh_geo_compare(nm, stock_wh_by_nm, prev_snap) if need_geo else {
-            "wh_live": item.get("wh_live"),
-            "wh_live_prev": item.get("wh_live_prev"),
-            "wh_emptied": item.get("wh_emptied") or [],
-            "wh_names": item.get("wh_names") or [],
-            "stock_geo_flag": item.get("stock_geo_flag") or "ok",
-        }
         geo_bad = geo.get("stock_geo_flag") in ("oos", "narrow", "emptied")
         item.update({
             "stock": stock_qty,
@@ -5053,13 +5101,22 @@ async def save_setting(request: dict):
     if not key:
         return {"error": "key required"}
     try:
+        # списки/объекты — как JSON-строка (иначе str(list) сломает get_setting_json)
+        if isinstance(value, (list, dict)):
+            import json as _json
+            store_val = _json.dumps(value, ensure_ascii=False)
+        else:
+            store_val = str(value)
         resp = httpx.post(
             f"{SUPABASE_URL}/rest/v1/settings?on_conflict=key",
-            json={"key": key, "value": str(value), "updated_at": datetime.now(timezone.utc).isoformat()},
+            json={"key": key, "value": store_val, "updated_at": datetime.now(timezone.utc).isoformat()},
             headers=sb_headers(), timeout=10
         )
         if not resp.is_success:
             return {"error": f"Supabase error: {resp.status_code} {resp.text[:200]}"}
+        # отключённые склады влияют на темп/гео — сбрасываем кэш
+        if key == SUPPLY_WH_DISABLED_KEY:
+            SALES_PACE_CACHE["by_period"] = {}
         return {"status": "ok"}
     except Exception as e:
         return {"error": str(e)}

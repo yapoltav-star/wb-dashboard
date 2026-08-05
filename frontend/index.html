@@ -1327,6 +1327,7 @@ async function loadData() {
     // Поставки — рекомендации
     SUPPLY_REPORT = data.supply_report || [];
     TARGET_DAYS = parseInt((data.settings || {}).target_coverage_days) || 30;
+    applyWhDisabledFromSettings(data.settings || {});
     const tdEl = document.getElementById('targetDaysInput');
     if(tdEl) tdEl.value = TARGET_DAYS;
     const swEl = document.getElementById('salesWindowInput');
@@ -2748,6 +2749,49 @@ var SUPPLY_PINNED = JSON.parse(localStorage.getItem('wb_supply_pinned') || 'null
 var SHOW_BARCODE = JSON.parse(localStorage.getItem('wb_supply_show_barcode') || 'true');
 var dragWh = null, dragSupplyArt = null;
 
+function parseSupplyWhDisabled(raw) {
+  if(raw == null || raw === '') return null;
+  try {
+    if(typeof raw === 'string') {
+      const p = JSON.parse(raw);
+      return Array.isArray(p) ? p.map(String) : null;
+    }
+    if(Array.isArray(raw)) return raw.map(String);
+  } catch(e) {}
+  return null;
+}
+
+/** Сохранить список отключённых складов (общий — Supabase + локальный кэш). */
+function persistWhDisabled(immediate) {
+  const payload = JSON.stringify(WH_DISABLED);
+  localStorage.setItem('wb_supply_wh_disabled', payload);
+  const doSave = () => fetch(`${RAILWAY_URL}/api/save-setting`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({key: 'supply_wh_disabled', value: payload})
+  }).catch(() => {});
+  if(immediate) return doSave();
+  clearTimeout(window._whDisSaveT);
+  window._whDisSaveT = setTimeout(doSave, 300);
+  return Promise.resolve();
+}
+
+function applyWhDisabledFromSettings(settings) {
+  const hasKey = settings && Object.prototype.hasOwnProperty.call(settings, 'supply_wh_disabled');
+  const srv = hasKey ? (parseSupplyWhDisabled(settings.supply_wh_disabled) || []) : null;
+  const local = parseSupplyWhDisabled(localStorage.getItem('wb_supply_wh_disabled'));
+  if(srv !== null) {
+    WH_DISABLED = srv;
+    localStorage.setItem('wb_supply_wh_disabled', JSON.stringify(WH_DISABLED));
+  } else if(local && local.length) {
+    // разовый перенос с этого браузера на общий список
+    WH_DISABLED = local;
+    persistWhDisabled(true);
+  } else {
+    WH_DISABLED = local || [];
+  }
+}
+
 function reconcileWhOrder(allWarehouses, defaultSorted) {
   const known = WH_ORDER.filter(w => allWarehouses.includes(w));
   const newOnes = defaultSorted.filter(w => !known.includes(w));
@@ -2759,14 +2803,18 @@ function isWhEnabled(w) {
   return !WH_DISABLED.includes(w);
 }
 
-function toggleWhEnabled(encodedName, e) {
+async function toggleWhEnabled(encodedName, e) {
   if(e) e.stopPropagation();
   const name = decodeURIComponent(encodedName);
   const i = WH_DISABLED.indexOf(name);
   if(i > -1) WH_DISABLED.splice(i, 1);
   else WH_DISABLED.push(name);
-  localStorage.setItem('wb_supply_wh_disabled', JSON.stringify(WH_DISABLED));
+  await persistWhDisabled(true);
   renderSupplyRecs();
+  // темп: гео/остатки без сгоревших складов (обогащение stock/geo на каждый GET)
+  if(typeof loadSalesPace === 'function') {
+    try { loadSalesPace(); } catch(err) {}
+  }
 }
 
 function buildSupplyMatrix() {
@@ -2778,7 +2826,7 @@ function buildSupplyMatrix() {
   const warehouses = reconcileWhOrder(Object.keys(whTotals), defaultSorted);
   // убрать из disabled склады, которых больше нет
   WH_DISABLED = WH_DISABLED.filter(w => warehouses.includes(w));
-  localStorage.setItem('wb_supply_wh_disabled', JSON.stringify(WH_DISABLED));
+  persistWhDisabled();
 
   // Ключ — nm_id (FBS часто пишется с vendor_code=nm_id, FBW — с артикулом продавца)
   const byArticle = {};
