@@ -3221,10 +3221,20 @@ function paceStockHtml(a) {
   const stock = a.stock;
   if(stock == null) return '<span style="color:var(--wb-faint)">—</span>';
   const flag = a.stock_flag || (stock <= 0 ? 'oos' : 'ok');
-  const color = flag === 'oos' ? '#B42318' : (flag === 'low' ? '#B54708' : 'var(--wb-text)');
+  const geo = a.stock_geo_flag || 'ok';
+  let color = flag === 'oos' ? '#B42318' : (flag === 'low' ? '#B54708' : 'var(--wb-text)');
+  if(flag === 'ok' && (geo === 'emptied' || geo === 'narrow')) color = '#B54708';
   const days = a.days_left != null ? ` · ~${Number(a.days_left).toLocaleString('ru-RU', {maximumFractionDigits: 1})}д` : '';
-  const tip = flag === 'oos' ? 'Нет на складах WB' : (flag === 'low' ? 'Мало дней запаса' : 'Остаток ок');
-  return `<span style="font-weight:600;color:${color}" title="${tip}">${fmt(stock)}${days}</span>`;
+  const live = a.wh_live != null ? ` · ${a.wh_live} скл.` : '';
+  const livePrev = a.wh_live_prev != null && a.wh_live != null && a.wh_live_prev !== a.wh_live
+    ? ` (было ${a.wh_live_prev})` : '';
+  const emptied = (a.wh_emptied || []).slice(0, 3);
+  const emptiedTip = emptied.length ? `; обнулились: ${emptied.join(', ')}` : '';
+  let tip = flag === 'oos' ? 'Нет на складах WB' : (flag === 'low' ? 'Мало дней запаса' : 'Остаток ок');
+  if(geo === 'emptied') tip = 'Склад(ы) обнулились — срок доставки мог вырасти' + emptiedTip;
+  else if(geo === 'narrow') tip = 'Узкая география складов — доставка дольше в регионах';
+  else if(live) tip += `; живых складов: ${a.wh_live}${a.wh_live_prev!=null?' (вчера '+a.wh_live_prev+')':''}${emptiedTip}`;
+  return `<span style="font-weight:600;color:${color}" title="${escapeHtml(tip)}">${fmt(stock)}${days}${live}${livePrev}</span>`;
 }
 
 function paceCrDeltaHtml(d) {
@@ -3238,8 +3248,18 @@ function paceCrDeltaHtml(d) {
 
 function paceStockBadge(a) {
   if(!a.stock_linked) return '';
-  const label = a.stock_flag === 'oos' ? 'OOS' : 'мало стока';
-  return ` <span class="cfo-pill bad" title="Падение заказов/воронки при низком остатке">${label}</span>`;
+  const geo = a.stock_geo_flag || '';
+  let label = a.stock_flag === 'oos' ? 'OOS' : 'мало стока';
+  let tip = 'Падение заказов/воронки при низком остатке';
+  if(geo === 'emptied') {
+    const names = (a.wh_emptied || []).slice(0, 2).join(', ');
+    label = names ? ('склад 0: ' + names) : 'склад обнулился';
+    tip = 'Падение при обнулении склада — вероятно вырос срок доставки';
+  } else if(geo === 'narrow' && a.stock_flag !== 'oos') {
+    label = `узко ${a.wh_live||0} скл.`;
+    tip = 'Падение при узкой географии складов';
+  }
+  return ` <span class="cfo-pill bad" title="${escapeHtml(tip)}">${escapeHtml(label)}</span>`;
 }
 
 function paceSort(key) {
@@ -3367,6 +3387,7 @@ function drawSalesPace() {
   const upN = all.filter(a => (a.orders_delta||0) > 0).length;
   const stockLinkN = all.filter(a => a.stock_linked).length;
   const oosDownN = all.filter(a => a.stock_linked && a.stock_flag === 'oos').length;
+  const geoDownN = all.filter(a => a.stock_linked && (a.stock_geo_flag === 'emptied' || a.stock_geo_flag === 'narrow')).length;
   const sumDelta = all.reduce((s,a) => s + (a.orders_delta||0), 0);
   if(cards) {
     cards.innerHTML = [
@@ -3375,6 +3396,7 @@ function drawSalesPace() {
       ['Падают по заказам', fmt(downN), 'color:#B42318'],
       ['Падение + сток', fmt(stockLinkN), stockLinkN ? 'color:#B42318' : ''],
       ['Из них OOS', fmt(oosDownN), oosDownN ? 'color:#B42318' : ''],
+      ['География складов', fmt(geoDownN), geoDownN ? 'color:#B54708' : ''],
       ['Δ заказов всего', (sumDelta>0?'+':'') + fmt(sumDelta), sumDelta<0?'color:#B42318':(sumDelta>0?'color:#027A48':'')],
     ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
   }
@@ -3491,7 +3513,7 @@ function drawSalesPace() {
 
   root.innerHTML = `<div class="pace-hint">Сравнение: <b>${escapeHtml(tLabel)}</b> vs <b>${escapeHtml(yLabel)}</b> (Москва).
     ${PACE_DATA.custom_dates ? 'Выбранный день vs предыдущий (полные сутки; если выбран сегодня — до текущего времени). ' : 'Без даты — сегодня vs вчера до того же времени. Можно выбрать день слева. '}
-    <b>Остаток</b> — текущий на складах WB; <b>Падение + сток</b> — падают заказы/переходы/корзина при OOS или &lt;5 дней запаса.
+    <b>Остаток</b> — шт. на WB + дни запаса + число живых складов; <b>Падение + сток</b> — падают заказы/воронка при OOS, малом запасе или сужении географии (обнулился склад → дольше доставка).
     <b>Показы / CPM</b> за день: ${showViewsFull
       ? 'сегодня · вчера до того же часа (снимки) · Δ · вчера за весь день (API).'
       : 'текущее окно vs прошлое.'}
