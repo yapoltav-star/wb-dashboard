@@ -9,7 +9,9 @@
 1. **Создай пустой GitHub-репозиторий** `ozon-dashboard` (или вынеси папку `ozon-dashboard/` из этого репо).
 2. **Supabase** → New project → SQL Editor → выполни `supabase/schema.sql`.
 3. **Токены Ozon**: кабинет продавца → Настройки → Seller API → `Client-Id` + `Api-Key`.
-4. **Railway** → Deploy from GitHub → Root Directory: `backend` (если репо = содержимое этой папки).
+4. **Railway** → Deploy from GitHub → репо `wb-dashboard`.
+   - **Root Directory:** `ozon-dashboard/backend`  ← обязательно, не `ozon-dashboard`
+   - **Branch:** `cursor/ozon-dashboard-skeleton-74b8` (пока не смержили в main)
 5. Variables:
 
 ```
