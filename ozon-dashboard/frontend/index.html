@@ -81,10 +81,32 @@ tr:hover td{background:#F8FAFF}
 
 .matrix-wrap{overflow-x:auto;border:1px solid var(--oz-border);border-radius:var(--r);background:var(--oz-surface);-webkit-overflow-scrolling:touch}
 .matrix{border-collapse:separate;border-spacing:0;font-size:12px;min-width:100%;table-layout:fixed}
-.matrix th,.matrix td{border-bottom:1px solid var(--oz-border);border-right:1px solid var(--oz-border);padding:8px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative}
+.matrix th,.matrix td{border-bottom:1px solid var(--oz-border);border-right:2px solid #C8CED8;padding:8px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative}
 .matrix th{background:#FAFBFC;position:sticky;top:0;z-index:2;font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--oz-muted);font-weight:600}
-.matrix thead tr:first-child th{text-align:center;border-bottom:1px solid var(--oz-border);z-index:3}
+.matrix thead tr:first-child th{text-align:center;border-bottom:2px solid #9AA3B2;z-index:3}
 .matrix thead tr:nth-child(2) th{top:0;z-index:2}
+/* Группы колонок «Рост продаж»: жирная граница + разные цвета */
+#paceMatrix .pg-start{border-left:3px solid #5B6575!important}
+#paceMatrix th.pg-g{font-size:11px;letter-spacing:.4px;font-weight:700;border-bottom:2px solid #9AA3B2}
+#paceMatrix th.pg-stock,#paceMatrix td.pg-stock{background:#EEF1F5}
+#paceMatrix thead th.pg-stock{background:#E2E6ED;color:#374151}
+#paceMatrix th.pg-orders,#paceMatrix td.pg-orders{background:#EEF4FF}
+#paceMatrix thead th.pg-orders{background:#D6E4FF;color:#1E3A8A}
+#paceMatrix th.pg-opens,#paceMatrix td.pg-opens{background:#FFF8EB}
+#paceMatrix thead th.pg-opens{background:#FDECC8;color:#92400E}
+#paceMatrix th.pg-cart,#paceMatrix td.pg-cart{background:#ECFDF5}
+#paceMatrix thead th.pg-cart{background:#D1FADF;color:#065F46}
+#paceMatrix th.pg-cr,#paceMatrix td.pg-cr{background:#F0FDFA}
+#paceMatrix thead th.pg-cr{background:#CCFBF1;color:#115E59}
+#paceMatrix tr.pinned td.pg-stock,#paceMatrix tr.pinned td.pg-orders,
+#paceMatrix tr.pinned td.pg-opens,#paceMatrix tr.pinned td.pg-cart,
+#paceMatrix tr.pinned td.pg-cr{filter:saturate(.85) brightness(.98)}
+#paceMatrix tr.pace-down td.pg-orders,#paceMatrix tr.pace-down td.pg-opens,
+#paceMatrix tr.pace-down td.pg-cart,#paceMatrix tr.pace-down td.pg-cr,
+#paceMatrix tr.pace-down td.pg-stock{box-shadow:inset 0 0 0 999px rgba(240,68,56,.04)}
+#paceMatrix tr.pace-up td.pg-orders,#paceMatrix tr.pace-up td.pg-opens,
+#paceMatrix tr.pace-up td.pg-cart,#paceMatrix tr.pace-up td.pg-cr,
+#paceMatrix tr.pace-up td.pg-stock{box-shadow:inset 0 0 0 999px rgba(18,183,106,.04)}
 .matrix th.sticky,.matrix td.sticky{
   position:sticky;left:0;z-index:3;background:var(--oz-surface);text-align:left;
   box-shadow:2px 0 4px rgba(0,0,0,.06);min-width:300px;
@@ -116,9 +138,8 @@ tr:hover td{background:#F8FAFF}
 .pace-delta-down{color:var(--red);font-weight:600}
 .pace-delta-flat{color:var(--oz-faint)}
 .pace-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:#FEE4E2;color:#B42318}
-.matrix tr.pace-down td{background:#FFF8F7}
-.matrix tr.pace-up td{background:#F6FEF9}
-.matrix tr.pace-down td.sticky,.matrix tr.pace-up td.sticky{background:inherit}
+.matrix tr.pace-down td.sticky{background:#FFF8F7}
+.matrix tr.pace-up td.sticky{background:#F6FEF9}
 .subnav{background:var(--oz-surface);border-bottom:1px solid var(--oz-border);padding:0 24px;display:none;align-items:center;height:40px;gap:0}
 .subnav.on{display:flex}
 .sn-item{display:flex;align-items:center;height:100%;padding:0 14px;font-size:13px;color:var(--oz-muted);cursor:pointer;border-bottom:2px solid transparent}
@@ -973,8 +994,8 @@ function togglePacePin(offer, e) {
   localStorage.setItem('oz_pace_pinned', JSON.stringify(PACE_PINNED));
   drawSalesPace();
 }
-function paceTh(label, key, colIdx) {
-  return `<th class="mhead" style="cursor:pointer" data-col="${colIdx}" data-wkey="per" onclick="paceSort('${key}')">${label}${paceSortMark(key)}</th>`;
+function paceTh(label, key, colIdx, cls) {
+  return `<th class="mhead ${cls || ''}" style="cursor:pointer" data-col="${colIdx}" data-wkey="per" onclick="paceSort('${key}')">${label}${paceSortMark(key)}</th>`;
 }
 
 function drawSalesPace() {
@@ -1065,19 +1086,24 @@ function drawSalesPace() {
   colgroup += '</colgroup>';
 
   const head = `<tr>
-    <th class="sticky" data-col="0" data-wkey="per">Артикул</th>
-    ${paceTh('Остаток', 'stock', 1)}
-    ${paceTh('Заказы ' + colCur, 'orders_today', 2)}
-    ${paceTh(colPrev, 'orders_yesterday', 3)}
-    ${paceTh('Δ', 'orders_delta', 4)}
-    ${paceTh('Показы ' + colCur, 'opens_today', 5)}
-    ${paceTh(colPrev, 'opens_yesterday', 6)}
-    ${paceTh('Δ', 'opens_delta', 7)}
-    ${paceTh('Корзина ' + colCur, 'cart_today', 8)}
-    ${paceTh(colPrev, 'cart_yesterday', 9)}
-    ${paceTh('Δ', 'cart_delta', 10)}
-    ${paceTh('CR корзины', 'cart_cr_today', 11)}
-    ${paceTh('Δ CR', 'cart_cr_delta', 12)}
+    <th class="sticky" rowspan="2" data-col="0" data-wkey="per">Артикул</th>
+    <th class="mhead pg-start pg-stock" rowspan="2" style="cursor:pointer" data-col="1" data-wkey="per" onclick="paceSort('stock')">Остаток${paceSortMark('stock')}</th>
+    <th colspan="3" class="pg-start pg-orders pg-g">Заказы</th>
+    <th colspan="3" class="pg-start pg-opens pg-g">Показы</th>
+    <th colspan="3" class="pg-start pg-cart pg-g">Корзина</th>
+    <th colspan="2" class="pg-start pg-cr pg-g">CR корзины</th>
+  </tr><tr>
+    ${paceTh(colCur, 'orders_today', 2, 'pg-orders')}
+    ${paceTh(colPrev, 'orders_yesterday', 3, 'pg-orders')}
+    ${paceTh('Δ', 'orders_delta', 4, 'pg-orders')}
+    ${paceTh(colCur, 'opens_today', 5, 'pg-start pg-opens')}
+    ${paceTh(colPrev, 'opens_yesterday', 6, 'pg-opens')}
+    ${paceTh('Δ', 'opens_delta', 7, 'pg-opens')}
+    ${paceTh(colCur, 'cart_today', 8, 'pg-start pg-cart')}
+    ${paceTh(colPrev, 'cart_yesterday', 9, 'pg-cart')}
+    ${paceTh('Δ', 'cart_delta', 10, 'pg-cart')}
+    ${paceTh(colCur, 'cart_cr_today', 11, 'pg-start pg-cr')}
+    ${paceTh('Δ', 'cart_cr_delta', 12, 'pg-cr')}
   </tr>`;
 
   const rows = ordered.map(a => {
@@ -1088,18 +1114,18 @@ function drawSalesPace() {
         <button class="pin-btn ${a.isPinned?'on':''}" onclick='togglePacePin(${JSON.stringify(offer)},event)'>📌</button>
         <span class="prod-name">${esc(offer)}</span>${paceStockBadge(a)}
       </td>
-      <td class="num">${paceStockHtml(a)}</td>
-      <td class="num">${fmt(a.orders_today)}</td>
-      <td class="num">${fmt(a.orders_yesterday)}</td>
-      <td class="num">${paceDeltaHtml(a.orders_delta)}</td>
-      <td class="num">${a.opens_today == null ? '—' : fmt(a.opens_today)}</td>
-      <td class="num">${a.opens_yesterday == null ? '—' : fmt(a.opens_yesterday)}</td>
-      <td class="num">${paceDeltaHtml(a.opens_delta)}</td>
-      <td class="num">${a.cart_today == null ? '—' : fmt(a.cart_today)}</td>
-      <td class="num">${a.cart_yesterday == null ? '—' : fmt(a.cart_yesterday)}</td>
-      <td class="num">${paceDeltaHtml(a.cart_delta)}</td>
-      <td class="num">${a.cart_cr_today == null ? '—' : a.cart_cr_today + '%'}</td>
-      <td class="num">${paceCrDeltaHtml(a.cart_cr_delta)}</td>
+      <td class="num pg-start pg-stock">${paceStockHtml(a)}</td>
+      <td class="num pg-start pg-orders">${fmt(a.orders_today)}</td>
+      <td class="num pg-orders">${fmt(a.orders_yesterday)}</td>
+      <td class="num pg-orders">${paceDeltaHtml(a.orders_delta)}</td>
+      <td class="num pg-start pg-opens">${a.opens_today == null ? '—' : fmt(a.opens_today)}</td>
+      <td class="num pg-opens">${a.opens_yesterday == null ? '—' : fmt(a.opens_yesterday)}</td>
+      <td class="num pg-opens">${paceDeltaHtml(a.opens_delta)}</td>
+      <td class="num pg-start pg-cart">${a.cart_today == null ? '—' : fmt(a.cart_today)}</td>
+      <td class="num pg-cart">${a.cart_yesterday == null ? '—' : fmt(a.cart_yesterday)}</td>
+      <td class="num pg-cart">${paceDeltaHtml(a.cart_delta)}</td>
+      <td class="num pg-start pg-cr">${a.cart_cr_today == null ? '—' : a.cart_cr_today + '%'}</td>
+      <td class="num pg-cr">${paceCrDeltaHtml(a.cart_cr_delta)}</td>
     </tr>`;
   }).join('');
 
