@@ -202,6 +202,11 @@ a.prod-link:hover .prod-name{color:var(--oz-blue);text-decoration:underline}
 .prod-row.pinned .prod-main:hover{background:#FEF3C7}
 .prod-art{font-weight:600;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;min-width:160px}
 .prod-nmid{font-size:11px;color:var(--oz-faint);font-weight:400;margin-top:2px}
+.rev-prod{display:flex;align-items:center;gap:10px;min-width:0}
+.rev-prod img,.rev-thumb{width:36px;height:36px;object-fit:cover;border-radius:6px;background:#F0F2F5;border:1px solid var(--oz-border);flex-shrink:0}
+.rev-prod .prod-ph{width:36px;height:36px;flex-shrink:0;font-size:10px}
+a.rev-link{color:inherit;text-decoration:none}
+a.rev-link:hover .prod-art{color:var(--oz-blue);text-decoration:underline}
 .prod-rating{min-width:70px;font-weight:600;font-size:14px}
 .prod-neg{margin-left:auto;display:flex;align-items:center;gap:6px}
 .prod-neg-count{font-size:18px;font-weight:700;color:var(--red)}
@@ -1946,6 +1951,21 @@ function gc(name) {
   return GROUP_COLORS[h % GROUP_COLORS.length];
 }
 function cssSafe(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
+function revThumb(a) {
+  if (a && a.primary_image) {
+    return `<img class="rev-thumb" src="${esc(a.primary_image)}" alt="" loading="lazy" referrerpolicy="no-referrer">`;
+  }
+  return `<div class="prod-ph">n/a</div>`;
+}
+function revProdCell(a, article) {
+  const art = article || (a && a.article) || '';
+  const sku = a && a.sku;
+  const ozUrl = sku ? `https://www.ozon.ru/product/${sku}/` : '';
+  const meta = sku ? ('SKU ' + sku) : ((a && a.name) || '—');
+  const inner = `<div class="rev-prod">${revThumb(a)}<div><div class="prod-art" style="min-width:0">${esc(art)}</div><div class="prod-nmid">${esc(meta)}</div></div></div>`;
+  if (!ozUrl) return inner;
+  return `<a class="rev-link" href="${esc(ozUrl)}" target="_blank" rel="noopener noreferrer" title="Открыть на ozon.ru" onclick="event.stopPropagation()">${inner}</a>`;
+}
 
 function setNegPeriod(days) {
   NEG_PERIOD = days;
@@ -2129,7 +2149,7 @@ function drawNegReviews() {
     return `<div class="prod-row${isPinned ? ' pinned' : ''}${isOpen ? ' open' : ''}">
       <div class="prod-main" onclick="toggleProdRow('${safe}')">
         <span class="prod-pin${isPinned ? ' on' : ''}" onclick="pinArticle('${safe}', event)" title="${isPinned ? 'Открепить' : 'Закрепить'}">📌</span>
-        <div class="prod-art">${esc(article)}<div class="prod-nmid">${esc(a.sku ? ('SKU ' + a.sku) : (a.name || '—'))}</div></div>
+        ${revProdCell(a, article)}
         <div class="prod-rating">${ratingHtml}</div>
         <div class="prod-neg"><span class="prod-neg-count${neg === 0 ? ' zero' : ''}">${neg}</span> <span style="font-size:11px;color:var(--oz-faint)">за ${NEG_PERIOD} дн.</span></div>
         <span class="prod-arr">▾</span>
@@ -2165,7 +2185,7 @@ function artRow(a) {
     ? `<span class="rnum" style="color:${rc(rat)}">${Number(rat).toFixed(2)}</span>`
     : '<span style="color:var(--oz-faint)">—</span>';
   return `<tr>
-    <td><div class="prod-art" style="min-width:0">${esc(a.article)}<div class="prod-nmid">${esc(a.sku ? ('SKU ' + a.sku) : (a.name || ''))}</div></div></td>
+    <td>${revProdCell(a, a.article)}</td>
     <td class="tc">${ratingCell}</td>
     <td class="tr2" style="color:${(a.r5||0)>0?'#12B76A':'inherit'}">${a.r5 || '—'}</td>
     <td class="tr2">${a.r4 || '—'}</td>
@@ -2341,10 +2361,14 @@ function renderGroupManager() {
         ${g !== 'Без склейки' ? `<span style="cursor:pointer;opacity:.85;font-size:12px;margin-right:8px" onclick="renameGroup('${encodeURIComponent(g)}')" title="Переименовать">✏️</span><span style="cursor:pointer;opacity:.7;font-size:12px" onclick="rmGroup('${encodeURIComponent(g)}')" title="Удалить">✕</span>` : ''}
       </div>
       <div class="gm-gb" id="${gid}">
-        ${shown.map(art => `<div class="gm-a" draggable="true" ondragstart="gDS(event,'${encodeURIComponent(art)}','${encodeURIComponent(g)}')">
+        ${shown.map(art => {
+          const a = ALL.find(x => x.article === art) || {};
+          return `<div class="gm-a" draggable="true" ondragstart="gDS(event,'${encodeURIComponent(art)}','${encodeURIComponent(g)}')">
+          ${revThumb(a)}
           <span>${esc(art)}</span>
           ${g !== 'Без склейки' ? `<span class="gm-del" onclick="rmArt('${encodeURIComponent(g)}','${encodeURIComponent(art)}')">✕</span>` : ''}
-        </div>`).join('')}
+        </div>`;
+        }).join('')}
         ${q && shown.length < arts.length ? `<div style="font-size:11px;color:var(--oz-faint);margin-top:4px">показаны ${shown.length} из ${arts.length}</div>` : ''}
         ${g !== 'Без склейки' ? `<div class="gm-add"><input placeholder="Добавить артикул…" id="ai_${gid}"><button onclick="addArt('${encodeURIComponent(g)}','ai_${gid}')">+</button></div>` : ''}
       </div>
