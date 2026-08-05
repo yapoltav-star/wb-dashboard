@@ -5573,7 +5573,8 @@ def dashboard_data():
         return ("feedback_stats", r.json() if r.is_success else [])
 
     def load_neg(days: int):
-        r = _dash_rpc("get_negative_counts", {"days_back": days, "max_stars": 3}, 20)
+        # ★1–2 — «жесткий» негатив (совпадает с фильтром NEG_STARS на фронте)
+        r = _dash_rpc("get_negative_counts", {"days_back": days, "max_stars": 2}, 20)
         return ("neg", days, r.json() if r.is_success else [])
 
     def load_settings():
