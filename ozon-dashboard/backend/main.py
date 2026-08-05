@@ -414,24 +414,41 @@ def fetch_fbo_stocks_by_warehouse(skus: list[str]) -> list[dict]:
 
 
 def fetch_fbs_stocks_by_warehouse(skus: list[int | str]) -> list[dict]:
-    """POST /v1/product/info/stocks-by-warehouse/fbs."""
+    """POST /v2/product/info/stocks-by-warehouse/fbs (v1 устарел)."""
     out: list[dict] = []
-    # API ждёт sku как числа или строки — отправим int где возможно
-    cleaned = []
+    cleaned: list[str] = []
     for s in skus:
-        try:
-            cleaned.append(int(s))
-        except (TypeError, ValueError):
+        if s is None or s == "" or s == "None":
             continue
-    for i in range(0, len(cleaned), 500):
-        chunk = cleaned[i : i + 500]
+        cleaned.append(str(s))
+    # уникальные, батчами по 100
+    cleaned = list(dict.fromkeys(cleaned))
+    for i in range(0, len(cleaned), 100):
+        chunk = cleaned[i : i + 100]
         if not chunk:
             continue
-        payload = ozon_post("/v1/product/info/stocks-by-warehouse/fbs", {"sku": chunk})
-        items = payload.get("result") or payload.get("items") or []
-        if isinstance(items, dict):
-            items = items.get("items") or []
-        out.extend(items)
+        cursor = ""
+        while True:
+            body: dict = {"sku": chunk, "limit": 1000}
+            if cursor:
+                body["cursor"] = cursor
+            payload = ozon_post("/v2/product/info/stocks-by-warehouse/fbs", body)
+            result = payload.get("result") or payload
+            items = (
+                result.get("stocks")
+                or result.get("items")
+                or payload.get("stocks")
+                or payload.get("items")
+                or []
+            )
+            if isinstance(items, dict):
+                items = items.get("items") or items.get("stocks") or []
+            out.extend(items)
+            has_next = bool(result.get("has_next"))
+            cursor = result.get("cursor") or ""
+            if not has_next or not cursor or not items:
+                break
+            time.sleep(0.15)
         time.sleep(0.2)
     return out
 
