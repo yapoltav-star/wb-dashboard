@@ -361,13 +361,18 @@ def sync_coinvest(
 
         name_by_offer = {}
         name_by_pid = {}
+        img_by_offer: dict[str, str] = {}
+        img_by_pid: dict[int, str] = {}
         sku_by_pid: dict[int, int] = {}
         sku_by_offer: dict[str, int] = {}
         if load_products:
             try:
                 for pr in load_products() or []:
+                    img = (pr.get("primary_image") or "").strip() if isinstance(pr.get("primary_image"), str) else ""
                     if pr.get("offer_id"):
                         name_by_offer[pr["offer_id"]] = pr.get("name") or ""
+                        if img:
+                            img_by_offer[pr["offer_id"]] = img
                         if pr.get("sku") is not None:
                             try:
                                 sku_by_offer[pr["offer_id"]] = int(pr["sku"])
@@ -376,6 +381,8 @@ def sync_coinvest(
                     if pr.get("product_id") is not None:
                         pid = int(pr["product_id"])
                         name_by_pid[pid] = pr.get("name") or ""
+                        if img:
+                            img_by_pid[pid] = img
                         if pr.get("sku") is not None:
                             try:
                                 sku_by_pid[pid] = int(pr["sku"])
@@ -397,6 +404,8 @@ def sync_coinvest(
             row["name"] = name_by_pid.get(row["product_id"]) or name_by_offer.get(row["offer_id"]) or ""
             sku = sku_by_pid.get(row["product_id"]) or sku_by_offer.get(row["offer_id"])
             row["sku"] = sku
+            row["primary_image"] = img_by_pid.get(row["product_id"]) or img_by_offer.get(row["offer_id"]) or ""
+            row["ozon_url"] = f"https://www.ozon.ru/product/{sku}/" if sku else None
             row["manual_site_price"] = False
             offer = str(row.get("offer_id") or "")
             if offer and offer in manual:
