@@ -282,6 +282,12 @@ let WH_ORDER = JSON.parse(localStorage.getItem('oz_wh_order') || 'null') || [];
 let STOCK_PINNED = JSON.parse(localStorage.getItem('oz_stock_pinned') || 'null') || [];
 let COL_WIDTHS = JSON.parse(localStorage.getItem('oz_col_widths') || 'null') || { product: 320, metric: 72 };
 if (!COL_WIDTHS.product || COL_WIDTHS.product < 280) COL_WIDTHS.product = 320;
+let PACE_COL_WIDTHS = JSON.parse(localStorage.getItem('oz_pace_col_widths') || 'null') || {};
+const PACE_COL_DEFAULTS = [320, 100, 110, 100, 72, 110, 100, 72, 110, 100, 72, 100, 80];
+function paceColW(i) {
+  const w = PACE_COL_WIDTHS[i];
+  return (w && w >= 44) ? w : (PACE_COL_DEFAULTS[i] || 80);
+}
 let dragWh = null;
 let dragPinArt = null;
 
@@ -507,14 +513,19 @@ function pinDrop(e, target) {
 function saveColWidths() {
   localStorage.setItem('oz_col_widths', JSON.stringify(COL_WIDTHS));
 }
+function savePaceColWidths() {
+  localStorage.setItem('oz_pace_col_widths', JSON.stringify(PACE_COL_WIDTHS));
+}
 
-function attachColResizers(table) {
+function attachColResizers(table, mode) {
+  if (!table) return;
   const cols = table.querySelectorAll('colgroup col');
   table.querySelectorAll('th[data-col]').forEach(th => {
     if (th.querySelector('.col-resizer')) return;
     const handle = document.createElement('div');
     handle.className = 'col-resizer';
     handle.title = 'Тяни, чтобы изменить ширину';
+    handle.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); });
     handle.addEventListener('mousedown', (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -528,10 +539,11 @@ function attachColResizers(table) {
       const onMove = (e2) => {
         const w = Math.max(44, Math.round(startW + (e2.clientX - startX)));
         col.style.width = w + 'px';
-        if (key === 'product') {
+        if (mode === 'pace' || key === 'per') {
+          PACE_COL_WIDTHS[idx] = w;
+        } else if (key === 'product') {
           COL_WIDTHS.product = w;
         } else if (key === 'metric') {
-          // одинаковая ширина для всех metric-колонок
           COL_WIDTHS.metric = w;
           cols.forEach((c, i) => {
             if (i > 0) c.style.width = w + 'px';
@@ -542,7 +554,8 @@ function attachColResizers(table) {
         handle.classList.remove('active');
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
-        saveColWidths();
+        if (mode === 'pace' || key === 'per') savePaceColWidths();
+        else saveColWidths();
       };
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
@@ -811,7 +824,7 @@ function renderStocks() {
       Формулы: темп = заказы/окно · дней = остаток/темп · поставить = темп×цель − остаток.
       Склады вправо/влево — ползунок под таблицей (как на WB).
     </div>`;
-  attachColResizers(document.getElementById('stocksMatrix'));
+  attachColResizers(document.getElementById('stocksMatrix'), 'stocks');
 }
 
 /* ── Рост продаж (sales-pace) ── */
@@ -960,8 +973,8 @@ function togglePacePin(offer, e) {
   localStorage.setItem('oz_pace_pinned', JSON.stringify(PACE_PINNED));
   drawSalesPace();
 }
-function paceTh(label, key) {
-  return `<th class="mhead" style="cursor:pointer" onclick="paceSort('${key}')">${label}${paceSortMark(key)}</th>`;
+function paceTh(label, key, colIdx) {
+  return `<th class="mhead" style="cursor:pointer" data-col="${colIdx}" data-wkey="per" onclick="paceSort('${key}')">${label}${paceSortMark(key)}</th>`;
 }
 
 function drawSalesPace() {
@@ -1046,20 +1059,25 @@ function drawSalesPace() {
 
   const colCur = PACE_DATA.col_cur || 'Сейчас';
   const colPrev = PACE_DATA.col_prev || 'Было';
+  const nCols = 13;
+  let colgroup = '<colgroup>';
+  for (let i = 0; i < nCols; i++) colgroup += `<col style="width:${paceColW(i)}px">`;
+  colgroup += '</colgroup>';
+
   const head = `<tr>
-    <th class="sticky">Артикул</th>
-    ${paceTh('Остаток', 'stock')}
-    ${paceTh('Заказы ' + colCur, 'orders_today')}
-    ${paceTh(colPrev, 'orders_yesterday')}
-    ${paceTh('Δ', 'orders_delta')}
-    ${paceTh('Показы ' + colCur, 'opens_today')}
-    ${paceTh(colPrev, 'opens_yesterday')}
-    ${paceTh('Δ', 'opens_delta')}
-    ${paceTh('Корзина ' + colCur, 'cart_today')}
-    ${paceTh(colPrev, 'cart_yesterday')}
-    ${paceTh('Δ', 'cart_delta')}
-    ${paceTh('CR корзины', 'cart_cr_today')}
-    ${paceTh('Δ CR', 'cart_cr_delta')}
+    <th class="sticky" data-col="0" data-wkey="per">Артикул</th>
+    ${paceTh('Остаток', 'stock', 1)}
+    ${paceTh('Заказы ' + colCur, 'orders_today', 2)}
+    ${paceTh(colPrev, 'orders_yesterday', 3)}
+    ${paceTh('Δ', 'orders_delta', 4)}
+    ${paceTh('Показы ' + colCur, 'opens_today', 5)}
+    ${paceTh(colPrev, 'opens_yesterday', 6)}
+    ${paceTh('Δ', 'opens_delta', 7)}
+    ${paceTh('Корзина ' + colCur, 'cart_today', 8)}
+    ${paceTh(colPrev, 'cart_yesterday', 9)}
+    ${paceTh('Δ', 'cart_delta', 10)}
+    ${paceTh('CR корзины', 'cart_cr_today', 11)}
+    ${paceTh('Δ CR', 'cart_cr_delta', 12)}
   </tr>`;
 
   const rows = ordered.map(a => {
@@ -1087,12 +1105,14 @@ function drawSalesPace() {
 
   root.innerHTML = `
     <div class="matrix-wrap">
-      <table class="matrix">
+      <table class="matrix" id="paceMatrix">
+        ${colgroup}
         <thead>${head}</thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <div class="hint">Как на WB: сравниваем <b>то же время</b> текущего периода с прошлым. Δ — абсолютная разница заказов (не %). Заказы из FBO/FBS отправлений, показы/корзина — из аналитики Ozon. Остаток — из вкладки Остатки.</div>`;
+    <div class="hint">Как на WB: сравниваем <b>то же время</b> текущего периода с прошлым. Δ — абсолютная разница заказов (не %). Тяни край заголовка колонки — шире/уже. Заказы из FBO/FBS отправлений, показы/корзина — из аналитики Ozon.</div>`;
+  attachColResizers(document.getElementById('paceMatrix'), 'pace');
 }
 
 refreshStatus();
