@@ -106,6 +106,7 @@ body{
 .chart-card .chart-box{position:relative;height:230px}
 .chart-card.wide{grid-column:1 / -1}
 .chart-card.wide .chart-box{height:260px}
+.charts-hint{grid-column:1 / -1;font-size:12px;color:var(--oz-muted);margin-top:-4px}
 
 .tbl-wrap{
   background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);
@@ -2686,6 +2687,11 @@ function shortLabel(s, n = 28) {
 function ensureChartJs() {
   return typeof Chart !== 'undefined';
 }
+function openChartRow(row) {
+  if (!row) return;
+  const href = ozonProductUrl(row.sku, row.url);
+  if (href) window.open(href, '_blank', 'noopener');
+}
 function makeBarChart(canvasId, labels, datasets, opts = {}) {
   if (!ensureChartJs()) return null;
   const el = document.getElementById(canvasId);
@@ -2695,6 +2701,7 @@ function makeBarChart(canvasId, labels, datasets, opts = {}) {
   }
   const horizontal = !!opts.horizontal;
   const dualY = !!opts.dualY;
+  const clickRows = Array.isArray(opts.rows) ? opts.rows : null;
   const scales = horizontal
     ? {
         x: { beginAtZero: true, ticks: { font: { size: 10, family: 'Manrope' } }, grid: { color: '#F0F3F8' } },
@@ -2721,6 +2728,8 @@ function makeBarChart(canvasId, labels, datasets, opts = {}) {
       ticks: { font: { size: 10, family: 'Manrope' } },
     };
   }
+  if (clickRows) el.style.cursor = 'pointer';
+  else el.style.cursor = '';
   COMP_CHARTS[canvasId] = new Chart(el, {
     type: opts.type || 'bar',
     data: { labels, datasets },
@@ -2728,13 +2737,26 @@ function makeBarChart(canvasId, labels, datasets, opts = {}) {
       indexAxis: horizontal ? 'y' : 'x',
       responsive: true,
       maintainAspectRatio: false,
+      onHover: (evt, elements) => {
+        if (!clickRows) return;
+        const t = evt?.native?.target || el;
+        t.style.cursor = elements?.length ? 'pointer' : 'default';
+      },
+      onClick: (_evt, elements) => {
+        if (!clickRows || !elements?.length) return;
+        const i = elements[0].index;
+        openChartRow(clickRows[i]);
+      },
       plugins: {
         legend: { display: datasets.length > 1, position: 'top', labels: { boxWidth: 10, font: { size: 11, family: 'Manrope' } } },
         tooltip: {
           callbacks: {
             title: (items) => {
               const i = items[0]?.dataIndex;
-              return (opts.fullLabels && opts.fullLabels[i]) || items[0]?.label || '';
+              const row = clickRows && clickRows[i];
+              const name = (opts.fullLabels && opts.fullLabels[i]) || items[0]?.label || '';
+              if (row?.sku) return `${name}\nSKU ${row.sku} · клик → ozon.ru`;
+              return name;
             },
             label: (item) => {
               if (opts.tooltipRaw && opts.tooltipRaw[item.datasetIndex]) {
@@ -2980,13 +3002,13 @@ function renderPositionCharts(rows) {
     data: top.map(r => Math.round(r.ordered_sum || 0)),
     backgroundColor: 'rgba(0,91,255,0.75)',
     borderRadius: 4,
-  }], { fullLabels: full });
+  }], { fullLabels: full, rows: top });
   makeBarChart('comp-qty', labels, [{
     label: 'Заказы, шт',
     data: top.map(r => r.ordered_qty || 0),
     backgroundColor: 'rgba(18,183,106,0.75)',
     borderRadius: 4,
-  }], { fullLabels: full });
+  }], { fullLabels: full, rows: top });
 }
 
 function toggleBrandsOnlyDetail() {
@@ -3593,15 +3615,15 @@ function renderBrandDetailCharts(rowsAll) {
     chartCard('Показы (топ SKU)', 'brand-shows') +
     chartCard('Доля рекламы, %', 'brand-ads') +
     chartCard('Остаток на конец, шт', 'brand-stock');
-  makeBarChart('brand-qty', H.lab(qty), [{ label: 'Заказы, шт', data: qty.map(r => r.ordered_qty || 0), backgroundColor: color, borderRadius: 4 }], { fullLabels: H.full(qty) });
-  makeBarChart('brand-shows', H.lab(shows), [{ label: 'Показы', data: shows.map(r => r.shows || 0), backgroundColor: 'rgba(247,144,9,0.8)', borderRadius: 4 }], { fullLabels: H.full(shows) });
-  makeBarChart('brand-ads', H.lab(ads), [{ label: 'Доля рекламы, %', data: ads.map(r => Number(r.ads_share) || 0), backgroundColor: 'rgba(240,68,56,0.75)', borderRadius: 4 }], { fullLabels: H.full(ads), horizontal: true });
+  makeBarChart('brand-qty', H.lab(qty), [{ label: 'Заказы, шт', data: qty.map(r => r.ordered_qty || 0), backgroundColor: color, borderRadius: 4 }], { fullLabels: H.full(qty), rows: qty });
+  makeBarChart('brand-shows', H.lab(shows), [{ label: 'Показы', data: shows.map(r => r.shows || 0), backgroundColor: 'rgba(247,144,9,0.8)', borderRadius: 4 }], { fullLabels: H.full(shows), rows: shows });
+  makeBarChart('brand-ads', H.lab(ads), [{ label: 'Доля рекламы, %', data: ads.map(r => Number(r.ads_share) || 0), backgroundColor: 'rgba(240,68,56,0.75)', borderRadius: 4 }], { fullLabels: H.full(ads), horizontal: true, rows: ads });
   makeBarChart('brand-stock', H.lab(stock), [{
     label: 'Остаток, шт',
     data: stock.map(r => r.stock || 0),
     backgroundColor: stock.map(r => (r.stock || 0) === 0 ? 'rgba(240,68,56,0.75)' : color),
     borderRadius: 4,
-  }], { fullLabels: H.full(stock) });
+  }], { fullLabels: H.full(stock), rows: stock });
 }
 function renderCompareCharts(own, rival) {
   const el = document.getElementById('compareCharts');
@@ -3649,17 +3671,17 @@ function renderCompareCharts(own, rival) {
   ]);
 
   const rQty = H.byQty(rivalRows), mQty = H.byQty(ownRows);
-  makeBarChart('cmp-qty-rival', H.lab(rQty), [{ label: 'Заказы, шт', data: rQty.map(r => r.ordered_qty || 0), backgroundColor: rivalColor, borderRadius: 4 }], { fullLabels: H.full(rQty) });
-  makeBarChart('cmp-qty-me', H.lab(mQty), [{ label: 'Заказы, шт', data: mQty.map(r => r.ordered_qty || 0), backgroundColor: meColor, borderRadius: 4 }], { fullLabels: H.full(mQty) });
+  makeBarChart('cmp-qty-rival', H.lab(rQty), [{ label: 'Заказы, шт', data: rQty.map(r => r.ordered_qty || 0), backgroundColor: rivalColor, borderRadius: 4 }], { fullLabels: H.full(rQty), rows: rQty });
+  makeBarChart('cmp-qty-me', H.lab(mQty), [{ label: 'Заказы, шт', data: mQty.map(r => r.ordered_qty || 0), backgroundColor: meColor, borderRadius: 4 }], { fullLabels: H.full(mQty), rows: mQty });
   const rShows = H.byShows(rivalRows), mShows = H.byShows(ownRows);
-  makeBarChart('cmp-shows-rival', H.lab(rShows), [{ label: 'Показы', data: rShows.map(r => r.shows || 0), backgroundColor: 'rgba(247,144,9,0.8)', borderRadius: 4 }], { fullLabels: H.full(rShows) });
-  makeBarChart('cmp-shows-me', H.lab(mShows), [{ label: 'Показы', data: mShows.map(r => r.shows || 0), backgroundColor: 'rgba(247,144,9,0.55)', borderRadius: 4 }], { fullLabels: H.full(mShows) });
+  makeBarChart('cmp-shows-rival', H.lab(rShows), [{ label: 'Показы', data: rShows.map(r => r.shows || 0), backgroundColor: 'rgba(247,144,9,0.8)', borderRadius: 4 }], { fullLabels: H.full(rShows), rows: rShows });
+  makeBarChart('cmp-shows-me', H.lab(mShows), [{ label: 'Показы', data: mShows.map(r => r.shows || 0), backgroundColor: 'rgba(247,144,9,0.55)', borderRadius: 4 }], { fullLabels: H.full(mShows), rows: mShows });
   const rAds = H.byAds(rivalRows), mAds = H.byAds(ownRows);
-  makeBarChart('cmp-ads-rival', H.lab(rAds), [{ label: 'Доля рекламы, %', data: rAds.map(r => Number(r.ads_share) || 0), backgroundColor: 'rgba(240,68,56,0.75)', borderRadius: 4 }], { fullLabels: H.full(rAds), horizontal: true });
-  makeBarChart('cmp-ads-me', H.lab(mAds), [{ label: 'Доля рекламы, %', data: mAds.map(r => Number(r.ads_share) || 0), backgroundColor: 'rgba(240,68,56,0.5)', borderRadius: 4 }], { fullLabels: H.full(mAds), horizontal: true });
+  makeBarChart('cmp-ads-rival', H.lab(rAds), [{ label: 'Доля рекламы, %', data: rAds.map(r => Number(r.ads_share) || 0), backgroundColor: 'rgba(240,68,56,0.75)', borderRadius: 4 }], { fullLabels: H.full(rAds), horizontal: true, rows: rAds });
+  makeBarChart('cmp-ads-me', H.lab(mAds), [{ label: 'Доля рекламы, %', data: mAds.map(r => Number(r.ads_share) || 0), backgroundColor: 'rgba(240,68,56,0.5)', borderRadius: 4 }], { fullLabels: H.full(mAds), horizontal: true, rows: mAds });
   const rStock = H.byStock(rivalRows), mStock = H.byStock(ownRows);
-  makeBarChart('cmp-stock-rival', H.lab(rStock), [{ label: 'Остаток, шт', data: rStock.map(r => r.stock || 0), backgroundColor: rStock.map(r => (r.stock || 0) === 0 ? 'rgba(240,68,56,0.75)' : rivalColor), borderRadius: 4 }], { fullLabels: H.full(rStock) });
-  makeBarChart('cmp-stock-me', H.lab(mStock), [{ label: 'Остаток, шт', data: mStock.map(r => r.stock || 0), backgroundColor: mStock.map(r => (r.stock || 0) === 0 ? 'rgba(240,68,56,0.75)' : meColor), borderRadius: 4 }], { fullLabels: H.full(mStock) });
+  makeBarChart('cmp-stock-rival', H.lab(rStock), [{ label: 'Остаток, шт', data: rStock.map(r => r.stock || 0), backgroundColor: rStock.map(r => (r.stock || 0) === 0 ? 'rgba(240,68,56,0.75)' : rivalColor), borderRadius: 4 }], { fullLabels: H.full(rStock), rows: rStock });
+  makeBarChart('cmp-stock-me', H.lab(mStock), [{ label: 'Остаток, шт', data: mStock.map(r => r.stock || 0), backgroundColor: mStock.map(r => (r.stock || 0) === 0 ? 'rgba(240,68,56,0.75)' : meColor), borderRadius: 4 }], { fullLabels: H.full(mStock), rows: mStock });
 }
 
 /* ── Реклама ── */
