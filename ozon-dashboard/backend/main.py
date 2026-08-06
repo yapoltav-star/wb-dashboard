@@ -1287,6 +1287,10 @@ def _run_finance_sync(period_days: int = 7):
         fin.FINANCE_CACHE["syncing"] = False
 
 
+# Оценка доли цены, которая доходит до выплаты (после комиссии, логистики, рекламы)
+OZON_PAYOUT_RATE = 0.35
+
+
 def build_inventory_finance() -> dict:
     """Себестоимость и потенц. выручка остатков: склад + в пути (promised/waiting)."""
     try:
@@ -1294,6 +1298,7 @@ def build_inventory_finance() -> dict:
     except Exception as e:
         logger.warning("ensure_costs_loaded: %s", e)
     by_offer_cost, by_sku_cost, meta = costmod.load_cost_indexes(get_setting)
+    payout_rate = OZON_PAYOUT_RATE
     try:
         warehouses = _sb_select_all(
             "stocks",
@@ -1381,6 +1386,7 @@ def build_inventory_finance() -> dict:
     rows = []
     cost_total = 0.0
     revenue_total = 0.0
+    payout_total = 0.0
     qty_wh = qty_tr = qty_all = 0
     without_cost = without_price = 0
 
@@ -1402,12 +1408,15 @@ def build_inventory_finance() -> dict:
             price = None
         cost_value = round(qty_total * cost, 2) if cost is not None else None
         rev_value = round(qty_total * price, 2) if price is not None else None
+        # к выплате ≈ 35% от цены (комиссия + логистика + реклама)
+        payout_value = round(rev_value * payout_rate, 2) if rev_value is not None else None
         if cost_value is not None:
             cost_total += cost_value
         else:
             without_cost += 1
         if rev_value is not None:
             revenue_total += rev_value
+            payout_total += payout_value or 0
         else:
             without_price += 1
         qty_wh += qty_warehouse
@@ -1426,12 +1435,15 @@ def build_inventory_finance() -> dict:
             "price": price,
             "cost_value": cost_value,
             "revenue_value": rev_value,
+            "payout_value": payout_value,
         })
 
-    rows.sort(key=lambda x: (-(x.get("cost_value") or 0), -(x.get("qty_total") or 0), str(x.get("offer_id"))))
+    rows.sort(key=lambda x: (-(x.get("payout_value") or x.get("cost_value") or 0), -(x.get("qty_total") or 0), str(x.get("offer_id"))))
     return {
         "cost_total": round(cost_total, 2),
         "revenue_total": round(revenue_total, 2),
+        "payout_total": round(payout_total, 2),
+        "payout_rate": payout_rate,
         "qty_warehouse": qty_wh,
         "qty_transit": qty_tr,
         "qty_total": qty_all,

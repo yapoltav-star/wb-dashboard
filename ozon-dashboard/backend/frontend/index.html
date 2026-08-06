@@ -53,6 +53,12 @@ body{
 .card-l{font-size:11px;color:var(--oz-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
 .card-v{font-size:24px;font-weight:600;color:var(--oz-text)}
 .card-sub{font-size:12px;color:var(--oz-faint);margin-top:3px}
+.fin-total-row{background:#F0F4FA;font-weight:700}
+.fin-total-row td{border-top:2px solid var(--oz-border);padding-top:10px;padding-bottom:10px}
+.fin-cabinet{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:0 0 16px;padding:14px 16px;background:linear-gradient(135deg,#F7FAFF,#EEF3FB);border:1px solid var(--oz-border);border-radius:var(--r)}
+.fin-cabinet .fc-l{font-size:11px;color:var(--oz-muted);margin-bottom:4px}
+.fin-cabinet .fc-v{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
+.fin-cabinet .fc-s{font-size:11px;color:var(--oz-faint);margin-top:2px}
 
 .toolbar{display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap}
 .search{display:flex;align-items:center;gap:8px;background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--rs);padding:6px 12px;width:280px}
@@ -3911,10 +3917,13 @@ function drawFinance() {
   }
 
   const costMeta = inv.costs_meta || {};
+  const payoutRate = Number(inv.payout_rate != null ? inv.payout_rate : 0.35);
+  const payoutPct = Math.round(payoutRate * 100);
+  const cabinetTotal = (Number(recv.amount) || 0) + (Number(inv.payout_total) || 0);
   cards.innerHTML = [
     ['Дебиторка Ozon', money(recv.amount), 'color:var(--oz-blue)', 'Финансы → Выплаты · не перечислено'],
     ['Себестоимость остатков', money(inv.cost_total), '', `склад ${fmt(inv.qty_warehouse||0)} + в пути ${fmt(inv.qty_transit||0)}`],
-    ['Потенц. выручка остатков', money(inv.revenue_total), 'color:var(--green)', 'по цене продажи × шт'],
+    ['К выплате с остатков', money(inv.payout_total), 'color:var(--green)', `~${payoutPct}% от цены (комиссия+доставка+реклама)`],
     ['Начислено за период', money(FIN_DATA.total), '', `${FIN_DAYS} дн · соинвест ${money(FIN_DATA.coinvest_total)}`],
   ].map(([l,v,s,sub]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div>${sub?`<div class="card-sub">${sub}</div>`:''}</div>`).join('');
 
@@ -3932,8 +3941,20 @@ function drawFinance() {
       <td class="num mono">${r.cost_value!=null?money(r.cost_value):'—'}</td>
       <td class="num mono">${r.price!=null?money(r.price):'—'}</td>
       <td class="num mono">${r.revenue_value!=null?money(r.revenue_value):'—'}</td>
+      <td class="num mono">${r.payout_value!=null?money(r.payout_value):'—'}</td>
     </tr>`;
   }).join('');
+  const invTotalRow = (inv.rows || []).length ? `<tr class="fin-total-row">
+      <td>Итого</td>
+      <td class="num mono">${fmt(inv.qty_warehouse||0)}</td>
+      <td class="num mono">${fmt(inv.qty_transit||0)}</td>
+      <td class="num mono">${fmt(inv.qty_total||0)}</td>
+      <td></td>
+      <td class="num mono">${money(inv.cost_total)}</td>
+      <td></td>
+      <td class="num mono">${money(inv.revenue_total)}</td>
+      <td class="num mono">${money(inv.payout_total)}</td>
+    </tr>` : '';
 
   const dayRows = (FIN_DATA.days || []).map(d => `<tr>
     <td>${esc(d.date)}</td>
@@ -3962,14 +3983,20 @@ function drawFinance() {
     : 'Дебиторка: ЛК Финансы → Выплаты · API cash-flow-statement → end_balance';
 
   root.innerHTML = `
-    <div class="hint" style="margin-bottom:12px">${recvHint}. Остатки: <b>склад</b> = present (free+reserved), <b>в пути</b> = promised/waiting. Себес: ${fmt(inv.costs_count||0)} арт.${costMeta.filename?` · файл «${esc(costMeta.filename)}»`:''}${inv.articles_without_cost?` · без себеса: ${fmt(inv.articles_without_cost)}`:''}</div>
+    <div class="fin-cabinet">
+      <div><div class="fc-l">Итого по кабинету</div><div class="fc-v" style="color:var(--oz-blue)">${money(cabinetTotal)}</div><div class="fc-s">дебиторка + к выплате с остатков</div></div>
+      <div><div class="fc-l">Дебиторка (Выплаты)</div><div class="fc-v">${money(recv.amount)}</div><div class="fc-s">уже начислено, ждёт перевода</div></div>
+      <div><div class="fc-l">Себестоимость остатков</div><div class="fc-v">${money(inv.cost_total)}</div><div class="fc-s">${fmt(inv.qty_total||0)} шт · склад+в пути</div></div>
+      <div><div class="fc-l">К выплате с остатков</div><div class="fc-v" style="color:var(--green)">${money(inv.payout_total)}</div><div class="fc-s">~${payoutPct}% от витрины ${money(inv.revenue_total)}</div></div>
+    </div>
+    <div class="hint" style="margin-bottom:12px">${recvHint}. Выручка к выплате = цена × шт × ${payoutPct}% (оценка после комиссии, доставки и рекламы). Себес: ${fmt(inv.costs_count||0)} арт.${costMeta.filename?` · «${esc(costMeta.filename)}»`:''}${inv.articles_without_cost?` · без себеса: ${fmt(inv.articles_without_cost)}`:''}</div>
     ${periodRows ? `<div class="tbl-wrap" style="margin-bottom:16px"><table>
       <thead><tr><th>Период выплат</th><th>Выплачено</th><th>К перечислению</th><th>Остаток (не перечислено)</th></tr></thead>
       <tbody>${periodRows}</tbody>
     </table></div>` : ''}
     <div class="tbl-wrap" style="margin-bottom:16px"><table>
-      <thead><tr><th>Артикул</th><th>Склад</th><th>В пути</th><th>Итого шт</th><th>Себес</th><th>Себес × шт</th><th>Цена</th><th>Выручка × шт</th></tr></thead>
-      <tbody>${invRows || `<tr><td colspan="8"><div class="empty"><b>${(inv.costs_count||0)?'Нет остатков с количеством':'Себес не загружен'}</b>${(inv.costs_count||0)?'Обнови остатки в разделе Остатки':'Нажми «Загрузить себес» — файл cost_price.xlsx'}</div></td></tr>`}</tbody>
+      <thead><tr><th>Артикул</th><th>Склад</th><th>В пути</th><th>Итого шт</th><th>Себес</th><th>Себес × шт</th><th>Цена</th><th>Витрина × шт</th><th>К выплате ~${payoutPct}%</th></tr></thead>
+      <tbody>${invRows ? (invRows + invTotalRow) : `<tr><td colspan="9"><div class="empty"><b>${(inv.costs_count||0)?'Нет остатков с количеством':'Себес не загружен'}</b>${(inv.costs_count||0)?'Обнови остатки в разделе Остатки':'Нажми «Загрузить себес»'}</div></td></tr>`}</tbody>
     </table></div>
     ${FIN_DATA.syncing && !(FIN_DATA.days||[]).length ? '<div class="loading"><div class="spinner"></div>Считаем начисления…</div>' : `
     <div class="tbl-wrap" style="margin-bottom:16px"><table>
