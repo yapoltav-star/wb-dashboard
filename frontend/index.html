@@ -2830,7 +2830,7 @@ function gmArticleMeta(art) {
   return {
     nm_id: nm > 0 ? nm : null,
     hasPhoto,
-    thumb: hasPhoto ? wbThumbUrl(nm) : (nm > 0 && broken ? '' : (nm > 0 ? wbThumbUrl(nm) : '')),
+    thumb: hasPhoto ? wbThumbUrl(nm) : '',
     avg_rating: avg,
     total: tot,
     is_official: !!a.is_official || a.source === 'manual',
