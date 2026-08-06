@@ -545,8 +545,15 @@ td.tc{text-align:center}
 .gm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
 .gm-g{border:1px solid var(--wb-border);border-radius:var(--r);overflow:hidden;background:var(--wb-surface)}
 .gm-gh{display:flex;align-items:center;gap:6px;padding:10px 12px;font-weight:600;font-size:13px;color:#fff}
-.gm-gh-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gm-gh-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
 .gm-gh-ord{font-size:11px;opacity:.75;font-weight:600;margin-right:2px}
+.gm-toggle{
+  border:0;background:rgba(255,255,255,.18);color:#fff;width:24px;height:24px;border-radius:4px;
+  cursor:pointer;font-size:11px;line-height:1;padding:0;flex:0 0 auto;font-family:inherit
+}
+.gm-toggle:hover{background:rgba(255,255,255,.32)}
+.gm-count{font-size:11px;opacity:.85;font-weight:500;margin-right:4px;white-space:nowrap}
+.gm-g.gm-collapsed .gm-gb{display:none}
 .gm-ord-btns{display:inline-flex;flex-direction:column;gap:1px;margin-right:4px}
 .gm-ord-btns button{
   border:0;background:rgba(255,255,255,.18);color:#fff;width:22px;height:14px;line-height:1;
@@ -820,6 +827,8 @@ td.tc{text-align:center}
       </div>
       <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
         <span class="saved-note" id="savedNote">✓ Сохранено</span>
+        <button class="action-btn" onclick="gmExpandAll(false)" title="Скрыть артикулы во всех склейках">Свернуть все</button>
+        <button class="action-btn" onclick="gmExpandAll(true)" title="Показать артикулы во всех склейках">Развернуть все</button>
         <button class="action-btn" onclick="addGroup()">+ Склейка</button>
         <button class="action-btn primary" onclick="saveGroups()">Сохранить</button>
       </div>
@@ -1297,6 +1306,8 @@ const RAILWAY_URL = (typeof location !== 'undefined' && location.hostname
 var ALL = [], RATINGS = {}, GROUPS = {}, SK = 'avg_rating', SD = -1, EXP = {};
 var HAS_OFFICIAL = false;
 var dragArt = null, dragFrom = null;
+/** Склейки в менеджере: true = развёрнута (видны артикулы). По умолчанию свёрнуты. */
+var GM_OPEN = {};
 /** nmId, у которых превью с CDN не загрузилось — считаем «без фото». */
 var gmBrokenThumbs = new Set();
 var gmThumbFailT = null;
@@ -3073,84 +3084,108 @@ function renderGroupManager() {
     const color = gc(g);
     const gid = 'gb_' + g.replace(/[^a-zа-я0-9]/gi,'_');
     const isNamed = g !== 'Без склейки';
+    // при поиске — разворачиваем, чтобы было видно совпадения
+    const isOpen = q ? true : !!GM_OPEN[g];
     const ordIdx = isNamed ? namedKeys.indexOf(g) : -1;
+    const gEnc = encodeURIComponent(g);
     const ordBtns = isNamed ? `<span class="gm-ord-btns">
-      <button type="button" title="Выше" ${ordIdx <= 0 ? 'disabled' : ''} onclick="event.stopPropagation();moveGroup('${encodeURIComponent(g)}','up')">▲</button>
-      <button type="button" title="Ниже" ${ordIdx >= namedKeys.length - 1 ? 'disabled' : ''} onclick="event.stopPropagation();moveGroup('${encodeURIComponent(g)}','down')">▼</button>
+      <button type="button" title="Выше" ${ordIdx <= 0 ? 'disabled' : ''} onclick="event.stopPropagation();moveGroup('${gEnc}','up')">▲</button>
+      <button type="button" title="Ниже" ${ordIdx >= namedKeys.length - 1 ? 'disabled' : ''} onclick="event.stopPropagation();moveGroup('${gEnc}','down')">▼</button>
     </span>
     <span class="gm-gh-ord">${ordIdx + 1}</span>` : '';
 
-    let sepDrawn = false;
-    const body = shown.map(art => {
-      const meta = gmArticleMeta(art);
+    let body = '';
+    if(isOpen) {
+      let sepDrawn = false;
+      body = shown.map(art => {
+        const meta = gmArticleMeta(art);
 
-      let sep = '';
-      if(!meta.hasPhoto && !sepDrawn) {
-        sepDrawn = true;
-        sep = `<div class="gm-sep">Без фото · оценка и отзывы</div>`;
-      }
+        let sep = '';
+        if(!meta.hasPhoto && !sepDrawn) {
+          sepDrawn = true;
+          sep = `<div class="gm-sep">Без фото · оценка и отзывы</div>`;
+        }
 
-      const thumb = (meta.nm_id && meta.hasPhoto)
-        ? `<img class="gm-thumb" src="${meta.thumb}" alt="" loading="lazy" onerror="gmThumbFail(this,${meta.nm_id})">`
-        : `<span class="gm-thumb"></span>`;
+        const thumb = (meta.nm_id && meta.hasPhoto)
+          ? `<img class="gm-thumb" src="${meta.thumb}" alt="" loading="lazy" onerror="gmThumbFail(this,${meta.nm_id})">`
+          : `<span class="gm-thumb"></span>`;
 
-      let statsHtml = '';
-      if(!meta.hasPhoto) {
-        const rat = meta.avg_rating != null && meta.avg_rating !== ''
-          ? parseFloat(meta.avg_rating).toFixed(2)
-          : '—';
-        const tot = meta.total || 0;
-        const ratColor = meta.avg_rating != null ? rc(meta.avg_rating) : 'var(--wb-muted)';
-        statsHtml = `<div class="gm-stats"><span style="color:${ratColor}">★ ${rat}</span>`
-          + `<span class="gm-stats-muted"> · ${fmt(tot)} отз.</span></div>`;
-      }
+        let statsHtml = '';
+        if(!meta.hasPhoto) {
+          const rat = meta.avg_rating != null && meta.avg_rating !== ''
+            ? parseFloat(meta.avg_rating).toFixed(2)
+            : '—';
+          const tot = meta.total || 0;
+          const ratColor = meta.avg_rating != null ? rc(meta.avg_rating) : 'var(--wb-muted)';
+          statsHtml = `<div class="gm-stats"><span style="color:${ratColor}">★ ${rat}</span>`
+            + `<span class="gm-stats-muted"> · ${fmt(tot)} отз.</span></div>`;
+        }
 
-      const nmid = meta.nm_id
-        ? `<div class="gm-nmid">${meta.nm_id}</div>`
-        : '';
+        const nmid = meta.nm_id
+          ? `<div class="gm-nmid">${meta.nm_id}</div>`
+          : '';
 
-      const artEnc = encodeURIComponent(art);
-      const gEnc = encodeURIComponent(g);
+        const artEnc = encodeURIComponent(art);
 
-      return `${sep}<div class="gm-a${meta.hasPhoto ? '' : ' gm-no-photo'}"
-          draggable="true"
-          data-art="${artEnc}"
-          data-group="${gEnc}"
-          ondragstart="gDS(event,'${artEnc}','${gEnc}')"
-          ondragend="gDE(event)"
-          ondragover="gArtOver(event,'${artEnc}')"
-          ondragleave="gArtLeave(event)"
-          ondrop="gArtDrop(event,'${gEnc}','${artEnc}')">
-          ${thumb}
-          <div class="gm-art-name">
-            <div class="gm-art-title" title="${escapeHtml(art)}">${escapeHtml(art)}</div>
-            ${nmid}
-            ${statsHtml}
-          </div>
-          ${isNamed?`<span class="gm-del" onclick="event.stopPropagation();rmArt('${gEnc}','${artEnc}')">✕</span>`:''}
-        </div>`;
-    }).join('');
+        return `${sep}<div class="gm-a${meta.hasPhoto ? '' : ' gm-no-photo'}"
+            draggable="true"
+            data-art="${artEnc}"
+            data-group="${gEnc}"
+            ondragstart="gDS(event,'${artEnc}','${gEnc}')"
+            ondragend="gDE(event)"
+            ondragover="gArtOver(event,'${artEnc}')"
+            ondragleave="gArtLeave(event)"
+            ondrop="gArtDrop(event,'${gEnc}','${artEnc}')">
+            ${thumb}
+            <div class="gm-art-name">
+              <div class="gm-art-title" title="${escapeHtml(art)}">${escapeHtml(art)}</div>
+              ${nmid}
+              ${statsHtml}
+            </div>
+            ${isNamed?`<span class="gm-del" onclick="event.stopPropagation();rmArt('${gEnc}','${artEnc}')">✕</span>`:''}
+          </div>`;
+      }).join('');
+    }
 
-    const gEnc = encodeURIComponent(g);
-    html += `<div class="gm-g" data-group="${escapeHtml(g)}">
+    const toggleTitle = isOpen ? 'Свернуть' : 'Развернуть';
+    const countLabel = q && shown.length !== arts.length
+      ? `${shown.length}/${arts.length}`
+      : String(arts.length);
+
+    html += `<div class="gm-g${isOpen ? '' : ' gm-collapsed'}" data-group="${escapeHtml(g)}">
       <div class="gm-gh" style="background:${color}"
         ondragover="gOver(event)"
         ondrop="gDrop(event,'${gEnc}')">
+        <button type="button" class="gm-toggle" title="${toggleTitle}"
+          onclick="event.stopPropagation();gmToggleGroup('${gEnc}')">${isOpen ? '▾' : '▸'}</button>
         ${ordBtns}
-        <span class="gm-gh-title" title="${escapeHtml(g)}">${escapeHtml(g)}</span>
-        ${isNamed?`<span style="cursor:pointer;opacity:.85;font-size:12px;margin-right:8px" onclick="renameGroup('${gEnc}')" title="Переименовать">✏️</span><span style="cursor:pointer;opacity:.7;font-size:12px" onclick="rmGroup('${gEnc}')" title="Удалить">✕</span>`:''}
+        <span class="gm-gh-title" title="${escapeHtml(g)} · ${toggleTitle}"
+          onclick="event.stopPropagation();gmToggleGroup('${gEnc}')">${escapeHtml(g)}</span>
+        <span class="gm-count" title="Артикулов">${countLabel}</span>
+        ${isNamed?`<span style="cursor:pointer;opacity:.85;font-size:12px;margin-right:8px" onclick="event.stopPropagation();renameGroup('${gEnc}')" title="Переименовать">✏️</span><span style="cursor:pointer;opacity:.7;font-size:12px" onclick="event.stopPropagation();rmGroup('${gEnc}')" title="Удалить">✕</span>`:''}
       </div>
-      <div class="gm-gb" id="${gid}"
+      ${isOpen ? `<div class="gm-gb" id="${gid}"
         ondragover="gBodyOver(event)"
         ondragleave="gBodyLeave(event)"
         ondrop="gDrop(event,'${gEnc}')">
         ${body || '<div style="font-size:11px;color:var(--wb-faint);padding:8px 4px">Перетащи сюда артикул</div>'}
         ${q && shown.length<arts.length?`<div style="font-size:11px;color:var(--wb-faint);margin-top:4px">показаны ${shown.length} из ${arts.length}</div>`:''}
         ${isNamed?`<div class="gm-add"><input placeholder="Добавить артикул..." id="ai_${gid}"><button onclick="addArt('${gEnc}','ai_${gid}')">+</button></div>`:''}
-      </div>
+      </div>` : ''}
     </div>`;
   });
   document.getElementById('gmGrid').innerHTML = html || '<div class="empty">Ничего не найдено</div>';
+}
+
+function gmToggleGroup(gE) {
+  const g = decodeURIComponent(gE);
+  GM_OPEN[g] = !GM_OPEN[g];
+  renderGroupManager();
+}
+
+function gmExpandAll(open) {
+  Object.keys(GROUPS).concat(['Без склейки']).forEach(g => { GM_OPEN[g] = !!open; });
+  renderGroupManager();
 }
 
 function rmArt(gE,aE){const g=decodeURIComponent(gE),a=decodeURIComponent(aE);GROUPS[g]=(GROUPS[g]||[]).filter(x=>x!==a);renderGroupManager();}
