@@ -146,13 +146,57 @@ def _money_obj(v) -> float:
     return _money(v)
 
 
-def fetch_receivable(ozon_post: Callable, days: int = 30) -> dict:
+def _cashflow_rows(payload: dict) -> list[dict]:
+    result = payload.get("result") or payload
+    details = result.get("details")
+    if isinstance(details, list):
+        rows = details
+    elif isinstance(details, dict):
+        rows = [details]
+    else:
+        rows = []
+    if not rows and isinstance(result.get("cash_flows"), list):
+        rows = result["cash_flows"]
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        d = row.get("details") if isinstance(row.get("details"), dict) else row
+        period = d.get("period") if isinstance(d.get("period"), dict) else (row.get("period") or {})
+        pays = d.get("payments")
+        payment = 0.0
+        if isinstance(pays, dict):
+            payment = _money(pays.get("payment"))
+        elif isinstance(pays, list):
+            for p in pays:
+                if isinstance(p, dict):
+                    payment += _money(p.get("payment") if "payment" in p else p)
+                else:
+                    payment += _money(p)
+        out.append({
+            "begin": (period or {}).get("begin"),
+            "end": (period or {}).get("end"),
+            "period_id": (period or {}).get("id"),
+            "begin_balance": round(_money(d.get("begin_balance_amount")), 2),
+            "end_balance": round(_money(d.get("end_balance_amount")), 2),
+            "invoice_transfer": round(_money(d.get("invoice_transfer")), 2),
+            "payment": round(payment, 2),
+        })
+    # свежие периоды сверху
+    out.sort(key=lambda x: str(x.get("end") or x.get("begin") or ""), reverse=True)
+    return out
+
+
+def fetch_receivable(ozon_post: Callable, days: int = 90) -> dict:
     """
-    Дебиторка Ozon = closing_balance из POST /v1/finance/balance
-    (деньги на балансе, которые ещё не перечислили).
-    Fallback: end_balance_amount из cash-flow-statement.
+    Дебиторка Ozon = раздел ЛК «Финансы → Выплаты».
+    API: POST /v1/finance/cash-flow-statement/list
+      • end_balance_amount — остаток, который ещё не перечислили
+      • invoice_transfer — к перечислению за период
+      • payments.payment — уже выплачено за период
+    Fallback: closing_balance из /v1/finance/balance (это «Финансы → Баланс»).
     """
-    days = max(1, min(int(days or 30), 30))
+    days = max(14, min(int(days or 90), 180))
     now = time.time()
     cached = _RECEIVABLE_CACHE.get("data")
     if cached and now - float(_RECEIVABLE_CACHE.get("at") or 0) < 300:
@@ -163,90 +207,86 @@ def fetch_receivable(ozon_post: Callable, days: int = 30) -> dict:
     date_from = today - timedelta(days=days - 1)
     out: dict = {
         "amount": 0.0,
+        "invoice_transfer": None,
         "opening": None,
-        "accrued": None,
         "payments": None,
+        "periods": [],
         "date_from": date_from.isoformat(),
         "date_to": date_to.isoformat(),
         "source": None,
+        "cabinet": "Финансы → Выплаты",
         "error": None,
     }
 
-    try:
-        payload = ozon_post(
-            "/v1/finance/balance",
-            {"date_from": date_from.isoformat(), "date_to": date_to.isoformat()},
-        )
-        total = payload.get("total") or (payload.get("result") or {}).get("total") or {}
-        if isinstance(total, dict) and total:
-            closing = _money_obj(total.get("closing_balance"))
-            opening = _money_obj(total.get("opening_balance"))
-            accrued = _money_obj(total.get("accrued"))
-            pays = total.get("payments") or []
-            pay_sum = 0.0
-            if isinstance(pays, list):
-                for p in pays:
-                    pay_sum += _money_obj(p)
-            elif isinstance(pays, dict):
-                pay_sum = _money_obj(pays)
-            out.update({
-                "amount": round(closing, 2),
-                "opening": round(opening, 2),
-                "accrued": round(accrued, 2),
-                "payments": round(pay_sum, 2),
-                "source": "finance/balance",
-                "error": None,
-            })
-            _RECEIVABLE_CACHE["data"] = out
-            _RECEIVABLE_CACHE["at"] = now
-            return out
-    except Exception as e:
-        logger.warning("finance/balance: %s", e)
-        out["error"] = str(e)
-
-    # fallback cash-flow
+    # 1) Выплаты — cash-flow-statement
     try:
         from_dt = datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc)
         to_dt = datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59, tzinfo=timezone.utc)
         payload = ozon_post(
             "/v1/finance/cash-flow-statement/list",
             {
-                "date": {"from": from_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"), "to": to_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")},
+                "date": {
+                    "from": from_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                    "to": to_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                },
                 "page": 1,
                 "page_size": 50,
                 "with_details": True,
             },
         )
-        result = payload.get("result") or payload
-        details = result.get("details")
-        rows = details if isinstance(details, list) else ([details] if isinstance(details, dict) else [])
-        if not rows and isinstance(result.get("cash_flows"), list):
-            rows = result["cash_flows"]
-        best = None
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            end_bal = row.get("end_balance_amount")
-            if end_bal is None and isinstance(row.get("details"), dict):
-                end_bal = row["details"].get("end_balance_amount")
-            if end_bal is None:
-                continue
-            best = row
-        if best is not None:
-            d = best.get("details") if isinstance(best.get("details"), dict) else best
+        periods = _cashflow_rows(payload)
+        if periods:
+            latest = periods[0]
+            pay_sum = round(sum(p.get("payment") or 0 for p in periods), 2)
             out.update({
-                "amount": round(_money(d.get("end_balance_amount")), 2),
-                "opening": round(_money(d.get("begin_balance_amount")), 2),
+                "amount": latest.get("end_balance") or 0.0,
+                "invoice_transfer": latest.get("invoice_transfer"),
+                "opening": latest.get("begin_balance"),
+                "payments": pay_sum,
+                "periods": periods[:12],
                 "source": "cash-flow-statement",
+                "cabinet": "Финансы → Выплаты",
                 "error": None,
             })
             _RECEIVABLE_CACHE["data"] = out
             _RECEIVABLE_CACHE["at"] = now
             return out
-        if not out.get("error"):
-            out["error"] = "Пустой ответ cash-flow-statement"
+        out["error"] = "Пустой ответ cash-flow-statement"
     except Exception as e:
-        logger.warning("cash-flow-statement: %s", e)
+        logger.warning("cash-flow-statement (выплаты): %s", e)
+        out["error"] = str(e)
+
+    # 2) fallback — Баланс (другой раздел ЛК)
+    try:
+        bal_from = today - timedelta(days=min(29, days - 1))
+        payload = ozon_post(
+            "/v1/finance/balance",
+            {"date_from": bal_from.isoformat(), "date_to": today.isoformat()},
+        )
+        total = payload.get("total") or (payload.get("result") or {}).get("total") or {}
+        if isinstance(total, dict) and total:
+            closing = _money_obj(total.get("closing_balance"))
+            opening = _money_obj(total.get("opening_balance"))
+            pays = total.get("payments") or []
+            pay_sum = 0.0
+            if isinstance(pays, list):
+                for p in pays:
+                    pay_sum += _money_obj(p)
+            elif isinstance(pays, dict):
+                pay_sum = _money_obj(pays.get("payment") if "payment" in pays else pays)
+            out.update({
+                "amount": round(closing, 2),
+                "opening": round(opening, 2),
+                "payments": round(pay_sum, 2),
+                "source": "finance/balance",
+                "cabinet": "Финансы → Баланс (fallback)",
+                "error": None,
+            })
+            _RECEIVABLE_CACHE["data"] = out
+            _RECEIVABLE_CACHE["at"] = now
+            return out
+    except Exception as e:
+        logger.warning("finance/balance fallback: %s", e)
         if not out.get("error"):
             out["error"] = str(e)
 
@@ -360,7 +400,7 @@ def sync_finance(ozon_post: Callable, period_days: int = 7, with_compensation: b
 
         receivable = None
         try:
-            receivable = fetch_receivable(ozon_post, days=min(30, max(period_days, 7)))
+            receivable = fetch_receivable(ozon_post, days=90)
         except Exception as e:
             receivable = {"amount": 0, "error": str(e), "source": None}
 

@@ -1485,9 +1485,9 @@ def get_finance(days: int = 7):
         cached = fin.get_cached()
         cached["syncing"] = True
 
-    # дебиторка — всегда свежая (кэш 5 мин внутри)
+    # дебиторка (Финансы → Выплаты) — кэш 5 мин внутри
     try:
-        cached["receivable"] = fin.fetch_receivable(ozon_post, days=30)
+        cached["receivable"] = fin.fetch_receivable(ozon_post, days=90)
     except Exception as e:
         cached["receivable"] = cached.get("receivable") or {"amount": 0, "error": str(e)}
 

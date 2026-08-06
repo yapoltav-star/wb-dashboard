@@ -3900,7 +3900,7 @@ function drawFinance() {
 
   const costMeta = inv.costs_meta || {};
   cards.innerHTML = [
-    ['Дебиторка Ozon', money(recv.amount), 'color:var(--oz-blue)', 'не перечислено (баланс)'],
+    ['Дебиторка Ozon', money(recv.amount), 'color:var(--oz-blue)', 'Финансы → Выплаты · не перечислено'],
     ['Себестоимость остатков', money(inv.cost_total), '', `склад ${fmt(inv.qty_warehouse||0)} + в пути ${fmt(inv.qty_transit||0)}`],
     ['Потенц. выручка остатков', money(inv.revenue_total), 'color:var(--green)', 'по цене продажи × шт'],
     ['Начислено за период', money(FIN_DATA.total), '', `${FIN_DAYS} дн · соинвест ${money(FIN_DATA.coinvest_total)}`],
@@ -3936,12 +3936,25 @@ function drawFinance() {
     <td class="num mono">${money(t.amount)}</td>
   </tr>`).join('');
 
+  const periodRows = (recv.periods || []).slice(0, 8).map(p => {
+    const per = [p.begin, p.end].filter(Boolean).map(x => String(x).slice(0, 10)).join(' — ');
+    return `<tr>
+      <td>${esc(per || '—')}</td>
+      <td class="num mono">${money(p.payment)}</td>
+      <td class="num mono">${money(p.invoice_transfer)}</td>
+      <td class="num mono">${money(p.end_balance)}</td>
+    </tr>`;
+  }).join('');
   const recvHint = recv.source
-    ? `Источник: <code>${esc(recv.source)}</code>${recv.date_from ? ` · ${esc(recv.date_from)}…${esc(recv.date_to||'')}` : ''}${recv.payments!=null ? ` · выплаты за период ${money(recv.payments)}` : ''}`
-    : 'Дебиторка: POST /v1/finance/balance → closing_balance';
+    ? `${esc(recv.cabinet || 'Финансы → Выплаты')} · <code>${esc(recv.source)}</code>${recv.invoice_transfer!=null ? ` · к перечислению ${money(recv.invoice_transfer)}` : ''}${recv.payments!=null ? ` · уже выплачено ${money(recv.payments)}` : ''}`
+    : 'Дебиторка: ЛК Финансы → Выплаты · API cash-flow-statement → end_balance';
 
   root.innerHTML = `
-    <div class="hint" style="margin-bottom:12px">${recvHint}. Остатки: <b>склад</b> = present (free+reserved), <b>в пути</b> = promised/waiting (+ requested). Себес: ${fmt(inv.costs_count||0)} арт.${costMeta.filename?` · файл «${esc(costMeta.filename)}»`:''}${inv.articles_without_cost?` · без себеса: ${fmt(inv.articles_without_cost)}`:''}</div>
+    <div class="hint" style="margin-bottom:12px">${recvHint}. Остатки: <b>склад</b> = present (free+reserved), <b>в пути</b> = promised/waiting. Себес: ${fmt(inv.costs_count||0)} арт.${costMeta.filename?` · файл «${esc(costMeta.filename)}»`:''}${inv.articles_without_cost?` · без себеса: ${fmt(inv.articles_without_cost)}`:''}</div>
+    ${periodRows ? `<div class="tbl-wrap" style="margin-bottom:16px"><table>
+      <thead><tr><th>Период выплат</th><th>Выплачено</th><th>К перечислению</th><th>Остаток (не перечислено)</th></tr></thead>
+      <tbody>${periodRows}</tbody>
+    </table></div>` : ''}
     <div class="tbl-wrap" style="margin-bottom:16px"><table>
       <thead><tr><th>Артикул</th><th>Склад</th><th>В пути</th><th>Итого шт</th><th>Себес</th><th>Себес × шт</th><th>Цена</th><th>Выручка × шт</th></tr></thead>
       <tbody>${invRows || '<tr><td colspan="8"><div class="empty"><b>Нет остатков или себеса</b>Загрузи cost_price.xlsx и обнови остатки</div></td></tr>'}</tbody>
