@@ -3510,12 +3510,6 @@ function renderBrandDetailCharts(rowsAll, brandName) {
     (showCompare ? chartCard(`Остаток — мой`, 'brand-stock-me') : '');
 
   if (showCompare) {
-    const pair = (id, labels, meVal, rivalVal, meTip, rivalTip) => makeBarChart(id, labels, [
-      { label: 'Я: ' + own, data: [meVal], backgroundColor: meColor, borderRadius: 4 },
-      { label: 'Конкурент: ' + brandName, data: [rivalVal], backgroundColor: rivalColor, borderRadius: 4 },
-    ], { tooltipRaw: [[meTip], [rivalTip]] });
-
-    // одна категория → две колонки; для остатков две метрики рядом
     makeBarChart('brand-vs-qty', [''], [
       { label: 'Я: ' + own, data: [ownAgg.qty], backgroundColor: meColor, borderRadius: 4 },
       { label: 'Конкурент: ' + brandName, data: [themAgg.qty], backgroundColor: rivalColor, borderRadius: 4 },
