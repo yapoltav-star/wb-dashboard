@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 import ads
 import coinvest as coin
 import competitors as comp
+import costs as costmod
 import finance as fin
 import orders as ordmod
 import reviews as revs
@@ -567,7 +568,7 @@ def fetch_ordered_units(date_from: date, date_to: date) -> dict[str, int]:
 
 
 def _stock_qty_from_analytics_item(it: dict) -> tuple[int, int, int]:
-    """free_to_sell, reserved, promised из analytics/stocks."""
+    """free_to_sell, reserved, promised(+в пути) из analytics/stocks."""
     free = _to_int(
         it.get("free_to_sell_amount")
         or it.get("available_stock_count")
@@ -575,7 +576,10 @@ def _stock_qty_from_analytics_item(it: dict) -> tuple[int, int, int]:
         or it.get("present")
     )
     reserved = _to_int(it.get("reserved_amount") or it.get("reserved"))
-    promised = _to_int(it.get("promised_amount") or it.get("promised") or it.get("stock_defect"))
+    # promised — ожидаемый/в пути; + requested/waitingdocs (возвраты и поставки)
+    promised = _to_int(it.get("promised_amount") or it.get("promised"))
+    promised += _to_int(it.get("requested_stock_count"))
+    promised += _to_int(it.get("waitingdocs_stock_count"))
     return free, reserved, promised
 
 
@@ -1283,6 +1287,195 @@ def _run_finance_sync(period_days: int = 7):
         fin.FINANCE_CACHE["syncing"] = False
 
 
+def build_inventory_finance() -> dict:
+    """Себестоимость и потенц. выручка остатков: склад + в пути (promised/waiting)."""
+    by_offer_cost, by_sku_cost, meta = costmod.load_cost_indexes(get_setting)
+    try:
+        warehouses = _sb_select_all(
+            "stocks",
+            "offer_id,sku,channel,present,reserved,free_to_sell,promised",
+            {},
+        )
+    except Exception as e:
+        logger.warning("inventory stocks: %s", e)
+        warehouses = []
+    try:
+        products = _sb_select_all(
+            "products",
+            "offer_id,sku,name,price,marketing_price,primary_image,archived",
+            {"archived": "eq.false"},
+        )
+    except Exception as e:
+        logger.warning("inventory products: %s", e)
+        products = []
+
+    prod_by_offer: dict[str, dict] = {}
+    for p in products:
+        offer = costmod._norm_offer(p.get("offer_id"))
+        if offer:
+            prod_by_offer[offer] = p
+
+    # агрегат qty по offer: warehouse(present) + transit(promised)
+    agg: dict[str, dict] = {}
+    for w in warehouses:
+        offer = costmod._norm_offer(w.get("offer_id"))
+        if not offer:
+            continue
+        row = agg.setdefault(
+            offer,
+            {
+                "offer_id": offer,
+                "sku": w.get("sku"),
+                "qty_warehouse": 0,
+                "qty_reserved": 0,
+                "qty_transit": 0,
+                "qty_free": 0,
+            },
+        )
+        if w.get("sku") and not row.get("sku"):
+            row["sku"] = w.get("sku")
+        present = int(w.get("present") or 0)
+        reserved = int(w.get("reserved") or 0)
+        free = int(w.get("free_to_sell") or 0)
+        promised = int(w.get("promised") or 0)
+        row["qty_warehouse"] += present
+        row["qty_reserved"] += reserved
+        row["qty_free"] += free
+        row["qty_transit"] += promised
+
+    # если нет детализации по складам — fallback на stock_totals
+    if not agg:
+        try:
+            totals = _sb_select_all(
+                "stock_totals",
+                "offer_id,sku,name,fbo_present,fbo_reserved,fbs_present,fbs_reserved,stock_total,primary_image",
+                {},
+            )
+        except Exception:
+            totals = []
+        for t in totals:
+            offer = costmod._norm_offer(t.get("offer_id"))
+            if not offer:
+                continue
+            wh = int(t.get("stock_total") or 0) or (
+                int(t.get("fbo_present") or 0) + int(t.get("fbs_present") or 0)
+            )
+            reserved = int(t.get("fbo_reserved") or 0) + int(t.get("fbs_reserved") or 0)
+            if wh <= 0 and reserved <= 0:
+                continue
+            agg[offer] = {
+                "offer_id": offer,
+                "sku": t.get("sku"),
+                "qty_warehouse": wh,
+                "qty_reserved": reserved,
+                "qty_transit": 0,
+                "qty_free": max(0, wh - reserved),
+                "name": t.get("name") or "",
+                "primary_image": t.get("primary_image"),
+            }
+
+    rows = []
+    cost_total = 0.0
+    revenue_total = 0.0
+    qty_wh = qty_tr = qty_all = 0
+    without_cost = without_price = 0
+
+    for offer, base in agg.items():
+        qty_warehouse = int(base.get("qty_warehouse") or 0)
+        qty_transit = int(base.get("qty_transit") or 0)
+        qty_total = qty_warehouse + qty_transit
+        if qty_total <= 0:
+            continue
+        p = prod_by_offer.get(offer) or {}
+        sku = base.get("sku") or p.get("sku")
+        cm = costmod.resolve_cost(by_offer_cost, by_sku_cost, offer, sku)
+        cost = cm.get("cost")
+        try:
+            price = float(p.get("marketing_price") or p.get("price") or 0) or None
+        except (TypeError, ValueError):
+            price = None
+        if price is not None and price <= 0:
+            price = None
+        cost_value = round(qty_total * cost, 2) if cost is not None else None
+        rev_value = round(qty_total * price, 2) if price is not None else None
+        if cost_value is not None:
+            cost_total += cost_value
+        else:
+            without_cost += 1
+        if rev_value is not None:
+            revenue_total += rev_value
+        else:
+            without_price += 1
+        qty_wh += qty_warehouse
+        qty_tr += qty_transit
+        qty_all += qty_total
+        rows.append({
+            "offer_id": offer,
+            "sku": sku,
+            "name": p.get("name") or base.get("name") or "",
+            "primary_image": p.get("primary_image") or base.get("primary_image"),
+            "qty_warehouse": qty_warehouse,
+            "qty_reserved": int(base.get("qty_reserved") or 0),
+            "qty_transit": qty_transit,
+            "qty_total": qty_total,
+            "cost": cost,
+            "price": price,
+            "cost_value": cost_value,
+            "revenue_value": rev_value,
+        })
+
+    rows.sort(key=lambda x: (-(x.get("cost_value") or 0), -(x.get("qty_total") or 0), str(x.get("offer_id"))))
+    return {
+        "cost_total": round(cost_total, 2),
+        "revenue_total": round(revenue_total, 2),
+        "qty_warehouse": qty_wh,
+        "qty_transit": qty_tr,
+        "qty_total": qty_all,
+        "articles": len(rows),
+        "articles_without_cost": without_cost,
+        "articles_without_price": without_price,
+        "costs_count": len(by_offer_cost),
+        "costs_meta": meta,
+        "rows": rows[:300],
+    }
+
+
+@app.post("/api/upload-costs")
+async def upload_costs(file: UploadFile = File(...)):
+    """Excel себестоимости (SKU + Артикул + По умолчанию / даты)."""
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Пустой файл")
+    try:
+        parsed, parse_meta = costmod.parse_cost_price_workbook(contents)
+    except Exception as e:
+        logger.exception("upload-costs parse")
+        raise HTTPException(status_code=400, detail=f"Не удалось разобрать Excel: {e}") from e
+    by_offer = (parsed or {}).get("by_offer") or {}
+    by_sku = (parsed or {}).get("by_sku") or {}
+    if not by_offer:
+        raise HTTPException(status_code=400, detail="В файле не найдено строк с себестоимостью")
+    meta = costmod.save_costs(
+        save_setting,
+        by_offer,
+        by_sku,
+        {**(parse_meta or {}), "filename": file.filename},
+    )
+    inv = build_inventory_finance()
+    return {
+        "ok": True,
+        "offers": len(by_offer),
+        "skus": len(by_sku),
+        "meta": meta,
+        "inventory": {
+            "cost_total": inv.get("cost_total"),
+            "revenue_total": inv.get("revenue_total"),
+            "qty_total": inv.get("qty_total"),
+            "articles_without_cost": inv.get("articles_without_cost"),
+        },
+    }
+
+
 @app.get("/api/finance")
 def get_finance(days: int = 7):
     cached = fin.get_cached()
@@ -1291,11 +1484,27 @@ def get_finance(days: int = 7):
             threading.Thread(target=_run_finance_sync, kwargs={"period_days": days}, daemon=True).start()
         cached = fin.get_cached()
         cached["syncing"] = True
+
+    # дебиторка — всегда свежая (кэш 5 мин внутри)
+    try:
+        cached["receivable"] = fin.fetch_receivable(ozon_post, days=30)
+    except Exception as e:
+        cached["receivable"] = cached.get("receivable") or {"amount": 0, "error": str(e)}
+
+    try:
+        cached["inventory"] = build_inventory_finance()
+    except Exception as e:
+        logger.exception("inventory finance")
+        cached["inventory"] = {"cost_total": 0, "revenue_total": 0, "error": str(e), "rows": []}
+
     return cached
 
 
 @app.post("/api/sync-finance")
 def trigger_finance(days: int = 7):
+    # сбросить кэш дебиторки при ручном обновлении
+    fin._RECEIVABLE_CACHE["at"] = 0
+    fin._RECEIVABLE_CACHE["data"] = None
     if fin.FINANCE_CACHE.get("syncing"):
         return {"ok": True, "syncing": True}
     threading.Thread(target=_run_finance_sync, kwargs={"period_days": days}, daemon=True).start()

@@ -700,10 +700,12 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
     <button class="filter-btn" id="finDays14" onclick="setFinDays(14)">14</button>
     <button class="filter-btn" id="finDays30" onclick="setFinDays(30)">30</button>
     <span id="finInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+    <input type="file" id="finCostInput" accept=".xlsx,.xls" style="display:none" onchange="uploadFinCosts(this.files[0])">
+    <button class="action-btn" onclick="document.getElementById('finCostInput').click()">Загрузить себес</button>
     <button class="action-btn primary ml-auto" id="finSyncBtn" onclick="triggerFinanceSync()">↻ Обновить</button>
   </div>
   <div class="cards" id="finCards"></div>
-  <div id="finRoot"><div class="empty"><b>Финансы</b>Начисления accrual + отчёт компенсаций. Соинвест ₽ — по типам начислений (скидка/компенсация/баллы).</div></div>
+  <div id="finRoot"><div class="empty"><b>Финансы</b>Дебиторка Ozon, себестоимость/выручка остатков (склад + в пути), начисления.</div></div>
 </div>
 
 <script>
@@ -3812,7 +3814,7 @@ function drawAds() {
 }
 
 /* ── Финансы ── */
-let FIN_DATA = { days: [], by_type: [], syncing: false };
+let FIN_DATA = { days: [], by_type: [], syncing: false, inventory: {}, receivable: {} };
 let FIN_DAYS = 7;
 let finPoll = null;
 function setFinDays(d) {
@@ -3824,7 +3826,7 @@ function setFinDays(d) {
   triggerFinanceSync();
 }
 async function renderFinance(force) {
-  if (force || !(FIN_DATA.days || []).length) await loadFinance();
+  if (force || !(FIN_DATA.days || []).length || !FIN_DATA.inventory) await loadFinance();
   else drawFinance();
 }
 async function loadFinance() {
@@ -3832,7 +3834,7 @@ async function loadFinance() {
     const r = await fetch('/api/finance?days=' + FIN_DAYS);
     FIN_DATA = await r.json();
   } catch (e) {
-    FIN_DATA = { days: [], syncing: false, error: String(e) };
+    FIN_DATA = { days: [], syncing: false, error: String(e), inventory: {}, receivable: {} };
   }
   drawFinance();
   clearTimeout(finPoll);
@@ -3847,6 +3849,25 @@ async function triggerFinanceSync() {
   clearTimeout(finPoll);
   finPoll = setTimeout(loadFinance, 3000);
 }
+async function uploadFinCosts(file) {
+  if (!file) return;
+  const info = document.getElementById('finInfo');
+  if (info) info.textContent = 'Загрузка себестоимости…';
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch('/api/upload-costs', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error(await readErr(r));
+    const d = await r.json();
+    if (info) info.textContent = `себес: ${fmt(d.offers)} арт.`;
+    await loadFinance();
+  } catch (e) {
+    if (info) info.textContent = 'Ошибка себеса: ' + (e.message || e);
+  } finally {
+    const inp = document.getElementById('finCostInput');
+    if (inp) inp.value = '';
+  }
+}
 function drawFinance() {
   const root = document.getElementById('finRoot');
   const cards = document.getElementById('finCards');
@@ -3859,6 +3880,8 @@ function drawFinance() {
   else { if (info) info.textContent = FIN_DATA.updated_at ? ('обновлено ' + fmtDt(FIN_DATA.updated_at)) : ''; if (btn) btn.disabled = false; }
 
   const comp = FIN_DATA.compensation || {};
+  const inv = FIN_DATA.inventory || {};
+  const recv = FIN_DATA.receivable || {};
   if (comp.file) {
     banner.style.display = 'block';
     banner.className = 'banner';
@@ -3867,21 +3890,38 @@ function drawFinance() {
     banner.style.display = 'block';
     banner.className = 'banner warn';
     banner.textContent = 'Компенсации: ' + (comp.error || comp.status || '—');
+  } else if (recv.error && !(recv.amount > 0)) {
+    banner.style.display = 'block';
+    banner.className = 'banner warn';
+    banner.textContent = 'Дебиторка: ' + recv.error;
   } else {
     banner.style.display = 'none';
   }
 
+  const costMeta = inv.costs_meta || {};
   cards.innerHTML = [
-    ['Начислено всего', money(FIN_DATA.total), ''],
-    ['Соинвест / скидки (оценка)', money(FIN_DATA.coinvest_total), 'color:var(--amber)'],
-    ['Типов соинвеста', fmt((FIN_DATA.coinvest_types || []).length), ''],
-    ['Дней', fmt((FIN_DATA.days || []).length), ''],
-  ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div></div>`).join('');
+    ['Дебиторка Ozon', money(recv.amount), 'color:var(--oz-blue)', 'не перечислено (баланс)'],
+    ['Себестоимость остатков', money(inv.cost_total), '', `склад ${fmt(inv.qty_warehouse||0)} + в пути ${fmt(inv.qty_transit||0)}`],
+    ['Потенц. выручка остатков', money(inv.revenue_total), 'color:var(--green)', 'по цене продажи × шт'],
+    ['Начислено за период', money(FIN_DATA.total), '', `${FIN_DAYS} дн · соинвест ${money(FIN_DATA.coinvest_total)}`],
+  ].map(([l,v,s,sub]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div>${sub?`<div class="card-sub">${sub}</div>`:''}</div>`).join('');
 
-  if (FIN_DATA.syncing && !(FIN_DATA.days || []).length) {
-    root.innerHTML = '<div class="loading"><div class="spinner"></div>Accrual by-day + compensation report…</div>';
-    return;
-  }
+  const invRows = (inv.rows || []).slice(0, 80).map(r => {
+    const ozUrl = r.sku ? `https://www.ozon.ru/product/${r.sku}/` : '';
+    const art = ozUrl
+      ? `<a class="offer-link" href="${esc(ozUrl)}" target="_blank" rel="noopener">${esc(r.offer_id||'—')}</a>`
+      : `<span class="mono">${esc(r.offer_id||'—')}</span>`;
+    return `<tr>
+      <td>${art}</td>
+      <td class="num mono">${fmt(r.qty_warehouse)}</td>
+      <td class="num mono">${fmt(r.qty_transit)}</td>
+      <td class="num mono">${fmt(r.qty_total)}</td>
+      <td class="num mono">${r.cost!=null?money(r.cost):'—'}</td>
+      <td class="num mono">${r.cost_value!=null?money(r.cost_value):'—'}</td>
+      <td class="num mono">${r.price!=null?money(r.price):'—'}</td>
+      <td class="num mono">${r.revenue_value!=null?money(r.revenue_value):'—'}</td>
+    </tr>`;
+  }).join('');
 
   const dayRows = (FIN_DATA.days || []).map(d => `<tr>
     <td>${esc(d.date)}</td>
@@ -3896,7 +3936,17 @@ function drawFinance() {
     <td class="num mono">${money(t.amount)}</td>
   </tr>`).join('');
 
+  const recvHint = recv.source
+    ? `Источник: <code>${esc(recv.source)}</code>${recv.date_from ? ` · ${esc(recv.date_from)}…${esc(recv.date_to||'')}` : ''}${recv.payments!=null ? ` · выплаты за период ${money(recv.payments)}` : ''}`
+    : 'Дебиторка: POST /v1/finance/balance → closing_balance';
+
   root.innerHTML = `
+    <div class="hint" style="margin-bottom:12px">${recvHint}. Остатки: <b>склад</b> = present (free+reserved), <b>в пути</b> = promised/waiting (+ requested). Себес: ${fmt(inv.costs_count||0)} арт.${costMeta.filename?` · файл «${esc(costMeta.filename)}»`:''}${inv.articles_without_cost?` · без себеса: ${fmt(inv.articles_without_cost)}`:''}</div>
+    <div class="tbl-wrap" style="margin-bottom:16px"><table>
+      <thead><tr><th>Артикул</th><th>Склад</th><th>В пути</th><th>Итого шт</th><th>Себес</th><th>Себес × шт</th><th>Цена</th><th>Выручка × шт</th></tr></thead>
+      <tbody>${invRows || '<tr><td colspan="8"><div class="empty"><b>Нет остатков или себеса</b>Загрузи cost_price.xlsx и обнови остатки</div></td></tr>'}</tbody>
+    </table></div>
+    ${FIN_DATA.syncing && !(FIN_DATA.days||[]).length ? '<div class="loading"><div class="spinner"></div>Считаем начисления…</div>' : `
     <div class="tbl-wrap" style="margin-bottom:16px"><table>
       <thead><tr><th>День</th><th>Всего</th><th>Соинвест*</th><th>Записей</th></tr></thead>
       <tbody>${dayRows || '<tr><td colspan="4">Нет данных</td></tr>'}</tbody>
@@ -3905,7 +3955,7 @@ function drawFinance() {
       <thead><tr><th>type_id</th><th>Соинвест?</th><th>Название</th><th>Сумма</th></tr></thead>
       <tbody>${typeRows || '<tr><td colspan="4">Нет разбивки</td></tr>'}</tbody>
     </table></div>
-    <div class="hint">*Соинвест ₽ — сумма начислений, у которых в названии/описании есть «скидк / соинвест / компенсац / балл / акци». Справочник: <code>/v1/finance/accrual/types</code>. Транзакции v3 устаревают — используем accrual.</div>`;
+    <div class="hint">*Соинвест ₽ — типы с «скидк / соинвест / компенсац / балл / акци». Accrual API.</div>`}`;
 }
 
 refreshStatus();

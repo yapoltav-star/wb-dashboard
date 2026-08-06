@@ -1,4 +1,4 @@
-"""Финансы — начисления (accrual) + компенсации; поиск соинвеста в ₽."""
+"""Финансы — начисления (accrual) + компенсации; дебиторка (баланс Ozon)."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ FINANCE_CACHE: dict = {
     "coinvest_total": 0,
     "total": 0,
     "compensation": None,
+    "receivable": None,
     "updated_at": None,
     "syncing": False,
     "error": None,
@@ -25,6 +26,7 @@ FINANCE_CACHE: dict = {
 }
 
 _lock = threading.Lock()
+_RECEIVABLE_CACHE: dict = {"at": 0.0, "data": None}
 
 COINVEST_HINTS = (
     "соинвест",
@@ -138,6 +140,121 @@ def _extract_fees(acc: dict) -> list[dict]:
     return rows
 
 
+def _money_obj(v) -> float:
+    if isinstance(v, dict):
+        return _money(v.get("value") if "value" in v else v.get("amount"))
+    return _money(v)
+
+
+def fetch_receivable(ozon_post: Callable, days: int = 30) -> dict:
+    """
+    Дебиторка Ozon = closing_balance из POST /v1/finance/balance
+    (деньги на балансе, которые ещё не перечислили).
+    Fallback: end_balance_amount из cash-flow-statement.
+    """
+    days = max(1, min(int(days or 30), 30))
+    now = time.time()
+    cached = _RECEIVABLE_CACHE.get("data")
+    if cached and now - float(_RECEIVABLE_CACHE.get("at") or 0) < 300:
+        return cached
+
+    today = datetime.now(timezone(timedelta(hours=3))).date()
+    date_to = today
+    date_from = today - timedelta(days=days - 1)
+    out: dict = {
+        "amount": 0.0,
+        "opening": None,
+        "accrued": None,
+        "payments": None,
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "source": None,
+        "error": None,
+    }
+
+    try:
+        payload = ozon_post(
+            "/v1/finance/balance",
+            {"date_from": date_from.isoformat(), "date_to": date_to.isoformat()},
+        )
+        total = payload.get("total") or (payload.get("result") or {}).get("total") or {}
+        if isinstance(total, dict) and total:
+            closing = _money_obj(total.get("closing_balance"))
+            opening = _money_obj(total.get("opening_balance"))
+            accrued = _money_obj(total.get("accrued"))
+            pays = total.get("payments") or []
+            pay_sum = 0.0
+            if isinstance(pays, list):
+                for p in pays:
+                    pay_sum += _money_obj(p)
+            elif isinstance(pays, dict):
+                pay_sum = _money_obj(pays)
+            out.update({
+                "amount": round(closing, 2),
+                "opening": round(opening, 2),
+                "accrued": round(accrued, 2),
+                "payments": round(pay_sum, 2),
+                "source": "finance/balance",
+                "error": None,
+            })
+            _RECEIVABLE_CACHE["data"] = out
+            _RECEIVABLE_CACHE["at"] = now
+            return out
+    except Exception as e:
+        logger.warning("finance/balance: %s", e)
+        out["error"] = str(e)
+
+    # fallback cash-flow
+    try:
+        from_dt = datetime(date_from.year, date_from.month, date_from.day, tzinfo=timezone.utc)
+        to_dt = datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59, tzinfo=timezone.utc)
+        payload = ozon_post(
+            "/v1/finance/cash-flow-statement/list",
+            {
+                "date": {"from": from_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"), "to": to_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")},
+                "page": 1,
+                "page_size": 50,
+                "with_details": True,
+            },
+        )
+        result = payload.get("result") or payload
+        details = result.get("details")
+        rows = details if isinstance(details, list) else ([details] if isinstance(details, dict) else [])
+        if not rows and isinstance(result.get("cash_flows"), list):
+            rows = result["cash_flows"]
+        best = None
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            end_bal = row.get("end_balance_amount")
+            if end_bal is None and isinstance(row.get("details"), dict):
+                end_bal = row["details"].get("end_balance_amount")
+            if end_bal is None:
+                continue
+            best = row
+        if best is not None:
+            d = best.get("details") if isinstance(best.get("details"), dict) else best
+            out.update({
+                "amount": round(_money(d.get("end_balance_amount")), 2),
+                "opening": round(_money(d.get("begin_balance_amount")), 2),
+                "source": "cash-flow-statement",
+                "error": None,
+            })
+            _RECEIVABLE_CACHE["data"] = out
+            _RECEIVABLE_CACHE["at"] = now
+            return out
+        if not out.get("error"):
+            out["error"] = "Пустой ответ cash-flow-statement"
+    except Exception as e:
+        logger.warning("cash-flow-statement: %s", e)
+        if not out.get("error"):
+            out["error"] = str(e)
+
+    _RECEIVABLE_CACHE["data"] = out
+    _RECEIVABLE_CACHE["at"] = now
+    return out
+
+
 def request_compensation_report(ozon_post: Callable, ym: str) -> dict:
     """Асинхронный XLSX: Финансы → Компенсации."""
     payload = ozon_post("/v1/finance/compensation", {"date": ym, "language": "RU"})
@@ -241,6 +358,12 @@ def sync_finance(ozon_post: Callable, period_days: int = 7, with_compensation: b
             except Exception as e:
                 compensation = {"status": "error", "period": ym, "error": str(e)}
 
+        receivable = None
+        try:
+            receivable = fetch_receivable(ozon_post, days=min(30, max(period_days, 7)))
+        except Exception as e:
+            receivable = {"amount": 0, "error": str(e), "source": None}
+
         FINANCE_CACHE.update({
             "days": day_rows,
             "types": types,
@@ -249,6 +372,7 @@ def sync_finance(ozon_post: Callable, period_days: int = 7, with_compensation: b
             "coinvest_total": round(coinvest_total, 2),
             "total": round(grand_total, 2),
             "compensation": compensation,
+            "receivable": receivable,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "syncing": False,
             "error": None,
@@ -273,6 +397,7 @@ def get_cached() -> dict:
         "coinvest_total": FINANCE_CACHE.get("coinvest_total") or 0,
         "total": FINANCE_CACHE.get("total") or 0,
         "compensation": FINANCE_CACHE.get("compensation"),
+        "receivable": FINANCE_CACHE.get("receivable"),
         "updated_at": FINANCE_CACHE.get("updated_at"),
         "syncing": bool(FINANCE_CACHE.get("syncing")),
         "error": FINANCE_CACHE.get("error"),
