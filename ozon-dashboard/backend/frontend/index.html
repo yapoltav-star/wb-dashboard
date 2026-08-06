@@ -365,6 +365,7 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
   <div class="sn-item on" data-comp="position" onclick="showCompPage('position',this)">Товары категории</div>
   <div class="sn-item" data-comp="brands" onclick="showCompPage('brands',this)">Бренды</div>
   <div class="sn-item" data-comp="brand" onclick="showCompPage('brand',this)">Отчёт бренда</div>
+  <div class="sn-item" data-comp="compare" onclick="showCompPage('compare',this)">Сравнение</div>
 </div>
 
 <!-- GROWTH / SALES PACE -->
@@ -617,34 +618,50 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
   <div id="brandsRoot"><div class="empty"><b>Бренды</b>Excel аналитики с листом «Бренды». Кликни бренд — откроется его детальный отчёт, если загружен.</div></div>
 </div>
 
-<!-- COMPETITORS: детальный отчёт бренда -->
+<!-- COMPETITORS: детальный отчёт одного бренда -->
 <div class="page" id="page-comp-brand">
   <div class="banner" id="brandBanner" style="display:none"></div>
+  <div class="own-brand-bar">
+    <label>Бренд
+      <select class="neg-sel" id="brandSelect" onchange="selectBrandDetail(this.value)"></select>
+    </label>
+    <span id="brandHint" style="color:var(--oz-muted)">инфа и диаграммы по одному бренду</span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="action-btn" onclick="showCompPage('compare')">⇄ Сравнить</button>
+      <button class="action-btn" id="brandDelBtn" onclick="deleteCurrentBrandDetail()" style="display:none">🗑 Удалить отчёт</button>
+      <button class="action-btn primary" onclick="document.getElementById('compFileInput').click()">📊 Загрузить отчёт</button>
+    </div>
+  </div>
+  <div class="cards" id="brandCards"></div>
+  <div id="brandCharts" class="charts" style="display:none"></div>
+  <div class="toolbar">
+    <div class="search">
+      <input id="brandSearch" placeholder="Товар / SKU…" oninput="drawBrandDetail()">
+    </div>
+    <span id="brandInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+  </div>
+  <div id="brandRoot"><div class="empty"><b>Отчёт бренда</b>Загрузи Excel по бренду — показы, реклама, остатки, заказы.</div></div>
+</div>
+
+<!-- COMPETITORS: сравнение мой vs конкурент -->
+<div class="page" id="page-comp-compare">
   <div class="own-brand-bar">
     <label>Мой бренд
       <select class="neg-sel" id="ownBrandSelect" onchange="saveOwnBrand(this.value)"></select>
     </label>
     <span class="vs">vs</span>
     <label>Конкурент
-      <select class="neg-sel" id="rivalBrandSelect" onchange="selectBrandDetail(this.value)"></select>
+      <select class="neg-sel" id="rivalBrandSelect" onchange="selectRivalBrand(this.value)"></select>
     </label>
-    <span id="ownBrandHint">выбери обоих — сравнение и диаграммы рядом</span>
+    <span id="ownBrandHint">выбери обоих — сравнение и точки роста</span>
     <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button class="action-btn" id="brandDelBtn" onclick="deleteCurrentBrandDetail()" style="display:none">🗑 Удалить отчёт конкурента</button>
       <button class="action-btn primary" onclick="document.getElementById('compFileInput').click()">📊 Загрузить отчёт</button>
     </div>
   </div>
   <div id="brandCompare"></div>
   <div id="brandTips" class="tips"></div>
-  <div class="cards" id="brandCards"></div>
-  <div id="brandCharts" class="charts" style="display:none"></div>
-  <div class="toolbar">
-    <div class="search">
-      <input id="brandSearch" placeholder="Товар / SKU конкурента…" oninput="drawBrandDetail()">
-    </div>
-    <span id="brandInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
-  </div>
-  <div id="brandRoot"><div class="empty"><b>Отчёт бренда</b>Загрузи Excel по бренду — сравним с твоим и покажем точки роста.</div></div>
+  <div id="compareCharts" class="charts" style="display:none"></div>
+  <div class="empty" id="compareEmpty" style="display:none"><b>Сравнение</b>Укажи мой бренд и конкурента с загруженными отчётами.</div>
 </div>
 
 <!-- ADS -->
@@ -2631,12 +2648,28 @@ async function saveGroups() {
 
 /* ── Конкуренты (общая база Supabase) ── */
 let COMP_ALL = { position: null, brands: null, brand_details: [], brand_detail_map: {}, hidden_brands: [], own_brand: '' };
-let COMP_PAGE = 'position'; // position | brands | brand
+let COMP_PAGE = 'position'; // position | brands | brand | compare
 let COMP_FILTER = 'all';
 let COMP_SORT = 'ordered_sum';
 let COMP_BRAND = '';
+let COMP_RIVAL = '';
 let BRANDS_ONLY_DETAIL = false;
 let BRANDS_SHOW_HIDDEN = false;
+
+function ozonProductUrl(sku, url) {
+  const u = String(url || '').trim();
+  if (u.startsWith('http')) return u;
+  const s = String(sku || '').trim();
+  if (s) return 'https://www.ozon.ru/product/' + encodeURIComponent(s) + '/';
+  return '';
+}
+function skuLinkHtml(sku, url) {
+  const s = String(sku || '').trim();
+  if (!s) return '—';
+  const href = ozonProductUrl(s, url);
+  if (!href) return `<span class="mono">${esc(s)}</span>`;
+  return `<a class="prod-link mono" href="${esc(href)}" target="_blank" rel="noopener">${esc(s)}</a>`;
+}
 const COMP_CHARTS = {}; // id -> Chart instance
 
 function destroyCompCharts(prefix) {
@@ -2750,7 +2783,12 @@ function showCompPage(id, el) {
     el.classList.add('on');
   }
   document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
-  const map = { position: 'page-competitors', brands: 'page-comp-brands', brand: 'page-comp-brand' };
+  const map = {
+    position: 'page-competitors',
+    brands: 'page-comp-brands',
+    brand: 'page-comp-brand',
+    compare: 'page-comp-compare',
+  };
   const page = document.getElementById(map[COMP_PAGE] || 'page-competitors');
   if (page) page.classList.add('on');
   renderCompetitors(true);
@@ -2760,19 +2798,24 @@ async function renderCompetitors(force) {
   drawCompPosition();
   drawCompBrands();
   fillBrandSelect();
+  fillOwnBrandSelect();
+  fillRivalSelect();
   drawBrandDetail();
+  drawBrandCompare();
 }
 async function loadCompetitors() {
   try {
     const r = await fetch('/api/competitors');
     COMP_ALL = await r.json();
     COMP_ALL._loaded = true;
-    if (!COMP_BRAND) {
-      const keys = Object.keys(COMP_ALL.brand_detail_map || {});
-      if (keys.length) COMP_BRAND = keys[0];
+    const keys = Object.keys(COMP_ALL.brand_detail_map || {});
+    const own = (COMP_ALL.own_brand || '').toLowerCase();
+    if (!COMP_BRAND && keys.length) COMP_BRAND = keys[0];
+    if (!COMP_RIVAL && keys.length) {
+      COMP_RIVAL = keys.find(k => k.toLowerCase() !== own) || keys[0];
     }
   } catch (e) {
-    COMP_ALL = { position: null, brands: null, brand_details: [], brand_detail_map: {}, _loaded: true, error: String(e) };
+    COMP_ALL = { position: null, brands: null, brand_details: [], brand_detail_map: {}, hidden_brands: [], own_brand: '', _loaded: true, error: String(e) };
   }
 }
 async function uploadCompetitors(file) {
@@ -2910,7 +2953,7 @@ function drawCompPosition() {
       <td class="num mono">${fmt(r.rank)}</td>
       <td>${esc(r.competitor || '—')}${r.is_own ? ' <span class="tag stock">мой</span>' : ''}</td>
       <td style="max-width:360px;white-space:normal">${name}<div class="prod-meta">${esc(r.offer_id || '')}</div></td>
-      <td class="mono">${esc(r.sku || '—')}</td>
+      <td>${skuLinkHtml(r.sku, r.url)}</td>
       <td class="num"><div>${fmt(Math.round(r.ordered_sum || 0))}</div>
         <div style="height:3px;background:#E8EEF7;border-radius:2px;margin-top:4px"><div style="height:100%;width:${pct}%;background:var(--oz-blue);border-radius:2px"></div></div></td>
       <td class="num">${fmt(r.ordered_qty)}</td>
@@ -3186,20 +3229,35 @@ function brandOptionLabel(name, { markMine } = {}) {
   const mine = markMine && own && name.toLowerCase() === own ? ' · мой' : '';
   return (rank != null ? `${name} (${rank})` : name) + mine;
 }
-function fillOwnBrandSelect() {
-  const sel = document.getElementById('ownBrandSelect');
-  const hint = document.getElementById('ownBrandHint');
-  if (!sel) return;
+function detailBrandKeys() {
+  const map = COMP_ALL.brand_detail_map || {};
+  return Object.keys(map).sort((a, b) => {
+    const ra = brandRankFromList(a);
+    const rb = brandRankFromList(b);
+    if (ra != null && rb != null && ra !== rb) return ra - rb;
+    if (ra != null && rb == null) return -1;
+    if (ra == null && rb != null) return 1;
+    const sa = (map[a].rows || []).reduce((s, r) => s + (r.ordered_sum || 0), 0);
+    const sb = (map[b].rows || []).reduce((s, r) => s + (r.ordered_sum || 0), 0);
+    return sb - sa;
+  });
+}
+function allBrandNames() {
   const brandRows = (COMP_ALL.brands && COMP_ALL.brands.rows) || [];
-  const detailKeys = Object.keys(COMP_ALL.brand_detail_map || {});
   const names = new Map();
   brandRows.forEach(r => { if (r.brand) names.set(String(r.brand).toLowerCase(), r.brand); });
-  detailKeys.forEach(k => { if (!names.has(k.toLowerCase())) names.set(k.toLowerCase(), k); });
-  const list = [...names.values()].sort((a, b) => {
+  detailBrandKeys().forEach(k => { if (!names.has(k.toLowerCase())) names.set(k.toLowerCase(), k); });
+  return [...names.values()].sort((a, b) => {
     const ra = brandRankFromList(a), rb = brandRankFromList(b);
     if (ra != null && rb != null) return ra - rb;
     return a.localeCompare(b, 'ru');
   });
+}
+function fillOwnBrandSelect() {
+  const sel = document.getElementById('ownBrandSelect');
+  const hint = document.getElementById('ownBrandHint');
+  if (!sel) return;
+  const list = allBrandNames();
   const own = COMP_ALL.own_brand || '';
   const ownKey = own.toLowerCase();
   const hasOwn = list.some(n => n.toLowerCase() === ownKey);
@@ -3211,11 +3269,22 @@ function fillOwnBrandSelect() {
     sel.insertAdjacentHTML('afterbegin', `<option value="${esc(own)}" selected>${esc(own)} (нет в сводке)</option>`);
   }
   if (hint) {
-    const rival = COMP_BRAND || '';
+    const rival = COMP_RIVAL || '';
     if (own && rival) hint.textContent = `${own} vs ${rival}`;
     else if (!own) hint.textContent = 'выбери мой бренд и конкурента';
-    else hint.textContent = 'слева свой, справа конкурент с загруженным отчётом';
+    else hint.textContent = 'справа — конкурент с загруженным отчётом';
   }
+}
+function fillRivalSelect() {
+  const sel = document.getElementById('rivalBrandSelect');
+  if (!sel) return;
+  const keys = detailBrandKeys();
+  const own = (COMP_ALL.own_brand || '').toLowerCase();
+  if (COMP_RIVAL && !keys.includes(COMP_RIVAL) && keys.length) COMP_RIVAL = keys[0];
+  if (!COMP_RIVAL && keys.length) COMP_RIVAL = keys.find(k => k.toLowerCase() !== own) || keys[0];
+  sel.innerHTML = keys.length
+    ? keys.map(k => `<option value="${esc(k)}" ${k === COMP_RIVAL ? 'selected' : ''}>${esc(brandOptionLabel(k, { markMine: true }))}</option>`).join('')
+    : '<option value="">нет загруженных отчётов</option>';
 }
 async function saveOwnBrand(brand) {
   try {
@@ -3228,39 +3297,30 @@ async function saveOwnBrand(brand) {
     if (!r.ok) throw new Error(d.detail || d.error || ('HTTP ' + r.status));
     COMP_ALL = d;
     COMP_ALL._loaded = true;
-    drawBrandDetail();
+    drawBrandCompare();
   } catch (e) {
     alert('Не удалось сохранить мой бренд: ' + (e.message || e));
   }
 }
 function fillBrandSelect() {
-  // селект конкурента сверху (rivalBrandSelect); старый brandSelect мог остаться — тоже синхронизируем
-  const sel = document.getElementById('rivalBrandSelect') || document.getElementById('brandSelect');
-  fillOwnBrandSelect();
+  const sel = document.getElementById('brandSelect');
   if (!sel) return;
-  const map = COMP_ALL.brand_detail_map || {};
-  const keys = Object.keys(map).sort((a, b) => {
-    const ra = brandRankFromList(a);
-    const rb = brandRankFromList(b);
-    if (ra != null && rb != null && ra !== rb) return ra - rb;
-    if (ra != null && rb == null) return -1;
-    if (ra == null && rb != null) return 1;
-    const sa = (map[a].rows || []).reduce((s, r) => s + (r.ordered_sum || 0), 0);
-    const sb = (map[b].rows || []).reduce((s, r) => s + (r.ordered_sum || 0), 0);
-    return sb - sa;
-  });
+  const keys = detailBrandKeys();
   if (COMP_BRAND && !keys.includes(COMP_BRAND) && keys.length) COMP_BRAND = keys[0];
-  if (!COMP_BRAND && keys.length) {
-    const own = (COMP_ALL.own_brand || '').toLowerCase();
-    COMP_BRAND = keys.find(k => k.toLowerCase() !== own) || keys[0];
-  }
+  if (!COMP_BRAND && keys.length) COMP_BRAND = keys[0];
   sel.innerHTML = keys.length
     ? keys.map(k => `<option value="${esc(k)}" ${k === COMP_BRAND ? 'selected' : ''}>${esc(brandOptionLabel(k, { markMine: true }))}</option>`).join('')
     : '<option value="">нет загруженных отчётов</option>';
+  const hint = document.getElementById('brandHint');
+  if (hint) hint.textContent = COMP_BRAND ? ('отчёт: ' + COMP_BRAND) : 'загрузи Excel отчёта бренда';
 }
 function selectBrandDetail(v) {
   COMP_BRAND = v;
   drawBrandDetail();
+}
+function selectRivalBrand(v) {
+  COMP_RIVAL = v;
+  drawBrandCompare();
 }
 function renderBrandCompareAndTips(selectedBrand) {
   const box = document.getElementById('brandCompare');
@@ -3274,9 +3334,14 @@ function renderBrandCompareAndTips(selectedBrand) {
   const same = own && selectedBrand && own.toLowerCase() === String(selectedBrand).toLowerCase();
   const tips = [];
 
-  if (!own) {
+  if (!own || !selectedBrand) {
     box.innerHTML = '';
-    tipsEl.innerHTML = '<div class="tip info"><b>Сначала выбери мой бренд</b>Сверху укажи свой бренд — тогда сравним с этим отчётом и покажем, где расти.</div>';
+    tipsEl.innerHTML = '<div class="tip info"><b>Выбери мой бренд и конкурента</b>Сверху укажи обоих — покажем сравнение и точки роста.</div>';
+    return;
+  }
+  if (same) {
+    box.innerHTML = '';
+    tipsEl.innerHTML = '<div class="tip warn"><b>Одинаковые бренды</b>Выбери другого конкурента справа — сравнивать бренд сам с собой не нужно.</div>';
     return;
   }
 
@@ -3357,24 +3422,22 @@ function renderBrandCompareAndTips(selectedBrand) {
       else if (ratio <= 0.8) tips.push({ cls: 'grow', t: 'Ценовое преимущество', d: `Ты дешевле (${fmt(Math.round(mePrice))} vs ${fmt(Math.round(themPrice))} ₽). Точка роста — наличие и видимость (показы/поиск), а не демпинг.` });
     }
     if (themDet?.top) {
-      tips.push({ cls: 'info', t: 'Их локомотив', d: `Топ SKU «${themDet.top.name.slice(0, 70)}» — ${moneyShort(themDet.top.ordered_sum)}, ср. ${fmt(Math.round(themDet.top.avg_price || 0))} ₽, остаток ${fmt(themDet.top.stock)}. Сверь, есть ли у тебя аналог в этой полке.` });
+      const topSku = themDet.top.sku ? ` · SKU ${themDet.top.sku}` : '';
+      tips.push({ cls: 'info', t: 'Их локомотив', d: `Топ SKU «${themDet.top.name.slice(0, 70)}» — ${moneyShort(themDet.top.ordered_sum)}, ср. ${fmt(Math.round(themDet.top.avg_price || 0))} ₽, остаток ${fmt(themDet.top.stock)}${topSku}. Сверь, есть ли у тебя аналог.` });
     }
   } else {
-    box.innerHTML = same
-      ? `<div class="banner ok" style="display:block">Смотришь свой бренд «${esc(own)}» — ниже точки роста по твоим SKU.</div>`
-      : '';
+    box.innerHTML = '';
   }
 
-  // Tips focused on MY brand detail (growth levers)
-  const focus = meDet || (same ? themDet : null);
-  if (!meDet && !same) {
-    tips.push({ cls: 'info', t: 'Загрузи свой детальный отчёт', d: `Чтобы подсказки были по SKU (остатки, реклама, воронка) — выгрузи Excel по бренду «${own}» и загрузи сюда.` });
+  const focus = meDet;
+  if (!meDet) {
+    tips.push({ cls: 'info', t: 'Загрузи свой детальный отчёт', d: `Чтобы подсказки были по SKU — выгрузи Excel по бренду «${own}» и загрузи сюда.` });
   }
   if (focus) {
     if (focus.lost > 0) {
-      tips.push({ cls: 'warn', t: 'Упущенные продажи', d: `~${moneyShort(focus.lost)} теряется из‑за отсутствия. ${focus.zeroStock} SKU без остатка. Приоритет: довезти топ по avg daily / lost sales.` });
+      tips.push({ cls: 'warn', t: 'Упущенные продажи', d: `~${moneyShort(focus.lost)} теряется из‑за отсутствия. ${focus.zeroStock} SKU без остатка.` });
     } else if (focus.zeroStock >= Math.max(3, Math.floor(focus.count * 0.3))) {
-      tips.push({ cls: 'warn', t: 'Много SKU без остатка', d: `${focus.zeroStock} из ${focus.count} без стока. Сужай витрину или добивай наличие на хитах.` });
+      tips.push({ cls: 'warn', t: 'Много SKU без остатка', d: `${focus.zeroStock} из ${focus.count} без стока.` });
     }
     if (focus.oosHeavy.length) {
       const names = focus.oosHeavy.slice(0, 3).map(r => r.name.split(',')[0].slice(0, 42)).join('; ');
@@ -3382,18 +3445,16 @@ function renderBrandCompareAndTips(selectedBrand) {
     }
     if (focus.highAdsWeak.length) {
       const n = focus.highAdsWeak[0];
-      tips.push({ cls: 'warn', t: 'Дорогая реклама без отдачи', d: `«${n.name.slice(0, 55)}» — доля рекламы ${Number(n.ads_share).toFixed(1)}% при обороте ${moneyShort(n.ordered_sum)}. Урежь ставку или поправь карточку/цену.` });
+      tips.push({ cls: 'warn', t: 'Дорогая реклама без отдачи', d: `«${n.name.slice(0, 55)}» — доля рекламы ${Number(n.ads_share).toFixed(1)}% при обороте ${moneyShort(n.ordered_sum)}.` });
     }
     if (focus.topShare >= 0.45 && focus.top) {
-      tips.push({ cls: 'info', t: 'Концентрация на 1 SKU', d: `${Math.round(focus.topShare * 100)}% оборота даёт один товар. Точка роста — подтянуть 2–3 соседних SKU, чтобы не зависеть от одного.` });
+      tips.push({ cls: 'info', t: 'Концентрация на 1 SKU', d: `${Math.round(focus.topShare * 100)}% оборота даёт один товар.` });
     }
     if (focus.avgCr > 0 && themDet && themDet.avgCr > focus.avgCr * 1.3) {
-      tips.push({ cls: 'warn', t: 'Конверсия слабее', d: `CR в заказ ~${focus.avgCr.toFixed(2)}% vs ~${themDet.avgCr.toFixed(2)}% у конкурента. Улучшай главные фото/видео и офер (комплект, ремешки).` });
+      tips.push({ cls: 'warn', t: 'Конверсия слабее', d: `CR в заказ ~${focus.avgCr.toFixed(2)}% vs ~${themDet.avgCr.toFixed(2)}% у конкурента.` });
     }
   }
-
-  // Neighbor brands as targets when viewing own
-  if (same && meSum) {
+  if (meSum) {
     const rows = (COMP_ALL.brands && COMP_ALL.brands.rows) || [];
     const above = rows.filter(r => r.rank < meSum.rank && !r.is_hidden).slice(-1)[0];
     if (above) {
@@ -3405,6 +3466,23 @@ function renderBrandCompareAndTips(selectedBrand) {
     tips.push({ cls: 'info', t: 'Мало данных для сравнения', d: 'Нужна сводка «Бренды» и/или детальные отчёты по себе и конкуренту.' });
   }
   tipsEl.innerHTML = tips.slice(0, 7).map(t => `<div class="tip ${t.cls}"><b>${esc(t.t)}</b>${esc(t.d)}</div>`).join('');
+}
+function drawBrandCompare() {
+  const empty = document.getElementById('compareEmpty');
+  fillOwnBrandSelect();
+  fillRivalSelect();
+  const own = COMP_ALL.own_brand || '';
+  const rival = COMP_RIVAL || '';
+  renderBrandCompareAndTips(rival);
+  if (!own || !rival || own.toLowerCase() === rival.toLowerCase()) {
+    destroyCompCharts('cmp-');
+    const ch = document.getElementById('compareCharts');
+    if (ch) { ch.style.display = 'none'; ch.innerHTML = ''; }
+    if (empty) empty.style.display = 'block';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  renderCompareCharts(own, rival);
 }
 function drawBrandDetail() {
   const root = document.getElementById('brandRoot');
@@ -3425,11 +3503,9 @@ function drawBrandDetail() {
     destroyCompCharts('brand-');
     const ch = document.getElementById('brandCharts');
     if (ch) { ch.style.display = 'none'; ch.innerHTML = ''; }
-    renderBrandCompareAndTips('');
-    root.innerHTML = '<div class="empty"><b>Нет отчёта бренда</b>Загрузи Excel по бренду (с колонками показы / воронка) — сохранится в общую базу.</div>';
+    root.innerHTML = '<div class="empty"><b>Нет отчёта бренда</b>Загрузи Excel по бренду (показы / воронка) — сохранится в общую базу.</div>';
     return;
   }
-  renderBrandCompareAndTips(COMP_BRAND);
   const rowsAll = rep.rows || [];
   const totalSum = rowsAll.reduce((s, r) => s + (r.ordered_sum || 0), 0);
   const totalQty = rowsAll.reduce((s, r) => s + (r.ordered_qty || 0), 0);
@@ -3440,7 +3516,8 @@ function drawBrandDetail() {
     ban.innerHTML = `<b>${esc(rep.brand)}</b> в общей базе`
       + (rep.category ? ` · ${esc(rep.category)}` : '')
       + (rep.period ? ` · ${esc(rep.period)}` : '')
-      + (rep.filename ? ` · ${esc(rep.filename)}` : '');
+      + (rep.filename ? ` · ${esc(rep.filename)}` : '')
+      + ` · <a href="#" onclick="event.preventDefault();COMP_RIVAL=${JSON.stringify(rep.brand)};showCompPage('compare')">сравнить →</a>`;
   }
   cards.innerHTML = [
     ['Товаров', fmt(rep.count || rowsAll.length), ''],
@@ -3456,16 +3533,17 @@ function drawBrandDetail() {
     String(r.name || '').toLowerCase().includes(q) ||
     String(r.sku || '').includes(q)
   );
-  renderBrandDetailCharts(rowsAll, COMP_BRAND);
+  renderBrandDetailCharts(rowsAll);
   const body = rows.slice(0, 400).map(r => {
-    const name = r.url
-      ? `<a class="prod-link" href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name || '—')}</a>`
+    const href = ozonProductUrl(r.sku, r.url);
+    const name = href
+      ? `<a class="prod-link" href="${esc(href)}" target="_blank" rel="noopener">${esc(r.name || '—')}</a>`
       : esc(r.name || '—');
     return `<tr>
       <td class="num mono">${fmt(r.rank)}</td>
       <td style="max-width:320px;white-space:normal">${name}
         <div class="prod-meta">${esc(r.flag || '')} · ${esc(r.scheme || '')}</div></td>
-      <td class="mono">${esc(r.sku || '—')}</td>
+      <td>${skuLinkHtml(r.sku, r.url)}</td>
       <td class="num">${fmt(Math.round(r.ordered_sum || 0))}</td>
       <td class="num">${fmt(r.ordered_qty)}</td>
       <td class="num">${fmt(Math.round(r.avg_price || 0))}</td>
@@ -3483,148 +3561,105 @@ function drawBrandDetail() {
       <th>Остаток</th><th>Показы</th><th>Карточка</th><th>CR заказ %</th><th>Рекл. %</th><th>Выкуп %</th>
     </tr></thead>
     <tbody>${body}</tbody></table></div>
-    <div class="hint">До 400 строк · отчёт бренда из общей базы</div>`;
+    <div class="hint">SKU кликабельны → карточка на ozon.ru · до 400 строк</div>`;
 }
-function renderBrandDetailCharts(rowsAll, brandName) {
+function chartTopHelpers() {
+  return {
+    byQty: (arr) => [...arr].sort((a, b) => (b.ordered_qty || 0) - (a.ordered_qty || 0)).slice(0, 10),
+    byShows: (arr) => [...arr].sort((a, b) => (b.shows || 0) - (a.shows || 0)).slice(0, 10),
+    byAds: (arr) => {
+      const x = [...arr].filter(r => (r.ads_share || 0) > 0).sort((a, b) => (b.ads_share || 0) - (a.ads_share || 0)).slice(0, 10);
+      return x.length ? x : [...arr].sort((a, b) => (b.ordered_qty || 0) - (a.ordered_qty || 0)).slice(0, 10);
+    },
+    byStock: (arr) => [...arr].sort((a, b) => (b.stock || 0) - (a.stock || 0)).slice(0, 10),
+    lab: (arr, n = 18) => arr.map(r => shortLabel(r.name || r.sku, n)),
+    full: (arr) => arr.map(r => r.name || r.sku || '—'),
+  };
+}
+function renderBrandDetailCharts(rowsAll) {
   const el = document.getElementById('brandCharts');
   if (!el) return;
   destroyCompCharts('brand-');
-  if (!ensureChartJs()) { el.style.display = 'none'; el.innerHTML = ''; return; }
-
-  const own = COMP_ALL.own_brand || '';
-  const ownAgg = own ? detailAgg(own) : null;
-  const themAgg = detailAgg(brandName);
-  const showCompare = !!(own && ownAgg && themAgg && own.toLowerCase() !== String(brandName || '').toLowerCase());
-  const ownRows = ownAgg ? (ownAgg.rows || []) : [];
-  const rivalRows = rowsAll || [];
-
-  if (!rivalRows.length && !showCompare) { el.style.display = 'none'; el.innerHTML = ''; return; }
-
-  const byQty = (arr) => [...arr].sort((a, b) => (b.ordered_qty || 0) - (a.ordered_qty || 0)).slice(0, 10);
-  const byShows = (arr) => [...arr].sort((a, b) => (b.shows || 0) - (a.shows || 0)).slice(0, 10);
-  const byAds = (arr) => [...arr].filter(r => (r.ads_share || 0) > 0).sort((a, b) => (b.ads_share || 0) - (a.ads_share || 0)).slice(0, 10);
-  const byStock = (arr) => [...arr].sort((a, b) => (b.stock || 0) - (a.stock || 0)).slice(0, 10);
-  const lab = (arr, n = 18) => arr.map(r => shortLabel(r.name || r.sku, n));
-  const full = (arr) => arr.map(r => r.name || r.sku || '—');
-  const meColor = 'rgba(0,91,255,0.8)';
-  const rivalColor = 'rgba(107,114,128,0.75)';
-
+  if (!ensureChartJs() || !rowsAll.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const H = chartTopHelpers();
+  const color = 'rgba(0,91,255,0.8)';
+  const qty = H.byQty(rowsAll);
+  const shows = H.byShows(rowsAll);
+  const ads = H.byAds(rowsAll);
+  const stock = H.byStock(rowsAll);
   el.style.display = 'grid';
   el.innerHTML =
-    (showCompare ? (
-      chartCard(`Заказы, шт — ${own} vs ${brandName}`, 'brand-vs-qty') +
-      chartCard(`Показы — ${own} vs ${brandName}`, 'brand-vs-shows') +
-      chartCard(`Ср. реклама % — ${own} vs ${brandName}`, 'brand-vs-ads') +
-      chartCard(`Остатки SKU — ${own} vs ${brandName}`, 'brand-vs-stock')
-    ) : '') +
-    chartCard(showCompare ? `Заказы, шт — топ SKU конкурента (${brandName})` : 'Заказы, шт (топ SKU)', 'brand-qty') +
-    (showCompare ? chartCard(`Заказы, шт — топ SKU мой (${own})`, 'brand-qty-me') : '') +
-    chartCard(showCompare ? `Показы — топ конкурента` : 'Показы (топ SKU)', 'brand-shows') +
-    (showCompare ? chartCard(`Показы — топ мой`, 'brand-shows-me') : '') +
-    chartCard(showCompare ? `Реклама % — конкурент` : 'Доля рекламы, %', 'brand-ads') +
-    (showCompare ? chartCard(`Реклама % — мой`, 'brand-ads-me') : '') +
-    chartCard(showCompare ? `Остаток — конкурент` : 'Остаток на конец, шт', 'brand-stock') +
-    (showCompare ? chartCard(`Остаток — мой`, 'brand-stock-me') : '');
-
-  if (showCompare) {
-    makeBarChart('brand-vs-qty', [''], [
-      { label: 'Я: ' + own, data: [ownAgg.qty], backgroundColor: meColor, borderRadius: 4 },
-      { label: 'Конкурент: ' + brandName, data: [themAgg.qty], backgroundColor: rivalColor, borderRadius: 4 },
-    ], { tooltipRaw: [[fmt(ownAgg.qty) + ' шт'], [fmt(themAgg.qty) + ' шт']] });
-    makeBarChart('brand-vs-shows', [''], [
-      { label: 'Я: ' + own, data: [ownAgg.shows], backgroundColor: meColor, borderRadius: 4 },
-      { label: 'Конкурент: ' + brandName, data: [themAgg.shows], backgroundColor: rivalColor, borderRadius: 4 },
-    ], { tooltipRaw: [[fmt(ownAgg.shows)], [fmt(themAgg.shows)]] });
-    makeBarChart('brand-vs-ads', [''], [
-      { label: 'Я: ' + own, data: [Number(ownAgg.avgAds.toFixed(1))], backgroundColor: meColor, borderRadius: 4 },
-      { label: 'Конкурент: ' + brandName, data: [Number(themAgg.avgAds.toFixed(1))], backgroundColor: rivalColor, borderRadius: 4 },
-    ], { tooltipRaw: [[ownAgg.avgAds.toFixed(1) + '%'], [themAgg.avgAds.toFixed(1) + '%']] });
-    makeBarChart('brand-vs-stock', ['С остатком', 'Без остатка'], [
-      {
-        label: 'Я: ' + own,
-        data: [Math.max(ownAgg.count - ownAgg.zeroStock, 0), ownAgg.zeroStock],
-        backgroundColor: meColor,
-        borderRadius: 4,
-      },
-      {
-        label: 'Конкурент: ' + brandName,
-        data: [Math.max(themAgg.count - themAgg.zeroStock, 0), themAgg.zeroStock],
-        backgroundColor: rivalColor,
-        borderRadius: 4,
-      },
-    ]);
-  }
-
-  const rivalQty = byQty(rivalRows);
-  makeBarChart('brand-qty', lab(rivalQty), [{
-    label: 'Заказы, шт',
-    data: rivalQty.map(r => r.ordered_qty || 0),
-    backgroundColor: showCompare ? rivalColor : meColor,
-    borderRadius: 4,
-  }], { fullLabels: full(rivalQty) });
-
-  if (showCompare) {
-    const meQty = byQty(ownRows);
-    makeBarChart('brand-qty-me', lab(meQty), [{
-      label: 'Заказы, шт',
-      data: meQty.map(r => r.ordered_qty || 0),
-      backgroundColor: meColor,
-      borderRadius: 4,
-    }], { fullLabels: full(meQty) });
-  }
-
-  const rivalShows = byShows(rivalRows);
-  makeBarChart('brand-shows', lab(rivalShows), [{
-    label: 'Показы',
-    data: rivalShows.map(r => r.shows || 0),
-    backgroundColor: 'rgba(247,144,9,0.8)',
-    borderRadius: 4,
-  }], { fullLabels: full(rivalShows) });
-  if (showCompare) {
-    const meShows = byShows(ownRows);
-    makeBarChart('brand-shows-me', lab(meShows), [{
-      label: 'Показы',
-      data: meShows.map(r => r.shows || 0),
-      backgroundColor: 'rgba(247,144,9,0.55)',
-      borderRadius: 4,
-    }], { fullLabels: full(meShows) });
-  }
-
-  const rivalAdsSrc = byAds(rivalRows);
-  const rivalAds = rivalAdsSrc.length ? rivalAdsSrc : byQty(rivalRows);
-  makeBarChart('brand-ads', lab(rivalAds), [{
-    label: 'Доля рекламы, %',
-    data: rivalAds.map(r => Number(r.ads_share) || 0),
-    backgroundColor: 'rgba(240,68,56,0.75)',
-    borderRadius: 4,
-  }], { fullLabels: full(rivalAds), horizontal: true });
-  if (showCompare) {
-    const meAdsSrc = byAds(ownRows);
-    const meAds = meAdsSrc.length ? meAdsSrc : byQty(ownRows);
-    makeBarChart('brand-ads-me', lab(meAds), [{
-      label: 'Доля рекламы, %',
-      data: meAds.map(r => Number(r.ads_share) || 0),
-      backgroundColor: 'rgba(240,68,56,0.5)',
-      borderRadius: 4,
-    }], { fullLabels: full(meAds), horizontal: true });
-  }
-
-  const rivalStock = byStock(rivalRows);
-  makeBarChart('brand-stock', lab(rivalStock), [{
+    chartCard('Заказы, шт (топ SKU)', 'brand-qty') +
+    chartCard('Показы (топ SKU)', 'brand-shows') +
+    chartCard('Доля рекламы, %', 'brand-ads') +
+    chartCard('Остаток на конец, шт', 'brand-stock');
+  makeBarChart('brand-qty', H.lab(qty), [{ label: 'Заказы, шт', data: qty.map(r => r.ordered_qty || 0), backgroundColor: color, borderRadius: 4 }], { fullLabels: H.full(qty) });
+  makeBarChart('brand-shows', H.lab(shows), [{ label: 'Показы', data: shows.map(r => r.shows || 0), backgroundColor: 'rgba(247,144,9,0.8)', borderRadius: 4 }], { fullLabels: H.full(shows) });
+  makeBarChart('brand-ads', H.lab(ads), [{ label: 'Доля рекламы, %', data: ads.map(r => Number(r.ads_share) || 0), backgroundColor: 'rgba(240,68,56,0.75)', borderRadius: 4 }], { fullLabels: H.full(ads), horizontal: true });
+  makeBarChart('brand-stock', H.lab(stock), [{
     label: 'Остаток, шт',
-    data: rivalStock.map(r => r.stock || 0),
-    backgroundColor: rivalStock.map(r => (r.stock || 0) === 0 ? 'rgba(240,68,56,0.75)' : rivalColor),
+    data: stock.map(r => r.stock || 0),
+    backgroundColor: stock.map(r => (r.stock || 0) === 0 ? 'rgba(240,68,56,0.75)' : color),
     borderRadius: 4,
-  }], { fullLabels: full(rivalStock) });
-  if (showCompare) {
-    const meStock = byStock(ownRows);
-    makeBarChart('brand-stock-me', lab(meStock), [{
-      label: 'Остаток, шт',
-      data: meStock.map(r => r.stock || 0),
-      backgroundColor: meStock.map(r => (r.stock || 0) === 0 ? 'rgba(240,68,56,0.75)' : meColor),
-      borderRadius: 4,
-    }], { fullLabels: full(meStock) });
-  }
+  }], { fullLabels: H.full(stock) });
+}
+function renderCompareCharts(own, rival) {
+  const el = document.getElementById('compareCharts');
+  if (!el) return;
+  destroyCompCharts('cmp-');
+  if (!ensureChartJs()) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const ownAgg = detailAgg(own);
+  const themAgg = detailAgg(rival);
+  if (!ownAgg || !themAgg) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const H = chartTopHelpers();
+  const meColor = 'rgba(0,91,255,0.8)';
+  const rivalColor = 'rgba(107,114,128,0.75)';
+  const ownRows = ownAgg.rows || [];
+  const rivalRows = themAgg.rows || [];
+  el.style.display = 'grid';
+  el.innerHTML =
+    chartCard(`Заказы, шт — ${own} vs ${rival}`, 'cmp-vs-qty') +
+    chartCard(`Показы — ${own} vs ${rival}`, 'cmp-vs-shows') +
+    chartCard(`Ср. реклама % — ${own} vs ${rival}`, 'cmp-vs-ads') +
+    chartCard(`Остатки SKU — ${own} vs ${rival}`, 'cmp-vs-stock') +
+    chartCard(`Заказы, шт — топ конкурента (${rival})`, 'cmp-qty-rival') +
+    chartCard(`Заказы, шт — топ мой (${own})`, 'cmp-qty-me') +
+    chartCard(`Показы — топ конкурента`, 'cmp-shows-rival') +
+    chartCard(`Показы — топ мой`, 'cmp-shows-me') +
+    chartCard(`Реклама % — конкурент`, 'cmp-ads-rival') +
+    chartCard(`Реклама % — мой`, 'cmp-ads-me') +
+    chartCard(`Остаток — конкурент`, 'cmp-stock-rival') +
+    chartCard(`Остаток — мой`, 'cmp-stock-me');
+
+  makeBarChart('cmp-vs-qty', [''], [
+    { label: 'Я: ' + own, data: [ownAgg.qty], backgroundColor: meColor, borderRadius: 4 },
+    { label: 'Конкурент: ' + rival, data: [themAgg.qty], backgroundColor: rivalColor, borderRadius: 4 },
+  ], { tooltipRaw: [[fmt(ownAgg.qty) + ' шт'], [fmt(themAgg.qty) + ' шт']] });
+  makeBarChart('cmp-vs-shows', [''], [
+    { label: 'Я: ' + own, data: [ownAgg.shows], backgroundColor: meColor, borderRadius: 4 },
+    { label: 'Конкурент: ' + rival, data: [themAgg.shows], backgroundColor: rivalColor, borderRadius: 4 },
+  ], { tooltipRaw: [[fmt(ownAgg.shows)], [fmt(themAgg.shows)]] });
+  makeBarChart('cmp-vs-ads', [''], [
+    { label: 'Я: ' + own, data: [Number(ownAgg.avgAds.toFixed(1))], backgroundColor: meColor, borderRadius: 4 },
+    { label: 'Конкурент: ' + rival, data: [Number(themAgg.avgAds.toFixed(1))], backgroundColor: rivalColor, borderRadius: 4 },
+  ], { tooltipRaw: [[ownAgg.avgAds.toFixed(1) + '%'], [themAgg.avgAds.toFixed(1) + '%']] });
+  makeBarChart('cmp-vs-stock', ['С остатком', 'Без остатка'], [
+    { label: 'Я: ' + own, data: [Math.max(ownAgg.count - ownAgg.zeroStock, 0), ownAgg.zeroStock], backgroundColor: meColor, borderRadius: 4 },
+    { label: 'Конкурент: ' + rival, data: [Math.max(themAgg.count - themAgg.zeroStock, 0), themAgg.zeroStock], backgroundColor: rivalColor, borderRadius: 4 },
+  ]);
+
+  const rQty = H.byQty(rivalRows), mQty = H.byQty(ownRows);
+  makeBarChart('cmp-qty-rival', H.lab(rQty), [{ label: 'Заказы, шт', data: rQty.map(r => r.ordered_qty || 0), backgroundColor: rivalColor, borderRadius: 4 }], { fullLabels: H.full(rQty) });
+  makeBarChart('cmp-qty-me', H.lab(mQty), [{ label: 'Заказы, шт', data: mQty.map(r => r.ordered_qty || 0), backgroundColor: meColor, borderRadius: 4 }], { fullLabels: H.full(mQty) });
+  const rShows = H.byShows(rivalRows), mShows = H.byShows(ownRows);
+  makeBarChart('cmp-shows-rival', H.lab(rShows), [{ label: 'Показы', data: rShows.map(r => r.shows || 0), backgroundColor: 'rgba(247,144,9,0.8)', borderRadius: 4 }], { fullLabels: H.full(rShows) });
+  makeBarChart('cmp-shows-me', H.lab(mShows), [{ label: 'Показы', data: mShows.map(r => r.shows || 0), backgroundColor: 'rgba(247,144,9,0.55)', borderRadius: 4 }], { fullLabels: H.full(mShows) });
+  const rAds = H.byAds(rivalRows), mAds = H.byAds(ownRows);
+  makeBarChart('cmp-ads-rival', H.lab(rAds), [{ label: 'Доля рекламы, %', data: rAds.map(r => Number(r.ads_share) || 0), backgroundColor: 'rgba(240,68,56,0.75)', borderRadius: 4 }], { fullLabels: H.full(rAds), horizontal: true });
+  makeBarChart('cmp-ads-me', H.lab(mAds), [{ label: 'Доля рекламы, %', data: mAds.map(r => Number(r.ads_share) || 0), backgroundColor: 'rgba(240,68,56,0.5)', borderRadius: 4 }], { fullLabels: H.full(mAds), horizontal: true });
+  const rStock = H.byStock(rivalRows), mStock = H.byStock(ownRows);
+  makeBarChart('cmp-stock-rival', H.lab(rStock), [{ label: 'Остаток, шт', data: rStock.map(r => r.stock || 0), backgroundColor: rStock.map(r => (r.stock || 0) === 0 ? 'rgba(240,68,56,0.75)' : rivalColor), borderRadius: 4 }], { fullLabels: H.full(rStock) });
+  makeBarChart('cmp-stock-me', H.lab(mStock), [{ label: 'Остаток, шт', data: mStock.map(r => r.stock || 0), backgroundColor: mStock.map(r => (r.stock || 0) === 0 ? 'rgba(240,68,56,0.75)' : meColor), borderRadius: 4 }], { fullLabels: H.full(mStock) });
 }
 
 /* ── Реклама ── */
