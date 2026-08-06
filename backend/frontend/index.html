@@ -644,6 +644,7 @@ td.tc{text-align:center}
   <div class="sn-item on" onclick="showPage('positions',this)">Позиции в поиске</div>
   <div class="sn-item" onclick="showPage('shelves',this)">Полки у конкурентов</div>
   <div class="sn-item" onclick="showPage('my-shelves',this)">Полки у моих карточек</div>
+  <div class="sn-item" onclick="showPage('rec-agg',this)">Рекомендации</div>
 </div>
 
 <!-- Upload modal -->
@@ -1142,6 +1143,31 @@ td.tc{text-align:center}
   </div>
 </div>
 
+<!-- РЕКОМЕНДАЦИИ: сводка по полкам «Смотрите также» -->
+<div class="page" id="page-rec-agg">
+  <div class="toolbar">
+    <span style="font-size:13px;font-weight:600">Рекомендации</span>
+    <span style="font-size:12px;color:var(--wb-muted);margin-left:10px">Сколько моих карточек показывают артикул в «Смотрите также»</span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <select id="recAggCity" onchange="onRecAggCityChange()"
+        style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;min-width:160px;background:#fff">
+        <option value="-1257786">Москва</option>
+      </select>
+      <input id="recAggSearch" placeholder="Поиск артикула / бренда…" oninput="drawRecAgg()"
+        style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:200px">
+      <button class="action-btn primary" id="recAggScanBtn" onclick="runRecAggScan()">↓ Собрать по моим карточкам</button>
+    </div>
+  </div>
+  <div style="padding:12px 20px;border-bottom:1px solid var(--wb-border);background:#FCFAF7;font-size:12px;color:var(--wb-muted);line-height:1.45">
+    Берём полки <b>«Смотрите также»</b> у карточек с продажами. Для каждого артикула: у скольких карточек он в <b>топ-5</b> и у скольких — <b>ниже</b> (места 6–15). Сканирует WB (~1–2 мин при 50+ карточках).
+  </div>
+  <div id="recAggStatus" style="padding:10px 20px;font-size:12px;color:var(--wb-muted)"></div>
+  <div class="cards" id="recAggCards"></div>
+  <div id="recAggRoot" style="overflow:auto">
+    <div class="empty" style="padding:40px 20px">Нажми «Собрать по моим карточкам» — посчитаем, кто чаще светится на полках.</div>
+  </div>
+</div>
+
 <!-- ФИНАНСЫ -->
 <div class="page" id="page-finance">
   <div id="finGate" class="fin-lock">
@@ -1312,6 +1338,7 @@ function showPage(id, btn) {
   if(id === 'positions') renderPositionsPage();
   if(id === 'shelves') renderShelvesPage();
   if(id === 'my-shelves') renderMyShelvesPage();
+  if(id === 'rec-agg') renderRecAggPage();
   if(id === 'finance') renderFinance();
 }
 
@@ -7053,6 +7080,331 @@ async function loadMyShelfFor(nmId, force) {
     MY_SHELF_LOADING = false;
     if(btn) btn.disabled = !MY_SHELF_ACTIVE;
   }
+}
+
+// ---------- Рекомендации: агрегат «Смотрите также» по моим карточкам ----------
+let REC_AGG = {
+  loading: false,
+  rows: [],        // [{nm_id, brand, name, thumb, top5, below, hosts_top5, hosts_below, is_mine}]
+  scanned: 0,
+  total_hosts: 0,
+  errors: 0,
+  city: '',
+  updated_at: null,
+};
+const REC_AGG_CACHE = {}; // host_nm -> shelf payload
+let REC_AGG_ABORT = 0;
+
+function recAggDest() {
+  return Number((document.getElementById('recAggCity') || {}).value || -1257786);
+}
+
+function onRecAggCityChange() {
+  const sel = document.getElementById('recAggCity');
+  if(sel) localStorage.setItem('rec_agg_dest', sel.value);
+  // кэш полок при смене города невалиден
+  Object.keys(REC_AGG_CACHE).forEach(k => delete REC_AGG_CACHE[k]);
+}
+
+function ensureRecAggCities() {
+  const sel = document.getElementById('recAggCity');
+  if(!sel) return;
+  const fill = () => {
+    if(!POS_CITIES || !POS_CITIES.length) return;
+    const saved = localStorage.getItem('rec_agg_dest')
+      || localStorage.getItem('my_shelf_dest')
+      || localStorage.getItem('shelf_dest')
+      || '-1257786';
+    sel.innerHTML = POS_CITIES.map(c =>
+      `<option value="${c.dest}"${String(c.dest)===String(saved)?' selected':''}>${escapeHtml(c.name)}</option>`
+    ).join('');
+  };
+  if(POS_CITIES && POS_CITIES.length) { fill(); return; }
+  fetch(`${RAILWAY_URL}/api/search-keywords`).then(r=>r.json()).then(d => {
+    POS_CITIES = Array.isArray(d.cities) ? d.cities : POS_CITIES;
+    fill();
+  }).catch(()=>{});
+}
+
+function renderRecAggPage() {
+  ensureRecAggCities();
+  drawRecAgg();
+}
+
+function buildRecAggFromCaches(hostCards) {
+  const ownSet = new Set(hostCards.map(c => Number(c.nm_id)));
+  const byNm = new Map();
+  hostCards.forEach(host => {
+    const hostNm = Number(host.nm_id);
+    const shelf = REC_AGG_CACHE[hostNm];
+    if(!shelf || !shelf.items) return;
+    (shelf.items || []).forEach(it => {
+      const nm = Number(it.nm_id);
+      if(!nm || nm === hostNm) return; // не считаем саму карточку
+      const pos = Number(it.position) || 0;
+      if(pos < 1) return;
+      let row = byNm.get(nm);
+      if(!row) {
+        row = {
+          nm_id: nm,
+          brand: it.brand || '',
+          name: it.name || '',
+          thumb: it.thumb || wbThumbUrl(nm),
+          supplier: it.supplier || '',
+          top5: 0,
+          below: 0,
+          hosts_top5: [],
+          hosts_below: [],
+          is_mine: ownSet.has(nm) || String(it.brand || '').toUpperCase() === 'PVS',
+        };
+        byNm.set(nm, row);
+      } else {
+        if(it.brand && !row.brand) row.brand = it.brand;
+        if(it.name && !row.name) row.name = it.name;
+        if(it.thumb && !row.thumb) row.thumb = it.thumb;
+        if(ownSet.has(nm)) row.is_mine = true;
+      }
+      const hostInfo = {
+        host_nm: hostNm,
+        host_vc: host.vendor_code || String(hostNm),
+        position: pos,
+      };
+      if(pos <= 5) {
+        // одна карточка — одно место; не дублируем
+        if(!row.hosts_top5.some(h => h.host_nm === hostNm)) {
+          row.top5 += 1;
+          row.hosts_top5.push(hostInfo);
+        }
+      } else {
+        if(!row.hosts_below.some(h => h.host_nm === hostNm)) {
+          row.below += 1;
+          row.hosts_below.push(hostInfo);
+        }
+      }
+    });
+  });
+  return Array.from(byNm.values());
+}
+
+async function mapPool(items, limit, worker) {
+  const out = new Array(items.length);
+  let i = 0;
+  async function run() {
+    while(i < items.length) {
+      const idx = i++;
+      out[idx] = await worker(items[idx], idx);
+    }
+  }
+  const n = Math.max(1, Math.min(limit, items.length || 1));
+  await Promise.all(Array.from({length: n}, () => run()));
+  return out;
+}
+
+async function runRecAggScan() {
+  if(REC_AGG.loading) return;
+  const status = document.getElementById('recAggStatus');
+  const btn = document.getElementById('recAggScanBtn');
+  const root = document.getElementById('recAggRoot');
+  const dest = recAggDest();
+  REC_AGG.loading = true;
+  REC_AGG_ABORT += 1;
+  const ticket = REC_AGG_ABORT;
+  if(btn) { btn.disabled = true; btn.textContent = 'Сканируем…'; }
+  if(status) status.textContent = 'Загружаю список карточек с продажами…';
+  if(root) root.innerHTML = '<div class="loading" style="padding:40px 20px"><div class="spinner"></div><span>Сканируем полки…</span></div>';
+
+  try {
+    // список хостов — как на «Полках у моих»
+    let hosts = [];
+    if(MY_SHELF_CARDS && MY_SHELF_CARDS.length) {
+      hosts = MY_SHELF_CARDS.map(c => ({
+        nm_id: Number(c.nm_id),
+        vendor_code: c.vendor_code || String(c.nm_id),
+      }));
+    } else {
+      const r = await fetch(`${RAILWAY_URL}/api/own-articles-all`);
+      const d = await r.json().catch(() => ({}));
+      const arts = Array.isArray(d.articles) ? d.articles : [];
+      hosts = arts.map(a => ({
+        nm_id: Number(a.nm_id),
+        vendor_code: a.vendor_code || String(a.nm_id),
+      }));
+    }
+    hosts = hosts.filter(h => h.nm_id > 0);
+    if(!hosts.length) {
+      REC_AGG.rows = [];
+      REC_AGG.scanned = 0;
+      REC_AGG.total_hosts = 0;
+      if(status) status.textContent = 'Нет карточек с продажами — открой «Полки у моих» и нажми «С продажами», либо обнови поставки.';
+      if(root) root.innerHTML = '<div class="empty" style="padding:40px 20px">Нет карточек для скана</div>';
+      return;
+    }
+
+    REC_AGG.total_hosts = hosts.length;
+    REC_AGG.scanned = 0;
+    REC_AGG.errors = 0;
+    let done = 0;
+    await mapPool(hosts, 3, async (host) => {
+      if(ticket !== REC_AGG_ABORT) return;
+      try {
+        if(!REC_AGG_CACHE[host.nm_id] || Number(REC_AGG_CACHE[host.nm_id].dest) !== dest) {
+          const r = await fetch(
+            `${RAILWAY_URL}/api/competitor-shelf?nm_id=${host.nm_id}&dest=${dest}&limit=15`
+          );
+          const d = await r.json().catch(() => ({}));
+          if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+          REC_AGG_CACHE[host.nm_id] = d;
+        }
+      } catch(e) {
+        REC_AGG.errors += 1;
+        REC_AGG_CACHE[host.nm_id] = {items: [], error: e.message, dest};
+      }
+      done += 1;
+      REC_AGG.scanned = done;
+      if(status && done % 2 === 0) {
+        status.textContent = `Полки: ${done} / ${hosts.length}` +
+          (REC_AGG.errors ? ` · ошибок ${REC_AGG.errors}` : '');
+      }
+    });
+    if(ticket !== REC_AGG_ABORT) return;
+
+    REC_AGG.rows = buildRecAggFromCaches(hosts);
+    REC_AGG.city = ((document.getElementById('recAggCity') || {}).selectedOptions || [])[0]
+      ? document.getElementById('recAggCity').selectedOptions[0].textContent
+      : '';
+    REC_AGG.updated_at = new Date().toLocaleString('ru-RU');
+    if(status) {
+      status.textContent =
+        `Готово · ${hosts.length} карточек · ${REC_AGG.rows.length} артикулов в рекомендациях` +
+        (REC_AGG.errors ? ` · ошибок полок ${REC_AGG.errors}` : '') +
+        (REC_AGG.city ? ` · ${REC_AGG.city}` : '') +
+        ` · ${REC_AGG.updated_at}`;
+    }
+    drawRecAgg();
+  } catch(e) {
+    if(status) status.textContent = 'Ошибка: ' + e.message;
+    if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка: ${escapeHtml(e.message)}</div>`;
+  } finally {
+    REC_AGG.loading = false;
+    if(btn) { btn.disabled = false; btn.textContent = '↓ Собрать по моим карточкам'; }
+  }
+}
+
+function drawRecAgg() {
+  const root = document.getElementById('recAggRoot');
+  const cards = document.getElementById('recAggCards');
+  if(!root) return;
+  if(REC_AGG.loading && !(REC_AGG.rows || []).length) return;
+
+  const q = ((document.getElementById('recAggSearch') || {}).value || '').trim().toLowerCase();
+  let rows = REC_AGG.rows || [];
+  if(q) {
+    rows = rows.filter(r =>
+      String(r.nm_id).includes(q) ||
+      String(r.brand || '').toLowerCase().includes(q) ||
+      String(r.name || '').toLowerCase().includes(q) ||
+      String(r.supplier || '').toLowerCase().includes(q)
+    );
+  }
+
+  const top5rows = rows.filter(r => r.top5 > 0).sort((a, b) =>
+    b.top5 - a.top5 || b.below - a.below || a.nm_id - b.nm_id
+  );
+  const belowOnly = rows.filter(r => r.top5 === 0 && r.below > 0).sort((a, b) =>
+    b.below - a.below || a.nm_id - b.nm_id
+  );
+  // также «ниже» у тех, кто уже в топ-5 — покажем в секции топ-5 с колонкой «ниже»
+  // отдельная секция — только кто НЕ в топ-5 ни у кого
+
+  if(cards) {
+    const totalHosts = REC_AGG.total_hosts || 0;
+    const topCards = top5rows.length ? top5rows[0].top5 : 0;
+    cards.innerHTML = [
+      ['Карточек-хостов', fmt(totalHosts)],
+      ['В топ-5 (артикулов)', fmt(top5rows.length)],
+      ['Только ниже топ-5', fmt(belowOnly.length)],
+      ['Лидер топ-5', top5rows[0] ? `${top5rows[0].nm_id} · ${topCards}` : '—'],
+    ].map(([l, v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="font-size:18px">${v}</div></div>`).join('');
+  }
+
+  if(!rows.length) {
+    root.innerHTML = (REC_AGG.rows && REC_AGG.rows.length)
+      ? '<div class="empty" style="padding:40px 20px">Ничего не найдено по фильтру</div>'
+      : '<div class="empty" style="padding:40px 20px">Нажми «Собрать по моим карточкам»</div>';
+    return;
+  }
+
+  const renderTable = (list, {showBelowCol}) => {
+    if(!list.length) {
+      return '<div class="empty" style="padding:20px">Пусто</div>';
+    }
+    const body = list.map((r, i) => {
+      const hostsTop = (r.hosts_top5 || [])
+        .slice(0, 8)
+        .map(h => `${escapeHtml(h.host_vc)} <span style="color:var(--wb-faint)">#${h.position}</span>`)
+        .join(', ');
+      const hostsBel = (r.hosts_below || [])
+        .slice(0, 6)
+        .map(h => `${escapeHtml(h.host_vc)} <span style="color:var(--wb-faint)">#${h.position}</span>`)
+        .join(', ');
+      const moreTop = (r.hosts_top5 || []).length > 8 ? ` +${(r.hosts_top5.length - 8)}` : '';
+      const moreBel = (r.hosts_below || []).length > 6 ? ` +${(r.hosts_below.length - 6)}` : '';
+      return `<tr>
+        <td style="color:var(--wb-faint);width:36px">${i + 1}</td>
+        <td style="text-align:left">
+          <div style="display:flex;gap:10px;align-items:center;min-width:0">
+            <img src="${r.thumb || wbThumbUrl(r.nm_id)}" width="36" height="48" alt=""
+              style="border-radius:4px;object-fit:cover;background:#f3f3f3;flex:0 0 auto"
+              onerror="this.style.visibility='hidden'">
+            <div style="min-width:0">
+              <div style="font-weight:600">
+                <a href="https://www.wildberries.ru/catalog/${r.nm_id}/detail.aspx" target="_blank" rel="noopener"
+                  style="color:inherit;text-decoration:none">${r.nm_id}</a>
+                ${r.is_mine ? '<span style="font-size:10px;color:#5B21B6;margin-left:6px">мой</span>' : ''}
+              </div>
+              <div style="font-size:11px;color:var(--wb-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px"
+                title="${escapeHtml(r.brand || '')} ${escapeHtml(r.name || '')}">
+                ${escapeHtml(r.brand || '—')}${r.name ? ' · ' + escapeHtml(r.name) : ''}
+              </div>
+            </div>
+          </div>
+        </td>
+        <td style="text-align:center;font-weight:700;color:${r.top5 ? '#027A48' : 'var(--wb-faint)'}">${r.top5 || '—'}</td>
+        ${showBelowCol ? `<td style="text-align:center;font-weight:600;color:${r.below ? '#B54708' : 'var(--wb-faint)'}">${r.below || '—'}</td>` : ''}
+        <td style="text-align:left;font-size:11px;color:var(--wb-muted);max-width:360px">
+          ${r.top5 ? `<div><b style="color:#027A48">топ-5:</b> ${hostsTop}${moreTop}</div>` : ''}
+          ${r.below ? `<div style="margin-top:2px"><b style="color:#B54708">ниже:</b> ${hostsBel}${moreBel}</div>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+    return `<div style="overflow-x:auto"><table class="comp-tbl" style="width:100%;table-layout:auto">
+      <thead><tr>
+        <th style="width:36px">#</th>
+        <th style="text-align:left">Артикул / товар</th>
+        <th>У карточек<br>в топ-5</th>
+        ${showBelowCol ? '<th>У карточек<br>ниже топ-5</th>' : ''}
+        <th style="text-align:left">Где именно (артикул хоста · место)</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>`;
+  };
+
+  root.innerHTML = `
+    <div style="padding:8px 20px 20px">
+      <div style="margin:12px 0 8px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+        <div style="font-size:13px;font-weight:700;color:#027A48">В топ-5 рекомендаций</div>
+        <div style="font-size:11px;color:var(--wb-muted)">${top5rows.length} артикулов · места 1–5 на полке «Смотрите также»</div>
+      </div>
+      ${renderTable(top5rows, {showBelowCol: true})}
+
+      <div style="margin:28px 0 0;padding-top:16px;border-top:2px solid var(--wb-border)">
+        <div style="margin:0 0 8px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+          <div style="font-size:13px;font-weight:700;color:#B54708">Ниже топ-5</div>
+          <div style="font-size:11px;color:var(--wb-muted)">${belowOnly.length} артикулов · есть в рекомендациях на местах 6–15, но ни разу в топ-5</div>
+        </div>
+        ${renderTable(belowOnly, {showBelowCol: false})}
+      </div>
+    </div>`;
 }
 
 const FINANCE_PIN = '1997';
