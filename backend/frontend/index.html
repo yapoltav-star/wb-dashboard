@@ -2920,8 +2920,9 @@ function placeArtInGroup(from, to, beforeArt) {
   }
   if(!GROUPS[to]) GROUPS[to] = [];
 
-  // вынуть из источника
-  if(from !== 'Без склейки' && GROUPS[from]) {
+  // вынуть из источника (и из любой другой склейки на всякий случай)
+  removeArtFromOtherGroups(dragArt, to);
+  if(from !== 'Без склейки' && from !== to && GROUPS[from]) {
     GROUPS[from] = (GROUPS[from] || []).filter(a => a !== dragArt);
   }
 
