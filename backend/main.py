@@ -7149,6 +7149,239 @@ def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
     }
 
 
+# ---------- «Продавец рекомендует» (Content API, настраиваемый блок на КТ) ----------
+
+SELLER_RECS_PATHS = (
+    f"{WB_CONTENT_URL}/content/v1/recommendations/list",
+    f"{WB_CONTENT_URL}/api/content/v1/recommendations/list",
+)
+
+# Короткий кэш полного агрегата (источник — Content API)
+SELLER_RECS_AGG_CACHE = {"ts": 0.0, "data": None}
+
+
+def fetch_seller_recommendations_raw(limit: int = 1000):
+    """
+    Весь список настроек «Продавец рекомендует» из Content API.
+    → (hosts, error)
+      hosts: [{nm_id, vendor_code, brand, name, thumb, recom_nms, recom_pics, recom_count, updated_at}]
+    """
+    if not WB_TOKEN:
+        return [], "WB_TOKEN не задан"
+
+    limit = max(1, min(int(limit or 1000), 5000))
+    hosts = []
+    next_cur = 0
+    used_path = None
+    last_err = None
+
+    for page in range(80):
+        body = {"limit": limit, "next": next_cur}
+        resp = None
+        for path in (used_path,) if used_path else SELLER_RECS_PATHS:
+            if not path:
+                continue
+            try:
+                resp = httpx.post(path, headers=wb_headers(), json=body, timeout=45)
+            except Exception as e:
+                last_err = str(e)[:200]
+                resp = None
+                continue
+            if resp.status_code == 404 and not used_path:
+                last_err = f"404 {path}"
+                continue
+            used_path = path
+            break
+
+        if resp is None:
+            return hosts, last_err or "Content API недоступен"
+
+        if resp.status_code == 429:
+            time.sleep(2.0)
+            try:
+                resp = httpx.post(used_path, headers=wb_headers(), json=body, timeout=45)
+            except Exception as e:
+                return hosts, str(e)[:200]
+
+        if not resp.is_success:
+            text = (resp.text or "")[:280]
+            # 401/403 — нет категории Контент / опции рекомендаций
+            hint = ""
+            if resp.status_code in (401, 403):
+                hint = " — проверь WB_TOKEN (категория «Контент») и доступ к блоку «Продавец рекомендует»"
+            elif resp.status_code == 402:
+                hint = " — рекомендациями управляет тариф/опция продавца (Джем и т.п.)"
+            return hosts, f"Content API {resp.status_code}: {text}{hint}"
+
+        payload = resp.json() or {}
+        # схемы: {data: [...], next: int} или обёртка data
+        rows = payload.get("data")
+        if rows is None and isinstance(payload.get("data"), dict):
+            rows = (payload.get("data") or {}).get("data")
+        if not isinstance(rows, list):
+            rows = []
+
+        if not rows:
+            break
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            nm = row.get("nmId") or row.get("nmID") or row.get("nm_id")
+            if not nm:
+                continue
+            recom_nms = row.get("recomNms") or row.get("recom_nms") or []
+            recom_pics = row.get("recomPics") or row.get("recom_pics") or []
+            try:
+                recom_nms = [int(x) for x in recom_nms if x is not None]
+            except (TypeError, ValueError):
+                recom_nms = []
+            hosts.append({
+                "nm_id": int(nm),
+                "vendor_code": (row.get("vendorCode") or row.get("vendor_code") or "").strip(),
+                "brand": (row.get("brandName") or row.get("brand_name") or row.get("brand") or "").strip(),
+                "name": (row.get("title") or row.get("name") or "").strip(),
+                "subject": (row.get("subjectName") or row.get("subject_name") or "").strip(),
+                "thumb": row.get("pic") or wb_product_thumb_url(int(nm)),
+                "recom_count": int(row.get("recomCount") or row.get("recom_count") or len(recom_nms) or 0),
+                "recom_nms": recom_nms,
+                "recom_pics": list(recom_pics) if isinstance(recom_pics, list) else [],
+                "updated_at": row.get("updatedAt") or row.get("updated_at"),
+            })
+
+        new_next = payload.get("next")
+        try:
+            new_next = int(new_next) if new_next is not None else 0
+        except (TypeError, ValueError):
+            new_next = 0
+
+        # курсор = последний nmId; если не сдвинулся — стоп
+        if not new_next or new_next == next_cur or len(rows) < limit:
+            # если next == 0 после страницы — конец
+            if not new_next:
+                break
+            if new_next == next_cur:
+                break
+        next_cur = new_next
+        # лимит 100 req/min — берём с запасом
+        time.sleep(0.65)
+
+    logger.info(f"seller recommendations: {len(hosts)} host cards via {used_path}")
+    return hosts, None
+
+
+def aggregate_seller_recommendations(hosts: list):
+    """
+    Инверт: для каждого рекомендуемого nm — у скольких карточек он в топ-5 / ниже.
+    Порядок в recom_nms = место (1-based).
+    """
+    own = {}
+    for h in hosts:
+        nm = int(h.get("nm_id") or 0)
+        if nm:
+            own[nm] = h
+
+    by_nm = {}
+    hosts_with = 0
+    for host in hosts:
+        recom_nms = host.get("recom_nms") or []
+        if not recom_nms:
+            continue
+        hosts_with += 1
+        host_nm = int(host["nm_id"])
+        host_vc = host.get("vendor_code") or str(host_nm)
+        pics = host.get("recom_pics") or []
+        for pos, rnm in enumerate(recom_nms, 1):
+            try:
+                rnm = int(rnm)
+            except (TypeError, ValueError):
+                continue
+            if not rnm or rnm == host_nm:
+                continue
+            row = by_nm.get(rnm)
+            if not row:
+                meta = own.get(rnm) or {}
+                pic = ""
+                if pos - 1 < len(pics) and pics[pos - 1]:
+                    pic = pics[pos - 1]
+                row = {
+                    "nm_id": rnm,
+                    "vendor_code": meta.get("vendor_code") or "",
+                    "brand": meta.get("brand") or "",
+                    "name": meta.get("name") or "",
+                    "thumb": pic or meta.get("thumb") or wb_product_thumb_url(rnm),
+                    "top5": 0,
+                    "below": 0,
+                    "hosts_top5": [],
+                    "hosts_below": [],
+                    "is_mine": rnm in own,
+                }
+                by_nm[rnm] = row
+            else:
+                meta = own.get(rnm)
+                if meta:
+                    row["is_mine"] = True
+                    if not row.get("vendor_code") and meta.get("vendor_code"):
+                        row["vendor_code"] = meta["vendor_code"]
+                    if not row.get("brand") and meta.get("brand"):
+                        row["brand"] = meta["brand"]
+                    if not row.get("name") and meta.get("name"):
+                        row["name"] = meta["name"]
+                    if not row.get("thumb") and meta.get("thumb"):
+                        row["thumb"] = meta["thumb"]
+
+            host_info = {
+                "host_nm": host_nm,
+                "host_vc": host_vc,
+                "position": pos,
+            }
+            if pos <= 5:
+                if not any(x["host_nm"] == host_nm for x in row["hosts_top5"]):
+                    row["top5"] += 1
+                    row["hosts_top5"].append(host_info)
+            else:
+                if not any(x["host_nm"] == host_nm for x in row["hosts_below"]):
+                    row["below"] += 1
+                    row["hosts_below"].append(host_info)
+
+    rows = list(by_nm.values())
+    rows.sort(key=lambda r: (-r["top5"], -r["below"], r["nm_id"]))
+    return {
+        "hosts_total": len(hosts),
+        "hosts_with_recs": hosts_with,
+        "rows": rows,
+    }
+
+
+@app.get("/api/seller-recommendations-agg")
+def get_seller_recommendations_agg(refresh: int = 0):
+    """
+    Сводка «Продавец рекомендует»: какой nm в скольких карточках в топ-5 / ниже.
+    Источник — Content API recommendations/list (настройки продавца).
+    """
+    now = time.time()
+    if (
+        not refresh
+        and SELLER_RECS_AGG_CACHE.get("data")
+        and now - float(SELLER_RECS_AGG_CACHE.get("ts") or 0) < 300
+    ):
+        return SELLER_RECS_AGG_CACHE["data"]
+
+    hosts, err = fetch_seller_recommendations_raw()
+    if err and not hosts:
+        raise HTTPException(status_code=502, detail=err)
+
+    agg = aggregate_seller_recommendations(hosts)
+    out = {
+        **agg,
+        "error": err,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    SELLER_RECS_AGG_CACHE["ts"] = now
+    SELLER_RECS_AGG_CACHE["data"] = out
+    return out
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8080))

@@ -1143,28 +1143,24 @@ td.tc{text-align:center}
   </div>
 </div>
 
-<!-- РЕКОМЕНДАЦИИ: сводка по полкам «Смотрите также» -->
+<!-- РЕКОМЕНДАЦИИ: сводка «Продавец рекомендует» (настройки продавца в КТ) -->
 <div class="page" id="page-rec-agg">
   <div class="toolbar">
     <span style="font-size:13px;font-weight:600">Рекомендации</span>
-    <span style="font-size:12px;color:var(--wb-muted);margin-left:10px">Сколько моих карточек показывают артикул в «Смотрите также»</span>
+    <span style="font-size:12px;color:var(--wb-muted);margin-left:10px">Блок «Продавец рекомендует» после rich content</span>
     <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <select id="recAggCity" onchange="onRecAggCityChange()"
-        style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;min-width:160px;background:#fff">
-        <option value="-1257786">Москва</option>
-      </select>
-      <input id="recAggSearch" placeholder="Поиск артикула / бренда…" oninput="drawRecAgg()"
-        style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:200px">
-      <button class="action-btn primary" id="recAggScanBtn" onclick="runRecAggScan()">↓ Собрать по моим карточкам</button>
+      <input id="recAggSearch" placeholder="Поиск артикула / названия…" oninput="drawRecAgg()"
+        style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:220px">
+      <button class="action-btn primary" id="recAggScanBtn" onclick="runRecAggScan()">↓ Загрузить с WB</button>
     </div>
   </div>
   <div style="padding:12px 20px;border-bottom:1px solid var(--wb-border);background:#FCFAF7;font-size:12px;color:var(--wb-muted);line-height:1.45">
-    Берём полки <b>«Смотрите также»</b> у карточек с продажами. Для каждого артикула: у скольких карточек он в <b>топ-5</b> и у скольких — <b>ниже</b> (места 6–15). Сканирует WB (~1–2 мин при 50+ карточках).
+    Твои настройки блока <b>«Продавец рекомендует»</b> (Content API). Для каждого артикула: в скольких карточках он в <b>топ-5</b> (места 1–5) и в скольких — <b>ниже</b>.
   </div>
   <div id="recAggStatus" style="padding:10px 20px;font-size:12px;color:var(--wb-muted)"></div>
   <div class="cards" id="recAggCards"></div>
   <div id="recAggRoot" style="overflow:auto">
-    <div class="empty" style="padding:40px 20px">Нажми «Собрать по моим карточкам» — посчитаем, кто чаще светится на полках.</div>
+    <div class="empty" style="padding:40px 20px">Нажми «Загрузить с WB» — посчитаем, кто стоит в рекомендациях и где.</div>
   </div>
 </div>
 
@@ -7082,211 +7078,61 @@ async function loadMyShelfFor(nmId, force) {
   }
 }
 
-// ---------- Рекомендации: агрегат «Смотрите также» по моим карточкам ----------
+// ---------- Рекомендации: «Продавец рекомендует» (Content API) ----------
 let REC_AGG = {
   loading: false,
   rows: [],        // [{nm_id, brand, name, thumb, top5, below, hosts_top5, hosts_below, is_mine}]
-  scanned: 0,
   total_hosts: 0,
-  errors: 0,
-  city: '',
+  hosts_with_recs: 0,
   updated_at: null,
+  error: null,
 };
-const REC_AGG_CACHE = {}; // host_nm -> shelf payload
-let REC_AGG_ABORT = 0;
-
-function recAggDest() {
-  return Number((document.getElementById('recAggCity') || {}).value || -1257786);
-}
-
-function onRecAggCityChange() {
-  const sel = document.getElementById('recAggCity');
-  if(sel) localStorage.setItem('rec_agg_dest', sel.value);
-  // кэш полок при смене города невалиден
-  Object.keys(REC_AGG_CACHE).forEach(k => delete REC_AGG_CACHE[k]);
-}
-
-function ensureRecAggCities() {
-  const sel = document.getElementById('recAggCity');
-  if(!sel) return;
-  const fill = () => {
-    if(!POS_CITIES || !POS_CITIES.length) return;
-    const saved = localStorage.getItem('rec_agg_dest')
-      || localStorage.getItem('my_shelf_dest')
-      || localStorage.getItem('shelf_dest')
-      || '-1257786';
-    sel.innerHTML = POS_CITIES.map(c =>
-      `<option value="${c.dest}"${String(c.dest)===String(saved)?' selected':''}>${escapeHtml(c.name)}</option>`
-    ).join('');
-  };
-  if(POS_CITIES && POS_CITIES.length) { fill(); return; }
-  fetch(`${RAILWAY_URL}/api/search-keywords`).then(r=>r.json()).then(d => {
-    POS_CITIES = Array.isArray(d.cities) ? d.cities : POS_CITIES;
-    fill();
-  }).catch(()=>{});
-}
 
 function renderRecAggPage() {
-  ensureRecAggCities();
   drawRecAgg();
 }
 
-function buildRecAggFromCaches(hostCards) {
-  const ownSet = new Set(hostCards.map(c => Number(c.nm_id)));
-  const byNm = new Map();
-  hostCards.forEach(host => {
-    const hostNm = Number(host.nm_id);
-    const shelf = REC_AGG_CACHE[hostNm];
-    if(!shelf || !shelf.items) return;
-    (shelf.items || []).forEach(it => {
-      const nm = Number(it.nm_id);
-      if(!nm || nm === hostNm) return; // не считаем саму карточку
-      const pos = Number(it.position) || 0;
-      if(pos < 1) return;
-      let row = byNm.get(nm);
-      if(!row) {
-        row = {
-          nm_id: nm,
-          brand: it.brand || '',
-          name: it.name || '',
-          thumb: it.thumb || wbThumbUrl(nm),
-          supplier: it.supplier || '',
-          top5: 0,
-          below: 0,
-          hosts_top5: [],
-          hosts_below: [],
-          is_mine: ownSet.has(nm) || String(it.brand || '').toUpperCase() === 'PVS',
-        };
-        byNm.set(nm, row);
-      } else {
-        if(it.brand && !row.brand) row.brand = it.brand;
-        if(it.name && !row.name) row.name = it.name;
-        if(it.thumb && !row.thumb) row.thumb = it.thumb;
-        if(ownSet.has(nm)) row.is_mine = true;
-      }
-      const hostInfo = {
-        host_nm: hostNm,
-        host_vc: host.vendor_code || String(hostNm),
-        position: pos,
-      };
-      if(pos <= 5) {
-        // одна карточка — одно место; не дублируем
-        if(!row.hosts_top5.some(h => h.host_nm === hostNm)) {
-          row.top5 += 1;
-          row.hosts_top5.push(hostInfo);
-        }
-      } else {
-        if(!row.hosts_below.some(h => h.host_nm === hostNm)) {
-          row.below += 1;
-          row.hosts_below.push(hostInfo);
-        }
-      }
-    });
-  });
-  return Array.from(byNm.values());
-}
-
-async function mapPool(items, limit, worker) {
-  const out = new Array(items.length);
-  let i = 0;
-  async function run() {
-    while(i < items.length) {
-      const idx = i++;
-      out[idx] = await worker(items[idx], idx);
-    }
-  }
-  const n = Math.max(1, Math.min(limit, items.length || 1));
-  await Promise.all(Array.from({length: n}, () => run()));
-  return out;
-}
-
-async function runRecAggScan() {
+async function runRecAggScan(force) {
   if(REC_AGG.loading) return;
   const status = document.getElementById('recAggStatus');
   const btn = document.getElementById('recAggScanBtn');
   const root = document.getElementById('recAggRoot');
-  const dest = recAggDest();
   REC_AGG.loading = true;
-  REC_AGG_ABORT += 1;
-  const ticket = REC_AGG_ABORT;
-  if(btn) { btn.disabled = true; btn.textContent = 'Сканируем…'; }
-  if(status) status.textContent = 'Загружаю список карточек с продажами…';
-  if(root) root.innerHTML = '<div class="loading" style="padding:40px 20px"><div class="spinner"></div><span>Сканируем полки…</span></div>';
+  if(btn) { btn.disabled = true; btn.textContent = 'Загрузка…'; }
+  if(status) status.textContent = 'Тяну настройки «Продавец рекомендует» с Content API…';
+  if(root) root.innerHTML = '<div class="loading" style="padding:40px 20px"><div class="spinner"></div><span>Загружаю рекомендации…</span></div>';
 
   try {
-    // список хостов — как на «Полках у моих»
-    let hosts = [];
-    if(MY_SHELF_CARDS && MY_SHELF_CARDS.length) {
-      hosts = MY_SHELF_CARDS.map(c => ({
-        nm_id: Number(c.nm_id),
-        vendor_code: c.vendor_code || String(c.nm_id),
-      }));
-    } else {
-      const r = await fetch(`${RAILWAY_URL}/api/own-articles-all`);
-      const d = await r.json().catch(() => ({}));
-      const arts = Array.isArray(d.articles) ? d.articles : [];
-      hosts = arts.map(a => ({
-        nm_id: Number(a.nm_id),
-        vendor_code: a.vendor_code || String(a.nm_id),
-      }));
+    const q = force ? '?refresh=1' : '';
+    const r = await fetch(`${RAILWAY_URL}/api/seller-recommendations-agg${q}`);
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok) {
+      const detail = d.detail || d.error || `HTTP ${r.status}`;
+      throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
     }
-    hosts = hosts.filter(h => h.nm_id > 0);
-    if(!hosts.length) {
-      REC_AGG.rows = [];
-      REC_AGG.scanned = 0;
-      REC_AGG.total_hosts = 0;
-      if(status) status.textContent = 'Нет карточек с продажами — открой «Полки у моих» и нажми «С продажами», либо обнови поставки.';
-      if(root) root.innerHTML = '<div class="empty" style="padding:40px 20px">Нет карточек для скана</div>';
-      return;
-    }
-
-    REC_AGG.total_hosts = hosts.length;
-    REC_AGG.scanned = 0;
-    REC_AGG.errors = 0;
-    let done = 0;
-    await mapPool(hosts, 3, async (host) => {
-      if(ticket !== REC_AGG_ABORT) return;
-      try {
-        if(!REC_AGG_CACHE[host.nm_id] || Number(REC_AGG_CACHE[host.nm_id].dest) !== dest) {
-          const r = await fetch(
-            `${RAILWAY_URL}/api/competitor-shelf?nm_id=${host.nm_id}&dest=${dest}&limit=15`
-          );
-          const d = await r.json().catch(() => ({}));
-          if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
-          REC_AGG_CACHE[host.nm_id] = d;
-        }
-      } catch(e) {
-        REC_AGG.errors += 1;
-        REC_AGG_CACHE[host.nm_id] = {items: [], error: e.message, dest};
-      }
-      done += 1;
-      REC_AGG.scanned = done;
-      if(status && done % 2 === 0) {
-        status.textContent = `Полки: ${done} / ${hosts.length}` +
-          (REC_AGG.errors ? ` · ошибок ${REC_AGG.errors}` : '');
-      }
-    });
-    if(ticket !== REC_AGG_ABORT) return;
-
-    REC_AGG.rows = buildRecAggFromCaches(hosts);
-    REC_AGG.city = ((document.getElementById('recAggCity') || {}).selectedOptions || [])[0]
-      ? document.getElementById('recAggCity').selectedOptions[0].textContent
-      : '';
-    REC_AGG.updated_at = new Date().toLocaleString('ru-RU');
+    REC_AGG.rows = Array.isArray(d.rows) ? d.rows : [];
+    REC_AGG.total_hosts = Number(d.hosts_total) || 0;
+    REC_AGG.hosts_with_recs = Number(d.hosts_with_recs) || 0;
+    REC_AGG.error = d.error || null;
+    REC_AGG.updated_at = d.updated_at
+      ? new Date(d.updated_at).toLocaleString('ru-RU')
+      : new Date().toLocaleString('ru-RU');
     if(status) {
       status.textContent =
-        `Готово · ${hosts.length} карточек · ${REC_AGG.rows.length} артикулов в рекомендациях` +
-        (REC_AGG.errors ? ` · ошибок полок ${REC_AGG.errors}` : '') +
-        (REC_AGG.city ? ` · ${REC_AGG.city}` : '') +
+        `Готово · карточек с настройками: ${REC_AGG.hosts_with_recs}` +
+        (REC_AGG.total_hosts ? ` / ${REC_AGG.total_hosts} в ответе` : '') +
+        ` · ${REC_AGG.rows.length} артикулов в рекомендациях` +
+        (REC_AGG.error ? ` · ⚠ ${REC_AGG.error}` : '') +
         ` · ${REC_AGG.updated_at}`;
     }
     drawRecAgg();
   } catch(e) {
+    REC_AGG.rows = [];
     if(status) status.textContent = 'Ошибка: ' + e.message;
     if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка: ${escapeHtml(e.message)}</div>`;
   } finally {
     REC_AGG.loading = false;
-    if(btn) { btn.disabled = false; btn.textContent = '↓ Собрать по моим карточкам'; }
+    if(btn) { btn.disabled = false; btn.textContent = '↓ Загрузить с WB'; }
   }
 }
 
@@ -7301,9 +7147,9 @@ function drawRecAgg() {
   if(q) {
     rows = rows.filter(r =>
       String(r.nm_id).includes(q) ||
+      String(r.vendor_code || '').toLowerCase().includes(q) ||
       String(r.brand || '').toLowerCase().includes(q) ||
-      String(r.name || '').toLowerCase().includes(q) ||
-      String(r.supplier || '').toLowerCase().includes(q)
+      String(r.name || '').toLowerCase().includes(q)
     );
   }
 
@@ -7313,14 +7159,12 @@ function drawRecAgg() {
   const belowOnly = rows.filter(r => r.top5 === 0 && r.below > 0).sort((a, b) =>
     b.below - a.below || a.nm_id - b.nm_id
   );
-  // также «ниже» у тех, кто уже в топ-5 — покажем в секции топ-5 с колонкой «ниже»
-  // отдельная секция — только кто НЕ в топ-5 ни у кого
 
   if(cards) {
-    const totalHosts = REC_AGG.total_hosts || 0;
+    const withRecs = REC_AGG.hosts_with_recs || 0;
     const topCards = top5rows.length ? top5rows[0].top5 : 0;
     cards.innerHTML = [
-      ['Карточек-хостов', fmt(totalHosts)],
+      ['Карточек с блоком', fmt(withRecs)],
       ['В топ-5 (артикулов)', fmt(top5rows.length)],
       ['Только ниже топ-5', fmt(belowOnly.length)],
       ['Лидер топ-5', top5rows[0] ? `${top5rows[0].nm_id} · ${topCards}` : '—'],
@@ -7330,12 +7174,11 @@ function drawRecAgg() {
   if(!rows.length) {
     root.innerHTML = (REC_AGG.rows && REC_AGG.rows.length)
       ? '<div class="empty" style="padding:40px 20px">Ничего не найдено по фильтру</div>'
-      : '<div class="empty" style="padding:40px 20px">Нажми «Собрать по моим карточкам»</div>';
+      : '<div class="empty" style="padding:40px 20px">Нажми «Загрузить с WB»</div>';
     return;
   }
 
   const renderTable = (list, mode) => {
-    // mode: 'top5' | 'below'
     if(!list.length) {
       return '<div class="empty" style="padding:20px">Пусто</div>';
     }
@@ -7359,6 +7202,7 @@ function drawRecAgg() {
         ? `${r.top5 ? `<div><b style="color:#027A48">топ-5:</b> ${hostsTop}${moreTop}</div>` : ''}
            ${r.below ? `<div style="margin-top:2px"><b style="color:#B54708">ниже:</b> ${hostsBel}${moreBel}</div>` : ''}`
         : `<div>${hostsBel}${moreBel}</div>`;
+      const vc = r.vendor_code ? escapeHtml(r.vendor_code) : '';
       return `<tr>
         <td style="color:var(--wb-faint);width:36px">${i + 1}</td>
         <td style="text-align:left">
@@ -7370,6 +7214,7 @@ function drawRecAgg() {
               <div style="font-weight:600">
                 <a href="https://www.wildberries.ru/catalog/${r.nm_id}/detail.aspx" target="_blank" rel="noopener"
                   style="color:inherit;text-decoration:none">${r.nm_id}</a>
+                ${vc ? `<span style="font-size:11px;color:var(--wb-muted);margin-left:6px">${vc}</span>` : ''}
                 ${r.is_mine ? '<span style="font-size:10px;color:#5B21B6;margin-left:6px">мой</span>' : ''}
               </div>
               <div style="font-size:11px;color:var(--wb-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px"
@@ -7385,13 +7230,13 @@ function drawRecAgg() {
     }).join('');
     const countHeaders = isTop
       ? `<th>У карточек<br>в топ-5</th><th>У карточек<br>ниже топ-5</th>`
-      : `<th>У карточек<br>(места 6–15)</th>`;
+      : `<th>У карточек<br>(места 6+)</th>`;
     return `<div style="overflow-x:auto"><table class="comp-tbl" style="width:100%">
       <thead><tr>
         <th style="width:36px">#</th>
         <th style="text-align:left">Артикул / товар</th>
         ${countHeaders}
-        <th style="text-align:left">Где именно (артикул хоста · место)</th>
+        <th style="text-align:left">Где (vendor · место)</th>
       </tr></thead>
       <tbody>${body}</tbody>
     </table></div>`;
@@ -7400,15 +7245,15 @@ function drawRecAgg() {
   root.innerHTML = `
     <div style="padding:8px 20px 20px">
       <div style="margin:12px 0 8px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
-        <div style="font-size:13px;font-weight:700;color:#027A48">В топ-5 рекомендаций</div>
-        <div style="font-size:11px;color:var(--wb-muted)">${top5rows.length} артикулов · места 1–5 на полке «Смотрите также»</div>
+        <div style="font-size:13px;font-weight:700;color:#027A48">В топ-5 «Продавец рекомендует»</div>
+        <div style="font-size:11px;color:var(--wb-muted)">${top5rows.length} артикулов · места 1–5</div>
       </div>
       ${renderTable(top5rows, 'top5')}
 
       <div style="margin:28px 0 0;padding-top:16px;border-top:2px solid var(--wb-border)">
         <div style="margin:0 0 8px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
           <div style="font-size:13px;font-weight:700;color:#B54708">Ниже топ-5</div>
-          <div style="font-size:11px;color:var(--wb-muted)">${belowOnly.length} артикулов · есть на местах 6–15, но ни разу в топ-5</div>
+          <div style="font-size:11px;color:var(--wb-muted)">${belowOnly.length} артикулов · места 6+, ни разу в топ-5</div>
         </div>
         ${renderTable(belowOnly, 'below')}
       </div>
