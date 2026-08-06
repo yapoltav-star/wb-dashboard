@@ -7082,9 +7082,11 @@ async function loadMyShelfFor(nmId, force) {
 // ---------- Рекомендации: «Продавец рекомендует» (Content API) ----------
 let REC_AGG = {
   loading: false,
-  rows: [],        // [{nm_id, brand, name, thumb, top5, below, hosts_top5, hosts_below, is_mine}]
+  rows: [],        // в рекомендациях
+  missing: [],     // свои карточки, которых нет нигде
   total_hosts: 0,
   hosts_with_recs: 0,
+  catalog_total: 0,
   updated_at: null,
   error: null,
   loaded: false,
@@ -7123,8 +7125,10 @@ async function runRecAggScan(forceRefresh) {
       throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
     }
     REC_AGG.rows = Array.isArray(d.rows) ? d.rows : [];
+    REC_AGG.missing = Array.isArray(d.missing) ? d.missing : [];
     REC_AGG.total_hosts = Number(d.hosts_total) || 0;
     REC_AGG.hosts_with_recs = Number(d.hosts_with_recs) || 0;
+    REC_AGG.catalog_total = Number(d.catalog_total) || 0;
     REC_AGG.error = d.error || null;
     REC_AGG.loaded = true;
     REC_AGG.updated_at = d.updated_at
@@ -7133,8 +7137,9 @@ async function runRecAggScan(forceRefresh) {
     if(status) {
       status.textContent =
         `Готово · карточек с блоком: ${REC_AGG.hosts_with_recs}` +
-        (REC_AGG.total_hosts ? ` · ${REC_AGG.total_hosts} в ответе` : '') +
-        ` · ${REC_AGG.rows.length} артикулов` +
+        (REC_AGG.catalog_total ? ` · каталог: ${REC_AGG.catalog_total}` : '') +
+        ` · в рекомендациях: ${REC_AGG.rows.length}` +
+        ` · нет нигде: ${REC_AGG.missing.length}` +
         (REC_AGG.error ? ` · ⚠ ${REC_AGG.error}` : '') +
         ` · ${REC_AGG.updated_at}`;
     }
@@ -7142,6 +7147,7 @@ async function runRecAggScan(forceRefresh) {
   } catch(e) {
     REC_AGG.loaded = false;
     REC_AGG.rows = [];
+    REC_AGG.missing = [];
     if(status) status.textContent = 'Ошибка: ' + e.message;
     if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка: ${escapeHtml(e.message)}<br><button class="action-btn primary" style="margin-top:12px" onclick="runRecAggScan(true)">Повторить</button></div>`;
   } finally {
@@ -7152,22 +7158,25 @@ async function runRecAggScan(forceRefresh) {
 
 function downloadRecAggCsv() {
   const rows = REC_AGG.rows || [];
-  if(!rows.length) return;
+  const missing = REC_AGG.missing || [];
+  if(!rows.length && !missing.length) return;
   const esc = (v) => {
     const s = String(v ?? '');
     return /["\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = [
-    ['nm_id', 'vendor_code', 'brand', 'name', 'top5_cards', 'below_cards', 'hosts_top5', 'hosts_below'].join(';'),
+    ['section', 'nm_id', 'vendor_code', 'brand', 'name', 'top5_cards', 'below_cards', 'hosts_top5', 'hosts_below'].join(';'),
   ];
-  rows.forEach(r => {
+  const push = (section, r) => {
     const ht = (r.hosts_top5 || []).map(h => `${h.host_vc||h.host_nm}#${h.position}`).join(' | ');
     const hb = (r.hosts_below || []).map(h => `${h.host_vc||h.host_nm}#${h.position}`).join(' | ');
     lines.push([
-      r.nm_id, r.vendor_code || '', r.brand || '', r.name || '',
+      section, r.nm_id, r.vendor_code || '', r.brand || '', r.name || '',
       r.top5 || 0, r.below || 0, ht, hb,
     ].map(esc).join(';'));
-  });
+  };
+  rows.forEach(r => push(r.top5 > 0 ? 'top5' : 'below', r));
+  missing.forEach(r => push('missing', r));
   const blob = new Blob(['\uFEFF' + lines.join('\n')], {type: 'text/csv;charset=utf-8'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -7180,18 +7189,17 @@ function drawRecAgg() {
   const root = document.getElementById('recAggRoot');
   const cards = document.getElementById('recAggCards');
   if(!root) return;
-  if(REC_AGG.loading && !(REC_AGG.rows || []).length) return;
+  if(REC_AGG.loading && !(REC_AGG.rows || []).length && !(REC_AGG.missing || []).length) return;
 
   const q = ((document.getElementById('recAggSearch') || {}).value || '').trim().toLowerCase();
-  let rows = REC_AGG.rows || [];
-  if(q) {
-    rows = rows.filter(r =>
-      String(r.nm_id).includes(q) ||
-      String(r.vendor_code || '').toLowerCase().includes(q) ||
-      String(r.brand || '').toLowerCase().includes(q) ||
-      String(r.name || '').toLowerCase().includes(q)
-    );
-  }
+  const matchQ = (r) => !q ||
+    String(r.nm_id).includes(q) ||
+    String(r.vendor_code || '').toLowerCase().includes(q) ||
+    String(r.brand || '').toLowerCase().includes(q) ||
+    String(r.name || '').toLowerCase().includes(q);
+
+  let rows = (REC_AGG.rows || []).filter(matchQ);
+  let missing = (REC_AGG.missing || []).filter(matchQ);
 
   const top5rows = rows.filter(r => r.top5 > 0).sort((a, b) =>
     b.top5 - a.top5 || b.below - a.below || a.nm_id - b.nm_id
@@ -7199,35 +7207,75 @@ function drawRecAgg() {
   const belowOnly = rows.filter(r => r.top5 === 0 && r.below > 0).sort((a, b) =>
     b.below - a.below || a.nm_id - b.nm_id
   );
+  missing = missing.sort((a, b) =>
+    String(a.vendor_code || '').localeCompare(String(b.vendor_code || ''), 'ru') || a.nm_id - b.nm_id
+  );
 
   const csvBtn = document.getElementById('recAggCsvBtn');
-  if(csvBtn) csvBtn.style.display = (REC_AGG.rows || []).length ? '' : 'none';
+  if(csvBtn) {
+    csvBtn.style.display = ((REC_AGG.rows || []).length || (REC_AGG.missing || []).length) ? '' : 'none';
+  }
 
   if(cards) {
     const withRecs = REC_AGG.hosts_with_recs || 0;
-    const topCards = top5rows.length ? top5rows[0].top5 : 0;
-    const leader = top5rows[0]
-      ? `${top5rows[0].vendor_code || top5rows[0].nm_id} · ${topCards}`
-      : '—';
     cards.innerHTML = [
       ['Карточек с блоком', fmt(withRecs)],
-      ['В топ-5 (артикулов)', fmt(top5rows.length)],
-      ['Только ниже топ-5', fmt(belowOnly.length)],
-      ['Лидер топ-5', leader],
+      ['В топ-5', fmt((REC_AGG.rows || []).filter(r => r.top5 > 0).length)],
+      ['Ниже топ-5', fmt((REC_AGG.rows || []).filter(r => r.top5 === 0 && r.below > 0).length)],
+      ['Нет в рекомендациях', fmt((REC_AGG.missing || []).length)],
     ].map(([l, v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="font-size:18px">${v}</div></div>`).join('');
   }
 
-  if(!rows.length) {
+  if(!top5rows.length && !belowOnly.length && !missing.length) {
     if(REC_AGG.loading) return;
-    root.innerHTML = (REC_AGG.rows && REC_AGG.rows.length)
+    const hasAny = (REC_AGG.rows && REC_AGG.rows.length) || (REC_AGG.missing && REC_AGG.missing.length);
+    root.innerHTML = hasAny
       ? '<div class="empty" style="padding:40px 20px">Ничего не найдено по фильтру</div>'
       : '<div class="empty" style="padding:40px 20px">Нет данных — нажми «Обновить»</div>';
     return;
   }
 
+  const productCell = (r) => {
+    const vc = r.vendor_code ? escapeHtml(r.vendor_code) : '';
+    return `<td style="text-align:left">
+      <div style="display:flex;gap:10px;align-items:center;min-width:0">
+        <img src="${r.thumb || wbThumbUrl(r.nm_id)}" width="36" height="48" alt=""
+          style="border-radius:4px;object-fit:cover;background:#f3f3f3;flex:0 0 auto"
+          onerror="this.style.visibility='hidden'">
+        <div style="min-width:0">
+          <div style="font-weight:600">
+            <a href="https://www.wildberries.ru/catalog/${r.nm_id}/detail.aspx" target="_blank" rel="noopener"
+              style="color:inherit;text-decoration:none">${r.nm_id}</a>
+            ${vc ? `<span style="font-size:11px;color:var(--wb-muted);margin-left:6px">${vc}</span>` : ''}
+            ${r.is_mine ? '<span style="font-size:10px;color:#5B21B6;margin-left:6px">мой</span>' : ''}
+          </div>
+          <div style="font-size:11px;color:var(--wb-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px"
+            title="${escapeHtml(r.brand || '')} ${escapeHtml(r.name || '')}">
+            ${escapeHtml(r.brand || '—')}${r.name ? ' · ' + escapeHtml(r.name) : ''}
+          </div>
+        </div>
+      </div>
+    </td>`;
+  };
+
   const renderTable = (list, mode) => {
     if(!list.length) {
       return '<div class="empty" style="padding:20px">Пусто</div>';
+    }
+    if(mode === 'missing') {
+      const body = list.map((r, i) => `<tr>
+        <td style="color:var(--wb-faint);width:36px">${i + 1}</td>
+        ${productCell(r)}
+        <td style="text-align:left;font-size:11px;color:var(--wb-muted)">Ни на одной карточке</td>
+      </tr>`).join('');
+      return `<div style="overflow-x:auto"><table class="comp-tbl" style="width:100%">
+        <thead><tr>
+          <th style="width:36px">#</th>
+          <th style="text-align:left">Артикул / товар</th>
+          <th style="text-align:left">Статус</th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+      </table></div>`;
     }
     const isTop = mode === 'top5';
     const body = list.map((r, i) => {
@@ -7249,28 +7297,9 @@ function drawRecAgg() {
         ? `${r.top5 ? `<div><b style="color:#027A48">топ-5:</b> ${hostsTop}${moreTop}</div>` : ''}
            ${r.below ? `<div style="margin-top:2px"><b style="color:#B54708">ниже:</b> ${hostsBel}${moreBel}</div>` : ''}`
         : `<div>${hostsBel}${moreBel}</div>`;
-      const vc = r.vendor_code ? escapeHtml(r.vendor_code) : '';
       return `<tr>
         <td style="color:var(--wb-faint);width:36px">${i + 1}</td>
-        <td style="text-align:left">
-          <div style="display:flex;gap:10px;align-items:center;min-width:0">
-            <img src="${r.thumb || wbThumbUrl(r.nm_id)}" width="36" height="48" alt=""
-              style="border-radius:4px;object-fit:cover;background:#f3f3f3;flex:0 0 auto"
-              onerror="this.style.visibility='hidden'">
-            <div style="min-width:0">
-              <div style="font-weight:600">
-                <a href="https://www.wildberries.ru/catalog/${r.nm_id}/detail.aspx" target="_blank" rel="noopener"
-                  style="color:inherit;text-decoration:none">${r.nm_id}</a>
-                ${vc ? `<span style="font-size:11px;color:var(--wb-muted);margin-left:6px">${vc}</span>` : ''}
-                ${r.is_mine ? '<span style="font-size:10px;color:#5B21B6;margin-left:6px">мой</span>' : ''}
-              </div>
-              <div style="font-size:11px;color:var(--wb-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px"
-                title="${escapeHtml(r.brand || '')} ${escapeHtml(r.name || '')}">
-                ${escapeHtml(r.brand || '—')}${r.name ? ' · ' + escapeHtml(r.name) : ''}
-              </div>
-            </div>
-          </div>
-        </td>
+        ${productCell(r)}
         ${countCell}
         <td style="text-align:left;font-size:11px;color:var(--wb-muted);max-width:380px">${hostsCell}</td>
       </tr>`;
@@ -7303,6 +7332,14 @@ function drawRecAgg() {
           <div style="font-size:11px;color:var(--wb-muted)">${belowOnly.length} артикулов · места 6+, ни разу в топ-5</div>
         </div>
         ${renderTable(belowOnly, 'below')}
+      </div>
+
+      <div style="margin:28px 0 0;padding-top:16px;border-top:2px solid var(--wb-border)">
+        <div style="margin:0 0 8px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+          <div style="font-size:13px;font-weight:700;color:#B42318">Нет в рекомендациях</div>
+          <div style="font-size:11px;color:var(--wb-muted)">${missing.length} своих карточек · не стоит ни на одной полке «Продавец рекомендует»</div>
+        </div>
+        ${renderTable(missing, 'missing')}
       </div>
     </div>`;
 }

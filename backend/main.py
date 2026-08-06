@@ -7270,16 +7270,29 @@ def fetch_seller_recommendations_raw(limit: int = 1000):
     return hosts, None
 
 
-def aggregate_seller_recommendations(hosts: list):
+def aggregate_seller_recommendations(hosts: list, catalog: list | None = None):
     """
     Инверт: для каждого рекомендуемого nm — у скольких карточек он в топ-5 / ниже.
     Порядок в recom_nms = место (1-based).
+    missing — свои карточки, которых нет ни в одном recomNms.
     """
     own = {}
     for h in hosts:
         nm = int(h.get("nm_id") or 0)
         if nm:
             own[nm] = h
+    for c in catalog or []:
+        nm = int(c.get("nm_id") or 0)
+        if not nm:
+            continue
+        prev = own.get(nm)
+        if not prev:
+            own[nm] = c
+        else:
+            # дополняем метаданные из полного каталога
+            for k in ("vendor_code", "brand", "name", "thumb"):
+                if not prev.get(k) and c.get(k):
+                    prev[k] = c[k]
 
     by_nm = {}
     hosts_with = 0
@@ -7346,18 +7359,127 @@ def aggregate_seller_recommendations(hosts: list):
 
     rows = list(by_nm.values())
     rows.sort(key=lambda r: (-r["top5"], -r["below"], r["nm_id"]))
+
+    recommended = set(by_nm.keys())
+    missing = []
+    # каталог — все свои nm; fallback own keys if catalog empty
+    all_own = catalog if catalog else list(own.values())
+    seen_miss = set()
+    for c in all_own:
+        try:
+            nm = int(c.get("nm_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not nm or nm in recommended or nm in seen_miss:
+            continue
+        seen_miss.add(nm)
+        missing.append({
+            "nm_id": nm,
+            "vendor_code": c.get("vendor_code") or "",
+            "brand": c.get("brand") or "",
+            "name": c.get("name") or "",
+            "thumb": c.get("thumb") or wb_product_thumb_url(nm),
+            "top5": 0,
+            "below": 0,
+            "hosts_top5": [],
+            "hosts_below": [],
+            "is_mine": True,
+        })
+    missing.sort(key=lambda r: (
+        (r.get("vendor_code") or "").lower(),
+        r["nm_id"],
+    ))
+
     return {
         "hosts_total": len(hosts),
         "hosts_with_recs": hosts_with,
+        "catalog_total": len(all_own) if catalog else len(own),
         "rows": rows,
+        "missing": missing,
     }
+
+
+def fetch_all_own_content_cards() -> list:
+    """Все свои nm-карточки из Content API: nm_id, vendor_code, brand, name, thumb."""
+    if not WB_TOKEN:
+        return []
+    out, seen = [], set()
+    cursor = {"limit": 100}
+    for _ in range(200):
+        try:
+            resp = httpx.post(
+                f"{WB_CONTENT_URL}/content/v2/get/cards/list",
+                headers=wb_headers(),
+                json={
+                    "settings": {
+                        "sort": {"ascending": True},
+                        "filter": {"withPhoto": -1},
+                        "cursor": cursor,
+                    }
+                },
+                timeout=40,
+            )
+        except Exception as e:
+            logger.error(f"cards/list for seller recs catalog: {e}")
+            break
+        if not resp.is_success:
+            logger.error(f"cards/list seller recs {resp.status_code}: {resp.text[:200]}")
+            break
+        payload = resp.json() or {}
+        cards = payload.get("cards") or []
+        if not cards:
+            break
+        for c in cards:
+            nm = c.get("nmID") or c.get("nmId")
+            if not nm:
+                continue
+            try:
+                nm = int(nm)
+            except (TypeError, ValueError):
+                continue
+            if nm in seen:
+                continue
+            seen.add(nm)
+            vc = (c.get("vendorCode") or "").strip()
+            brand = (c.get("brand") or "").strip()
+            name = (c.get("title") or c.get("subjectName") or "").strip()
+            thumb = wb_product_thumb_url(nm)
+            photos = c.get("photos") or c.get("mediaFiles") or []
+            if isinstance(photos, list) and photos:
+                p0 = photos[0]
+                if isinstance(p0, dict):
+                    thumb = (
+                        p0.get("c516x688")
+                        or p0.get("big")
+                        or p0.get("square")
+                        or p0.get("tm")
+                        or thumb
+                    )
+                elif isinstance(p0, str) and p0.startswith("http"):
+                    thumb = p0
+            out.append({
+                "nm_id": nm,
+                "vendor_code": vc,
+                "brand": brand,
+                "name": name,
+                "thumb": thumb,
+            })
+        curs = payload.get("cursor") or {}
+        updated = curs.get("updatedAt")
+        nm_cur = curs.get("nmID") or curs.get("nmId")
+        if len(cards) < 100 or not updated or nm_cur is None:
+            break
+        cursor = {"limit": 100, "updatedAt": updated, "nmID": nm_cur}
+        time.sleep(0.35)
+    logger.info(f"seller recs catalog cards: {len(out)}")
+    return out
 
 
 @app.get("/api/seller-recommendations-agg")
 def get_seller_recommendations_agg(refresh: int = 0):
     """
-    Сводка «Продавец рекомендует»: какой nm в скольких карточках в топ-5 / ниже.
-    Источник — Content API recommendations/list (настройки продавца).
+    Сводка «Продавец рекомендует»: какой nm в скольких карточках в топ-5 / ниже
+    + missing — свои карточки, которых нигде нет в рекомендациях.
     """
     now = time.time()
     if (
@@ -7371,7 +7493,8 @@ def get_seller_recommendations_agg(refresh: int = 0):
     if err and not hosts:
         raise HTTPException(status_code=502, detail=err)
 
-    agg = aggregate_seller_recommendations(hosts)
+    catalog = fetch_all_own_content_cards()
+    agg = aggregate_seller_recommendations(hosts, catalog=catalog)
     out = {
         **agg,
         "error": err,
