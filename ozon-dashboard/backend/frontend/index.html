@@ -3614,7 +3614,8 @@ function renderBrandDetailCharts(rowsAll) {
     chartCard('Заказы, шт (топ SKU)', 'brand-qty') +
     chartCard('Показы (топ SKU)', 'brand-shows') +
     chartCard('Доля рекламы, %', 'brand-ads') +
-    chartCard('Остаток на конец, шт', 'brand-stock');
+    chartCard('Остаток на конец, шт', 'brand-stock') +
+    '<div class="charts-hint">Клик по столбцу открывает карточку товара на ozon.ru</div>';
   makeBarChart('brand-qty', H.lab(qty), [{ label: 'Заказы, шт', data: qty.map(r => r.ordered_qty || 0), backgroundColor: color, borderRadius: 4 }], { fullLabels: H.full(qty), rows: qty });
   makeBarChart('brand-shows', H.lab(shows), [{ label: 'Показы', data: shows.map(r => r.shows || 0), backgroundColor: 'rgba(247,144,9,0.8)', borderRadius: 4 }], { fullLabels: H.full(shows), rows: shows });
   makeBarChart('brand-ads', H.lab(ads), [{ label: 'Доля рекламы, %', data: ads.map(r => Number(r.ads_share) || 0), backgroundColor: 'rgba(240,68,56,0.75)', borderRadius: 4 }], { fullLabels: H.full(ads), horizontal: true, rows: ads });
@@ -3651,7 +3652,8 @@ function renderCompareCharts(own, rival) {
     chartCard(`Реклама % — конкурент`, 'cmp-ads-rival') +
     chartCard(`Реклама % — мой`, 'cmp-ads-me') +
     chartCard(`Остаток — конкурент`, 'cmp-stock-rival') +
-    chartCard(`Остаток — мой`, 'cmp-stock-me');
+    chartCard(`Остаток — мой`, 'cmp-stock-me') +
+    '<div class="charts-hint">Клик по столбцу топ-SKU открывает карточку на ozon.ru</div>';
 
   makeBarChart('cmp-vs-qty', [''], [
     { label: 'Я: ' + own, data: [ownAgg.qty], backgroundColor: meColor, borderRadius: 4 },
