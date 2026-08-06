@@ -560,6 +560,20 @@ td.tc{text-align:center}
 .gm-thumb{width:28px;height:36px;object-fit:cover;border-radius:3px;background:#EBE8E3;flex:0 0 auto}
 .gm-art-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .gm-nmid{font-size:10px;color:var(--wb-faint);line-height:1.2}
+.gm-stats{font-size:11px;font-weight:600;line-height:1.25;margin-top:2px;color:var(--wb-text)}
+.gm-stats-muted{font-weight:500;color:var(--wb-muted);font-size:10px}
+.gm-art-ord{display:inline-flex;flex-direction:column;gap:1px;flex:0 0 auto}
+.gm-art-ord button{
+  border:0;background:#E8E4DE;color:#475569;width:18px;height:13px;line-height:1;
+  padding:0;border-radius:2px;cursor:pointer;font-size:8px;font-family:inherit
+}
+.gm-art-ord button:hover{background:#D4CFC7}
+.gm-art-ord button:disabled{opacity:.3;cursor:default}
+.gm-sep{
+  font-size:10px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;
+  color:var(--wb-muted);padding:8px 4px 4px;margin:4px 0 2px;border-top:1px dashed var(--wb-border)
+}
+.gm-a.gm-no-photo{background:#FCFAF7}
 .gm-del{color:var(--wb-faint);cursor:pointer;padding:0 4px;font-size:14px;flex:0 0 auto}
 .gm-del:hover{color:var(--red)}
 .gm-add{display:flex;gap:6px;margin-top:8px}
@@ -804,7 +818,7 @@ td.tc{text-align:center}
     <div style="display:flex;align-items:center;margin-bottom:4px">
       <div>
         <div class="section-title">Управление склейками</div>
-        <div class="section-sub">Стрелки ▲▼ — порядок склеек. Перетаскивай артикулы между группами. «Сохранить» — записать.</div>
+        <div class="section-sub">▲▼ у склейки — порядок групп, у артикула — порядок внутри. С фото сверху, без фото снизу (рейтинг · отзывы). «Сохранить» — записать.</div>
       </div>
       <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
         <span class="saved-note" id="savedNote">✓ Сохранено</span>
@@ -2787,12 +2801,33 @@ function EX() {
 
 // Groups manager
 function gmArticleMeta(art) {
-  const a = (ALL || []).find(x => x.article === art);
-  const nm = a && a.nm_id ? Number(a.nm_id) : 0;
+  const a = (ALL || []).find(x => x.article === art) || {};
+  const nm = a.nm_id ? Number(a.nm_id) : 0;
+  const hasPhoto = nm > 0;
   return {
     nm_id: nm > 0 ? nm : null,
-    thumb: nm > 0 ? wbThumbUrl(nm) : '',
+    hasPhoto,
+    thumb: hasPhoto ? wbThumbUrl(nm) : '',
+    avg_rating: a.avg_rating != null ? a.avg_rating : null,
+    total: a.total != null ? a.total : 0,
+    is_official: !!a.is_official,
   };
+}
+
+/** С фото (есть nm) сверху, без фото — снизу; порядок внутри блока сохраняется. */
+function sortArtsByPhoto(arts) {
+  const withP = [];
+  const withoutP = [];
+  (arts || []).forEach(art => {
+    if(gmArticleMeta(art).hasPhoto) withP.push(art);
+    else withoutP.push(art);
+  });
+  return withP.concat(withoutP);
+}
+
+function normalizeGroupArticles(g) {
+  if(!GROUPS[g]) return;
+  GROUPS[g] = sortArtsByPhoto(GROUPS[g]);
 }
 
 function moveGroup(gE, dir) {
@@ -2811,21 +2846,42 @@ function moveGroup(gE, dir) {
   renderGroupManager();
 }
 
+/** Двигать артикул внутри склейки; только в своём блоке (с фото / без). */
+function moveArt(gE, aE, dir) {
+  const g = decodeURIComponent(gE);
+  const art = decodeURIComponent(aE);
+  if(g === 'Без склейки' || !GROUPS[g]) return;
+  normalizeGroupArticles(g);
+  const list = GROUPS[g].slice();
+  const i = list.indexOf(art);
+  if(i < 0) return;
+  const j = i + (dir === 'up' || dir === -1 ? -1 : 1);
+  if(j < 0 || j >= list.length) return;
+  if(gmArticleMeta(list[i]).hasPhoto !== gmArticleMeta(list[j]).hasPhoto) return;
+  const t = list[i];
+  list[i] = list[j];
+  list[j] = t;
+  GROUPS[g] = list;
+  renderGroupManager();
+}
+
 function renderGroupManager() {
   const q = (document.getElementById('gmSearch')?.value || '').toLowerCase().trim();
+  Object.keys(GROUPS).forEach(g => normalizeGroupArticles(g));
+
   const ga = new Set(Object.values(GROUPS).flat());
-  const ung = ALL.filter(a => !ga.has(a.article)).map(a => a.article);
+  const ung = sortArtsByPhoto(ALL.filter(a => !ga.has(a.article)).map(a => a.article));
   const namedKeys = Object.keys(GROUPS);
   const all = {...GROUPS, 'Без склейки': ung};
   let html = '';
   Object.entries(all).forEach(([g, arts]) => {
-    let shown = arts;
+    let shown = arts.slice();
     if(q) shown = arts.filter(art => {
       if(art.toLowerCase().includes(q)) return true;
       const meta = gmArticleMeta(art);
       return meta.nm_id && String(meta.nm_id).includes(q);
     });
-    if(q && !shown.length) return; // hide groups with no matches while searching
+    if(q && !shown.length) return;
 
     const color = gc(g);
     const gid = 'gb_' + g.replace(/[^a-zа-я0-9]/gi,'_');
@@ -2837,6 +2893,58 @@ function renderGroupManager() {
     </span>
     <span class="gm-gh-ord">${ordIdx + 1}</span>` : '';
 
+    let sepDrawn = false;
+    const body = shown.map(art => {
+      const meta = gmArticleMeta(art);
+      const list = arts;
+      const iFull = list.indexOf(art);
+      const prev = iFull > 0 ? list[iFull - 1] : null;
+      const next = iFull >= 0 && iFull < list.length - 1 ? list[iFull + 1] : null;
+      const canUp = isNamed && prev && gmArticleMeta(prev).hasPhoto === meta.hasPhoto;
+      const canDown = isNamed && next && gmArticleMeta(next).hasPhoto === meta.hasPhoto;
+
+      let sep = '';
+      if(!meta.hasPhoto && !sepDrawn) {
+        sepDrawn = true;
+        sep = `<div class="gm-sep">Без фото · оценка и отзывы</div>`;
+      }
+
+      const thumb = meta.thumb
+        ? `<img class="gm-thumb" src="${meta.thumb}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'gm-thumb'}))">`
+        : `<span class="gm-thumb"></span>`;
+
+      let statsHtml = '';
+      if(!meta.hasPhoto) {
+        const rat = meta.avg_rating != null && meta.avg_rating !== ''
+          ? parseFloat(meta.avg_rating).toFixed(2)
+          : '—';
+        const tot = meta.total || 0;
+        const ratColor = meta.avg_rating != null ? rc(meta.avg_rating) : 'var(--wb-muted)';
+        statsHtml = `<div class="gm-stats"><span style="color:${ratColor}">★ ${rat}</span>
+          <span class="gm-stats-muted"> · ${fmt(tot)} отз.</span></div>`;
+      }
+
+      const nmid = meta.nm_id
+        ? `<div class="gm-nmid">${meta.nm_id}</div>`
+        : '';
+
+      const artOrd = isNamed ? `<span class="gm-art-ord">
+        <button type="button" title="Выше" ${canUp ? '' : 'disabled'} onclick="event.stopPropagation();moveArt('${encodeURIComponent(g)}','${encodeURIComponent(art)}','up')">▲</button>
+        <button type="button" title="Ниже" ${canDown ? '' : 'disabled'} onclick="event.stopPropagation();moveArt('${encodeURIComponent(g)}','${encodeURIComponent(art)}','down')">▼</button>
+      </span>` : '';
+
+      return `${sep}<div class="gm-a${meta.hasPhoto ? '' : ' gm-no-photo'}" draggable="true" ondragstart="gDS(event,'${encodeURIComponent(art)}','${encodeURIComponent(g)}')">
+          ${artOrd}
+          ${thumb}
+          <div class="gm-art-name">
+            <div title="${escapeHtml(art)}">${escapeHtml(art)}</div>
+            ${nmid}
+            ${statsHtml}
+          </div>
+          ${isNamed?`<span class="gm-del" onclick="rmArt('${encodeURIComponent(g)}','${encodeURIComponent(art)}')">✕</span>`:''}
+        </div>`;
+    }).join('');
+
     html += `<div class="gm-g" data-group="${escapeHtml(g)}" ondragover="gOver(event)" ondrop="gDrop(event,'${encodeURIComponent(g)}')">
       <div class="gm-gh" style="background:${color}">
         ${ordBtns}
@@ -2844,23 +2952,7 @@ function renderGroupManager() {
         ${isNamed?`<span style="cursor:pointer;opacity:.85;font-size:12px;margin-right:8px" onclick="renameGroup('${encodeURIComponent(g)}')" title="Переименовать">✏️</span><span style="cursor:pointer;opacity:.7;font-size:12px" onclick="rmGroup('${encodeURIComponent(g)}')" title="Удалить">✕</span>`:''}
       </div>
       <div class="gm-gb" id="${gid}">
-        ${shown.map(art => {
-          const meta = gmArticleMeta(art);
-          const thumb = meta.thumb
-            ? `<img class="gm-thumb" src="${meta.thumb}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
-            : `<span class="gm-thumb" style="display:inline-block"></span>`;
-          const nmid = meta.nm_id
-            ? `<div class="gm-nmid">${meta.nm_id}</div>`
-            : '';
-          return `<div class="gm-a" draggable="true" ondragstart="gDS(event,'${encodeURIComponent(art)}','${encodeURIComponent(g)}')">
-          ${thumb}
-          <div class="gm-art-name">
-            <div title="${escapeHtml(art)}">${escapeHtml(art)}</div>
-            ${nmid}
-          </div>
-          ${isNamed?`<span class="gm-del" onclick="rmArt('${encodeURIComponent(g)}','${encodeURIComponent(art)}')">✕</span>`:''}
-        </div>`;
-        }).join('')}
+        ${body}
         ${q && shown.length<arts.length?`<div style="font-size:11px;color:var(--wb-faint);margin-top:4px">показаны ${shown.length} из ${arts.length}</div>`:''}
         ${isNamed?`<div class="gm-add"><input placeholder="Добавить артикул..." id="ai_${gid}"><button onclick="addArt('${encodeURIComponent(g)}','ai_${gid}')">+</button></div>`:''}
       </div>
@@ -2876,7 +2968,12 @@ function gDrop(e,toEnc){
   const to = decodeURIComponent(toEnc);
   if(!dragArt||dragFrom===to) return;
   if(dragFrom!=='Без склейки') GROUPS[dragFrom]=(GROUPS[dragFrom]||[]).filter(a=>a!==dragArt);
-  if(to!=='Без склейки'){if(!GROUPS[to])GROUPS[to]=[];if(!GROUPS[to].includes(dragArt))GROUPS[to].push(dragArt);}
+  if(to!=='Без склейки'){
+    if(!GROUPS[to])GROUPS[to]=[];
+    if(!GROUPS[to].includes(dragArt))GROUPS[to].push(dragArt);
+    normalizeGroupArticles(to);
+  }
+  if(dragFrom!=='Без склейки' && GROUPS[dragFrom]) normalizeGroupArticles(dragFrom);
   dragArt=null;dragFrom=null;renderGroupManager();
 }
 function rmArt(gE,aE){const g=decodeURIComponent(gE),a=decodeURIComponent(aE);GROUPS[g]=(GROUPS[g]||[]).filter(x=>x!==a);renderGroupManager();}
@@ -2885,6 +2982,7 @@ function addArt(gE,inputId){
   const input=document.getElementById(inputId);
   const art=(input.value||'').trim();
   if(!art)return;if(!GROUPS[g])GROUPS[g]=[];if(!GROUPS[g].includes(art))GROUPS[g].push(art);
+  normalizeGroupArticles(g);
   input.value='';renderGroupManager();
 }
 function addGroup(){const name=prompt('Название склейки:');if(!name?.trim())return;GROUPS[name.trim()]=[];renderGroupManager();}
@@ -2898,18 +2996,17 @@ function renameGroup(gE){
     alert('Склейка с таким названием уже существует');
     return;
   }
-  // Rebuild GROUPS preserving order, replacing the key
   const next = {};
   Object.entries(GROUPS).forEach(([name, arts]) => {
     next[name === g ? trimmed : name] = arts;
   });
   GROUPS = next;
-  // Keep expand/collapse state consistent with renamed key
   if(EXP[g] !== undefined){ EXP[trimmed] = EXP[g]; delete EXP[g]; }
   renderGroupManager();
 }
 
 async function saveGroups() {
+  Object.keys(GROUPS).forEach(g => normalizeGroupArticles(g));
   try {
     const resp = await fetch(`${RAILWAY_URL}/api/save-groups`, {
       method: 'POST',
