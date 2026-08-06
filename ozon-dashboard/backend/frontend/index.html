@@ -3494,7 +3494,12 @@ function renderBrandDetailCharts(rowsAll, brandName) {
 
   el.style.display = 'grid';
   el.innerHTML =
-    (showCompare ? chartCard(`Сравнение: ${own} vs ${brandName}`, 'brand-vs-totals', true) : '') +
+    (showCompare ? (
+      chartCard(`Заказы, шт — ${own} vs ${brandName}`, 'brand-vs-qty') +
+      chartCard(`Показы — ${own} vs ${brandName}`, 'brand-vs-shows') +
+      chartCard(`Ср. реклама % — ${own} vs ${brandName}`, 'brand-vs-ads') +
+      chartCard(`Остатки SKU — ${own} vs ${brandName}`, 'brand-vs-stock')
+    ) : '') +
     chartCard(showCompare ? `Заказы, шт — топ SKU конкурента (${brandName})` : 'Заказы, шт (топ SKU)', 'brand-qty') +
     (showCompare ? chartCard(`Заказы, шт — топ SKU мой (${own})`, 'brand-qty-me') : '') +
     chartCard(showCompare ? `Показы — топ конкурента` : 'Показы (топ SKU)', 'brand-shows') +
@@ -3505,49 +3510,38 @@ function renderBrandDetailCharts(rowsAll, brandName) {
     (showCompare ? chartCard(`Остаток — мой`, 'brand-stock-me') : '');
 
   if (showCompare) {
-    makeBarChart('brand-vs-totals', ['Заказы, шт', 'Показы', 'Ср. реклама %', 'SKU с остатком', 'SKU без остатка'], [
+    const pair = (id, labels, meVal, rivalVal, meTip, rivalTip) => makeBarChart(id, labels, [
+      { label: 'Я: ' + own, data: [meVal], backgroundColor: meColor, borderRadius: 4 },
+      { label: 'Конкурент: ' + brandName, data: [rivalVal], backgroundColor: rivalColor, borderRadius: 4 },
+    ], { tooltipRaw: [[meTip], [rivalTip]] });
+
+    // одна категория → две колонки; для остатков две метрики рядом
+    makeBarChart('brand-vs-qty', [''], [
+      { label: 'Я: ' + own, data: [ownAgg.qty], backgroundColor: meColor, borderRadius: 4 },
+      { label: 'Конкурент: ' + brandName, data: [themAgg.qty], backgroundColor: rivalColor, borderRadius: 4 },
+    ], { tooltipRaw: [[fmt(ownAgg.qty) + ' шт'], [fmt(themAgg.qty) + ' шт']] });
+    makeBarChart('brand-vs-shows', [''], [
+      { label: 'Я: ' + own, data: [ownAgg.shows], backgroundColor: meColor, borderRadius: 4 },
+      { label: 'Конкурент: ' + brandName, data: [themAgg.shows], backgroundColor: rivalColor, borderRadius: 4 },
+    ], { tooltipRaw: [[fmt(ownAgg.shows)], [fmt(themAgg.shows)]] });
+    makeBarChart('brand-vs-ads', [''], [
+      { label: 'Я: ' + own, data: [Number(ownAgg.avgAds.toFixed(1))], backgroundColor: meColor, borderRadius: 4 },
+      { label: 'Конкурент: ' + brandName, data: [Number(themAgg.avgAds.toFixed(1))], backgroundColor: rivalColor, borderRadius: 4 },
+    ], { tooltipRaw: [[ownAgg.avgAds.toFixed(1) + '%'], [themAgg.avgAds.toFixed(1) + '%']] });
+    makeBarChart('brand-vs-stock', ['С остатком', 'Без остатка'], [
       {
         label: 'Я: ' + own,
-        data: [
-          ownAgg.qty,
-          ownAgg.shows,
-          Number(ownAgg.avgAds.toFixed(1)),
-          Math.max(ownAgg.count - ownAgg.zeroStock, 0),
-          ownAgg.zeroStock,
-        ],
+        data: [Math.max(ownAgg.count - ownAgg.zeroStock, 0), ownAgg.zeroStock],
         backgroundColor: meColor,
         borderRadius: 4,
       },
       {
         label: 'Конкурент: ' + brandName,
-        data: [
-          themAgg.qty,
-          themAgg.shows,
-          Number(themAgg.avgAds.toFixed(1)),
-          Math.max(themAgg.count - themAgg.zeroStock, 0),
-          themAgg.zeroStock,
-        ],
+        data: [Math.max(themAgg.count - themAgg.zeroStock, 0), themAgg.zeroStock],
         backgroundColor: rivalColor,
         borderRadius: 4,
       },
-    ], {
-      tooltipRaw: [
-        [
-          fmt(ownAgg.qty) + ' шт',
-          fmt(ownAgg.shows),
-          ownAgg.avgAds.toFixed(1) + '%',
-          fmt(Math.max(ownAgg.count - ownAgg.zeroStock, 0)),
-          fmt(ownAgg.zeroStock),
-        ],
-        [
-          fmt(themAgg.qty) + ' шт',
-          fmt(themAgg.shows),
-          themAgg.avgAds.toFixed(1) + '%',
-          fmt(Math.max(themAgg.count - themAgg.zeroStock, 0)),
-          fmt(themAgg.zeroStock),
-        ],
-      ],
-    });
+    ]);
   }
 
   const rivalQty = byQty(rivalRows);
