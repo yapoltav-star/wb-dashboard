@@ -555,23 +555,24 @@ td.tc{text-align:center}
 .gm-ord-btns button:hover{background:rgba(255,255,255,.35)}
 .gm-ord-btns button:disabled{opacity:.35;cursor:default}
 .gm-gb{padding:10px;min-height:50px}
-.gm-a{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--rs);font-size:12px;cursor:grab;background:var(--wb-bg);margin-bottom:6px;border:1px solid var(--wb-border);user-select:none;transition:border-color .12s,box-shadow .12s,background .12s,opacity .12s}
+.gm-a{display:flex;align-items:flex-start;gap:8px;padding:5px 8px;border-radius:var(--rs);font-size:12px;cursor:grab;background:var(--wb-bg);margin-bottom:6px;border:1px solid var(--wb-border);user-select:none;transition:border-color .12s,box-shadow .12s,background .12s,opacity .12s}
 .gm-a:hover{border-color:var(--wb-purple);background:var(--wb-purple-light)}
 .gm-a.gm-dragging{opacity:.45;cursor:grabbing}
 .gm-a.gm-drop-before{box-shadow:inset 0 2px 0 0 #7C3AED}
 .gm-a.gm-drop-after{box-shadow:inset 0 -2px 0 0 #7C3AED}
 .gm-gb.gm-drop-target{outline:2px dashed #A78BFA;outline-offset:-2px;background:rgba(124,58,237,.04)}
-.gm-thumb{width:28px;height:36px;object-fit:cover;border-radius:3px;background:#EBE8E3;flex:0 0 auto;pointer-events:none}
-.gm-art-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:none}
+.gm-thumb{width:28px;height:36px;object-fit:cover;border-radius:3px;background:#EBE8E3;flex:0 0 auto;pointer-events:none;margin-top:1px}
+.gm-art-name{flex:1;min-width:0;overflow:hidden;pointer-events:none}
+.gm-art-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
 .gm-nmid{font-size:10px;color:var(--wb-faint);line-height:1.2}
-.gm-stats{font-size:11px;font-weight:600;line-height:1.25;margin-top:2px;color:var(--wb-text)}
+.gm-stats{font-size:11px;font-weight:600;line-height:1.3;margin-top:2px;color:var(--wb-text);white-space:nowrap}
 .gm-stats-muted{font-weight:500;color:var(--wb-muted);font-size:10px}
 .gm-sep{
   font-size:10px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;
   color:var(--wb-muted);padding:8px 4px 4px;margin:4px 0 2px;border-top:1px dashed var(--wb-border);pointer-events:none
 }
 .gm-a.gm-no-photo{background:#FCFAF7}
-.gm-del{color:var(--wb-faint);cursor:pointer;padding:0 4px;font-size:14px;flex:0 0 auto}
+.gm-del{color:var(--wb-faint);cursor:pointer;padding:0 4px;font-size:14px;flex:0 0 auto;margin-top:2px}
 .gm-del:hover{color:var(--red)}
 .gm-add{display:flex;gap:6px;margin-top:8px}
 .gm-add input{flex:1;border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;outline:none}
@@ -815,7 +816,7 @@ td.tc{text-align:center}
     <div style="display:flex;align-items:center;margin-bottom:4px">
       <div>
         <div class="section-title">Управление склейками</div>
-        <div class="section-sub">Перетащи артикул на место (фиолетовая линия = куда встанет). Между склейками — тоже перетаскиванием. ▲▼ у группы — порядок склеек. «Сохранить».</div>
+        <div class="section-sub">Сверху — с фото, снизу — без фото (★ и число отзывов). Перетащи на строку: фиолетовая линия = место. ▲▼ у группы — порядок склеек. «Сохранить».</div>
       </div>
       <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
         <span class="saved-note" id="savedNote">✓ Сохранено</span>
@@ -1296,6 +1297,9 @@ const RAILWAY_URL = (typeof location !== 'undefined' && location.hostname
 var ALL = [], RATINGS = {}, GROUPS = {}, SK = 'avg_rating', SD = -1, EXP = {};
 var HAS_OFFICIAL = false;
 var dragArt = null, dragFrom = null;
+/** nmId, у которых превью с CDN не загрузилось — считаем «без фото». */
+var gmBrokenThumbs = new Set();
+var gmThumbFailT = null;
 var STOCK_TOTALS = [];
 var SUPPLY_REPORT = [], TARGET_DAYS = 30;
 var AD_STATS = [];
@@ -2797,27 +2801,81 @@ function EX() {
 }
 
 // Groups manager
+function gmFindArticle(art) {
+  const s = String(art || '').trim();
+  if(!s) return {};
+  const key = s.toLowerCase();
+  return (ALL || []).find(x => {
+    if(String(x.article || '').trim() === s) return true;
+    if(String(x.article || '').trim().toLowerCase() === key) return true;
+    if(x.nm_id != null && String(x.nm_id) === s) return true;
+    return false;
+  }) || RATINGS[s] || RATINGS[key] || {};
+}
+
 function gmArticleMeta(art) {
-  const a = (ALL || []).find(x => x.article === art) || {};
-  const nm = a.nm_id ? Number(a.nm_id) : 0;
-  const hasPhoto = nm > 0;
+  const a = gmFindArticle(art);
+  // nm: из карточки, либо если в склейке лежит сам nm_id
+  let nm = a.nm_id ? Number(a.nm_id) : 0;
+  if(!nm) {
+    const asNum = Number(String(art || '').trim());
+    if(Number.isFinite(asNum) && asNum > 1e5) nm = asNum;
+  }
+  const broken = nm > 0 && gmBrokenThumbs.has(String(nm));
+  const hasPhoto = nm > 0 && !broken;
+  const avg = a.avg_rating != null ? a.avg_rating
+    : (a.wb_rating != null ? a.wb_rating : null);
+  const tot = a.total != null ? a.total
+    : (a.reviews_total != null ? a.reviews_total : 0);
   return {
     nm_id: nm > 0 ? nm : null,
     hasPhoto,
-    thumb: hasPhoto ? wbThumbUrl(nm) : '',
-    avg_rating: a.avg_rating != null ? a.avg_rating : null,
-    total: a.total != null ? a.total : 0,
-    is_official: !!a.is_official,
+    thumb: hasPhoto ? wbThumbUrl(nm) : (nm > 0 && broken ? '' : (nm > 0 ? wbThumbUrl(nm) : '')),
+    avg_rating: avg,
+    total: tot,
+    is_official: !!a.is_official || a.source === 'manual',
   };
 }
 
-/** С фото (есть nm) сверху, без фото — снизу; порядок внутри блока сохраняется. */
+/** Превью с CDN не открылось — артикул уезжает вниз, покажем рейтинг. */
+function gmThumbFail(imgEl, nm) {
+  const n = String(nm || '');
+  if(!n) return;
+  try {
+    if(imgEl && imgEl.parentNode) {
+      if(!imgEl.dataset.fb) {
+        // сначала пробуем jpg
+        imgEl.dataset.fb = '1';
+        imgEl.src = wbThumbUrl(nm, 'jpg');
+        return;
+      }
+      const span = document.createElement('span');
+      span.className = 'gm-thumb';
+      imgEl.replaceWith(span);
+    }
+  } catch(_) {}
+  if(gmBrokenThumbs.has(n)) return;
+  gmBrokenThumbs.add(n);
+  clearTimeout(gmThumbFailT);
+  gmThumbFailT = setTimeout(() => {
+    try { renderGroupManager(); } catch(_) {}
+  }, 80);
+}
+
+/** С фото сверху, без фото снизу; без фото — по рейтингу ↓, затем по отзывам ↓; порядок «с фото» сохраняется. */
 function sortArtsByPhoto(arts) {
   const withP = [];
   const withoutP = [];
   (arts || []).forEach(art => {
     if(gmArticleMeta(art).hasPhoto) withP.push(art);
     else withoutP.push(art);
+  });
+  withoutP.sort((a, b) => {
+    const ma = gmArticleMeta(a), mb = gmArticleMeta(b);
+    const ra = ma.avg_rating != null ? Number(ma.avg_rating) : -1;
+    const rb = mb.avg_rating != null ? Number(mb.avg_rating) : -1;
+    if(rb !== ra) return rb - ra;
+    return (Number(mb.total) || 0) - (Number(ma.total) || 0);
   });
   return withP.concat(withoutP);
 }
@@ -3031,8 +3089,8 @@ function renderGroupManager() {
         sep = `<div class="gm-sep">Без фото · оценка и отзывы</div>`;
       }
 
-      const thumb = meta.thumb
-        ? `<img class="gm-thumb" src="${meta.thumb}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'gm-thumb'}))">`
+      const thumb = (meta.nm_id && meta.hasPhoto)
+        ? `<img class="gm-thumb" src="${meta.thumb}" alt="" loading="lazy" onerror="gmThumbFail(this,${meta.nm_id})">`
         : `<span class="gm-thumb"></span>`;
 
       let statsHtml = '';
@@ -3042,8 +3100,8 @@ function renderGroupManager() {
           : '—';
         const tot = meta.total || 0;
         const ratColor = meta.avg_rating != null ? rc(meta.avg_rating) : 'var(--wb-muted)';
-        statsHtml = `<div class="gm-stats"><span style="color:${ratColor}">★ ${rat}</span>
-          <span class="gm-stats-muted"> · ${fmt(tot)} отз.</span></div>`;
+        statsHtml = `<div class="gm-stats"><span style="color:${ratColor}">★ ${rat}</span>`
+          + `<span class="gm-stats-muted"> · ${fmt(tot)} отз.</span></div>`;
       }
 
       const nmid = meta.nm_id
@@ -3064,7 +3122,7 @@ function renderGroupManager() {
           ondrop="gArtDrop(event,'${gEnc}','${artEnc}')">
           ${thumb}
           <div class="gm-art-name">
-            <div title="${escapeHtml(art)}">${escapeHtml(art)}</div>
+            <div class="gm-art-title" title="${escapeHtml(art)}">${escapeHtml(art)}</div>
             ${nmid}
             ${statsHtml}
           </div>
