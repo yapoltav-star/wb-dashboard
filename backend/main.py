@@ -4130,6 +4130,16 @@ def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> 
     Для day + date_cur/date_prev — выбранные календарные дни (полные сутки;
     если выбран сегодняшний — до текущего времени)."""
     today0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    time_cut = now.strftime("%H:%M")
+
+    def _range_note(equal_cut: bool) -> str:
+        if equal_cut:
+            return (
+                f"Одинаковое окно часов (оба до {time_cut} МСК) — "
+                "сравниваем «срез к этому моменту», а не полные сутки"
+            )
+        return "Полные календарные периоды (или выбранные дни целиком)"
+
     if period == "day" and date_cur:
         cur_day = _parse_ymd(date_cur)
         if cur_day:
@@ -4138,27 +4148,37 @@ def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> 
                 prev_day = cur_day - timedelta(days=1)
             cur_start = cur_day.replace(hour=0, minute=0, second=0, microsecond=0)
             prev_start = prev_day.replace(hour=0, minute=0, second=0, microsecond=0)
-            if cur_start.date() == today0.date():
+            cur_is_today = cur_start.date() == today0.date()
+            prev_is_today = prev_start.date() == today0.date()
+            if cur_is_today:
                 cur_end = now
-                label_cur = f"{cur_start.strftime('%d.%m.%Y')} до {now.strftime('%H:%M')}"
+                label_cur = f"{cur_start.strftime('%d.%m.%Y')} (сегодня) до {time_cut}"
+                col_cur = f"{cur_start.strftime('%d.%m')} до {time_cut}"
             else:
                 cur_end = cur_start.replace(hour=23, minute=59, second=59)
-                label_cur = cur_start.strftime("%d.%m.%Y")
-            if prev_start.date() == today0.date():
+                label_cur = f"{cur_start.strftime('%d.%m.%Y')} (полные сутки)"
+                col_cur = cur_start.strftime("%d.%m")
+            if prev_is_today:
                 prev_end = now
-                label_prev = f"{prev_start.strftime('%d.%m.%Y')} до {now.strftime('%H:%M')}"
+                label_prev = f"{prev_start.strftime('%d.%m.%Y')} (сегодня) до {time_cut}"
+                col_prev = f"{prev_start.strftime('%d.%m')} до {time_cut}"
             else:
                 prev_end = prev_start.replace(hour=23, minute=59, second=59)
-                label_prev = prev_start.strftime("%d.%m.%Y")
+                label_prev = f"{prev_start.strftime('%d.%m.%Y')} (полные сутки)"
+                col_prev = prev_start.strftime("%d.%m")
+            equal_cut = cur_is_today  # выбран «сегодня» vs предыдущий день
             return {
                 "cur_start": cur_start, "cur_end": cur_end,
                 "prev_start": prev_start, "prev_end": prev_end,
                 "label_cur": label_cur,
                 "label_prev": label_prev,
-                "col_cur": cur_start.strftime("%d.%m"),
-                "col_prev": prev_start.strftime("%d.%m"),
+                "col_cur": col_cur,
+                "col_prev": col_prev,
                 "use_snaps": False,
                 "custom_dates": True,
+                "period_name": "День (выбранный)",
+                "mode_hint": _range_note(equal_cut),
+                "time_cutoff": time_cut if equal_cut else None,
             }
     if period == "day":
         cur_start = today0
@@ -4167,12 +4187,15 @@ def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> 
         return {
             "cur_start": cur_start, "cur_end": now,
             "prev_start": prev_start, "prev_end": prev_end,
-            "label_cur": f"сегодня до {now.strftime('%H:%M')}",
-            "label_prev": f"вчера до {now.strftime('%H:%M')}",
-            "col_cur": "Сегодня",
-            "col_prev": "Вчера",
+            "label_cur": f"сегодня {cur_start.strftime('%d.%m.%Y')} до {time_cut}",
+            "label_prev": f"вчера {prev_start.strftime('%d.%m.%Y')} до {time_cut}",
+            "col_cur": f"Сегодня {cur_start.strftime('%d.%m')}",
+            "col_prev": f"Вчера {prev_start.strftime('%d.%m')}",
             "use_snaps": True,
             "custom_dates": False,
+            "period_name": "День",
+            "mode_hint": _range_note(True),
+            "time_cutoff": time_cut,
         }
     if period == "week":
         # понедельник текущей недели
@@ -4182,12 +4205,15 @@ def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> 
         return {
             "cur_start": cur_start, "cur_end": now,
             "prev_start": prev_start, "prev_end": prev_end,
-            "label_cur": f"эта неделя ({cur_start.strftime('%d.%m')}–{now.strftime('%d.%m %H:%M')})",
-            "label_prev": f"прошлая неделя ({prev_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m %H:%M')})",
-            "col_cur": "Текущий",
-            "col_prev": "Прошлый",
+            "label_cur": f"эта неделя: {cur_start.strftime('%d.%m')} → сейчас ({now.strftime('%d.%m %H:%M')})",
+            "label_prev": f"прошлая неделя: {prev_start.strftime('%d.%m')} → {prev_end.strftime('%d.%m %H:%M')}",
+            "col_cur": f"{cur_start.strftime('%d.%m')}–{now.strftime('%d.%m')}",
+            "col_prev": f"{prev_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m')}",
             "use_snaps": False,
             "custom_dates": False,
+            "period_name": "Неделя (пн → сейчас)",
+            "mode_hint": _range_note(True),
+            "time_cutoff": time_cut,
         }
     if period == "weeks2":
         cur_start = now - timedelta(days=14)
@@ -4196,12 +4222,15 @@ def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> 
         return {
             "cur_start": cur_start, "cur_end": now,
             "prev_start": prev_start, "prev_end": prev_end,
-            "label_cur": f"последние 14 дн. ({cur_start.strftime('%d.%m')}–{now.strftime('%d.%m')})",
-            "label_prev": f"пред. 14 дн. ({prev_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m')})",
-            "col_cur": "Текущий",
-            "col_prev": "Прошлый",
+            "label_cur": f"последние 14 дн.: {cur_start.strftime('%d.%m.%Y')} → {now.strftime('%d.%m.%Y')}",
+            "label_prev": f"предыдущие 14 дн.: {prev_start.strftime('%d.%m.%Y')} → {prev_end.strftime('%d.%m.%Y')}",
+            "col_cur": f"{cur_start.strftime('%d.%m')}–{now.strftime('%d.%m')}",
+            "col_prev": f"{prev_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m')}",
             "use_snaps": False,
             "custom_dates": False,
+            "period_name": "2 недели",
+            "mode_hint": "Два окна по 14 дней подряд (без выравнивания по часам)",
+            "time_cutoff": None,
         }
     # month — с 1-го числа до сейчас vs прошлый месяц до того же дня/времени
     cur_start = today0.replace(day=1)
@@ -4222,12 +4251,15 @@ def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> 
     return {
         "cur_start": cur_start, "cur_end": now,
         "prev_start": prev_month_start, "prev_end": prev_end,
-        "label_cur": f"этот месяц ({cur_start.strftime('%d.%m')}–{now.strftime('%d.%m %H:%M')})",
-        "label_prev": f"прошлый месяц ({prev_month_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m %H:%M')})",
-        "col_cur": "Текущий",
-        "col_prev": "Прошлый",
+        "label_cur": f"этот месяц: {cur_start.strftime('%d.%m.%Y')} → {now.strftime('%d.%m.%Y %H:%M')}",
+        "label_prev": f"прошлый месяц: {prev_month_start.strftime('%d.%m.%Y')} → {prev_end.strftime('%d.%m.%Y %H:%M')}",
+        "col_cur": f"{cur_start.strftime('%d.%m')}–{now.strftime('%d.%m')}",
+        "col_prev": f"{prev_month_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m')}",
         "use_snaps": False,
         "custom_dates": False,
+        "period_name": "Месяц (1-е → сейчас)",
+        "mode_hint": _range_note(True),
+        "time_cutoff": time_cut,
     }
 
 def _funnel_products_range(start_str: str, end_str: str, nm_ids: list = None) -> dict:
@@ -4588,6 +4620,9 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             "col_cur": win.get("col_cur") or ("Сегодня" if period == "day" else "Текущий"),
             "col_prev": win.get("col_prev") or ("Вчера" if period == "day" else "Прошлый"),
             "custom_dates": bool(win.get("custom_dates")),
+            "period_name": win.get("period_name") or period,
+            "mode_hint": win.get("mode_hint") or "",
+            "time_cutoff": win.get("time_cutoff"),
             "date_cur": cur_s,
             "date_prev": prev_s,
             "today": cur_s,
@@ -4755,6 +4790,9 @@ def get_sales_pace(period: str = "day", refresh: bool = False, date_cur: str = N
         "col_cur": cached.get("col_cur"),
         "col_prev": cached.get("col_prev"),
         "custom_dates": cached.get("custom_dates"),
+        "period_name": cached.get("period_name"),
+        "mode_hint": cached.get("mode_hint"),
+        "time_cutoff": cached.get("time_cutoff"),
         "date_cur": cached.get("date_cur") or date_cur,
         "date_prev": cached.get("date_prev") or date_prev,
         "today": cached.get("today"),

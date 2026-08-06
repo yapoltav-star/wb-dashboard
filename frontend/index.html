@@ -368,6 +368,32 @@ td.tc{text-align:center}
 .pace-delta-down{color:#B42318;font-weight:700}
 .pace-delta-flat{color:var(--wb-muted)}
 .pace-hint{font-size:11px;color:var(--wb-muted);line-height:1.45;padding:0 4px 10px}
+/* Рост продаж: плашка «что с чем сравниваем» */
+.pace-compare{
+  margin:0 0 12px;padding:12px 16px;border:1px solid #BFDBFE;border-radius:var(--r);
+  background:linear-gradient(105deg,#EFF6FF 0%,#F8FAFC 45%,#FFF7ED 100%);
+  display:flex;flex-wrap:wrap;align-items:stretch;gap:12px 16px
+}
+.pace-compare-head{flex:0 0 100%;display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.pace-compare-title{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#1E3A8A}
+.pace-compare-mode{font-size:12px;color:var(--wb-muted);max-width:560px;line-height:1.35}
+.pace-compare-body{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;width:100%}
+.pace-compare-pill{
+  flex:1 1 200px;min-width:180px;max-width:360px;background:#fff;border-radius:10px;
+  border:2px solid #93C5FD;padding:10px 14px;box-shadow:0 1px 0 rgba(15,23,42,.04)
+}
+.pace-compare-pill.prev{border-color:#FDBA74}
+.pace-compare-pill .pc-tag{font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;margin-bottom:4px}
+.pace-compare-pill.cur .pc-tag{color:#1D4ED8}
+.pace-compare-pill.prev .pc-tag{color:#C2410C}
+.pace-compare-pill .pc-date{font-size:15px;font-weight:700;color:var(--wb-text);line-height:1.25;word-break:break-word}
+.pace-compare-pill .pc-sub{font-size:11px;color:var(--wb-muted);margin-top:3px}
+.pace-compare-vs{
+  flex:0 0 auto;font-size:13px;font-weight:800;color:#475569;padding:6px 10px;border-radius:999px;
+  background:#fff;border:1px solid #CBD5E1;letter-spacing:.04em
+}
+.pace-compare-note{flex:1 1 100%;font-size:11px;color:#475569;line-height:1.4}
+.pace-compare-note b{color:var(--wb-text)}
 /* Рост продаж: жирнее границы + цветные группы столбцов */
 .matrix.pace-tbl th,.matrix.pace-tbl td{border-right:1px solid #D8D3CC;border-bottom:1px solid #E8E4DE}
 .matrix.pace-tbl thead tr:first-child th{border-bottom:2px solid #C9C3BA;font-size:11px;letter-spacing:.2px}
@@ -699,6 +725,7 @@ td.tc{text-align:center}
     </div>
   </div>
   <div class="cards" id="paceCards"></div>
+  <div id="paceCompareBar" class="pace-compare" style="display:none"></div>
   <div id="paceInsights" class="pace-insights" style="display:none"></div>
   <div id="paceRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить» — сравним текущий период с прошлым (день / неделя / 2 недели / месяц).</div></div>
 </div>
@@ -3807,13 +3834,73 @@ function paceCpmDeltaHtml(d) {
 function paceTh(label, key, rowspan, extraClass) {
   const rs = rowspan ? ` rowspan="${rowspan}"` : '';
   const cls = ['mhead', extraClass].filter(Boolean).join(' ');
-  return `<th class="${cls}" style="cursor:pointer" onclick="paceSort('${key}')"${rs}>${label}${paceSortMark(key)}</th>`;
+  const raw = String(label || '');
+  let shown = escapeHtml(raw);
+  // «Сегодня 06.08» / «Вчера 05.08 до 12:48» — две строки, дата заметнее
+  const m = raw.match(/^(\S+)\s+(.+)$/);
+  if(m && (m[1].length <= 12) && /\d/.test(m[2])) {
+    shown = `${escapeHtml(m[1])}<br><span style="font-weight:600;font-size:10px;opacity:.9;line-height:1.2">${escapeHtml(m[2])}</span>`;
+  }
+  return `<th class="${cls}" style="cursor:pointer" onclick="paceSort('${key}')"${rs}>${shown}${paceSortMark(key)}</th>`;
 }
 function paceGroupTh(label, colspan, groupClass) {
-  return `<th colspan="${colspan}" class="pg-group ${groupClass} pg-start">${label}</th>`;
+  return `<th colspan="${colspan}" class="pg-group ${groupClass} pg-start">${escapeHtml(label)}</th>`;
 }
 function paceTd(html, cls) {
   return `<td class="${cls || ''}">${html}</td>`;
+}
+
+function renderPaceCompareBar() {
+  const bar = document.getElementById('paceCompareBar');
+  if(!bar) return;
+  const hasLabels = PACE_DATA.label_cur || PACE_DATA.label_prev;
+  if(!hasLabels && !PACE_DATA.now_time) {
+    bar.style.display = 'none';
+    bar.innerHTML = '';
+    return;
+  }
+  const tLabel = PACE_DATA.label_cur || (PACE_DATA.now_time ? ('сегодня до ' + PACE_DATA.now_time) : 'текущий период');
+  const yLabel = PACE_DATA.label_prev || (PACE_DATA.now_time ? ('вчера до ' + PACE_DATA.now_time) : 'прошлый период');
+  const periodName = PACE_DATA.period_name || (
+    PACE_PERIOD === 'day' ? 'День' :
+    PACE_PERIOD === 'week' ? 'Неделя' :
+    PACE_PERIOD === 'weeks2' ? '2 недели' :
+    PACE_PERIOD === 'month' ? 'Месяц' : PACE_PERIOD
+  );
+  const modeHint = PACE_DATA.mode_hint
+    || (PACE_DATA.custom_dates
+      ? 'Выбранный день vs день перед ним'
+      : 'Срез до текущего времени на обоих сторонах');
+  const cut = PACE_DATA.time_cutoff || PACE_DATA.now_time || '';
+  const noteBits = [];
+  if(cut && (PACE_PERIOD === 'day' || PACE_PERIOD === 'week' || PACE_PERIOD === 'month')) {
+    noteBits.push(`Срез времени: <b>${escapeHtml(cut)} МСК</b>`);
+  }
+  if(PACE_DATA.as_of) noteBits.push(`данные на <b>${escapeHtml(PACE_DATA.as_of)}</b>`);
+  if(PACE_PERIOD === 'day' && !PACE_DATA.custom_dates) {
+    noteBits.push('не путать с «полным вчерашним днём» — окно одинаковое по часам');
+  }
+  bar.style.display = 'flex';
+  bar.innerHTML = `
+    <div class="pace-compare-head">
+      <div class="pace-compare-title">Что с чем сравниваем · ${escapeHtml(periodName)} · МСК</div>
+      <div class="pace-compare-mode">${escapeHtml(modeHint)}</div>
+    </div>
+    <div class="pace-compare-body">
+      <div class="pace-compare-pill cur">
+        <div class="pc-tag">Сейчас · текущий период</div>
+        <div class="pc-date">${escapeHtml(tLabel)}</div>
+        <div class="pc-sub">Колонки «текущий» в таблице</div>
+      </div>
+      <div class="pace-compare-vs">VS</div>
+      <div class="pace-compare-pill prev">
+        <div class="pc-tag">База · прошлый период</div>
+        <div class="pc-date">${escapeHtml(yLabel)}</div>
+        <div class="pc-sub">Колонки «прошлый» в таблице · Δ = сейчас − база</div>
+      </div>
+    </div>
+    ${noteBits.length ? `<div class="pace-compare-note">${noteBits.join(' · ')}</div>` : ''}
+  `;
 }
 
 /** Значимое падение заказов: −3 шт и больше или −15%+ при базе ≥5. */
@@ -4250,16 +4337,21 @@ function drawSalesPace() {
   const geoDownN = all.filter(a => a.stock_linked && (a.stock_geo_flag === 'emptied' || a.stock_geo_flag === 'narrow')).length;
   const sumDelta = all.reduce((s,a) => s + (a.orders_delta||0), 0);
   if(cards) {
+    const cut = PACE_DATA.time_cutoff || PACE_DATA.now_time || '—';
+    const compareLine = (PACE_DATA.col_cur && PACE_DATA.col_prev)
+      ? `${PACE_DATA.col_cur} / ${PACE_DATA.col_prev}`
+      : (PACE_DATA.label_cur || '—');
     cards.innerHTML = [
-      ['Сейчас (МСК)', PACE_DATA.now_time || '—'],
+      ['Срез МСК', cut],
+      ['Сравниваем', compareLine],
       ['Артикулов', fmt(all.length)],
       ['Падают по заказам', fmt(downN), 'color:#B42318'],
       ['Падение + сток', fmt(stockLinkN), stockLinkN ? 'color:#B42318' : ''],
       ['Из них OOS', fmt(oosDownN), oosDownN ? 'color:#B42318' : ''],
-      ['География складов', fmt(geoDownN), geoDownN ? 'color:#B54708' : ''],
       ['Δ заказов всего', (sumDelta>0?'+':'') + fmt(sumDelta), sumDelta<0?'color:#B42318':(sumDelta>0?'color:#027A48':'')],
-    ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+    ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="font-size:${l==='Сравниваем'?'13px':'18px'};${s||''}">${escapeHtml(String(v))}</div></div>`).join('');
   }
+  renderPaceCompareBar();
   renderPaceInsights(all);
 
   if(PACE_DATA.syncing && !all.length) {
@@ -4315,7 +4407,10 @@ function drawSalesPace() {
   tot.cpm_delta = (adsOk && tot.cpm_today != null && tot.cpm_yesterday != null) ? Math.round((tot.cpm_today - tot.cpm_yesterday) * 10) / 10 : null;
   const viewsColspan = showViewsFull ? 4 : 3;
   const cpmColspan = showViewsFull ? 4 : 3;
-  const yHourLabel = PACE_DATA.now_time ? ('Вчера до ' + PACE_DATA.now_time) : (colPrev + ' до часа');
+  const yHourLabel = (PACE_DATA.now_time && PACE_DATA.date_prev)
+    ? (`${String(PACE_DATA.date_prev).slice(8,10)}.${String(PACE_DATA.date_prev).slice(5,7)} до ${PACE_DATA.now_time}`)
+    : (PACE_DATA.now_time ? ('Вчера до ' + PACE_DATA.now_time) : (colPrev + ' до часа'));
+  const yFullLabel = 'Вчера 0–24ч';
 
   const totalRow = `<tr class="total-row">
       <td class="mcol-art pg-meta"><div class="art">Весь кабинет</div><div class="nmid">${fmt(all.length)} арт.</div></td>
@@ -4373,13 +4468,17 @@ function drawSalesPace() {
     </tr>`;
   }).join('');
 
-  root.innerHTML = `<div class="pace-hint">Сравнение: <b>${escapeHtml(tLabel)}</b> vs <b>${escapeHtml(yLabel)}</b> (Москва).
-    ${PACE_DATA.custom_dates ? 'Выбранный день vs предыдущий (полные сутки; если выбран сегодня — до текущего времени). ' : 'Без даты — сегодня vs вчера до того же времени. Можно выбрать день слева. '}
-    <b>Остаток</b> — шт. на WB + дни запаса + число живых складов; <b>Падение + сток</b> — падают заказы/воронка при OOS, малом запасе или сужении географии (обнулился склад → дольше доставка).
-    <b>Показы / CPM</b> за день: ${showViewsFull
-      ? 'сегодня · вчера до того же часа (снимки) · Δ · вчера за весь день (API).'
-      : 'текущее окно vs прошлое.'}
-    CR корзины = корзина ÷ переходы. 📌 — закрепить.</div>
+  root.innerHTML = `<div class="pace-hint">
+    <b>Сейчас:</b> ${escapeHtml(tLabel)} &nbsp;→&nbsp; <b>База:</b> ${escapeHtml(yLabel)}
+    · часовой пояс <b>МСК</b>
+    · Δ = сейчас − база.
+    ${PACE_DATA.mode_hint ? (' <span style="color:var(--wb-text)">' + escapeHtml(PACE_DATA.mode_hint) + '</span>.') : ''}
+    <b>Остаток</b> — шт. на WB + дни + живые склады.
+    <b>Показы / CPM</b>${showViewsFull
+      ? ': срез «до часа» vs вчера до того же часа; колонка «Вчера 0–24ч» — полный день (API).'
+      : ': текущее окно vs прошлое.'}
+    CR = корзина ÷ переходы. 📌 — закрепить.
+  </div>
     <div class="matrix-wrap"><table class="matrix promo-xls pace-tbl">
       <thead><tr>
         ${paceTh('Артикул продавца', 'vendor_code', 2, 'mcol-art pg-meta')}
@@ -4397,11 +4496,11 @@ function drawSalesPace() {
         ${paceTh(colCur, 'views_today', null, 'pg-views pg-start')}
         ${paceTh(showViewsFull ? yHourLabel : colPrev, 'views_yesterday', null, 'pg-views')}
         ${paceTh('Δ', 'views_delta', null, 'pg-views')}
-        ${showViewsFull ? paceTh('Вчера день', 'views_yesterday_full', null, 'pg-views') : ''}
+        ${showViewsFull ? paceTh(yFullLabel, 'views_yesterday_full', null, 'pg-views') : ''}
         ${paceTh(colCur, 'cpm_today', null, 'pg-cpm pg-start')}
         ${paceTh(showViewsFull ? yHourLabel : colPrev, 'cpm_yesterday', null, 'pg-cpm')}
         ${paceTh('Δ', 'cpm_delta', null, 'pg-cpm')}
-        ${showViewsFull ? paceTh('Вчера день', 'cpm_yesterday_full', null, 'pg-cpm') : ''}
+        ${showViewsFull ? paceTh(yFullLabel, 'cpm_yesterday_full', null, 'pg-cpm') : ''}
         ${paceTh(colCur, 'clicks_today', null, 'pg-clicks pg-start')}
         ${paceTh(colPrev, 'clicks_yesterday', null, 'pg-clicks')}
         ${paceTh('Δ', 'clicks_delta', null, 'pg-clicks')}
