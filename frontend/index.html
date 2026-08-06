@@ -3225,6 +3225,7 @@ function renameGroup(gE){
     next[name === g ? trimmed : name] = arts;
   });
   GROUPS = next;
+  if(GM_OPEN[g] !== undefined){ GM_OPEN[trimmed] = GM_OPEN[g]; delete GM_OPEN[g]; }
   if(EXP[g] !== undefined){ EXP[trimmed] = EXP[g]; delete EXP[g]; }
   renderGroupManager();
 }
