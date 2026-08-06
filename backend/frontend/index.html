@@ -3153,11 +3153,23 @@ function renderGroupManager() {
 }
 
 function rmArt(gE,aE){const g=decodeURIComponent(gE),a=decodeURIComponent(aE);GROUPS[g]=(GROUPS[g]||[]).filter(x=>x!==a);renderGroupManager();}
+/** Артикул должен быть только в одной склейке — вычищаем из остальных. */
+function removeArtFromOtherGroups(art, keepGroup) {
+  Object.keys(GROUPS).forEach(name => {
+    if(name === keepGroup) return;
+    const list = GROUPS[name] || [];
+    if(!list.includes(art)) return;
+    GROUPS[name] = list.filter(x => x !== art);
+  });
+}
 function addArt(gE,inputId){
   const g=decodeURIComponent(gE);
   const input=document.getElementById(inputId);
   const art=(input.value||'').trim();
-  if(!art)return;if(!GROUPS[g])GROUPS[g]=[];if(!GROUPS[g].includes(art))GROUPS[g].push(art);
+  if(!art)return;
+  if(!GROUPS[g])GROUPS[g]=[];
+  removeArtFromOtherGroups(art, g);
+  if(!GROUPS[g].includes(art)) GROUPS[g].push(art);
   normalizeGroupArticles(g);
   input.value='';renderGroupManager();
 }
