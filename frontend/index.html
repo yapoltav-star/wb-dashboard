@@ -7334,21 +7334,31 @@ function drawRecAgg() {
     return;
   }
 
-  const renderTable = (list, {showBelowCol}) => {
+  const renderTable = (list, mode) => {
+    // mode: 'top5' | 'below'
     if(!list.length) {
       return '<div class="empty" style="padding:20px">Пусто</div>';
     }
+    const isTop = mode === 'top5';
     const body = list.map((r, i) => {
       const hostsTop = (r.hosts_top5 || [])
         .slice(0, 8)
         .map(h => `${escapeHtml(h.host_vc)} <span style="color:var(--wb-faint)">#${h.position}</span>`)
         .join(', ');
       const hostsBel = (r.hosts_below || [])
-        .slice(0, 6)
+        .slice(0, 8)
         .map(h => `${escapeHtml(h.host_vc)} <span style="color:var(--wb-faint)">#${h.position}</span>`)
         .join(', ');
       const moreTop = (r.hosts_top5 || []).length > 8 ? ` +${(r.hosts_top5.length - 8)}` : '';
-      const moreBel = (r.hosts_below || []).length > 6 ? ` +${(r.hosts_below.length - 6)}` : '';
+      const moreBel = (r.hosts_below || []).length > 8 ? ` +${(r.hosts_below.length - 8)}` : '';
+      const countCell = isTop
+        ? `<td style="text-align:center;font-weight:700;color:#027A48">${r.top5}</td>
+           <td style="text-align:center;font-weight:600;color:${r.below ? '#B54708' : 'var(--wb-faint)'}">${r.below || '—'}</td>`
+        : `<td style="text-align:center;font-weight:700;color:#B54708">${r.below}</td>`;
+      const hostsCell = isTop
+        ? `${r.top5 ? `<div><b style="color:#027A48">топ-5:</b> ${hostsTop}${moreTop}</div>` : ''}
+           ${r.below ? `<div style="margin-top:2px"><b style="color:#B54708">ниже:</b> ${hostsBel}${moreBel}</div>` : ''}`
+        : `<div>${hostsBel}${moreBel}</div>`;
       return `<tr>
         <td style="color:var(--wb-faint);width:36px">${i + 1}</td>
         <td style="text-align:left">
@@ -7369,20 +7379,18 @@ function drawRecAgg() {
             </div>
           </div>
         </td>
-        <td style="text-align:center;font-weight:700;color:${r.top5 ? '#027A48' : 'var(--wb-faint)'}">${r.top5 || '—'}</td>
-        ${showBelowCol ? `<td style="text-align:center;font-weight:600;color:${r.below ? '#B54708' : 'var(--wb-faint)'}">${r.below || '—'}</td>` : ''}
-        <td style="text-align:left;font-size:11px;color:var(--wb-muted);max-width:360px">
-          ${r.top5 ? `<div><b style="color:#027A48">топ-5:</b> ${hostsTop}${moreTop}</div>` : ''}
-          ${r.below ? `<div style="margin-top:2px"><b style="color:#B54708">ниже:</b> ${hostsBel}${moreBel}</div>` : ''}
-        </td>
+        ${countCell}
+        <td style="text-align:left;font-size:11px;color:var(--wb-muted);max-width:380px">${hostsCell}</td>
       </tr>`;
     }).join('');
-    return `<div style="overflow-x:auto"><table class="comp-tbl" style="width:100%;table-layout:auto">
+    const countHeaders = isTop
+      ? `<th>У карточек<br>в топ-5</th><th>У карточек<br>ниже топ-5</th>`
+      : `<th>У карточек<br>(места 6–15)</th>`;
+    return `<div style="overflow-x:auto"><table class="comp-tbl" style="width:100%">
       <thead><tr>
         <th style="width:36px">#</th>
         <th style="text-align:left">Артикул / товар</th>
-        <th>У карточек<br>в топ-5</th>
-        ${showBelowCol ? '<th>У карточек<br>ниже топ-5</th>' : ''}
+        ${countHeaders}
         <th style="text-align:left">Где именно (артикул хоста · место)</th>
       </tr></thead>
       <tbody>${body}</tbody>
@@ -7395,14 +7403,14 @@ function drawRecAgg() {
         <div style="font-size:13px;font-weight:700;color:#027A48">В топ-5 рекомендаций</div>
         <div style="font-size:11px;color:var(--wb-muted)">${top5rows.length} артикулов · места 1–5 на полке «Смотрите также»</div>
       </div>
-      ${renderTable(top5rows, {showBelowCol: true})}
+      ${renderTable(top5rows, 'top5')}
 
       <div style="margin:28px 0 0;padding-top:16px;border-top:2px solid var(--wb-border)">
         <div style="margin:0 0 8px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
           <div style="font-size:13px;font-weight:700;color:#B54708">Ниже топ-5</div>
-          <div style="font-size:11px;color:var(--wb-muted)">${belowOnly.length} артикулов · есть в рекомендациях на местах 6–15, но ни разу в топ-5</div>
+          <div style="font-size:11px;color:var(--wb-muted)">${belowOnly.length} артикулов · есть на местах 6–15, но ни разу в топ-5</div>
         </div>
-        ${renderTable(belowOnly, {showBelowCol: false})}
+        ${renderTable(belowOnly, 'below')}
       </div>
     </div>`;
 }
