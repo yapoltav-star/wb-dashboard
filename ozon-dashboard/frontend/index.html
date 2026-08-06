@@ -2,7 +2,10 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
+<!-- Фиксированная «десктопная» ширина: на телефоне Safari сразу умещает всю страницу,
+     pinch-zoom отдаляет/приближает вместе с таблицами — видны все столбцы (как в WB). -->
 <meta name="viewport" content="width=1400, initial-scale=1, minimum-scale=0.15, maximum-scale=4, user-scalable=yes">
+<meta name="format-detection" content="telephone=no">
 <title>Ozon Partners — Дашборд</title>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
@@ -15,28 +18,35 @@
   --green:#12B76A;--red:#F04438;--amber:#F79009;
   --r:8px;--rs:6px;
 }
-html{-webkit-text-size-adjust:100%}
-body{font-family:'Manrope',sans-serif;background:var(--oz-bg);color:var(--oz-text);min-height:100vh;min-width:1400px;overflow-x:auto}
-.topbar{background:#001A4D;padding:0 24px;display:flex;align-items:center;height:52px;gap:0;border-bottom:3px solid var(--oz-blue)}
-.tb-logo{display:flex;align-items:center;gap:10px;margin-right:32px}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+body{
+  font-family:'Manrope',sans-serif;background:var(--oz-bg);color:var(--oz-text);
+  min-height:100vh;min-width:1400px;overflow-x:auto;
+  -webkit-overflow-scrolling:touch;
+}
+.topbar{
+  background:#001A4D;padding:0 24px;display:flex;align-items:center;height:52px;gap:0;
+  border-bottom:3px solid var(--oz-blue);min-width:1400px;position:sticky;top:0;z-index:50;
+}
+.tb-logo{display:flex;align-items:center;gap:10px;margin-right:32px;flex-shrink:0}
 .tb-logo-mark{width:28px;height:28px;border-radius:8px;background:var(--oz-blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700}
-.tb-logo-text{color:#fff;font-size:13px;font-weight:600;letter-spacing:.3px}
-.tb-nav{display:flex;height:100%}
-.tb-nav-item{display:flex;align-items:center;padding:0 16px;color:rgba(255,255,255,.7);font-size:13px;cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap}
+.tb-logo-text{color:#fff;font-size:13px;font-weight:600;letter-spacing:.3px;white-space:nowrap}
+.tb-nav{display:flex;height:100%;flex:1;min-width:0;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tb-nav-item{display:flex;align-items:center;padding:0 16px;color:rgba(255,255,255,.7);font-size:13px;cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap;flex-shrink:0}
 .tb-nav-item:hover{color:#fff;background:rgba(255,255,255,.08)}
 .tb-nav-item.on{color:#fff;border-bottom-color:#fff;font-weight:600}
 .tb-nav-item.soon{opacity:.45;cursor:default}
-.tb-right{margin-left:auto;display:flex;align-items:center;gap:12px}
-.tb-sync{display:flex;align-items:center;gap:6px;color:rgba(255,255,255,.7);font-size:12px}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:12px;flex-shrink:0}
+.tb-sync{display:flex;align-items:center;gap:6px;color:rgba(255,255,255,.7);font-size:12px;white-space:nowrap}
 .tb-dot{width:6px;height:6px;border-radius:50%;background:#6CE9A6;flex-shrink:0}
 .tb-dot.loading{background:var(--amber);animation:pulse 1s infinite}
 .tb-dot.error{background:var(--red)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-.tb-btn{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.2);color:#fff;padding:5px 14px;border-radius:var(--rs);font-size:12px;cursor:pointer;font-family:inherit;transition:all .15s}
+.tb-btn{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.2);color:#fff;padding:5px 14px;border-radius:var(--rs);font-size:12px;cursor:pointer;font-family:inherit;transition:all .15s;white-space:nowrap}
 .tb-btn:hover{background:rgba(255,255,255,.25)}
 .tb-btn:disabled{opacity:.5;cursor:wait}
 
-.page{display:none;padding:24px}.page.on{display:block}
+.page{display:none;padding:24px;min-width:1352px}.page.on{display:block}
 
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
 .card{background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);padding:16px 18px}
@@ -97,8 +107,11 @@ body{font-family:'Manrope',sans-serif;background:var(--oz-bg);color:var(--oz-tex
 .chart-card.wide{grid-column:1 / -1}
 .chart-card.wide .chart-box{height:260px}
 
-.tbl-wrap{background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);overflow:auto}
-table{width:100%;border-collapse:collapse;font-size:13px}
+.tbl-wrap{
+  background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);
+  overflow-x:auto;-webkit-overflow-scrolling:touch;
+}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:700px}
 th{text-align:left;padding:10px 12px;background:#FAFBFC;border-bottom:1px solid var(--oz-border);color:var(--oz-muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap}
 td{padding:10px 12px;border-bottom:1px solid var(--oz-border);vertical-align:middle}
 tr:last-child td{border-bottom:none}
@@ -230,8 +243,13 @@ a.prod-link:hover .prod-name{color:var(--oz-blue);text-decoration:underline}
 .action-card .ac-title{font-size:13px;font-weight:600;margin-bottom:6px;line-height:1.3}
 .action-card .ac-meta{font-size:12px;color:var(--oz-muted);display:flex;flex-wrap:wrap;gap:8px}
 .action-card.on{border-color:#86EFAC;background:#F0FDF4}
-.subnav{background:var(--oz-surface);border-bottom:1px solid var(--oz-border);padding:0 24px;display:none;align-items:center;height:40px;gap:0}
+.subnav{
+  background:var(--oz-surface);border-bottom:1px solid var(--oz-border);padding:0 24px;
+  display:none;align-items:center;height:40px;gap:0;min-width:1400px;
+  overflow-x:auto;-webkit-overflow-scrolling:touch;
+}
 .subnav.on{display:flex}
+.sn-item{flex-shrink:0}
 .sn-item{display:flex;align-items:center;height:100%;padding:0 14px;font-size:13px;color:var(--oz-muted);cursor:pointer;border-bottom:2px solid transparent}
 .sn-item:hover{color:var(--oz-text)}
 .sn-item.on{color:var(--oz-blue);border-bottom-color:var(--oz-blue);font-weight:600}
