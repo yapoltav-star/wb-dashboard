@@ -936,20 +936,58 @@ def save_setting_endpoint(body: dict = Body(...)):
     return {"ok": True, "key": key, "value": ivalue}
 
 
+_PRODUCT_ORDERS_CACHE: dict = {"days": None, "data": {}, "at": 0.0}
+
+
+def get_product_orders_by_sku(days: int) -> dict[str, int]:
+    """Заказы (ordered_units) по SKU за days; кэш ~10 мин."""
+    days = 7 if int(days or 7) <= 7 else 28
+    now = time.time()
+    if (
+        _PRODUCT_ORDERS_CACHE.get("days") == days
+        and _PRODUCT_ORDERS_CACHE.get("data") is not None
+        and now - float(_PRODUCT_ORDERS_CACHE.get("at") or 0) < 600
+    ):
+        return _PRODUCT_ORDERS_CACHE["data"]
+    date_to = date.today()
+    date_from = date_to - timedelta(days=days - 1)
+    try:
+        data = fetch_ordered_units(date_from, date_to)
+    except Exception as e:
+        logger.warning("product orders analytics: %s", e)
+        data = _PRODUCT_ORDERS_CACHE.get("data") or {}
+        if data and _PRODUCT_ORDERS_CACHE.get("days") == days:
+            return data
+        data = {}
+    _PRODUCT_ORDERS_CACHE["days"] = days
+    _PRODUCT_ORDERS_CACHE["data"] = data
+    _PRODUCT_ORDERS_CACHE["at"] = now
+    return data
+
+
 @app.get("/api/products")
 def list_products(
     q: str = "",
     archived: str = "active",
     limit: int = 200,
     offset: int = 0,
+    days: int = 7,
+    sort: str = "orders",
 ):
+    """Список товаров. sort=orders — по заказам за days (7|28) из Analytics API."""
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
+    days = 7 if int(days or 7) <= 7 else 28
+    sort_by_orders = (sort or "orders").lower() in ("orders", "ordered", "ordered_qty")
+
+    # для сортировки по заказам тянем все подходящие строки, режем после sort
+    fetch_limit = 5000 if sort_by_orders else limit
+    fetch_offset = 0 if sort_by_orders else offset
     params: dict = {
         "select": "product_id,offer_id,sku,name,price,old_price,marketing_price,primary_image,visibility,has_fbo_stocks,has_fbs_stocks,archived,updated_at",
         "order": "offer_id.asc",
-        "limit": str(limit),
-        "offset": str(offset),
+        "limit": str(fetch_limit),
+        "offset": str(fetch_offset),
     }
     if archived == "active":
         params["archived"] = "eq.false"
@@ -993,13 +1031,41 @@ def list_products(
         stock_idx = load_stock_index()
     except Exception:
         stock_idx = {}
+
+    orders_by_sku: dict[str, int] = {}
+    orders_error = None
+    try:
+        orders_by_sku = get_product_orders_by_sku(days)
+    except Exception as e:
+        orders_error = str(e)
+
     for it in items:
         offer = str(it.get("offer_id") or "")
         st = stock_idx.get(offer) or {}
         it["stock"] = int(st.get("stock") or 0)
         it["warehouses"] = int(st.get("warehouses") or 0)
+        sku = str(it.get("sku") or "").strip()
+        it["ordered_qty"] = int(orders_by_sku.get(sku) or 0) if sku else 0
 
-    return {"items": items, "total": total, "limit": limit, "offset": offset}
+    if sort_by_orders:
+        items.sort(key=lambda x: (-int(x.get("ordered_qty") or 0), str(x.get("offer_id") or "")))
+        total = len(items) if total < len(items) else total
+        items = items[offset: offset + limit]
+
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "days": days,
+        "sort": "orders" if sort_by_orders else sort,
+        "orders_updated_at": (
+            datetime.fromtimestamp(_PRODUCT_ORDERS_CACHE.get("at") or 0, tz=timezone.utc).isoformat()
+            if _PRODUCT_ORDERS_CACHE.get("at")
+            else None
+        ),
+        "orders_error": orders_error,
+    }
 
 
 @app.get("/api/stocks")

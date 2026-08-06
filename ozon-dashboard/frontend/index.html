@@ -124,6 +124,13 @@ tr:hover td{background:#F8FAFF}
 .prod-meta{font-size:11px;color:var(--oz-faint);margin-top:2px}
 a.prod-link{color:inherit;text-decoration:none}
 a.prod-link:hover .prod-name{color:var(--oz-blue);text-decoration:underline}
+.prod-mini{display:flex;align-items:center;gap:8px}
+.prod-mini img,.prod-mini .prod-ph{width:32px;height:32px;border-radius:5px}
+.prod-mini img{object-fit:cover;background:#F0F2F5;border:1px solid var(--oz-border)}
+a.offer-link{color:var(--oz-blue);text-decoration:none;font-weight:600;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+a.offer-link:hover{text-decoration:underline}
+.orders-hi{font-weight:700;font-size:14px}
+.orders-hi.zero{color:var(--oz-faint);font-weight:500}
 .coin-prod{display:flex;align-items:center;gap:8px;min-width:200px}
 .coin-prod img{width:36px;height:36px;object-fit:cover;border-radius:6px;background:#F0F2F5;border:1px solid var(--oz-border);flex-shrink:0}
 .coin-prod .prod-ph{width:36px;height:36px;flex-shrink:0}
@@ -441,18 +448,22 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
   </div>
   <div class="toolbar">
     <div class="search">
-      <input id="q" placeholder="Артикул, название, product_id…" onkeydown="if(event.key==='Enter')loadProducts()">
+      <input id="q" placeholder="Артикул, product_id, SKU…" onkeydown="if(event.key==='Enter')loadProducts()">
     </div>
     <button class="filter-btn on" data-arch="active" onclick="setArchived('active',this)">Активные</button>
     <button class="filter-btn" data-arch="archived" onclick="setArchived('archived',this)">Архив</button>
     <button class="filter-btn" data-arch="all" onclick="setArchived('all',this)">Все</button>
+    <span style="font-size:12px;color:var(--oz-muted);margin-left:8px">Заказы:</span>
+    <button class="filter-btn on" id="prodDays7" onclick="setProdDays(7)">7 дн</button>
+    <button class="filter-btn" id="prodDays28" onclick="setProdDays(28)">28 дн</button>
+    <span id="prodOrdersInfo" style="font-size:12px;color:var(--oz-muted);margin-left:4px"></span>
     <button class="action-btn primary ml-auto" onclick="syncProducts()">Обновить товары</button>
   </div>
   <div class="tbl-wrap">
     <table>
       <thead>
         <tr>
-          <th>Товар</th><th>Артикул</th><th>SKU</th><th>Цена</th><th>Остаток</th><th>Канал</th><th>Статус</th>
+          <th></th><th>Артикул</th><th id="thOrders">Заказы</th><th>Цена</th><th>Остаток</th><th>Канал</th><th>Статус</th>
         </tr>
       </thead>
       <tbody id="tbody"><tr><td colspan="7"><div class="empty">Загрузка…</div></td></tr></tbody>
@@ -723,6 +734,7 @@ async function readErr(r) {
 }
 
 let ARCHIVED = 'active';
+let PROD_DAYS = 7;
 let CURRENT = 'products';
 let TARGET_DAYS = 30;
 let STOCK_TOTALS = [];
@@ -879,14 +891,27 @@ async function refreshStatus() {
   }
 }
 
+function setProdDays(days) {
+  PROD_DAYS = days <= 7 ? 7 : 28;
+  document.getElementById('prodDays7').classList.toggle('on', PROD_DAYS === 7);
+  document.getElementById('prodDays28').classList.toggle('on', PROD_DAYS === 28);
+  const th = document.getElementById('thOrders');
+  if (th) th.textContent = `Заказы (${PROD_DAYS} дн)`;
+  loadProducts();
+}
+
 async function loadProducts() {
   const tbody = document.getElementById('tbody');
   const q = document.getElementById('q').value.trim();
   tbody.innerHTML = '<tr><td colspan="7"><div class="empty">Загрузка…</div></td></tr>';
+  const th = document.getElementById('thOrders');
+  if (th) th.textContent = `Заказы (${PROD_DAYS} дн)`;
   try {
     const url = new URL('/api/products', location.origin);
     url.searchParams.set('archived', ARCHIVED);
     url.searchParams.set('limit', '200');
+    url.searchParams.set('days', String(PROD_DAYS));
+    url.searchParams.set('sort', 'orders');
     if (q) url.searchParams.set('q', q);
     const r = await fetch(url);
     if (!r.ok) throw new Error(await readErr(r));
@@ -894,6 +919,12 @@ async function loadProducts() {
     document.getElementById('statFilter').textContent =
       ARCHIVED === 'active' ? 'активные' : ARCHIVED === 'archived' ? 'архив' : 'все';
     if (typeof d.total === 'number') document.getElementById('statTotal').textContent = d.total;
+    const info = document.getElementById('prodOrdersInfo');
+    if (info) {
+      if (d.orders_error) info.textContent = '· API заказов недоступен';
+      else if (d.orders_updated_at) info.textContent = '· по Analytics API';
+      else info.textContent = '';
+    }
     const items = d.items || [];
     if (!items.length) {
       tbody.innerHTML = `<tr><td colspan="7"><div class="empty"><b>Ничего не найдено</b></div></td></tr>`;
@@ -902,7 +933,7 @@ async function loadProducts() {
     tbody.innerHTML = items.map(it => {
       const img = it.primary_image
         ? `<img src="${esc(it.primary_image)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
-        : `<div class="prod-ph">n/a</div>`;
+        : `<div class="prod-ph">—</div>`;
       const stocks = [];
       if (it.has_fbo_stocks) stocks.push('<span class="tag stock">FBO</span>');
       if (it.has_fbs_stocks) stocks.push('<span class="tag stock">FBS</span>');
@@ -912,13 +943,16 @@ async function loadProducts() {
       const stockQty = it.stock != null ? fmt(it.stock) : '—';
       const whN = it.warehouses != null ? fmt(it.warehouses) : '—';
       const ozUrl = it.sku ? `https://www.ozon.ru/product/${it.sku}/` : '';
-      const title = ozUrl
-        ? `<a class="prod-link" href="${esc(ozUrl)}" target="_blank" rel="noopener"><div class="prod">${img}<div><div class="prod-name">${esc(it.name || '—')}</div><div class="prod-meta">id ${esc(it.product_id)}</div></div></div></a>`
-        : `<div class="prod">${img}<div><div class="prod-name">${esc(it.name || '—')}</div><div class="prod-meta">id ${esc(it.product_id)}</div></div></div>`;
+      const offer = esc(it.offer_id || '—');
+      const offerCell = ozUrl
+        ? `<a class="offer-link" href="${esc(ozUrl)}" target="_blank" rel="noopener" title="SKU ${esc(it.sku)}">${offer}</a>`
+        : `<span class="mono">${offer}</span>`;
+      const qty = Number(it.ordered_qty || 0);
+      const ordersCls = qty > 0 ? 'orders-hi' : 'orders-hi zero';
       return `<tr>
-        <td>${title}</td>
-        <td class="mono">${esc(it.offer_id || '—')}</td>
-        <td class="mono">${esc(it.sku ?? '—')}</td>
+        <td><div class="prod-mini">${img}</div></td>
+        <td>${offerCell}</td>
+        <td class="num mono ${ordersCls}">${fmt(qty)}</td>
         <td class="mono">${money(it.marketing_price ?? it.price)}</td>
         <td class="num mono" title="Остаток / складов">${stockQty}<div class="prod-meta">${whN} скл.</div></td>
         <td>${stocks.length ? stocks.join(' ') : '<span class="tag">нет</span>'}</td>
