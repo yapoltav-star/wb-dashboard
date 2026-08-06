@@ -1151,16 +1151,17 @@ td.tc{text-align:center}
     <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <input id="recAggSearch" placeholder="Поиск артикула / названия…" oninput="drawRecAgg()"
         style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:220px">
-      <button class="action-btn primary" id="recAggScanBtn" onclick="runRecAggScan()">↓ Загрузить с WB</button>
+      <button class="action-btn" id="recAggCsvBtn" onclick="downloadRecAggCsv()" style="display:none">↓ CSV</button>
+      <button class="action-btn primary" id="recAggScanBtn" type="button" onclick="runRecAggScan(true)">↻ Обновить</button>
     </div>
   </div>
   <div style="padding:12px 20px;border-bottom:1px solid var(--wb-border);background:#FCFAF7;font-size:12px;color:var(--wb-muted);line-height:1.45">
-    Твои настройки блока <b>«Продавец рекомендует»</b> (Content API). Для каждого артикула: в скольких карточках он в <b>топ-5</b> (места 1–5) и в скольких — <b>ниже</b>.
+    Твои настройки блока <b>«Продавец рекомендует»</b> (Content API). Для каждого артикула: в скольких карточках он в <b>топ-5</b> (места 1–5) и в скольких — <b>ниже</b>. Данные подтягиваются сами при открытии вкладки.
   </div>
   <div id="recAggStatus" style="padding:10px 20px;font-size:12px;color:var(--wb-muted)"></div>
   <div class="cards" id="recAggCards"></div>
   <div id="recAggRoot" style="overflow:auto">
-    <div class="empty" style="padding:40px 20px">Нажми «Загрузить с WB» — посчитаем, кто стоит в рекомендациях и где.</div>
+    <div class="empty" style="padding:40px 20px">Открой вкладку — загрузим рекомендации с WB…</div>
   </div>
 </div>
 
@@ -7086,25 +7087,36 @@ let REC_AGG = {
   hosts_with_recs: 0,
   updated_at: null,
   error: null,
+  loaded: false,
 };
 
 function renderRecAggPage() {
   drawRecAgg();
+  // автозагрузка при первом открытии вкладки
+  if(!REC_AGG.loaded && !REC_AGG.loading) {
+    runRecAggScan(false);
+  }
 }
 
-async function runRecAggScan(force) {
+async function runRecAggScan(forceRefresh) {
   if(REC_AGG.loading) return;
+  // forceRefresh=true только с кнопки; click-event не считаем refresh
+  const force = forceRefresh === true || forceRefresh === 1;
   const status = document.getElementById('recAggStatus');
   const btn = document.getElementById('recAggScanBtn');
   const root = document.getElementById('recAggRoot');
   REC_AGG.loading = true;
   if(btn) { btn.disabled = true; btn.textContent = 'Загрузка…'; }
-  if(status) status.textContent = 'Тяну настройки «Продавец рекомендует» с Content API…';
-  if(root) root.innerHTML = '<div class="loading" style="padding:40px 20px"><div class="spinner"></div><span>Загружаю рекомендации…</span></div>';
+  if(status) status.textContent = 'Тяну «Продавец рекомендует» с Content API…';
+  if(root && !(REC_AGG.rows || []).length) {
+    root.innerHTML = '<div class="loading" style="padding:40px 20px"><div class="spinner"></div><span>Загружаю рекомендации…</span></div>';
+  }
 
   try {
     const q = force ? '?refresh=1' : '';
-    const r = await fetch(`${RAILWAY_URL}/api/seller-recommendations-agg${q}`);
+    const r = await fetch(`${RAILWAY_URL}/api/seller-recommendations-agg${q}`, {
+      cache: 'no-store',
+    });
     const d = await r.json().catch(() => ({}));
     if(!r.ok) {
       const detail = d.detail || d.error || `HTTP ${r.status}`;
@@ -7114,26 +7126,54 @@ async function runRecAggScan(force) {
     REC_AGG.total_hosts = Number(d.hosts_total) || 0;
     REC_AGG.hosts_with_recs = Number(d.hosts_with_recs) || 0;
     REC_AGG.error = d.error || null;
+    REC_AGG.loaded = true;
     REC_AGG.updated_at = d.updated_at
       ? new Date(d.updated_at).toLocaleString('ru-RU')
       : new Date().toLocaleString('ru-RU');
     if(status) {
       status.textContent =
-        `Готово · карточек с настройками: ${REC_AGG.hosts_with_recs}` +
-        (REC_AGG.total_hosts ? ` / ${REC_AGG.total_hosts} в ответе` : '') +
-        ` · ${REC_AGG.rows.length} артикулов в рекомендациях` +
+        `Готово · карточек с блоком: ${REC_AGG.hosts_with_recs}` +
+        (REC_AGG.total_hosts ? ` · ${REC_AGG.total_hosts} в ответе` : '') +
+        ` · ${REC_AGG.rows.length} артикулов` +
         (REC_AGG.error ? ` · ⚠ ${REC_AGG.error}` : '') +
         ` · ${REC_AGG.updated_at}`;
     }
     drawRecAgg();
   } catch(e) {
+    REC_AGG.loaded = false;
     REC_AGG.rows = [];
     if(status) status.textContent = 'Ошибка: ' + e.message;
-    if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка: ${escapeHtml(e.message)}</div>`;
+    if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка: ${escapeHtml(e.message)}<br><button class="action-btn primary" style="margin-top:12px" onclick="runRecAggScan(true)">Повторить</button></div>`;
   } finally {
     REC_AGG.loading = false;
-    if(btn) { btn.disabled = false; btn.textContent = '↓ Загрузить с WB'; }
+    if(btn) { btn.disabled = false; btn.textContent = '↻ Обновить'; }
   }
+}
+
+function downloadRecAggCsv() {
+  const rows = REC_AGG.rows || [];
+  if(!rows.length) return;
+  const esc = (v) => {
+    const s = String(v ?? '');
+    return /["\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [
+    ['nm_id', 'vendor_code', 'brand', 'name', 'top5_cards', 'below_cards', 'hosts_top5', 'hosts_below'].join(';'),
+  ];
+  rows.forEach(r => {
+    const ht = (r.hosts_top5 || []).map(h => `${h.host_vc||h.host_nm}#${h.position}`).join(' | ');
+    const hb = (r.hosts_below || []).map(h => `${h.host_vc||h.host_nm}#${h.position}`).join(' | ');
+    lines.push([
+      r.nm_id, r.vendor_code || '', r.brand || '', r.name || '',
+      r.top5 || 0, r.below || 0, ht, hb,
+    ].map(esc).join(';'));
+  });
+  const blob = new Blob(['\uFEFF' + lines.join('\n')], {type: 'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `seller-recommendations-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
 function drawRecAgg() {
@@ -7160,21 +7200,28 @@ function drawRecAgg() {
     b.below - a.below || a.nm_id - b.nm_id
   );
 
+  const csvBtn = document.getElementById('recAggCsvBtn');
+  if(csvBtn) csvBtn.style.display = (REC_AGG.rows || []).length ? '' : 'none';
+
   if(cards) {
     const withRecs = REC_AGG.hosts_with_recs || 0;
     const topCards = top5rows.length ? top5rows[0].top5 : 0;
+    const leader = top5rows[0]
+      ? `${top5rows[0].vendor_code || top5rows[0].nm_id} · ${topCards}`
+      : '—';
     cards.innerHTML = [
       ['Карточек с блоком', fmt(withRecs)],
       ['В топ-5 (артикулов)', fmt(top5rows.length)],
       ['Только ниже топ-5', fmt(belowOnly.length)],
-      ['Лидер топ-5', top5rows[0] ? `${top5rows[0].nm_id} · ${topCards}` : '—'],
+      ['Лидер топ-5', leader],
     ].map(([l, v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="font-size:18px">${v}</div></div>`).join('');
   }
 
   if(!rows.length) {
+    if(REC_AGG.loading) return;
     root.innerHTML = (REC_AGG.rows && REC_AGG.rows.length)
       ? '<div class="empty" style="padding:40px 20px">Ничего не найдено по фильтру</div>'
-      : '<div class="empty" style="padding:40px 20px">Нажми «Загрузить с WB»</div>';
+      : '<div class="empty" style="padding:40px 20px">Нет данных — нажми «Обновить»</div>';
     return;
   }
 
