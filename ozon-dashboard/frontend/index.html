@@ -3852,6 +3852,7 @@ async function triggerFinanceSync() {
 async function uploadFinCosts(file) {
   if (!file) return;
   const info = document.getElementById('finInfo');
+  const banner = document.getElementById('finBanner');
   if (info) info.textContent = 'Загрузка себестоимости…';
   try {
     const fd = new FormData();
@@ -3859,9 +3860,20 @@ async function uploadFinCosts(file) {
     const r = await fetch('/api/upload-costs', { method: 'POST', body: fd });
     if (!r.ok) throw new Error(await readErr(r));
     const d = await r.json();
+    const inv = d.inventory || {};
+    if (banner) {
+      banner.style.display = 'block';
+      banner.className = 'banner';
+      banner.innerHTML = `Себес загружен: <b>${fmt(d.offers)}</b> арт. · себестоимость остатков ${money(inv.cost_total)} · без себеса ${fmt(inv.articles_without_cost||0)}`;
+    }
     if (info) info.textContent = `себес: ${fmt(d.offers)} арт.`;
     await loadFinance();
   } catch (e) {
+    if (banner) {
+      banner.style.display = 'block';
+      banner.className = 'banner err';
+      banner.textContent = 'Себес не принят: ' + (e.message || e);
+    }
     if (info) info.textContent = 'Ошибка себеса: ' + (e.message || e);
   } finally {
     const inp = document.getElementById('finCostInput');
@@ -3957,7 +3969,7 @@ function drawFinance() {
     </table></div>` : ''}
     <div class="tbl-wrap" style="margin-bottom:16px"><table>
       <thead><tr><th>Артикул</th><th>Склад</th><th>В пути</th><th>Итого шт</th><th>Себес</th><th>Себес × шт</th><th>Цена</th><th>Выручка × шт</th></tr></thead>
-      <tbody>${invRows || '<tr><td colspan="8"><div class="empty"><b>Нет остатков или себеса</b>Загрузи cost_price.xlsx и обнови остатки</div></td></tr>'}</tbody>
+      <tbody>${invRows || `<tr><td colspan="8"><div class="empty"><b>${(inv.costs_count||0)?'Нет остатков с количеством':'Себес не загружен'}</b>${(inv.costs_count||0)?'Обнови остатки в разделе Остатки':'Нажми «Загрузить себес» — файл cost_price.xlsx'}</div></td></tr>`}</tbody>
     </table></div>
     ${FIN_DATA.syncing && !(FIN_DATA.days||[]).length ? '<div class="loading"><div class="spinner"></div>Считаем начисления…</div>' : `
     <div class="tbl-wrap" style="margin-bottom:16px"><table>

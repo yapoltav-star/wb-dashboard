@@ -5,10 +5,29 @@ from __future__ import annotations
 import io
 import logging
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
 logger = logging.getLogger("ozon-dashboard.costs")
 
 COST_PRICES_KEY = "ozon_cost_prices"
 COST_META_KEY = "ozon_cost_prices_meta"
+DEFAULT_COST_FILE = Path(__file__).resolve().parent / "data" / "cost_price.xlsx"
+
+# визуально похожие кириллица → латиница (частая путаница в артикулах)
+_CYR_LOOKALIKES = str.maketrans({
+    "А": "A", "а": "a",
+    "В": "B", "в": "b",
+    "Е": "E", "е": "e",
+    "К": "K", "к": "k",
+    "М": "M", "м": "m",
+    "Н": "H", "н": "h",
+    "О": "O", "о": "o",
+    "Р": "P", "р": "p",
+    "С": "C", "с": "c",
+    "Т": "T", "т": "t",
+    "У": "Y", "у": "y",
+    "Х": "X", "х": "x",
+})
 
 
 def _parse_cost_number(v) -> float | None:
@@ -31,7 +50,13 @@ def _norm_offer(v) -> str:
     s = str(v or "").strip()
     if not s:
         return ""
-    return s.replace("\u041e", "O").replace("\u043e", "o")
+    return s.translate(_CYR_LOOKALIKES)
+
+
+def _fold_offer(v) -> str:
+    """Ключ для нечёткого матча: без регистра, пробелов, lookalike-кириллицы."""
+    s = _norm_offer(v).lower().replace(" ", "").replace("_", "").replace("-", "")
+    return s
 
 
 def _parse_header_date(v):
@@ -215,6 +240,7 @@ def load_cost_indexes(get_setting) -> tuple[dict[str, dict], dict[str, dict], di
         offer = _norm_offer(k)
         if offer and isinstance(e, dict):
             by_offer[offer] = e
+            by_offer.setdefault(_fold_offer(offer), e)
     for k, e in (data.get("by_sku") or {}).items():
         sku = str(k).strip()
         if sku and isinstance(e, dict):
@@ -227,25 +253,38 @@ def load_cost_indexes(get_setting) -> tuple[dict[str, dict], dict[str, dict], di
                 continue
             if isinstance(v, dict):
                 by_offer[offer] = v
+                by_offer.setdefault(_fold_offer(offer), v)
             else:
                 c = _parse_cost_number(v)
                 if c is not None:
-                    by_offer[offer] = {"cost": c, "offer_id": offer}
+                    entry = {"cost": c, "offer_id": offer}
+                    by_offer[offer] = entry
+                    by_offer.setdefault(_fold_offer(offer), entry)
     return by_offer, by_sku, meta_d
 
 
 def resolve_cost(by_offer: dict, by_sku: dict, offer_id=None, sku=None) -> dict:
-    offer = _norm_offer(offer_id)
-    if offer and offer in by_offer:
-        return by_offer[offer]
+    # сначала SKU — в Excel колонка SKU = Ozon SKU
     if sku is not None:
         s = str(sku).strip()
         if s in by_sku:
             return by_sku[s]
+        try:
+            s2 = str(int(float(s)))
+            if s2 in by_sku:
+                return by_sku[s2]
+        except Exception:
+            pass
+    offer = _norm_offer(offer_id)
+    if offer and offer in by_offer:
+        return by_offer[offer]
     if offer:
+        folded = _fold_offer(offer)
+        if folded in by_offer:
+            return by_offer[folded]
         low = offer.lower()
         for k, e in by_offer.items():
-            if k.lower() == low:
+            if k.lower() == low or _fold_offer(k) == folded:
                 return e
     return {}
 
@@ -253,11 +292,52 @@ def resolve_cost(by_offer: dict, by_sku: dict, offer_id=None, sku=None) -> dict:
 def save_costs(save_setting, by_offer: dict, by_sku: dict, meta: dict | None = None) -> dict:
     import json
 
-    payload = {"by_offer": by_offer, "by_sku": by_sku}
+    clean_offer = {}
+    for k, e in (by_offer or {}).items():
+        if not isinstance(e, dict):
+            continue
+        oid = _norm_offer(e.get("offer_id") or k)
+        if not oid:
+            continue
+        clean_offer[oid] = {**e, "offer_id": oid}
+    clean_sku = {str(k).strip(): e for k, e in (by_sku or {}).items() if str(k).strip() and isinstance(e, dict)}
+    payload = {"by_offer": clean_offer, "by_sku": clean_sku}
     save_setting(COST_PRICES_KEY, json.dumps(payload, ensure_ascii=False))
     meta = dict(meta or {})
     meta["updated_at"] = datetime.now(timezone.utc).isoformat()
-    meta["offers"] = len(by_offer)
-    meta["skus"] = len(by_sku)
+    meta["offers"] = len(clean_offer)
+    meta["skus"] = len(clean_sku)
     save_setting(COST_META_KEY, json.dumps(meta, ensure_ascii=False))
     return meta
+
+
+def ensure_costs_loaded(get_setting, save_setting) -> dict | None:
+    """Если в settings пусто — подтянуть bundled data/cost_price.xlsx."""
+    _, _, meta = load_cost_indexes(get_setting)
+    if int((meta or {}).get("offers") or 0) > 0:
+        return None
+    # также если в raw settings уже есть данные без meta
+    by_offer, _, _ = load_cost_indexes(get_setting)
+    if any(isinstance(e, dict) and e.get("cost") is not None for e in by_offer.values()):
+        return None
+    if not DEFAULT_COST_FILE.is_file():
+        logger.warning("default cost file missing: %s", DEFAULT_COST_FILE)
+        return None
+    try:
+        contents = DEFAULT_COST_FILE.read_bytes()
+        parsed, parse_meta = parse_cost_price_workbook(contents)
+        offers = (parsed or {}).get("by_offer") or {}
+        skus = (parsed or {}).get("by_sku") or {}
+        if not offers:
+            return None
+        meta = save_costs(
+            save_setting,
+            offers,
+            skus,
+            {**(parse_meta or {}), "filename": DEFAULT_COST_FILE.name, "auto": True},
+        )
+        logger.info("auto-loaded cost_price.xlsx: %s offers", len(offers))
+        return meta
+    except Exception as e:
+        logger.exception("ensure_costs_loaded: %s", e)
+        return None

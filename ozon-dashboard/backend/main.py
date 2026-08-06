@@ -1289,6 +1289,10 @@ def _run_finance_sync(period_days: int = 7):
 
 def build_inventory_finance() -> dict:
     """Себестоимость и потенц. выручка остатков: склад + в пути (promised/waiting)."""
+    try:
+        costmod.ensure_costs_loaded(get_setting, save_setting)
+    except Exception as e:
+        logger.warning("ensure_costs_loaded: %s", e)
     by_offer_cost, by_sku_cost, meta = costmod.load_cost_indexes(get_setting)
     try:
         warehouses = _sb_select_all(
@@ -1434,8 +1438,9 @@ def build_inventory_finance() -> dict:
         "articles": len(rows),
         "articles_without_cost": without_cost,
         "articles_without_price": without_price,
-        "costs_count": len(by_offer_cost),
+        "costs_count": int((meta or {}).get("offers") or len(by_sku_cost) or 0),
         "costs_meta": meta,
+        "matched_with_cost": sum(1 for r in rows if r.get("cost") is not None),
         "rows": rows[:300],
     }
 
