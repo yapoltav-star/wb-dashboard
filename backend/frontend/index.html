@@ -3468,6 +3468,10 @@ var SUPPLY_PINNED = JSON.parse(localStorage.getItem('wb_supply_pinned') || 'null
 var SHOW_BARCODE = JSON.parse(localStorage.getItem('wb_supply_show_barcode') || 'true');
 var dragWh = null, dragSupplyArt = null;
 var WH_DISABLED_LOADED = false;
+var whAutoScrollRaf = null;
+var whAutoScrollDir = 0;
+var whAutoScrollWrap = null;
+var whAutoScrollSpeed = 0;
 
 function parseSupplyWhDisabled(raw) {
   if(raw == null || raw === '') return null;
