@@ -3725,17 +3725,104 @@ function toggleSupplyPin(vc, e) {
   renderSupplyRecs();
 }
 
-function whDS(e, name) { dragWh = decodeURIComponent(name); e.dataTransfer.effectAllowed = 'move'; }
+function whFindScrollWrap(el) {
+  if(el && el.closest) {
+    const w = el.closest('.matrix-wrap');
+    if(w) return w;
+  }
+  return document.querySelector('#supplyRoot .matrix-wrap')
+    || document.querySelector('#page-supply-recs .matrix-wrap')
+    || document.querySelector('.matrix-wrap');
+}
+
+function whStopAutoScroll() {
+  whAutoScrollDir = 0;
+  whAutoScrollSpeed = 0;
+  if(whAutoScrollRaf) {
+    cancelAnimationFrame(whAutoScrollRaf);
+    whAutoScrollRaf = null;
+  }
+  whAutoScrollWrap = null;
+  document.removeEventListener('dragover', whDragAutoScroll, true);
+}
+
+function whAutoScrollTick() {
+  whAutoScrollRaf = null;
+  if(!dragWh || !whAutoScrollDir || !whAutoScrollWrap) return;
+  const wrap = whAutoScrollWrap;
+  const max = wrap.scrollWidth - wrap.clientWidth;
+  if(max <= 0) return;
+  const next = Math.max(0, Math.min(max, wrap.scrollLeft + whAutoScrollDir * whAutoScrollSpeed));
+  if(next !== wrap.scrollLeft) wrap.scrollLeft = next;
+  // продолжаем, пока тянем у края
+  whAutoScrollRaf = requestAnimationFrame(whAutoScrollTick);
+}
+
+/** Пока тащим склад — если курсор у левого/правого края таблицы, крутим горизонтальный скролл. */
+function whDragAutoScroll(e) {
+  if(!dragWh) return;
+  const wrap = whAutoScrollWrap || whFindScrollWrap(e.target);
+  if(!wrap) return;
+  whAutoScrollWrap = wrap;
+  const rect = wrap.getBoundingClientRect();
+  const edge = 90;
+  const x = e.clientX;
+  let dir = 0;
+  let intensity = 0;
+  if(x < rect.left + edge) {
+    dir = -1;
+    intensity = 1 - Math.max(0, (x - rect.left) / edge);
+  } else if(x > rect.right - edge) {
+    dir = 1;
+    intensity = 1 - Math.max(0, (rect.right - x) / edge);
+  }
+  // если курсор у края окна (таблица шире экрана) — тоже крутим
+  if(!dir && x < 56) { dir = -1; intensity = 1 - x / 56; }
+  if(!dir && x > window.innerWidth - 56) { dir = 1; intensity = 1 - (window.innerWidth - x) / 56; }
+
+  whAutoScrollSpeed = dir ? Math.round(10 + intensity * 36) : 0;
+  if(dir !== whAutoScrollDir) {
+    whAutoScrollDir = dir;
+    if(dir && !whAutoScrollRaf) whAutoScrollRaf = requestAnimationFrame(whAutoScrollTick);
+  } else if(dir && !whAutoScrollRaf) {
+    whAutoScrollRaf = requestAnimationFrame(whAutoScrollTick);
+  }
+  // без preventDefault drop не сработает на th
+  if(e.cancelable) e.preventDefault();
+}
+
+function whDS(e, name) {
+  dragWh = decodeURIComponent(name);
+  try {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', dragWh);
+  } catch(_) {}
+  whAutoScrollWrap = whFindScrollWrap(e.currentTarget);
+  document.addEventListener('dragover', whDragAutoScroll, true);
+}
+
+function whDE() {
+  dragWh = null;
+  whStopAutoScroll();
+}
+
+function whOver(e) {
+  e.preventDefault();
+  try { e.dataTransfer.dropEffect = 'move'; } catch(_) {}
+  whDragAutoScroll(e);
+}
+
 function whDrop(e, targetName) {
   e.preventDefault();
   targetName = decodeURIComponent(targetName);
-  if(!dragWh || dragWh === targetName) return;
-  let order = WH_ORDER.filter(w => w !== dragWh);
+  const moving = dragWh;
+  whDE();
+  if(!moving || moving === targetName) return;
+  let order = WH_ORDER.filter(w => w !== moving);
   const idx = order.indexOf(targetName);
-  order.splice(idx === -1 ? order.length : idx, 0, dragWh);
+  order.splice(idx === -1 ? order.length : idx, 0, moving);
   WH_ORDER = order;
   localStorage.setItem('wb_supply_wh_order', JSON.stringify(WH_ORDER));
-  dragWh = null;
   renderSupplyRecs();
 }
 
@@ -3769,8 +3856,8 @@ function renderSupplyMatrixTable(matrix) {
   const whHead1 = warehouses.map((w,i) => {
     const on = isWhEnabled(w);
     const enc = encodeURIComponent(w);
-    return `<th colspan="4" class="wh-block${i%2?' wh-even':''}${on?'':' wh-off'}" draggable="true" title="${on?'Перетащи чтобы поменять порядок. Сними галочку — склад не участвует в расчётах':'Склад отключён — остатки и поставки не считаются'}"
-      ondragstart="whDS(event,'${enc}')" ondragover="event.preventDefault()" ondrop="whDrop(event,'${enc}')">
+    return `<th colspan="4" class="wh-block${i%2?' wh-even':''}${on?'':' wh-off'}" draggable="true" title="${on?'Перетащи чтобы поменять порядок. У края таблицы скролл поедет сам. Сними галочку — склад не участвует в расчётах':'Склад отключён — остатки и поставки не считаются'}"
+      ondragstart="whDS(event,'${enc}')" ondragend="whDE()" ondragover="whOver(event)" ondrop="whDrop(event,'${enc}')">
       <input type="checkbox" class="wh-en-cb" ${on?'checked':''} onclick="event.stopPropagation()" onchange="toggleWhEnabled('${enc}',event)" title="${on?'Отключить склад':'Включить склад'}">
       ⠿ ${w}
       <button class="wh-dl-btn" onclick="downloadWarehouseXlsx(event,'${enc}')" title="Скачать Excel для склада ${w}">⬇ xlsx</button>
