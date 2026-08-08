@@ -1100,7 +1100,7 @@ td.tc{text-align:center}
       <div>
         <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Фильтр / сортировка</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <input id="posKeySearch" placeholder="Поиск по ключу…" oninput="drawPosTable()"
+          <input id="posKeySearch" placeholder="Поиск по ключу…" oninput="drawPosTable();updatePosCheckBtn()"
             style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:200px">
           <button class="filter-btn" id="posSortManualBtn" onclick="setPosSortManual()">Ручной порядок</button>
         </div>
@@ -6474,6 +6474,9 @@ let POS_RESULTS = {}; // queryLower -> {position, page, total, error, not_found}
 let POS_RUNNING = false;
 let POS_STOP = false;
 let POS_LOADED = false;
+let POS_LOADING = false;
+let POS_LOAD_ERROR = '';
+let POS_LOAD_PROMISE = null;
 let POS_SORT = JSON.parse(localStorage.getItem('pos_sort') || '{"key":"rating","dir":"desc"}');
 let POS_PINNED = JSON.parse(localStorage.getItem('pos_pinned') || '[]'); // queryLower[]
 let POS_ORDER = JSON.parse(localStorage.getItem('pos_order') || '[]'); // queryLower[] manual
@@ -6498,6 +6501,7 @@ function setPosGender(g) {
   localStorage.setItem('pos_gender', POS_GENDER);
   updatePosGenderBtns();
   drawPosTable();
+  updatePosCheckBtn();
 }
 
 function updatePosGenderBtns() {
@@ -6513,49 +6517,89 @@ function savePosPins() { localStorage.setItem('pos_pinned', JSON.stringify(POS_P
 function savePosOrder() { localStorage.setItem('pos_order', JSON.stringify(POS_ORDER)); }
 function savePosSort() { localStorage.setItem('pos_sort', JSON.stringify(POS_SORT)); }
 
+function posResetFilters() {
+  POS_GENDER = 'all';
+  localStorage.setItem('pos_gender', 'all');
+  const inp = document.getElementById('posKeySearch');
+  if(inp) inp.value = '';
+  updatePosGenderBtns();
+  drawPosTable();
+  updatePosCheckBtn();
+}
+
 async function renderPositionsPage() {
   updatePosArtChip();
   updatePosCheckBtn();
   updatePosGenderBtns();
   if(!POS_LOADED) await loadPosKeywords();
   else drawPosTable();
+  updatePosCheckBtn();
 }
 
-async function loadPosKeywords() {
+async function loadPosKeywords(force) {
+  if(POS_LOADING && POS_LOAD_PROMISE) return POS_LOAD_PROMISE;
+  if(POS_LOADED && !force) {
+    drawPosTable();
+    return;
+  }
   const root = document.getElementById('posRoot');
   const meta = document.getElementById('posMeta');
-  try {
-    const r = await fetch(`${RAILWAY_URL}/api/search-keywords`);
-    const d = await r.json();
-    POS_KEYWORDS = Array.isArray(d.keywords) ? d.keywords : [];
-    POS_CITIES = Array.isArray(d.cities) ? d.cities : [];
-    POS_LOADED = true;
+  POS_LOADING = true;
+  POS_LOAD_ERROR = '';
+  if(root) root.innerHTML = '<div class="empty" style="padding:40px 20px">Загрузка ключей…</div>';
+  updatePosCheckBtn();
 
-    // синхронизируем ручной порядок с актуальным списком
-    const allKeys = POS_KEYWORDS.map(posKey);
-    if(!POS_ORDER.length) POS_ORDER = allKeys.slice();
-    else {
-      const seen = new Set();
-      POS_ORDER = POS_ORDER.filter(k => allKeys.includes(k) && !seen.has(k) && seen.add(k));
-      allKeys.forEach(k => { if(!seen.has(k)) POS_ORDER.push(k); });
-      savePosOrder();
-    }
-    POS_PINNED = POS_PINNED.filter(k => allKeys.includes(k));
-    savePosPins();
+  POS_LOAD_PROMISE = (async () => {
+    try {
+      const r = await fetch(`${RAILWAY_URL}/api/search-keywords?_=${Date.now()}`, {cache: 'no-store'});
+      const d = await r.json().catch(() => ({}));
+      if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+      POS_KEYWORDS = Array.isArray(d.keywords) ? d.keywords : [];
+      POS_CITIES = Array.isArray(d.cities) ? d.cities : [];
+      if(!POS_KEYWORDS.length) throw new Error('сервер вернул пустой список ключей');
+      POS_LOADED = true;
+      POS_LOAD_ERROR = '';
 
-    const sel = document.getElementById('posCity');
-    if(sel && POS_CITIES.length) {
-      const saved = localStorage.getItem('pos_dest') || String(d.default_dest || -1257786);
-      sel.innerHTML = POS_CITIES.map(c =>
-        `<option value="${c.dest}"${String(c.dest)===String(saved)?' selected':''}>${c.name}</option>`
-      ).join('');
+      // синхронизируем ручной порядок с актуальным списком
+      const allKeys = POS_KEYWORDS.map(posKey);
+      if(!POS_ORDER.length) POS_ORDER = allKeys.slice();
+      else {
+        const seen = new Set();
+        POS_ORDER = POS_ORDER.filter(k => allKeys.includes(k) && !seen.has(k) && seen.add(k));
+        allKeys.forEach(k => { if(!seen.has(k)) POS_ORDER.push(k); });
+        savePosOrder();
+      }
+      POS_PINNED = POS_PINNED.filter(k => allKeys.includes(k));
+      savePosPins();
+
+      const sel = document.getElementById('posCity');
+      if(sel && POS_CITIES.length) {
+        const saved = localStorage.getItem('pos_dest') || String(d.default_dest || -1257786);
+        sel.innerHTML = POS_CITIES.map(c =>
+          `<option value="${c.dest}"${String(c.dest)===String(saved)?' selected':''}>${c.name}</option>`
+        ).join('');
+      }
+      if(meta) meta.textContent = `${POS_KEYWORDS.length} ключей из аналитики` + (d.updated ? ` · ${d.updated}` : '');
+      updatePosGenderBtns();
+      drawPosTable();
+    } catch(e) {
+      POS_LOADED = false;
+      POS_KEYWORDS = [];
+      POS_LOAD_ERROR = String(e.message || e);
+      if(meta) meta.textContent = '';
+      if(root) {
+        root.innerHTML = `<div class="empty" style="padding:40px 20px">
+          Ошибка загрузки ключей: ${escapeHtml(POS_LOAD_ERROR)}
+          <div style="margin-top:12px"><button type="button" class="action-btn" onclick="loadPosKeywords(true)">Повторить</button></div>
+        </div>`;
+      }
+    } finally {
+      POS_LOADING = false;
+      POS_LOAD_PROMISE = null;
+      updatePosCheckBtn();
     }
-    if(meta) meta.textContent = `${POS_KEYWORDS.length} ключей из аналитики` + (d.updated ? ` · ${d.updated}` : '');
-    updatePosGenderBtns();
-    drawPosTable();
-  } catch(e) {
-    if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка загрузки ключей: ${e.message}</div>`;
-  }
+  })();
+  return POS_LOAD_PROMISE;
 }
 
 function onPosCityChange() {
@@ -6579,7 +6623,9 @@ function updatePosArtChip() {
 
 function updatePosCheckBtn() {
   const btn = document.getElementById('posCheckBtn');
-  if(btn) btn.disabled = !POS_ARTICLE || POS_RUNNING;
+  if(!btn) return;
+  const hasRows = POS_LOADED && !POS_LOADING && filteredPosKeywords().length > 0;
+  btn.disabled = !POS_ARTICLE || POS_RUNNING || POS_LOADING || !hasRows;
 }
 
 function clearPosArticle() {
@@ -6631,8 +6677,9 @@ function selectPosArticle(nmId, vendorCode) {
   localStorage.setItem('pos_article', JSON.stringify(POS_ARTICLE));
   POS_RESULTS = {};
   updatePosArtChip();
+  if(!POS_LOADED && !POS_LOADING) loadPosKeywords();
+  else drawPosTable();
   updatePosCheckBtn();
-  drawPosTable();
 }
 
 document.addEventListener('click', e => {
@@ -6753,13 +6800,32 @@ function drawPosTable() {
   const manBtn = document.getElementById('posSortManualBtn');
   if(manBtn) manBtn.classList.toggle('on', POS_SORT.key === 'manual');
   if(!root) return;
+  if(POS_LOADING) {
+    root.innerHTML = '<div class="empty" style="padding:40px 20px">Загрузка ключей…</div>';
+    return;
+  }
+  if(POS_LOAD_ERROR && !POS_KEYWORDS.length) {
+    root.innerHTML = `<div class="empty" style="padding:40px 20px">
+      Ошибка загрузки ключей: ${escapeHtml(POS_LOAD_ERROR)}
+      <div style="margin-top:12px"><button type="button" class="action-btn" onclick="loadPosKeywords(true)">Повторить</button></div>
+    </div>`;
+    return;
+  }
   const rows = filteredPosKeywords();
   if(!POS_KEYWORDS.length) {
-    root.innerHTML = '<div class="empty" style="padding:40px 20px">Ключи ещё не загружены</div>';
+    root.innerHTML = `<div class="empty" style="padding:40px 20px">
+      Ключи ещё не загружены
+      <div style="margin-top:12px"><button type="button" class="action-btn" onclick="loadPosKeywords(true)">Загрузить ключи</button></div>
+    </div>`;
     return;
   }
   if(!rows.length) {
-    root.innerHTML = '<div class="empty" style="padding:40px 20px">Нет ключей по фильтру</div>';
+    const genderLabel = POS_GENDER === 'men' ? 'Мужские' : POS_GENDER === 'women' ? 'Женские' : '';
+    const q = ((document.getElementById('posKeySearch')||{}).value || '').trim();
+    root.innerHTML = `<div class="empty" style="padding:40px 20px">
+      Нет ключей по текущему фильтру${genderLabel ? ` («${genderLabel}»)` : ''}${q ? ` · поиск: «${escapeHtml(q)}»` : ''}
+      <div style="margin-top:12px"><button type="button" class="action-btn" onclick="posResetFilters()">Сбросить фильтры</button></div>
+    </div>`;
     return;
   }
   const found = rows.filter(k => POS_RESULTS[posKey(k)]?.position != null).length;
@@ -6867,9 +6933,18 @@ function sleepPos(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function runPositionCheck() {
   if(!POS_ARTICLE || POS_RUNNING) return;
+  if(!POS_LOADED || POS_LOADING) {
+    await loadPosKeywords();
+  }
+  if(!POS_KEYWORDS.length) {
+    alert(POS_LOAD_ERROR
+      ? `Не удалось загрузить ключи: ${POS_LOAD_ERROR}`
+      : 'Ключи ещё не загружены — нажми «Загрузить ключи»');
+    return;
+  }
   const rows = filteredPosKeywords();
   if(!rows.length) {
-    alert('Нет ключей по текущему фильтру');
+    alert('Нет ключей по текущему фильтру. Сбрось пол / поиск или выбери «Все».');
     return;
   }
   const dest = Number((document.getElementById('posCity')||{}).value || -1257786);
