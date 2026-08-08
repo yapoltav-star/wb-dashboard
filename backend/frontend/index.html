@@ -3640,6 +3640,9 @@ function buildSupplyMatrix() {
     const vc = a.vendor_code;
     let rawRecommend = 0;
     let wbStock = 0;
+    let periodOrders = 0;
+    let periodBuyouts = 0;
+    let periodDays = 0;
     const cells = {};
     warehouses.forEach(w => {
       const r = a.byWh[w];
@@ -3653,6 +3656,9 @@ function buildSupplyMatrix() {
       if(enabled) {
         rawRecommend += recommend;
         wbStock += (r.current_stock || 0);
+        periodOrders += (r.ordered_qty || 0);
+        periodBuyouts += (r.buyout_qty || 0);
+        if(r.period_days) periodDays = r.period_days;
       }
     });
     const plannedQty = a.plannedQty || 0;
@@ -3661,6 +3667,7 @@ function buildSupplyMatrix() {
     return {
       vendor_code: vc, nm_id: a.nm_id, barcode: a.barcode, cells,
       plannedQty, totalRecommend, wbStock,
+      periodOrders, periodBuyouts, periodDays,
       ownStock: ow.family_stock != null ? ow.family_stock : (ow.stock || 0),
       ownFamily: ow.family || [vc],
       isPinned: SUPPLY_PINNED.includes(vc)
@@ -3853,6 +3860,14 @@ function renderSupplyMatrixTable(matrix) {
   const { warehouses, articles } = matrix;
   if(!articles.length) return '<div class="empty">Ничего не найдено</div>';
 
+  const periodDays = (() => {
+    const fromArt = articles.find(a => a.periodDays)?.periodDays;
+    if(fromArt) return fromArt;
+    const fromRep = (SUPPLY_REPORT || []).find(r => r.period_days)?.period_days;
+    if(fromRep) return fromRep;
+    return parseInt(document.getElementById('salesWindowInput')?.value, 10) || 14;
+  })();
+
   const whHead1 = warehouses.map((w,i) => {
     const on = isWhEnabled(w);
     const enc = encodeURIComponent(w);
@@ -3896,6 +3911,7 @@ function renderSupplyMatrixTable(matrix) {
       </td>
       <td class="m-info">${a.plannedQty>0?fmt(a.plannedQty):'—'}</td>
       <td class="m-info" title="Сумма остатков по включённым складам WB">${fmt(a.wbStock||0)}</td>
+      <td class="m-info" title="Сумма заказов по включённым складам за ${periodDays} дн.${a.periodBuyouts ? ' · выкупы: ' + fmt(a.periodBuyouts) : ''}">${fmt(a.periodOrders||0)}</td>
       <td class="m-info ${ownCls}" title="${famTip}"><span class="${a.totalRecommend>0?'m-recommend':'m-recommend zero'}">${a.totalRecommend>0?'+'+fmt(a.totalRecommend):'—'}</span></td>
       <td class="m-info ${ownCls}" title="${famTip}">${ownVal}</td>
       ${cells}
@@ -3917,6 +3933,7 @@ function renderSupplyMatrixTable(matrix) {
   const totPlanned = articles.reduce((s,a) => s + (a.plannedQty||0), 0);
   const totRecommend = articles.reduce((s,a) => s + (a.totalRecommend||0), 0);
   const totWbStock = articles.reduce((s,a) => s + (a.wbStock||0), 0);
+  const totPeriodOrders = articles.reduce((s,a) => s + (a.periodOrders||0), 0);
   const totWhCells = whSums.map((t,i) => {
     const off = t.enabled ? '' : ' wh-off';
     const rc2 = t.recommend > 0
@@ -3931,6 +3948,7 @@ function renderSupplyMatrixTable(matrix) {
       <td class="mcol-art"><div class="art">Итого</div><div class="nmid">${fmt(articles.length)} арт.</div></td>
       <td class="m-info">${totPlanned>0?fmt(totPlanned):'—'}</td>
       <td class="m-info" title="Сумма остатков по включённым складам WB">${fmt(totWbStock)}</td>
+      <td class="m-info" title="Сумма заказов по включённым складам за ${periodDays} дн.">${fmt(totPeriodOrders)}</td>
       <td class="m-info"><span class="${totRecommend>0?'m-recommend':'m-recommend zero'}">${totRecommend>0?'+'+fmt(totRecommend):'—'}</span></td>
       <td class="m-info" title="Сумма по нашему складу не считается — остатки семей дублируются">—</td>
       ${totWhCells}
@@ -3940,12 +3958,13 @@ function renderSupplyMatrixTable(matrix) {
     <thead>
       <tr>
         <th class="mcol-art" rowspan="2">Артикул продавца${SHOW_BARCODE ? ' / Баркод' : ''}</th>
-        <th colspan="4" class="m-info">Общая информация</th>
+        <th colspan="5" class="m-info">Общая информация</th>
         ${whHead1}
       </tr>
       <tr>
         <th class="mhead m-info">Уже запланировано в поставке</th>
         <th class="mhead m-info">Остаток WB</th>
+        <th class="mhead m-info" title="Сумма заказов по включённым складам за окно продаж">Продажи ${periodDays}д</th>
         <th class="mhead m-info">Поставить всего</th>
         <th class="mhead m-info">Наш склад${OWN_WH && OWN_WH.as_of ? `<div style="font-size:9px;font-weight:500;color:var(--wb-muted);text-transform:none;letter-spacing:0;margin-top:2px">на ${OWN_WH.as_of}</div>` : ''}</th>
         ${whHead2}
