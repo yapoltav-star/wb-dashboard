@@ -16,7 +16,7 @@ from pathlib import Path
 import httpx
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import ads
@@ -27,6 +27,7 @@ import finance as fin
 import orders as ordmod
 import reviews as revs
 import sales_pace as pace
+import supplies as supplies_mod
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ozon-dashboard")
@@ -1098,6 +1099,67 @@ def get_stocks():
         "target_coverage_days": get_setting_int("target_coverage_days", 30),
         "last_stocks_sync": get_setting("last_stocks_sync"),
     }
+
+
+def _run_supplies_sync():
+    try:
+        supplies_mod.sync_supplies(ozon_post=ozon_post)
+    except Exception as e:
+        logger.exception("supplies sync thread: %s", e)
+        supplies_mod.SUPPLIES_CACHE["error"] = str(e)
+        supplies_mod.SUPPLIES_CACHE["syncing"] = False
+
+
+@app.get("/api/supplies")
+def get_supplies(state: str = ""):
+    """Список FBO-поставок, разбитых по статусам."""
+    cached = supplies_mod.get_cached()
+    if not cached["orders"] and not cached["syncing"] and not cached["error"]:
+        if not supplies_mod.SUPPLIES_CACHE.get("syncing"):
+            threading.Thread(target=_run_supplies_sync, daemon=True).start()
+        cached = supplies_mod.get_cached()
+        cached["syncing"] = True
+    st = (state or "").strip().upper()
+    if st.startswith("ORDER_STATE_"):
+        st = st[len("ORDER_STATE_") :]
+    orders = cached.get("orders") or []
+    if st:
+        orders = [o for o in orders if o.get("state") == st]
+    return {**cached, "orders": orders, "filter_state": st or None}
+
+
+@app.post("/api/sync-supplies")
+def trigger_supplies_sync():
+    if supplies_mod.SUPPLIES_CACHE.get("syncing"):
+        return {"ok": True, "syncing": True}
+    threading.Thread(target=_run_supplies_sync, daemon=True).start()
+    return {"ok": True, "syncing": True}
+
+
+@app.get("/api/supplies/export-xlsx")
+def export_supplies_xlsx(state: str = "ACCEPTED_AT_SUPPLY_WAREHOUSE"):
+    """
+    Один Excel: товары из поставок в указанном статусе.
+    По умолчанию — «На точке отгрузки» (ACCEPTED_AT_SUPPLY_WAREHOUSE).
+    """
+    st = (state or supplies_mod.AT_DROPOFF).strip().upper()
+    if st.startswith("ORDER_STATE_"):
+        st = st[len("ORDER_STATE_") :]
+    try:
+        payload = supplies_mod.collect_products_for_state(ozon_post, st)
+        content = supplies_mod.build_xlsx_bytes(payload)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("supplies export")
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    label = supplies_mod.state_label(st).replace(" ", "_")
+    fname = f"ozon_postavki_{label}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 @app.get("/api/sales-pace")

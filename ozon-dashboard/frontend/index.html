@@ -381,6 +381,10 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
   <div class="sn-item" data-comp="brand" onclick="showCompPage('brand',this)">Отчёт бренда</div>
   <div class="sn-item" data-comp="compare" onclick="showCompPage('compare',this)">Сравнение</div>
 </div>
+<div class="subnav" id="subnav-stocks">
+  <div class="sn-item on" data-stocks="matrix" onclick="showStocksPage('matrix',this)">Матрица</div>
+  <div class="sn-item" data-stocks="supplies" onclick="showStocksPage('supplies',this)">Поставки</div>
+</div>
 
 <!-- GROWTH / SALES PACE -->
 <div class="page" id="page-growth">
@@ -495,6 +499,27 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
   </div>
   <div class="cards" id="stocksCards"></div>
   <div id="stocksRoot"><div class="empty"><b>Нет данных</b>Нажми «Обновить остатки»</div></div>
+</div>
+
+<!-- SUPPLIES (внутри Остатки) -->
+<div class="page" id="page-supplies">
+  <div class="banner" id="supBanner" style="display:none"></div>
+  <div class="toolbar">
+    <div class="search">
+      <input id="supSearch" placeholder="Номер поставки / склад…" oninput="drawSupplies()">
+    </div>
+    <button class="filter-btn on" id="supFltAll" onclick="setSupFilter('')">Все</button>
+    <button class="filter-btn" id="supFltDrop" onclick="setSupFilter('ACCEPTED_AT_SUPPLY_WAREHOUSE')">На точке отгрузки</button>
+    <button class="filter-btn" id="supFltTransit" onclick="setSupFilter('IN_TRANSIT')">В пути</button>
+    <button class="filter-btn" id="supFltReady" onclick="setSupFilter('READY_TO_SUPPLY')">К отгрузке</button>
+    <button class="filter-btn" id="supFltAccept" onclick="setSupFilter('ACCEPTANCE_AT_STORAGE_WAREHOUSE')">Приёмка</button>
+    <button class="filter-btn" id="supFltDone" onclick="setSupFilter('COMPLETED')">Завершены</button>
+    <span id="supInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+    <button class="action-btn" id="supExportBtn" onclick="exportSuppliesXlsx()">↓ Excel: на точке отгрузки</button>
+    <button class="action-btn primary ml-auto" id="supSyncBtn" onclick="triggerSuppliesSync()">↻ Обновить поставки</button>
+  </div>
+  <div class="cards" id="supCards"></div>
+  <div id="supRoot"><div class="empty"><b>Поставки FBO</b>Заявки, которые вы отгрузили / в пути / на точке. Нажми «Обновить поставки».</div></div>
 </div>
 
 <!-- ORDERS -->
@@ -744,6 +769,7 @@ async function readErr(r) {
 let ARCHIVED = 'active';
 let PROD_DAYS = 7;
 let CURRENT = 'products';
+let STOCKS_PAGE = 'matrix';
 let TARGET_DAYS = 30;
 let STOCK_TOTALS = [];
 let STOCK_WH = [];
@@ -773,6 +799,8 @@ function showSection(sec, el) {
   if (subR) subR.classList.toggle('on', sec === 'reviews');
   const subC = document.getElementById('subnav-competitors');
   if (subC) subC.classList.toggle('on', sec === 'competitors');
+  const subS = document.getElementById('subnav-stocks');
+  if (subS) subS.classList.toggle('on', sec === 'stocks');
   const btn = document.getElementById('btnTopSync');
   if (sec === 'reviews') {
     btn.textContent = 'Обновить отзывы';
@@ -784,13 +812,13 @@ function showSection(sec, el) {
     showCompPage(COMP_PAGE || 'position');
     return;
   }
+  if (sec === 'stocks') {
+    showStocksPage(STOCKS_PAGE || 'matrix');
+    return;
+  }
   const page = document.getElementById('page-' + sec);
   if (page) page.classList.add('on');
-  if (sec === 'stocks') {
-    btn.textContent = 'Обновить остатки';
-    if (!STOCK_TOTALS.length) loadStocks();
-    else renderStocks();
-  } else if (sec === 'growth') {
+  if (sec === 'growth') {
     btn.textContent = 'Обновить темп';
     renderSalesPace(true);
   } else if (sec === 'prices') {
@@ -828,7 +856,10 @@ function showRevPage(id, el) {
 }
 
 function topSync() {
-  if (CURRENT === 'stocks') syncStocks();
+  if (CURRENT === 'stocks') {
+    if (STOCKS_PAGE === 'supplies') triggerSuppliesSync();
+    else syncStocks();
+  }
   else if (CURRENT === 'growth') triggerSalesPaceSync();
   else if (CURRENT === 'prices') triggerCoinvestSync();
   else if (CURRENT === 'orders') triggerOrdersSync();
@@ -1130,6 +1161,202 @@ async function setTargetDays(v) {
     body: JSON.stringify({ key: 'target_coverage_days', value: TARGET_DAYS }),
   });
   renderStocks();
+}
+
+/* ── Поставки FBO (внутри Остатки) ── */
+let SUP_DATA = { orders: [], counters: [], syncing: false };
+let SUP_FILTER = '';
+let supPoll = null;
+
+function showStocksPage(id, el) {
+  STOCKS_PAGE = id || 'matrix';
+  document.querySelectorAll('#subnav-stocks .sn-item').forEach(n => {
+    n.classList.toggle('on', n.getAttribute('data-stocks') === STOCKS_PAGE);
+  });
+  if (el) {
+    document.querySelectorAll('#subnav-stocks .sn-item').forEach(n => n.classList.remove('on'));
+    el.classList.add('on');
+  }
+  const subS = document.getElementById('subnav-stocks');
+  if (subS) subS.classList.add('on');
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
+  const btn = document.getElementById('btnTopSync');
+  if (STOCKS_PAGE === 'supplies') {
+    const page = document.getElementById('page-supplies');
+    if (page) page.classList.add('on');
+    if (btn) btn.textContent = 'Обновить поставки';
+    renderSupplies(true);
+  } else {
+    const page = document.getElementById('page-stocks');
+    if (page) page.classList.add('on');
+    if (btn) btn.textContent = 'Обновить остатки';
+    if (!STOCK_TOTALS.length) loadStocks();
+    else renderStocks();
+  }
+}
+
+function setSupFilter(state) {
+  SUP_FILTER = state || '';
+  const map = {
+    '': 'supFltAll',
+    ACCEPTED_AT_SUPPLY_WAREHOUSE: 'supFltDrop',
+    IN_TRANSIT: 'supFltTransit',
+    READY_TO_SUPPLY: 'supFltReady',
+    ACCEPTANCE_AT_STORAGE_WAREHOUSE: 'supFltAccept',
+    COMPLETED: 'supFltDone',
+  };
+  Object.entries(map).forEach(([k, id]) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('on', k === SUP_FILTER);
+  });
+  drawSupplies();
+}
+
+async function renderSupplies(force) {
+  if (force || !(SUP_DATA.orders || []).length) await loadSupplies();
+  else drawSupplies();
+}
+
+async function loadSupplies() {
+  try {
+    const r = await fetch('/api/supplies');
+    SUP_DATA = await r.json();
+  } catch (e) {
+    SUP_DATA = { orders: [], syncing: false, error: String(e) };
+  }
+  drawSupplies();
+  clearTimeout(supPoll);
+  if (SUP_DATA.syncing) supPoll = setTimeout(loadSupplies, 4000);
+}
+
+async function triggerSuppliesSync() {
+  const btn = document.getElementById('supSyncBtn');
+  if (btn) btn.disabled = true;
+  SUP_DATA.syncing = true;
+  drawSupplies();
+  try { await fetch('/api/sync-supplies', { method: 'POST' }); } catch (_) {}
+  clearTimeout(supPoll);
+  supPoll = setTimeout(loadSupplies, 2500);
+}
+
+async function exportSuppliesXlsx() {
+  const btn = document.getElementById('supExportBtn');
+  const info = document.getElementById('supInfo');
+  if (btn) { btn.disabled = true; btn.textContent = 'Собираю Excel…'; }
+  if (info) info.textContent = 'Тянем состав поставок «на точке отгрузки»…';
+  try {
+    const r = await fetch('/api/supplies/export-xlsx?state=ACCEPTED_AT_SUPPLY_WAREHOUSE');
+    if (!r.ok) throw new Error(await readErr(r));
+    const blob = await r.blob();
+    const cd = r.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/i);
+    const name = (m && m[1]) || 'ozon_postavki_na_tochke.xlsx';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+    if (info) info.textContent = 'Excel скачан';
+  } catch (e) {
+    if (info) info.textContent = 'Ошибка Excel: ' + (e.message || e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↓ Excel: на точке отгрузки'; }
+  }
+}
+
+function drawSupplies() {
+  const root = document.getElementById('supRoot');
+  const cards = document.getElementById('supCards');
+  const info = document.getElementById('supInfo');
+  const btn = document.getElementById('supSyncBtn');
+  const banner = document.getElementById('supBanner');
+  if (!root) return;
+
+  if (SUP_DATA.error) {
+    if (info) info.textContent = 'Ошибка: ' + SUP_DATA.error;
+    if (btn) btn.disabled = false;
+    if (banner) {
+      banner.style.display = 'block';
+      banner.className = 'banner err';
+      banner.textContent = SUP_DATA.error;
+    }
+  } else if (SUP_DATA.syncing) {
+    if (info) info.textContent = 'Загружаем заявки FBO…';
+    if (btn) btn.disabled = true;
+    if (banner) banner.style.display = 'none';
+  } else {
+    if (info) info.textContent = SUP_DATA.updated_at ? ('обновлено ' + fmtDt(SUP_DATA.updated_at)) : '';
+    if (btn) btn.disabled = false;
+    if (banner) banner.style.display = 'none';
+  }
+
+  const byState = SUP_DATA.by_state || {};
+  const counters = SUP_DATA.counters || [];
+  const countMap = {};
+  counters.forEach(c => { countMap[c.state] = c.count; });
+  Object.keys(byState).forEach(k => { if (countMap[k] == null) countMap[k] = byState[k]; });
+
+  const cardStates = [
+    ['ACCEPTED_AT_SUPPLY_WAREHOUSE', 'На точке отгрузки', 'color:var(--oz-blue)'],
+    ['IN_TRANSIT', 'В пути', ''],
+    ['READY_TO_SUPPLY', 'К отгрузке', ''],
+    ['ACCEPTANCE_AT_STORAGE_WAREHOUSE', 'Приёмка на складе', ''],
+    ['COMPLETED', 'Завершены', 'color:var(--green)'],
+  ];
+  cards.innerHTML = cardStates.map(([st, label, style]) => {
+    const n = countMap[st] != null ? countMap[st] : (byState[st] || 0);
+    return `<div class="card" style="cursor:pointer" onclick="setSupFilter('${st}')">
+      <div class="card-l">${label}</div>
+      <div class="card-v" style="${style}">${fmt(n)}</div>
+    </div>`;
+  }).join('');
+
+  if (SUP_DATA.syncing && !(SUP_DATA.orders || []).length) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div>Supply-order list + get…</div>';
+    return;
+  }
+
+  const q = (document.getElementById('supSearch')?.value || '').trim().toLowerCase();
+  let orders = SUP_DATA.orders || [];
+  if (SUP_FILTER) orders = orders.filter(o => o.state === SUP_FILTER);
+  if (q) {
+    orders = orders.filter(o => {
+      const blob = [o.order_number, o.dropoff_name, o.dropoff_address, ...(o.supplies||[]).map(s => s.warehouse_name)]
+        .join(' ').toLowerCase();
+      return blob.includes(q);
+    });
+  }
+
+  if (!orders.length) {
+    root.innerHTML = `<div class="empty"><b>Нет поставок</b>${SUP_FILTER ? 'В этом статусе пусто — смени фильтр или обнови.' : 'Нажми «Обновить поставки».'}</div>`;
+    return;
+  }
+
+  const rows = orders.map(o => {
+    const wh = (o.supplies || []).map(s => esc(s.warehouse_name || '—')).join('<br>') || '—';
+    const slot = o.timeslot_from ? fmtDt(o.timeslot_from) : '—';
+    return `<tr>
+      <td class="mono">${esc(o.order_number || o.order_id)}</td>
+      <td><span class="tag ${o.state==='ACCEPTED_AT_SUPPLY_WAREHOUSE'?'ok':''}">${esc(o.state_label || o.state)}</span></td>
+      <td>${esc(o.dropoff_name || '—')}<div class="prod-meta">${esc(o.dropoff_address || '')}</div></td>
+      <td style="white-space:normal;font-size:12px">${wh}</td>
+      <td class="num">${fmt(o.supplies_count)}</td>
+      <td>${slot}</td>
+      <td>${fmtDt(o.state_updated_date || o.created_date)}</td>
+    </tr>`;
+  }).join('');
+
+  root.innerHTML = `
+    <div class="hint" style="margin-bottom:10px">Статус <b>На точке отгрузки</b> = ACCEPTED_AT_SUPPLY_WAREHOUSE.
+      Кнопка Excel собирает товары из всех таких поставок в один файл (сводка + детализация).</div>
+    <div class="tbl-wrap"><table>
+      <thead><tr>
+        <th>Заявка</th><th>Статус</th><th>Точка отгрузки</th><th>Склад назначения</th><th>Supply</th><th>Таймслот</th><th>Обновлено</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
 }
 
 async function loadStocks() {
