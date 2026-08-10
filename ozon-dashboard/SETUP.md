@@ -20,6 +20,10 @@ OZON_CLIENT_ID=...
 OZON_API_KEY=...
 SUPABASE_URL=https://xxxx.supabase.co
 SUPABASE_KEY=...   # service_role, не anon
+
+# опционально — остатки нашего физического склада (как на WB)
+OWN_WAREHOUSE_SHEET_ID=...
+OWN_WAREHOUSE_GID=...
 ```
 
 6. Открой сайт → **Обновить товары** — первый синк карточек.
@@ -30,6 +34,7 @@ SUPABASE_KEY=...   # service_role, не anon
 |--------|--------|
 | Товары | работает |
 | Остатки / рекомендации поставок (FBO+FBS, дни, поставить) | работает |
+| Наш склад (Google Sheets → колонка в матрице + вкладка) | работает |
 | Рост продаж (темп cur vs prev) | работает |
 | Цены и соинвест (цены v5 + Premium details + акции) | работает |
 | Заказы (FBO v3 + FBS v4) | работает |

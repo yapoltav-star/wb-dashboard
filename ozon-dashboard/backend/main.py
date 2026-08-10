@@ -25,6 +25,7 @@ import competitors as comp
 import costs as costmod
 import finance as fin
 import orders as ordmod
+import own_warehouse as own_wh
 import reviews as revs
 import sales_pace as pace
 import supplies as supplies_mod
@@ -1108,6 +1109,34 @@ def _run_supplies_sync():
         logger.exception("supplies sync thread: %s", e)
         supplies_mod.SUPPLIES_CACHE["error"] = str(e)
         supplies_mod.SUPPLIES_CACHE["syncing"] = False
+
+
+@app.get("/api/own-warehouse-stock")
+def get_own_warehouse_stock(refresh: bool = False):
+    """Остатки нашего физического склада (Google Sheets, как на WB)."""
+    data = own_wh.get_cached(refresh=refresh)
+    return {
+        "title": data.get("title"),
+        "as_of": data.get("as_of"),
+        "rows": data.get("rows") or [],
+        "by_vendor": data.get("by_vendor") or {},
+        "updated_at": data.get("updated_at"),
+        "error": data.get("error"),
+        "syncing": bool(data.get("syncing")),
+        "configured": bool(data.get("configured")),
+    }
+
+
+@app.post("/api/sync-own-warehouse")
+def sync_own_warehouse():
+    if own_wh.OWN_WAREHOUSE_CACHE.get("syncing"):
+        return {"ok": True, "syncing": True}
+
+    def _run():
+        own_wh.refresh_own_warehouse_stock()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"ok": True, "syncing": True}
 
 
 @app.get("/api/supplies")
