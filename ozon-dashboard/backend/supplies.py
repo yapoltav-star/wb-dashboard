@@ -146,7 +146,7 @@ def fetch_bundle_items(ozon_post: Callable, bundle_id: str, max_pages: int = 50)
     last_id = ""
     for _ in range(max_pages):
         body: dict = {
-            "bundle_ids": [bundle_id],
+            "bundle_ids": [str(bundle_id)],
             "limit": 100,
             "sort_field": "SKU",
             "is_asc": True,
@@ -154,15 +154,57 @@ def fetch_bundle_items(ozon_post: Callable, bundle_id: str, max_pages: int = 50)
         if last_id:
             body["last_id"] = last_id
         payload = ozon_post("/v1/supply-order/bundle", body)
-        batch = payload.get("items") or []
+        batch = payload.get("items")
+        if batch is None and isinstance(payload.get("result"), dict):
+            batch = payload["result"].get("items")
+        if batch is None and isinstance(payload.get("result"), list):
+            batch = payload["result"]
+        batch = batch or []
         items.extend(batch)
-        if not payload.get("has_next") or not batch:
+        has_next = bool(payload.get("has_next"))
+        if isinstance(payload.get("result"), dict):
+            has_next = has_next or bool(payload["result"].get("has_next"))
+        if not has_next or not batch:
             break
         last_id = payload.get("last_id") or ""
+        if isinstance(payload.get("result"), dict) and not last_id:
+            last_id = payload["result"].get("last_id") or ""
         if not last_id:
             break
         time.sleep(0.08)
     return items
+
+
+def fetch_order_details_items(ozon_post: Callable, order_id) -> list[dict]:
+    """Fallback: /v1/supply-order/details — если bundle пустой."""
+    try:
+        oid = int(order_id) if str(order_id).isdigit() else order_id
+        payload = ozon_post("/v1/supply-order/details", {"order_ids": [oid]})
+    except Exception as e:
+        logger.warning("supply-order/details %s: %s", order_id, e)
+        return []
+    orders = payload.get("orders") or payload.get("result") or []
+    if isinstance(orders, dict):
+        orders = [orders]
+    out = []
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        for supply in order.get("supplies") or []:
+            if not isinstance(supply, dict):
+                continue
+            for it in supply.get("items") or supply.get("products") or []:
+                if isinstance(it, dict):
+                    out.append(it)
+            bundle = supply.get("bundle") or {}
+            if isinstance(bundle, dict):
+                for it in bundle.get("items") or []:
+                    if isinstance(it, dict):
+                        out.append(it)
+        for it in order.get("items") or order.get("products") or []:
+            if isinstance(it, dict):
+                out.append(it)
+    return out
 
 
 def _summarize_order(order: dict) -> dict:
@@ -271,45 +313,67 @@ def get_cached() -> dict:
 def collect_products_for_state(ozon_post: Callable, state: str = AT_DROPOFF) -> dict:
     """Товары из всех поставок в статусе state — для Excel одним файлом."""
     state = _norm_state(state)
-    # берём из кэша или синкаем
     orders = [
         o for o in (SUPPLIES_CACHE.get("orders") or [])
-        if o.get("state") == state
+        if _norm_state(o.get("state")) == state
     ]
     if not orders and not SUPPLIES_CACHE.get("syncing"):
-        sync_supplies(ozon_post, states=[state])
+        try:
+            sync_supplies(ozon_post, states=[state])
+        except Exception as e:
+            logger.warning("sync for export: %s", e)
         orders = [
             o for o in (SUPPLIES_CACHE.get("orders") or [])
-            if o.get("state") == state
+            if _norm_state(o.get("state")) == state
         ]
 
     rows: list[dict] = []
+    errors: list[str] = []
     for order in orders:
-        for supply in order.get("supplies") or []:
-            bid = supply.get("bundle_id")
-            if not bid:
+        supplies = order.get("supplies") or [{}]
+        got_any = False
+        for supply in supplies:
+            if not isinstance(supply, dict):
                 continue
-            try:
-                items = fetch_bundle_items(ozon_post, str(bid))
-            except Exception as e:
-                logger.warning("bundle %s: %s", bid, e)
-                items = []
+            bid = supply.get("bundle_id")
+            items: list[dict] = []
+            if bid:
+                try:
+                    items = fetch_bundle_items(ozon_post, str(bid))
+                except Exception as e:
+                    msg = f"bundle {bid}: {e}"
+                    logger.warning(msg)
+                    errors.append(msg[:300])
+                    items = []
+            if not items:
+                try:
+                    items = fetch_order_details_items(ozon_post, order.get("order_id"))
+                except Exception as e:
+                    errors.append(f"details {order.get('order_id')}: {e}"[:300])
+                    items = []
+            if not items:
+                continue
+            got_any = True
             for it in items:
                 if not isinstance(it, dict):
                     continue
+                try:
+                    qty = int(float(it.get("quantity") or it.get("qty") or 0))
+                except (TypeError, ValueError):
+                    qty = 0
                 rows.append({
                     "order_id": order.get("order_id"),
                     "order_number": order.get("order_number"),
                     "order_state": order.get("state"),
-                    "order_state_label": order.get("state_label"),
+                    "order_state_label": order.get("state_label") or state_label(state),
                     "supply_id": supply.get("supply_id"),
                     "bundle_id": bid,
                     "dropoff_name": order.get("dropoff_name") or "",
                     "warehouse_name": supply.get("warehouse_name") or "",
-                    "offer_id": it.get("offer_id") or "",
-                    "sku": it.get("sku"),
-                    "name": it.get("name") or "",
-                    "quantity": int(it.get("quantity") or 0),
+                    "offer_id": it.get("offer_id") or it.get("article") or "",
+                    "sku": it.get("sku") or it.get("sku_id"),
+                    "name": it.get("name") or it.get("product_name") or "",
+                    "quantity": qty,
                     "barcode": it.get("barcode") or "",
                     "product_id": it.get("product_id"),
                     "volume_in_litres": it.get("volume_in_litres"),
@@ -319,8 +383,41 @@ def collect_products_for_state(ozon_post: Callable, state: str = AT_DROPOFF) -> 
                     "timeslot_from": order.get("timeslot_from"),
                 })
             time.sleep(0.05)
+        if not got_any:
+            # ещё одна попытка details на всю заявку
+            try:
+                items = fetch_order_details_items(ozon_post, order.get("order_id"))
+            except Exception:
+                items = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                try:
+                    qty = int(float(it.get("quantity") or 0))
+                except (TypeError, ValueError):
+                    qty = 0
+                rows.append({
+                    "order_id": order.get("order_id"),
+                    "order_number": order.get("order_number"),
+                    "order_state": order.get("state"),
+                    "order_state_label": order.get("state_label") or state_label(state),
+                    "supply_id": None,
+                    "bundle_id": None,
+                    "dropoff_name": order.get("dropoff_name") or "",
+                    "warehouse_name": "",
+                    "offer_id": it.get("offer_id") or "",
+                    "sku": it.get("sku"),
+                    "name": it.get("name") or "",
+                    "quantity": qty,
+                    "barcode": it.get("barcode") or "",
+                    "product_id": it.get("product_id"),
+                    "volume_in_litres": it.get("volume_in_litres"),
+                    "total_volume_in_litres": it.get("total_volume_in_litres"),
+                    "created_date": order.get("created_date"),
+                    "state_updated_date": order.get("state_updated_date"),
+                    "timeslot_from": order.get("timeslot_from"),
+                })
 
-    # сводка по артикулу (сумма qty по всем поставкам в статусе)
     agg: dict[str, dict] = {}
     for r in rows:
         key = str(r.get("offer_id") or r.get("sku") or "")
@@ -361,19 +458,22 @@ def collect_products_for_state(ozon_post: Callable, state: str = AT_DROPOFF) -> 
         "orders_count": len(orders),
         "rows": rows,
         "summary": summary,
+        "errors": errors[:20],
     }
 
 
 def build_xlsx_bytes(payload: dict) -> bytes:
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, Alignment
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font
+    except ImportError as e:
+        raise RuntimeError("На сервере нет openpyxl — добавь в requirements.txt и задеплой") from e
 
     wb = Workbook()
-    # лист 1 — сводка по артикулам (удобно для склада)
+    # ASCII sheet titles — надёжнее в некоторых окружениях
     ws1 = wb.active
-    ws1.title = "Сводка"
-    headers1 = ["Артикул", "SKU", "Название", "Штрихкод", "Кол-во", "Поставок", "Номера поставок"]
-    ws1.append(headers1)
+    ws1.title = "Summary"
+    ws1.append(["Артикул", "SKU", "Название", "Штрихкод", "Кол-во", "Поставок", "Номера поставок"])
     for cell in ws1[1]:
         cell.font = Font(bold=True)
     for r in payload.get("summary") or []:
@@ -386,23 +486,16 @@ def build_xlsx_bytes(payload: dict) -> bytes:
             r.get("orders_count"),
             r.get("order_numbers"),
         ])
-    ws1.column_dimensions["A"].width = 22
-    ws1.column_dimensions["B"].width = 14
-    ws1.column_dimensions["C"].width = 48
-    ws1.column_dimensions["D"].width = 16
-    ws1.column_dimensions["E"].width = 10
-    ws1.column_dimensions["F"].width = 10
-    ws1.column_dimensions["G"].width = 36
+    for col, w in zip("ABCDEFG", [22, 14, 48, 16, 10, 10, 36]):
+        ws1.column_dimensions[col].width = w
 
-    # лист 2 — детализация по поставкам
-    ws2 = wb.create_sheet("По поставкам")
-    headers2 = [
+    ws2 = wb.create_sheet("By_orders")
+    ws2.append([
         "Номер заявки", "ID заявки", "Статус", "Supply ID",
         "Точка отгрузки", "Склад назначения",
         "Артикул", "SKU", "Название", "Кол-во", "Штрихкод",
         "Создана", "Статус обновлён", "Таймслот с",
-    ]
-    ws2.append(headers2)
+    ])
     for cell in ws2[1]:
         cell.font = Font(bold=True)
     for r in payload.get("rows") or []:
@@ -425,13 +518,16 @@ def build_xlsx_bytes(payload: dict) -> bytes:
     for col, w in zip("ABCDEFGHIJKLMN", [16, 12, 18, 12, 28, 28, 20, 14, 40, 10, 16, 20, 20, 20]):
         ws2.column_dimensions[col].width = w
 
-    # инфо
-    ws3 = wb.create_sheet("Инфо")
-    ws3.append(["Статус", payload.get("state_label"), payload.get("state")])
-    ws3.append(["Заявок", payload.get("orders_count")])
-    ws3.append(["Строк детализации", len(payload.get("rows") or [])])
-    ws3.append(["Уникальных артикулов", len(payload.get("summary") or [])])
-    ws3.append(["Сформировано", datetime.now(timezone.utc).isoformat()])
+    ws3 = wb.create_sheet("Info")
+    ws3.append(["Status", payload.get("state_label"), payload.get("state")])
+    ws3.append(["Orders", payload.get("orders_count")])
+    ws3.append(["Detail rows", len(payload.get("rows") or [])])
+    ws3.append(["Unique offers", len(payload.get("summary") or [])])
+    ws3.append(["Generated", datetime.now(timezone.utc).isoformat()])
+    if payload.get("errors"):
+        ws3.append(["API errors", "; ".join(payload["errors"])[:2000]])
+    if not (payload.get("rows") or []):
+        ws3.append(["Note", "No items: check status / bundle_id / API rights"])
     ws3["A1"].font = Font(bold=True)
 
     buf = io.BytesIO()

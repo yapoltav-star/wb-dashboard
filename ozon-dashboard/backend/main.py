@@ -1148,17 +1148,25 @@ def export_supplies_xlsx(state: str = "ACCEPTED_AT_SUPPLY_WAREHOUSE"):
     try:
         payload = supplies_mod.collect_products_for_state(ozon_post, st)
         content = supplies_mod.build_xlsx_bytes(payload)
-    except HTTPException:
-        raise
+    except HTTPException as e:
+        # отдаём понятный текст, не сырой 500
+        raise HTTPException(status_code=e.status_code if e.status_code < 500 else 502, detail=str(e.detail)) from e
     except Exception as e:
         logger.exception("supplies export")
-        raise HTTPException(status_code=502, detail=str(e)) from e
-    label = supplies_mod.state_label(st).replace(" ", "_")
-    fname = f"ozon_postavki_{label}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.xlsx"
+        raise HTTPException(status_code=502, detail=f"Не удалось собрать Excel: {e}") from e
+
+    # только ASCII в Content-Disposition — иначе uvicorn даёт 500
+    safe_state = "".join(c if c.isalnum() or c in "-_" else "_" for c in st)[:48] or "supplies"
+    fname = f"ozon_supplies_{safe_state}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.xlsx"
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "X-Supplies-Orders": str(payload.get("orders_count") or 0),
+            "X-Supplies-Rows": str(len(payload.get("rows") or [])),
+            "X-Supplies-State": safe_state,
+        },
     )
 
 

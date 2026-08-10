@@ -1285,7 +1285,13 @@ async function exportSuppliesXlsx() {
     a.click();
     a.remove();
     URL.revokeObjectURL(a.href);
-    if (info) info.textContent = `Excel «${label}» скачан`;
+    const nOrd = r.headers.get('X-Supplies-Orders');
+    const nRows = r.headers.get('X-Supplies-Rows');
+    let msg = `Excel «${label}» скачан`;
+    if (nRows != null) msg += ` · позиций: ${nRows}`;
+    if (nOrd != null) msg += ` · поставок: ${nOrd}`;
+    if (nRows === '0') msg += ' (пусто — проверь синк / права API на bundle)';
+    if (info) info.textContent = msg;
   } catch (e) {
     if (info) info.textContent = 'Ошибка Excel: ' + (e.message || e);
   } finally {
