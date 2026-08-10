@@ -509,13 +509,14 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
       <input id="supSearch" placeholder="Номер поставки / склад…" oninput="drawSupplies()">
     </div>
     <button class="filter-btn on" id="supFltAll" onclick="setSupFilter('')">Все</button>
+    <button class="filter-btn" id="supFltReady" onclick="setSupFilter('READY_TO_SUPPLY')">К отгрузке</button>
     <button class="filter-btn" id="supFltDrop" onclick="setSupFilter('ACCEPTED_AT_SUPPLY_WAREHOUSE')">На точке отгрузки</button>
     <button class="filter-btn" id="supFltTransit" onclick="setSupFilter('IN_TRANSIT')">В пути</button>
-    <button class="filter-btn" id="supFltReady" onclick="setSupFilter('READY_TO_SUPPLY')">К отгрузке</button>
     <button class="filter-btn" id="supFltAccept" onclick="setSupFilter('ACCEPTANCE_AT_STORAGE_WAREHOUSE')">Приёмка</button>
+    <button class="filter-btn" id="supFltFill" onclick="setSupFilter('DATA_FILLING')">Заполнение данных</button>
     <button class="filter-btn" id="supFltDone" onclick="setSupFilter('COMPLETED')">Завершены</button>
     <span id="supInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
-    <button class="action-btn" id="supExportBtn" onclick="exportSuppliesXlsx()">↓ Excel: на точке отгрузки</button>
+    <button class="action-btn" id="supExportBtn" onclick="exportSuppliesXlsx()">↓ Excel по статусу</button>
     <button class="action-btn primary ml-auto" id="supSyncBtn" onclick="triggerSuppliesSync()">↻ Обновить поставки</button>
   </div>
   <div class="cards" id="supCards"></div>
@@ -1195,20 +1196,40 @@ function showStocksPage(id, el) {
   }
 }
 
+const SUP_STATE_LABELS = {
+  DATA_FILLING: 'Заполнение данных',
+  READY_TO_SUPPLY: 'К отгрузке',
+  ACCEPTED_AT_SUPPLY_WAREHOUSE: 'На точке отгрузки',
+  IN_TRANSIT: 'В пути',
+  ACCEPTANCE_AT_STORAGE_WAREHOUSE: 'Приёмка на складе',
+  REPORTS_CONFIRMATION_AWAITING: 'Согласование актов',
+  COMPLETED: 'Завершены',
+  CANCELLED: 'Отменена',
+  OVERDUE: 'Просрочена',
+};
+
+function supExportLabel(state) {
+  if (!state) return '↓ Excel (выбери статус)';
+  return `↓ Excel: ${SUP_STATE_LABELS[state] || state}`;
+}
+
 function setSupFilter(state) {
   SUP_FILTER = state || '';
   const map = {
     '': 'supFltAll',
+    READY_TO_SUPPLY: 'supFltReady',
     ACCEPTED_AT_SUPPLY_WAREHOUSE: 'supFltDrop',
     IN_TRANSIT: 'supFltTransit',
-    READY_TO_SUPPLY: 'supFltReady',
     ACCEPTANCE_AT_STORAGE_WAREHOUSE: 'supFltAccept',
+    DATA_FILLING: 'supFltFill',
     COMPLETED: 'supFltDone',
   };
   Object.entries(map).forEach(([k, id]) => {
     const el = document.getElementById(id);
     if (el) el.classList.toggle('on', k === SUP_FILTER);
   });
+  const exp = document.getElementById('supExportBtn');
+  if (exp && !exp.disabled) exp.textContent = supExportLabel(SUP_FILTER);
   drawSupplies();
 }
 
@@ -1242,15 +1263,21 @@ async function triggerSuppliesSync() {
 async function exportSuppliesXlsx() {
   const btn = document.getElementById('supExportBtn');
   const info = document.getElementById('supInfo');
+  if (!SUP_FILTER) {
+    if (info) info.textContent = 'Сначала выбери статус: к отгрузке / на точке / в пути / …';
+    return;
+  }
+  const state = SUP_FILTER;
+  const label = SUP_STATE_LABELS[state] || state;
   if (btn) { btn.disabled = true; btn.textContent = 'Собираю Excel…'; }
-  if (info) info.textContent = 'Тянем состав поставок «на точке отгрузки»…';
+  if (info) info.textContent = `Тянем состав поставок «${label}»…`;
   try {
-    const r = await fetch('/api/supplies/export-xlsx?state=ACCEPTED_AT_SUPPLY_WAREHOUSE');
+    const r = await fetch('/api/supplies/export-xlsx?state=' + encodeURIComponent(state));
     if (!r.ok) throw new Error(await readErr(r));
     const blob = await r.blob();
     const cd = r.headers.get('Content-Disposition') || '';
     const m = cd.match(/filename="?([^"]+)"?/i);
-    const name = (m && m[1]) || 'ozon_postavki_na_tochke.xlsx';
+    const name = (m && m[1]) || `ozon_postavki_${state}.xlsx`;
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = name;
@@ -1258,11 +1285,11 @@ async function exportSuppliesXlsx() {
     a.click();
     a.remove();
     URL.revokeObjectURL(a.href);
-    if (info) info.textContent = 'Excel скачан';
+    if (info) info.textContent = `Excel «${label}» скачан`;
   } catch (e) {
     if (info) info.textContent = 'Ошибка Excel: ' + (e.message || e);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '↓ Excel: на точке отгрузки'; }
+    if (btn) { btn.disabled = false; btn.textContent = supExportLabel(SUP_FILTER); }
   }
 }
 
@@ -1299,10 +1326,11 @@ function drawSupplies() {
   Object.keys(byState).forEach(k => { if (countMap[k] == null) countMap[k] = byState[k]; });
 
   const cardStates = [
+    ['READY_TO_SUPPLY', 'К отгрузке (ещё не отгрузили)', ''],
     ['ACCEPTED_AT_SUPPLY_WAREHOUSE', 'На точке отгрузки', 'color:var(--oz-blue)'],
     ['IN_TRANSIT', 'В пути', ''],
-    ['READY_TO_SUPPLY', 'К отгрузке', ''],
     ['ACCEPTANCE_AT_STORAGE_WAREHOUSE', 'Приёмка на складе', ''],
+    ['DATA_FILLING', 'Заполнение данных', ''],
     ['COMPLETED', 'Завершены', 'color:var(--green)'],
   ];
   cards.innerHTML = cardStates.map(([st, label, style]) => {
@@ -1337,9 +1365,12 @@ function drawSupplies() {
   const rows = orders.map(o => {
     const wh = (o.supplies || []).map(s => esc(s.warehouse_name || '—')).join('<br>') || '—';
     const slot = o.timeslot_from ? fmtDt(o.timeslot_from) : '—';
+    const tagCls = o.state === 'ACCEPTED_AT_SUPPLY_WAREHOUSE' ? 'ok'
+      : o.state === 'READY_TO_SUPPLY' ? 'stock'
+      : o.state === 'IN_TRANSIT' ? '' : '';
     return `<tr>
       <td class="mono">${esc(o.order_number || o.order_id)}</td>
-      <td><span class="tag ${o.state==='ACCEPTED_AT_SUPPLY_WAREHOUSE'?'ok':''}">${esc(o.state_label || o.state)}</span></td>
+      <td><span class="tag ${tagCls}">${esc(o.state_label || o.state)}</span></td>
       <td>${esc(o.dropoff_name || '—')}<div class="prod-meta">${esc(o.dropoff_address || '')}</div></td>
       <td style="white-space:normal;font-size:12px">${wh}</td>
       <td class="num">${fmt(o.supplies_count)}</td>
@@ -1348,9 +1379,15 @@ function drawSupplies() {
     </tr>`;
   }).join('');
 
+  const exportHint = SUP_FILTER
+    ? `Excel выгрузит товары из поставок в статусе <b>${esc(SUP_STATE_LABELS[SUP_FILTER] || SUP_FILTER)}</b>.`
+    : `Выбери статус фильтром (к отгрузке / на точке / в пути…) и нажми Excel — один файл по этому статусу.`;
+
   root.innerHTML = `
-    <div class="hint" style="margin-bottom:10px">Статус <b>На точке отгрузки</b> = ACCEPTED_AT_SUPPLY_WAREHOUSE.
-      Кнопка Excel собирает товары из всех таких поставок в один файл (сводка + детализация).</div>
+    <div class="hint" style="margin-bottom:10px">
+      <b>К отгрузке</b> — ещё не отгрузили · <b>На точке</b> — приняли на точке отгрузки · <b>В пути</b> — едут на склад Ozon.
+      ${exportHint}
+    </div>
     <div class="tbl-wrap"><table>
       <thead><tr>
         <th>Заявка</th><th>Статус</th><th>Точка отгрузки</th><th>Склад назначения</th><th>Supply</th><th>Таймслот</th><th>Обновлено</th>
