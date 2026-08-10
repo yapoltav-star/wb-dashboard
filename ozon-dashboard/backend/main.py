@@ -1113,17 +1113,21 @@ def _run_supplies_sync():
 
 @app.get("/api/own-warehouse-stock")
 def get_own_warehouse_stock(refresh: bool = False):
-    """Остатки нашего физического склада (Google Sheets, как на WB)."""
+    """Остатки нашего склада с WB-дашборда (с учётом загруженных туда отгрузок)."""
     data = own_wh.get_cached(refresh=refresh)
     return {
         "title": data.get("title"),
         "as_of": data.get("as_of"),
         "rows": data.get("rows") or [],
         "by_vendor": data.get("by_vendor") or {},
+        "shipments": data.get("shipments") or [],
+        "channel_summaries": data.get("channel_summaries") or [],
         "updated_at": data.get("updated_at"),
         "error": data.get("error"),
         "syncing": bool(data.get("syncing")),
         "configured": bool(data.get("configured")),
+        "source": data.get("source") or "wb-dashboard",
+        "wb_url": data.get("wb_url"),
     }
 
 
@@ -1133,7 +1137,7 @@ def sync_own_warehouse():
         return {"ok": True, "syncing": True}
 
     def _run():
-        own_wh.refresh_own_warehouse_stock()
+        own_wh.refresh_own_warehouse_stock(force_wb_refresh=True)
 
     threading.Thread(target=_run, daemon=True).start()
     return {"ok": True, "syncing": True}

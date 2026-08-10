@@ -516,7 +516,7 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
     <button class="action-btn primary ml-auto" id="owSyncBtn" onclick="triggerOwnWarehouseSync()">↻ Обновить</button>
   </div>
   <div class="cards" id="owCards"></div>
-  <div id="owRoot"><div class="empty"><b>Наш склад</b>Остатки с той же Google-таблицы, что на WB. Матч к Ozon по артикулу продавца.</div></div>
+  <div id="owRoot"><div class="empty"><b>Наш склад</b>Остатки с WB-дашборда (с учётом загруженных туда отгрузок). Матч к Ozon по артикулу продавца.</div></div>
 </div>
 
 <!-- SUPPLIES (внутри Остатки) -->
@@ -1486,13 +1486,13 @@ async function triggerOwnWarehouseSync() {
   const btn = document.getElementById('owSyncBtn');
   const info = document.getElementById('owInfo');
   if (btn) { btn.disabled = true; btn.textContent = 'Обновляю…'; }
-  if (info) info.textContent = 'Тянем Google Sheets…';
+  if (info) info.textContent = 'Тянем с WB-дашборда…';
   try {
     await fetch('/api/sync-own-warehouse', { method: 'POST' });
     OWN_WH.syncing = true;
     drawOwnWarehouse();
     clearTimeout(owPoll);
-    owPoll = setTimeout(() => renderOwnWarehouse(true), 1500);
+    owPoll = setTimeout(() => renderOwnWarehouse(true), 2000);
   } catch (e) {
     if (info) info.textContent = 'Ошибка: ' + (e.message || e);
   } finally {
@@ -1540,6 +1540,9 @@ function drawOwnWarehouse() {
     if (OWN_WH.as_of) bits.push('остатки на ' + OWN_WH.as_of);
     else if (OWN_WH.title) bits.push(OWN_WH.title);
     if (OWN_WH.updated_at) bits.push('подтянуто ' + OWN_WH.updated_at);
+    bits.push('источник: WB-дашборд');
+    const ships = OWN_WH.shipments || [];
+    if (ships.length) bits.push('отгрузок учтено: ' + ships.length);
     if (info) info.textContent = bits.join(' · ');
   }
 
@@ -1556,31 +1559,33 @@ function drawOwnWarehouse() {
 
   const withStock = (OWN_WH.rows || []).filter(r => (r.stock || 0) > 0);
   const totalQty = withStock.reduce((s, r) => s + (r.stock || 0), 0);
+  const shippedTotal = (OWN_WH.rows || []).reduce((s, r) => s + (r.shipped || 0), 0);
   if (cards) {
     cards.innerHTML = [
       ['Строк', fmt(rows.length)],
       ['С остатком', fmt(withStock.length)],
       ['Шт. на складе', fmt(totalQty)],
+      ['Списано отгрузками', fmt(shippedTotal)],
       ['На дату', OWN_WH.as_of || '—'],
     ].map(([l, v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v">${v}</div></div>`).join('');
   }
 
   if (!rows.length) {
     root.innerHTML = OWN_WH.syncing
-      ? '<div class="loading"><div class="spinner"></div>Тянем таблицу…</div>'
-      : '<div class="empty"><b>Пусто</b>Нет строк или не совпал фильтр. Проверь доступ к Google Sheets (ссылка «все, у кого есть ссылка»).</div>';
+      ? '<div class="loading"><div class="spinner"></div>Тянем с WB…</div>'
+      : '<div class="empty"><b>Пусто</b>Нет данных с WB-дашборда. Открой на WB вкладку «Наш склад» и обнови, либо проверь <code>WB_DASHBOARD_URL</code> в Railway.</div>';
     return;
   }
 
   root.innerHTML = `
     <div class="hint" style="margin-bottom:10px">
-      Источник — та же Google-таблица «Остатки на складе», что на WB.
+      Источник — <b>WB-дашборд</b> (не сырая Google-таблица): остатки уже с учётом загруженных туда отгрузок/поставок.
       В матрице Ozon колонка <b>Наш склад</b> матчится по артикулу продавца (<code>offer_id</code>).
-      Семья артикулов (общий остаток) показывается в скобках, если отличается.
+      ${OWN_WH.wb_url ? `URL: <code>${esc(OWN_WH.wb_url)}</code>` : ''}
     </div>
     <div class="tbl-wrap"><table>
       <thead><tr>
-        <th>Артикул</th><th>Название</th><th class="num">Остаток</th><th class="num">Семья</th><th>Семья (артикулы)</th><th>Примечание</th>
+        <th>Артикул</th><th>Название</th><th class="num">Остаток</th><th class="num">Списано</th><th class="num">Семья</th><th>Семья (артикулы)</th><th>Примечание</th>
       </tr></thead>
       <tbody>${rows.map(r => {
         const fam = (r.family || []).filter(x => x && x !== r.vendor_code);
@@ -1588,6 +1593,7 @@ function drawOwnWarehouse() {
           <td><b>${esc(r.vendor_code || '—')}</b></td>
           <td>${esc(r.name || '—')}</td>
           <td class="num">${fmt(r.stock || 0)}</td>
+          <td class="num">${fmt(r.shipped || 0)}</td>
           <td class="num">${fmt(r.family_stock != null ? r.family_stock : (r.stock || 0))}</td>
           <td class="prod-meta">${fam.length ? esc(fam.join(', ')) : '—'}</td>
           <td class="prod-meta">${esc(r.note || '')}</td>
@@ -1774,7 +1780,7 @@ function renderStocks() {
     : '';
   let head1 = `<th class="sticky" data-col="0" data-wkey="product">Артикул</th>
     <th class="wh-head wh-tot wh-block" colspan="4">Весь Ozon</th>
-    <th class="wh-head wh-block" style="background:#FFF4E8" colspan="1" title="Физический склад (Google Sheets, как на WB)">Наш склад${owAsOf}</th>`;
+    <th class="wh-head wh-block" style="background:#FFF4E8" colspan="1" title="Остаток с WB-дашборда (с учётом отгрузок)">Наш склад${owAsOf}</th>`;
   warehouses.forEach((w, wi) => {
     const on = isWhEnabled(w);
     const stripe = wi % 2 ? 'wh-b wh-even' : 'wh-a';
@@ -1861,7 +1867,7 @@ function renderStocks() {
       <b>📌</b> закрепить товар сверху · перетащи закреплённые строки, чтобы поменять порядок ·
       <b>⠿</b> перетащи заголовок склада · тяни край колонки для ширины ·
       галочка склада — включить/выключить из расчёта.
-      <b>Наш склад</b> — физический остаток из Google Sheets (как на WB), матч по артикулу.
+      <b>Наш склад</b> — остаток с WB-дашборда (с учётом отгрузок), матч по артикулу.
       Формулы: темп = заказы/окно · дней = остаток/темп · поставить = темп×цель − остаток.
       Склады вправо/влево — ползунок под таблицей (как на WB).
     </div>`;
