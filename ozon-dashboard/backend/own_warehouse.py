@@ -187,6 +187,20 @@ def get_cached(refresh: bool = False) -> dict:
     }
 
 
+def _norm_article_key(s: str) -> str:
+    """Мягкий ключ: регистр + латинская/кириллическая O и хвост 0/O/О."""
+    t = str(s or "").strip().lower().replace("ё", "е")
+    # визуально одинаковые буквы
+    t = t.translate(str.maketrans({
+        "о": "o", "а": "a", "е": "e", "с": "c", "р": "p",
+        "х": "x", "у": "y", "к": "k", "м": "m", "т": "t",
+        "в": "b", "н": "h",
+    }))
+    if t.endswith("0"):
+        t = t[:-1] + "o"
+    return t
+
+
 def lookup_for_offer(offer_id: str) -> dict | None:
     vc = str(offer_id or "").strip()
     if not vc:
@@ -195,8 +209,26 @@ def lookup_for_offer(offer_id: str) -> dict | None:
     hit = by_v.get(vc)
     if hit:
         return hit
+    # точное без регистра
     low = vc.lower()
     for k, v in by_v.items():
         if str(k).lower() == low:
             return v
+    # мягкий: O / 0 / О на конце и lookalike-буквы (041_Х10_gold_0 ↔ …_O)
+    want = _norm_article_key(vc)
+    for k, v in by_v.items():
+        if _norm_article_key(str(k)) == want:
+            return v
     return None
+
+
+def build_offer_index() -> dict[str, dict]:
+    """offer_id (и нормализованные ключи) → meta из by_vendor."""
+    by_v = OWN_WAREHOUSE_CACHE.get("by_vendor") or {}
+    out: dict[str, dict] = {}
+    for k, v in by_v.items():
+        sk = str(k)
+        out[sk] = v
+        out[sk.lower()] = v
+        out[_norm_article_key(sk)] = v
+    return out

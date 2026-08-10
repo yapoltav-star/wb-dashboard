@@ -1445,6 +1445,14 @@ function setOwFilter(f) {
   drawOwnWarehouse();
 }
 
+function ownWhNormKey(s) {
+  let t = String(s || '').trim().toLowerCase().replace(/ё/g, 'е');
+  const map = { 'о':'o','а':'a','е':'e','с':'c','р':'p','х':'x','у':'y','к':'k','м':'m','т':'t','в':'b','н':'h' };
+  t = t.replace(/[оаесрхукмтвн]/g, ch => map[ch] || ch);
+  if (t.endsWith('0')) t = t.slice(0, -1) + 'o';
+  return t;
+}
+
 function ownWhLookup(offerId) {
   const vc = String(offerId || '').trim();
   if (!vc) return null;
@@ -1452,6 +1460,10 @@ function ownWhLookup(offerId) {
   const low = vc.toLowerCase();
   for (const [k, v] of Object.entries(OWN_WH_BY_VENDOR || {})) {
     if (String(k).toLowerCase() === low) return v;
+  }
+  const want = ownWhNormKey(vc);
+  for (const [k, v] of Object.entries(OWN_WH_BY_VENDOR || {})) {
+    if (ownWhNormKey(k) === want) return v;
   }
   return null;
 }
