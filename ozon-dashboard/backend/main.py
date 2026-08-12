@@ -188,6 +188,48 @@ def ozon_get(path: str, params: dict | None = None, timeout: float = 60, retries
     raise HTTPException(status_code=502, detail=f"Ozon API {path}: {last_err}")
 
 
+def _dedupe_stock_warehouse_rows(rows: list[dict]) -> list[dict]:
+    """Один ряд на (offer_id, warehouse_name, channel); qty суммируем."""
+    merged: dict[tuple, dict] = {}
+    for wr in rows:
+        if not isinstance(wr, dict):
+            continue
+        offer = str(wr.get("offer_id") or "").strip()
+        wh = str(wr.get("warehouse_name") or "").strip() or "—"
+        ch = str(wr.get("channel") or "").strip().lower() or "fbo"
+        if not offer:
+            continue
+        key = (offer, wh, ch)
+        cur = merged.get(key)
+        if not cur:
+            merged[key] = {
+                **wr,
+                "offer_id": offer,
+                "warehouse_name": wh,
+                "channel": ch,
+                "present": _to_int(wr.get("present")),
+                "reserved": _to_int(wr.get("reserved")),
+                "free_to_sell": _to_int(wr.get("free_to_sell")),
+                "promised": _to_int(wr.get("promised")),
+                "ordered_qty": _to_int(wr.get("ordered_qty")),
+            }
+            continue
+        cur["present"] = _to_int(cur.get("present")) + _to_int(wr.get("present"))
+        cur["reserved"] = _to_int(cur.get("reserved")) + _to_int(wr.get("reserved"))
+        cur["free_to_sell"] = _to_int(cur.get("free_to_sell")) + _to_int(wr.get("free_to_sell"))
+        cur["promised"] = _to_int(cur.get("promised")) + _to_int(wr.get("promised"))
+        cur["ordered_qty"] = _to_int(cur.get("ordered_qty")) + _to_int(wr.get("ordered_qty"))
+        if not cur.get("warehouse_id") and wr.get("warehouse_id") is not None:
+            cur["warehouse_id"] = wr.get("warehouse_id")
+        if not cur.get("product_id") and wr.get("product_id") is not None:
+            cur["product_id"] = wr.get("product_id")
+        if cur.get("sku") is None and wr.get("sku") is not None:
+            cur["sku"] = wr.get("sku")
+        if wr.get("updated_at"):
+            cur["updated_at"] = wr["updated_at"]
+    return list(merged.values())
+
+
 def _to_int(v, default: int = 0) -> int:
     try:
         if v is None or v == "":
@@ -765,7 +807,12 @@ def sync_stocks() -> dict:
             if row:
                 row["ordered_qty"] = qty
 
-        # 5) распределить заказы по складам пропорционально free_to_sell/present
+        # 5a) схлопнуть дубли ключа (offer_id, warehouse_name, channel) —
+        # PostgREST upsert падает 409, если в одном батче два одинаковых ключа
+        warehouse_rows = _dedupe_stock_warehouse_rows(warehouse_rows)
+        logger.info("stocks warehouse rows after dedupe: %s", len(warehouse_rows))
+
+        # 5b) распределить заказы по складам пропорционально free_to_sell/present
         stock_by_offer: dict[str, int] = {}
         for wr in warehouse_rows:
             offer = wr["offer_id"]
@@ -790,15 +837,11 @@ def sync_stocks() -> dict:
                 wr["ordered_qty"] = 0
 
         # 6) write DB — replace warehouse rows
-        sb_delete("stocks", {"id": "gte.0"})
+        sb_delete("stocks", {"offer_id": "not.is.null"})
         wrote_wh = 0
         for i in range(0, len(warehouse_rows), 200):
             batch = warehouse_rows[i : i + 200]
-            # unique upsert key
             resp = sb_upsert("stocks", batch, on_conflict="offer_id,warehouse_name,channel")
-            if resp is not None and not resp.is_success:
-                # fallback without on_conflict if index missing
-                resp = sb_upsert("stocks", batch)
             if resp is not None and not resp.is_success:
                 raise HTTPException(
                     status_code=502,
