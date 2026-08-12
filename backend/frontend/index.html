@@ -661,6 +661,14 @@ td.tc{text-align:center}
 .spp-chart-legend{display:flex;gap:16px;font-size:12px;color:var(--wb-muted);margin-bottom:4px}
 .spp-chart-legend i{display:inline-block;width:18px;height:3px;border-radius:2px;vertical-align:middle;margin-right:6px}
 .spp-chart-empty{padding:48px 16px;text-align:center;color:var(--wb-muted);font-size:13px}
+tr.spp-alert{background:#FFF7ED !important;box-shadow:inset 4px 0 0 #EA580C}
+tr.spp-alert.spp-alert-up{background:#FEF2F2 !important;box-shadow:inset 4px 0 0 #DC2626}
+tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0 0 #EA580C}
+.spp-alert-badge{display:inline-flex;align-items:center;gap:4px;margin-left:6px;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;vertical-align:middle;white-space:nowrap}
+.spp-alert-badge.down{background:#FFEDD5;color:#C2410C;border:1px solid #FDBA74}
+.spp-alert-badge.up{background:#FEE2E2;color:#B91C1C;border:1px solid #FECACA}
+.spp-alert-cell{font-weight:700}
+.spp-alert-cell .spp-alert-main{color:#9A3412}
 </style>
 </head>
 <body>
@@ -5523,6 +5531,68 @@ function sppDeltaHtml(cur, prev, delta, at, label) {
   return `<span class="spp-delta ${up ? 'up' : 'down'}" title="${escapeHtml(tip)}">${up ? '↑' : '↓'}${abs}</span>`;
 }
 
+function sppClientChanged(a) {
+  const d = a && a.client_delta;
+  return d != null && isFinite(Number(d)) && Math.abs(Number(d)) >= 1;
+}
+
+function sppClientTip(a) {
+  if(!a) return '';
+  if(a.client_change_tip) return a.client_change_tip;
+  if(!sppClientChanged(a)) return '';
+  const d = Number(a.client_delta);
+  const direction = d < 0 ? 'снизилась' : 'выросла';
+  const parts = [];
+  if(a.sale_delta != null && Math.abs(Number(a.sale_delta)) >= 0.5) {
+    const sd = Number(a.sale_delta);
+    parts.push(sd < 0
+      ? `мы снизили цену продавца на ${Math.abs(Math.round(sd))} ₽`
+      : `мы подняли цену продавца на ${Math.round(sd)} ₽`);
+  }
+  if(a.spp_delta != null && Math.abs(Number(a.spp_delta)) >= 0.3) {
+    const sp = Number(a.spp_delta);
+    const sppBit = (a.prev_spp != null && a.spp != null) ? ` (${a.prev_spp}% → ${a.spp}%)` : '';
+    parts.push(sp > 0
+      ? `вырос СПП на ${Math.abs(sp)} п.п.${sppBit} — WB дал больше скидки`
+      : `упал СПП на ${Math.abs(sp)} п.п.${sppBit} — покупателю дороже`);
+  }
+  if(!parts.length) parts.push('открой график для деталей');
+  const prevS = a.prev_client_price != null ? Math.round(a.prev_client_price) + ' ₽' : '—';
+  const curS = a.client_price != null ? Math.round(a.client_price) + ' ₽' : '—';
+  return `Цена для клиента ${direction}: было ${prevS} → стало ${curS}. Причина: ${parts.join('; ')}.`;
+}
+
+function sppReasonBadge(a) {
+  if(!sppClientChanged(a)) return '';
+  const d = Number(a.client_delta);
+  const up = d > 0;
+  let reason = a.client_change_reason || '';
+  if(!reason) {
+    const saleAbs = a.sale_delta != null ? Math.abs(Number(a.sale_delta)) : 0;
+    const sppAbs = a.spp_delta != null ? Math.abs(Number(a.spp_delta)) : 0;
+    if(saleAbs >= 0.5 && sppAbs < 0.3) reason = Number(a.sale_delta) < 0 ? 'our_price_down' : 'our_price_up';
+    else if(sppAbs >= 0.3 && saleAbs < 0.5) reason = Number(a.spp_delta) > 0 ? 'spp_up' : 'spp_down';
+    else if(saleAbs >= 0.5 && sppAbs >= 0.3) reason = 'both';
+  }
+  let label = up ? 'Дороже' : 'Дешевле';
+  if(reason === 'our_price_down') label = 'Мы снизили';
+  else if(reason === 'our_price_up') label = 'Мы подняли';
+  else if(reason === 'spp_up') label = 'СПП↑';
+  else if(reason === 'spp_down') label = 'СПП↓';
+  else if(reason === 'both') label = up ? 'Цена+СПП' : 'Цена/СПП';
+  const tip = sppClientTip(a);
+  return `<span class="spp-alert-badge ${up ? 'up' : 'down'}" title="${escapeHtml(tip)}">⚠ ${label}</span>`;
+}
+
+function sppSppDeltaHtml(a) {
+  const d = a && a.spp_delta;
+  if(d == null || !isFinite(Number(d)) || Math.abs(Number(d)) < 0.3) return '';
+  const n = Number(d);
+  const up = n > 0;
+  const tip = `СПП: было ${a.prev_spp != null ? a.prev_spp + '%' : '—'} → стало ${a.spp != null ? a.spp + '%' : '—'}${a.prev_captured_at ? ' · ' + a.prev_captured_at : ''}`;
+  return `<span class="spp-delta ${up ? 'up' : 'down'}" title="${escapeHtml(tip)}">${up ? '↑' : '↓'}${Math.abs(n).toLocaleString('ru-RU', {maximumFractionDigits: 1})}</span>`;
+}
+
 let SPP_CHART_NM = null;
 let SPP_CHART_ART = '';
 let SPP_CHART_DAYS = 30;
@@ -5648,8 +5718,14 @@ function drawSppPrices() {
     const bits = [];
     if(SPP_DATA.updated_at) bits.push('обновлено ' + SPP_DATA.updated_at);
     if(SPP_DATA.client_source) bits.push('витрина: ' + SPP_DATA.client_source);
+    const changedN = (SPP_DATA.articles || []).filter(sppClientChanged).length;
+    if(changedN) bits.push(`⚠ изменилась цена клиента: ${changedN}`);
     if(SPP_DATA.error) bits.push(SPP_DATA.error);
-    if(info) info.textContent = bits.join(' · ');
+    if(info) {
+      info.textContent = bits.join(' · ');
+      info.style.color = changedN ? '#C2410C' : '';
+      info.style.fontWeight = changedN ? '600' : '';
+    }
     if(btn) btn.disabled = false;
   }
 
@@ -5663,6 +5739,15 @@ function drawSppPrices() {
 
   const sk = SPP_SORT.key, sd = SPP_SORT.dir;
   arts.sort((a, b) => {
+    // срочно: сначала строки, где цена для клиента изменилась
+    const ca = sppClientChanged(a) ? 1 : 0;
+    const cb = sppClientChanged(b) ? 1 : 0;
+    if(ca !== cb) return cb - ca;
+    if(ca && cb) {
+      const da = Math.abs(Number(a.client_delta) || 0);
+      const db = Math.abs(Number(b.client_delta) || 0);
+      if(da !== db) return db - da;
+    }
     let va = a[sk], vb = b[sk];
     if(va == null && vb == null) return 0;
     if(va == null) return 1;
@@ -5676,15 +5761,23 @@ function drawSppPrices() {
   const avgSpp = withSpp.length
     ? withSpp.reduce((s, a) => s + Number(a.spp), 0) / withSpp.length
     : null;
-  const maxSpp = withSpp.length ? Math.max(...withSpp.map(a => Number(a.spp))) : null;
+  const changedAll = all.filter(sppClientChanged);
   const withCb = all.filter(a => a.cashback_pct != null && Number(a.cashback_pct) > 0);
   if(cards) {
-    cards.innerHTML = [
+    const cardItems = [
       ['Артикулов', fmt(all.length)],
       ['Со СПП', fmt(withSpp.length)],
       ['Средний СПП', avgSpp != null ? (avgSpp.toLocaleString('ru-RU', {maximumFractionDigits: 1}) + '%') : '—', avgSpp != null ? 'color:#027A48' : ''],
       ['С кэшбеком', fmt(withCb.length), withCb.length ? 'color:#027A48' : ''],
-    ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+    ];
+    if(changedAll.length) {
+      cardItems.unshift([
+        '⚠ Цена клиента изменилась',
+        fmt(changedAll.length),
+        'color:#C2410C',
+      ]);
+    }
+    cards.innerHTML = cardItems.map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
   }
 
   if(SPP_DATA.syncing && !all.length) {
@@ -5701,7 +5794,14 @@ function drawSppPrices() {
   const th = (label, key) =>
     `<th class="mhead" style="cursor:pointer" onclick="sppSort('${key}')">${label}${sppSortMark(key)}</th>`;
 
-  root.innerHTML = `<div class="matrix-wrap"><table class="matrix promo-xls">
+  const alertBanner = changedAll.length
+    ? `<div style="margin:0 0 10px;padding:10px 14px;background:#FFF7ED;border:1px solid #FDBA74;border-radius:var(--rs);font-size:13px;color:#9A3412;line-height:1.45">
+        <b>⚠ ${changedAll.length} арт.</b> — изменилась цена для клиента с прошлого снимка.
+        Подсвеченные строки сверху. Наведи на бейдж / цену — увидишь, <b>мы ли снизили</b> или сдвинулся <b>СПП</b>.
+      </div>`
+    : '';
+
+  root.innerHTML = `${alertBanner}<div class="matrix-wrap"><table class="matrix promo-xls">
     <thead><tr>
       ${th('Артикул', 'vendor_code')}
       ${th('nmID', 'nm_id')}
@@ -5715,15 +5815,27 @@ function drawSppPrices() {
     <tbody>${arts.map((a, i) => {
       const wbLink = a.nm_id ? `https://www.wildberries.ru/catalog/${a.nm_id}/detail.aspx` : '#';
       const artAttr = escapeHtml(String(a.vendor_code || ''));
+      const changed = sppClientChanged(a);
+      const up = changed && Number(a.client_delta) > 0;
+      const rowCls = [
+        i % 2 ? 'wh-even' : '',
+        changed ? 'spp-alert' : '',
+        changed ? (up ? 'spp-alert-up' : 'spp-alert-down') : '',
+      ].filter(Boolean).join(' ');
+      const tip = sppClientTip(a);
       const saleCell = `<span style="font-weight:600">${sppMoney(a.sale_price)}</span>${sppDeltaHtml(a.sale_price, a.prev_sale_price, a.sale_delta, a.prev_captured_at, 'Цена продавца')}`;
-      const clientCell = `${sppMoney(a.client_price)}${sppDeltaHtml(a.client_price, a.prev_client_price, a.client_delta, a.prev_captured_at, 'Цена на сайте')}`;
-      return `<tr class="${i%2?'wh-even':''}">
+      const clientCell = changed
+        ? `<span class="spp-alert-cell" title="${escapeHtml(tip)}"><span class="spp-alert-main">${sppMoney(a.client_price)}</span>${sppDeltaHtml(a.client_price, a.prev_client_price, a.client_delta, a.prev_captured_at, 'Цена на сайте')}${sppReasonBadge(a)}</span>`
+        : `${sppMoney(a.client_price)}${sppDeltaHtml(a.client_price, a.prev_client_price, a.client_delta, a.prev_captured_at, 'Цена на сайте')}`;
+      const sppCell = `${sppPctHtml(a.spp)}${sppSppDeltaHtml(a)}`;
+      const rowTitle = tip ? ` title="${escapeHtml(tip)}"` : '';
+      return `<tr class="${rowCls}"${rowTitle}>
         <td class="mcol-art"><div class="art"><a href="${wbLink}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${escapeHtml(String(a.vendor_code||'—'))}</a></div></td>
         <td style="color:var(--wb-muted);font-size:12px">${a.nm_id || '—'}</td>
         <td>${sppMoney(a.price)}</td>
-        <td class="spp-price-cell" data-nm="${a.nm_id || ''}" data-art="${artAttr}" onclick="openSppChart(+this.dataset.nm, this.dataset.art)" title="График истории цен">${saleCell}</td>
-        <td class="spp-price-cell" data-nm="${a.nm_id || ''}" data-art="${artAttr}" onclick="openSppChart(+this.dataset.nm, this.dataset.art)" title="График истории цен">${clientCell}</td>
-        <td>${sppPctHtml(a.spp)}</td>
+        <td class="spp-price-cell" data-nm="${a.nm_id || ''}" data-art="${artAttr}" onclick="openSppChart(+this.dataset.nm, this.dataset.art)" title="${escapeHtml(tip || 'График истории цен')}">${saleCell}</td>
+        <td class="spp-price-cell" data-nm="${a.nm_id || ''}" data-art="${artAttr}" onclick="openSppChart(+this.dataset.nm, this.dataset.art)" title="${escapeHtml(tip || 'График истории цен')}">${clientCell}</td>
+        <td>${sppCell}</td>
         <td>${sppCashbackHtml(a)}</td>
         <td style="color:var(--wb-muted)">${a.discount != null ? a.discount + '%' : '—'}</td>
       </tr>`;
@@ -5731,8 +5843,8 @@ function drawSppPrices() {
   </table></div>
   <div class="pace-hint">СПП = насколько цена на витрине ниже вашей цены продавца после скидки:
     <b>(1 − цена сайта / цена продавца) × 100%</b>.
-    Стрелки — изменение относительно прошлого снимка (↑ зелёный / ↓ красный); клик по цене — график за 7–30 дней.
-    Кэшбек — % с витрины WB. Нужен токен с категорией «Цены и скидки».</div>`;
+    <b>Оранжевая/красная подсветка</b> — цена для клиента изменилась с прошлого обновления; наведи курсор — там написано, снизили ли вы цену или сдвинулся СПП.
+    Стрелки — Δ к прошлому снимку; клик по цене — график. Нужен токен «Цены и скидки».</div>`;
 }
 
 function setPromoExcelFilter(f) {

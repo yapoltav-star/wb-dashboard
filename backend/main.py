@@ -5650,23 +5650,30 @@ def fetch_latest_price_snapshots(nm_ids: list) -> dict:
     return out
 
 def attach_price_deltas(articles: list, prev_map: dict) -> list:
-    """Добавляет prev_* и дельты относительно прошлого снимка."""
+    """Добавляет prev_* и дельты относительно прошлого снимка + пояснение смены цены для клиента."""
     for a in articles:
         nm = a.get("nm_id")
         prev = prev_map.get(int(nm)) if nm is not None else None
         if not prev:
             a["prev_sale_price"] = None
             a["prev_client_price"] = None
+            a["prev_spp"] = None
             a["prev_captured_at"] = None
             a["sale_delta"] = None
             a["client_delta"] = None
+            a["spp_delta"] = None
+            a["client_change_reason"] = None
+            a["client_change_tip"] = None
             continue
         prev_sale = _num_or_none(prev.get("sale_price"))
         prev_client = _num_or_none(prev.get("client_price"))
+        prev_spp = _num_or_none(prev.get("spp"))
         cur_sale = _num_or_none(a.get("sale_price"))
         cur_client = _num_or_none(a.get("client_price"))
+        cur_spp = _num_or_none(a.get("spp"))
         a["prev_sale_price"] = prev_sale
         a["prev_client_price"] = prev_client
+        a["prev_spp"] = round(prev_spp, 1) if prev_spp is not None else None
         a["prev_captured_at"] = _fmt_snap_dt(prev.get("captured_at"))
         a["sale_delta"] = (
             round(cur_sale - prev_sale, 2)
@@ -5676,7 +5683,76 @@ def attach_price_deltas(articles: list, prev_map: dict) -> list:
             round(cur_client - prev_client, 2)
             if cur_client is not None and prev_client is not None else None
         )
+        a["spp_delta"] = (
+            round(cur_spp - prev_spp, 1)
+            if cur_spp is not None and prev_spp is not None else None
+        )
+        reason, tip = _explain_client_price_change(a)
+        a["client_change_reason"] = reason
+        a["client_change_tip"] = tip
     return articles
+
+
+def _explain_client_price_change(a: dict):
+    """Поясняет, почему изменилась цена для клиента: наша цена и/или СПП."""
+    client_delta = a.get("client_delta")
+    if client_delta is None or abs(float(client_delta)) < 0.5:
+        return None, None
+    sale_delta = a.get("sale_delta")
+    spp_delta = a.get("spp_delta")
+    prev_client = a.get("prev_client_price")
+    cur_client = a.get("client_price")
+    prev_at = a.get("prev_captured_at") or ""
+
+    parts = []
+    # что сделали мы с ценой продавца
+    if sale_delta is not None and abs(float(sale_delta)) >= 0.5:
+        sd = float(sale_delta)
+        if sd < 0:
+            parts.append(f"мы снизили цену продавца на {abs(int(round(sd)))} ₽")
+        else:
+            parts.append(f"мы подняли цену продавца на {int(round(sd))} ₽")
+
+    # изменение СПП (скидка WB для покупателя)
+    if spp_delta is not None and abs(float(spp_delta)) >= 0.3:
+        sp = float(spp_delta)
+        prev_spp = a.get("prev_spp")
+        cur_spp = a.get("spp")
+        spp_bit = ""
+        if prev_spp is not None and cur_spp is not None:
+            spp_bit = f" ({prev_spp}% → {cur_spp}%)"
+        if sp > 0:
+            parts.append(f"вырос СПП на {sp:g} п.п.{spp_bit} — WB дал больше скидки")
+        else:
+            parts.append(f"упал СПП на {abs(sp):g} п.п.{spp_bit} — покупателю дороже")
+
+    if not parts:
+        parts.append("причина не по цене продавца и не по СПП — открой график")
+
+    # доминирующая причина для короткого бейджа
+    sale_abs = abs(float(sale_delta)) if sale_delta is not None else 0
+    spp_abs = abs(float(spp_delta)) if spp_delta is not None else 0
+    if sale_abs >= 0.5 and spp_abs < 0.3:
+        reason = "our_price_down" if float(sale_delta) < 0 else "our_price_up"
+    elif spp_abs >= 0.3 and sale_abs < 0.5:
+        reason = "spp_up" if float(spp_delta) > 0 else "spp_down"
+    elif sale_abs >= 0.5 and spp_abs >= 0.3:
+        reason = "both"
+    else:
+        reason = "unknown"
+
+    direction = "снизилась" if float(client_delta) < 0 else "выросла"
+    prev_s = f"{int(round(prev_client))} ₽" if prev_client is not None else "—"
+    cur_s = f"{int(round(cur_client))} ₽" if cur_client is not None else "—"
+    tip = (
+        f"Цена для клиента {direction}: было {prev_s} → стало {cur_s}"
+        + (f" (снимок {prev_at})" if prev_at else "")
+        + ". "
+        + "Причина: "
+        + "; ".join(parts)
+        + "."
+    )
+    return reason, tip
 
 def save_price_snapshots(articles: list) -> int:
     """Пишет снимок цен после sync. Возвращает число строк."""
