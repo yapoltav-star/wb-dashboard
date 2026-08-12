@@ -4761,6 +4761,175 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
     return out
 
 
+def _pace_parse_snap_day(captured_at) -> str:
+    if not captured_at:
+        return ""
+    s = str(captured_at)
+    # 2026-08-11T... or 11.08.2026
+    if len(s) >= 10 and s[4] == "-":
+        return s[:10]
+    return ""
+
+
+def fetch_pace_price_compare(nm_ids: list, date_cur: str = None, date_prev: str = None) -> dict:
+    """Сравнение цены покупателя и СПП: сейчас vs день базы (date_prev).
+
+    Источник: price_snapshots (+ живой SPP_CACHE для «сейчас»).
+    """
+    if not nm_ids or not SUPABASE_URL or not SUPABASE_KEY:
+        return {}
+    ids = []
+    for x in nm_ids:
+        try:
+            ids.append(int(x))
+        except Exception:
+            pass
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return {}
+
+    live = {}
+    for a in (SPP_CACHE.get("articles") or []):
+        try:
+            nm = int(a.get("nm_id"))
+        except Exception:
+            continue
+        live[nm] = a
+
+    since = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
+    by_nm = {}
+    for i in range(0, len(ids), 80):
+        chunk = ids[i:i + 80]
+        try:
+            resp = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/price_snapshots",
+                params={
+                    "select": "nm_id,sale_price,client_price,spp,captured_at",
+                    "nm_id": f"in.({','.join(str(x) for x in chunk)})",
+                    "captured_at": f"gte.{since}",
+                    "order": "captured_at.asc",
+                    "limit": "12000",
+                },
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                },
+                timeout=30,
+            )
+            if not resp.is_success:
+                if resp.status_code == 404:
+                    logger.warning("price_snapshots missing — run supabase/price_snapshots.sql")
+                continue
+            for row in resp.json() or []:
+                try:
+                    nm = int(row.get("nm_id"))
+                except Exception:
+                    continue
+                by_nm.setdefault(nm, []).append(row)
+        except Exception as e:
+            logger.warning(f"fetch_pace_price_compare: {e}")
+
+    msk = _msk_now()
+    cur_day = (date_cur or msk.strftime("%Y-%m-%d"))[:10]
+    prev_day = (date_prev or (msk - timedelta(days=1)).strftime("%Y-%m-%d"))[:10]
+
+    out = {}
+    for nm in ids:
+        snaps = by_nm.get(nm) or []
+        lv = live.get(nm) or {}
+
+        cur_client = _num_or_none(lv.get("client_price"))
+        cur_spp = _num_or_none(lv.get("spp"))
+        cur_sale = _num_or_none(lv.get("sale_price"))
+        if snaps:
+            last = snaps[-1]
+            if cur_client is None:
+                cur_client = _num_or_none(last.get("client_price"))
+            if cur_spp is None:
+                cur_spp = _num_or_none(last.get("spp"))
+            if cur_sale is None:
+                cur_sale = _num_or_none(last.get("sale_price"))
+
+        prev = None
+        for s in reversed(snaps):
+            day = _pace_parse_snap_day(s.get("captured_at"))
+            if day and day <= prev_day:
+                prev = s
+                break
+        # запасной: предпоследний снимок, если база = «вчера», а снимков за вчера нет
+        if prev is None and len(snaps) >= 2:
+            prev = snaps[-2]
+            # не сравнивать с самим собой
+            if prev is snaps[-1]:
+                prev = None
+
+        prev_client = _num_or_none(prev.get("client_price")) if prev else None
+        prev_spp = _num_or_none(prev.get("spp")) if prev else None
+        prev_sale = _num_or_none(prev.get("sale_price")) if prev else None
+
+        client_delta = (
+            round(cur_client - prev_client, 2)
+            if cur_client is not None and prev_client is not None else None
+        )
+        spp_delta = (
+            round(cur_spp - prev_spp, 1)
+            if cur_spp is not None and prev_spp is not None else None
+        )
+        sale_delta = (
+            round(cur_sale - prev_sale, 2)
+            if cur_sale is not None and prev_sale is not None else None
+        )
+        out[nm] = {
+            "client_price": cur_client,
+            "prev_client_price": prev_client,
+            "client_delta": client_delta,
+            "spp": round(cur_spp, 1) if cur_spp is not None else None,
+            "prev_spp": round(prev_spp, 1) if prev_spp is not None else None,
+            "spp_delta": spp_delta,
+            "sale_price": cur_sale,
+            "prev_sale_price": prev_sale,
+            "sale_delta": sale_delta,
+            "price_compare_day": prev_day,
+            "price_as_of": cur_day,
+        }
+    return out
+
+
+def _enrich_pace_articles_prices(articles: list, date_cur: str = None, date_prev: str = None) -> list:
+    """Цена на сайте (для покупателя) и СПП: сейчас vs день сравнения темпа."""
+    if not articles:
+        return articles
+    nms = [a.get("nm_id") for a in articles if a.get("nm_id") is not None]
+    try:
+        price_map = fetch_pace_price_compare(nms, date_cur=date_cur, date_prev=date_prev)
+    except Exception as e:
+        logger.warning(f"enrich pace prices: {e}")
+        return articles
+    if not price_map:
+        return articles
+    out = []
+    for a in articles:
+        item = dict(a)
+        try:
+            nm = int(item.get("nm_id"))
+        except Exception:
+            out.append(item)
+            continue
+        p = price_map.get(nm) or {}
+        item.update(p)
+        # флаг: подорожало для покупателя при падении заказов
+        od = item.get("orders_delta")
+        cd = item.get("client_delta")
+        sd = item.get("spp_delta")
+        price_up = cd is not None and cd >= 30  # +30₽ и выше на сайте
+        spp_down = sd is not None and sd <= -1.0
+        item["price_linked"] = bool(
+            od is not None and od < 0 and (price_up or spp_down)
+        )
+        out.append(item)
+    return out
+
+
 @app.get("/api/sales-pace")
 def get_sales_pace(period: str = "day", refresh: bool = False, date_cur: str = None, date_prev: str = None):
     period = period if period in SALES_PACE_PERIODS else "day"
@@ -4779,6 +4948,11 @@ def get_sales_pace(period: str = "day", refresh: bool = False, date_cur: str = N
             ).start()
     cached = (SALES_PACE_CACHE.get("by_period") or {}).get(cache_key) or {}
     articles = _enrich_pace_articles_stock(cached.get("articles") or [], period)
+    articles = _enrich_pace_articles_prices(
+        articles,
+        date_cur=cached.get("date_cur") or date_cur,
+        date_prev=cached.get("date_prev") or date_prev,
+    )
     return {
         "period": period,
         "cache_key": cache_key,
