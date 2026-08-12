@@ -495,6 +495,11 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
     <span style="font-size:12px;color:var(--oz-muted);margin-left:8px">Целевой запас:</span>
     <input class="num-inp" id="targetDaysInput" type="number" min="1" value="30" onchange="setTargetDays(this.value)">
     <span style="font-size:12px;color:var(--oz-muted)">дней</span>
+    <span style="width:1px;height:20px;background:var(--oz-border);margin:0 6px"></span>
+    <span style="font-size:12px;color:var(--oz-muted)" title="Только у складов/городов. «Весь Ozon» всегда полный.">Склады:</span>
+    <button class="filter-btn on" id="stColOrders" onclick="toggleStockWhCol('orders')" title="Показать/скрыть «Зак.» на всех складах">Зак.</button>
+    <button class="filter-btn on" id="stColDays" onclick="toggleStockWhCol('days')" title="Показать/скрыть «Дн.» на всех складах">Дн.</button>
+    <button class="filter-btn on" id="stColRec" onclick="toggleStockWhCol('rec')" title="Показать/скрыть «Пост.» на всех складах">Пост.</button>
     <span id="stocksSyncInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
     <button class="action-btn primary ml-auto" id="stocksSyncBtn" onclick="syncStocks()">↻ Обновить остатки</button>
   </div>
@@ -797,6 +802,46 @@ let WH_ORDER = JSON.parse(localStorage.getItem('oz_wh_order') || 'null') || [];
 let STOCK_PINNED = JSON.parse(localStorage.getItem('oz_stock_pinned') || 'null') || [];
 let COL_WIDTHS = JSON.parse(localStorage.getItem('oz_col_widths') || 'null') || { product: 320, metric: 72 };
 if (!COL_WIDTHS.product || COL_WIDTHS.product < 280) COL_WIDTHS.product = 320;
+// видимость метрик только у складов (города); «Весь Ozon» всегда полный
+let STOCK_WH_COLS = (() => {
+  try {
+    const raw = JSON.parse(localStorage.getItem('oz_stock_wh_cols') || 'null');
+    if (raw && typeof raw === 'object') {
+      return {
+        orders: raw.orders !== false,
+        days: raw.days !== false,
+        rec: raw.rec !== false,
+      };
+    }
+  } catch (_) {}
+  return { orders: true, days: true, rec: true };
+})();
+
+function syncStockWhColButtons() {
+  const map = { stColOrders: 'orders', stColDays: 'days', stColRec: 'rec' };
+  Object.entries(map).forEach(([id, key]) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('on', !!STOCK_WH_COLS[key]);
+  });
+}
+
+function toggleStockWhCol(key) {
+  if (!['orders', 'days', 'rec'].includes(key)) return;
+  STOCK_WH_COLS[key] = !STOCK_WH_COLS[key];
+  // хотя бы «Ост.» всегда есть — скрывать можно все три доп. метрики
+  localStorage.setItem('oz_stock_wh_cols', JSON.stringify(STOCK_WH_COLS));
+  syncStockWhColButtons();
+  renderStocks();
+}
+
+function stockWhMetrics() {
+  // [key, label] — stock всегда
+  const out = [['stock', 'Ост.']];
+  if (STOCK_WH_COLS.orders) out.push(['orders', 'Зак.']);
+  if (STOCK_WH_COLS.days) out.push(['days', 'Дн.']);
+  if (STOCK_WH_COLS.rec) out.push(['rec', 'Пост.']);
+  return out;
+}
 let PACE_COL_WIDTHS = JSON.parse(localStorage.getItem('oz_pace_col_widths') || 'null') || {};
 const PACE_COL_DEFAULTS = [300, 90, 100, 90, 64, 100, 90, 64, 80, 80, 64, 100, 90, 64, 100, 90, 64, 80, 80, 64];
 function paceColW(i) {
@@ -1750,6 +1795,9 @@ function buildStockMatrix() {
 function renderStocks() {
   const matrix = buildStockMatrix();
   const { warehouses, articles } = matrix;
+  syncStockWhColButtons();
+  const whMetrics = stockWhMetrics();
+  const whSpan = whMetrics.length; // минимум 1 (Ост.)
 
   let critical = 0;
   articles.forEach(a => {
@@ -1782,7 +1830,7 @@ function renderStocks() {
 
   const pw = Math.max(COL_WIDTHS.product || 320, 280);
   const mw = COL_WIDTHS.metric || 72;
-  const colCount = 1 + 4 + 1 + warehouses.length * 4;
+  const colCount = 1 + 4 + 1 + warehouses.length * whSpan;
   let colgroup = `<colgroup><col style="width:${pw}px">`;
   for (let i = 1; i < colCount; i++) colgroup += `<col style="width:${mw}px">`;
   colgroup += '</colgroup>';
@@ -1796,7 +1844,7 @@ function renderStocks() {
   warehouses.forEach((w, wi) => {
     const on = isWhEnabled(w);
     const stripe = wi % 2 ? 'wh-b wh-even' : 'wh-a';
-    head1 += `<th class="wh-head wh-block ${stripe}${!on?' cell-off':''}" colspan="4" draggable="true"
+    head1 += `<th class="wh-head wh-block ${stripe}${!on?' cell-off':''}" colspan="${whSpan}" draggable="true"
       ondragstart='whDS(event,${JSON.stringify(w)})'
       ondragover="event.preventDefault()"
       ondrop='whDrop(event,${JSON.stringify(w)})'
@@ -1808,18 +1856,19 @@ function renderStocks() {
     </th>`;
   });
 
+  // «Весь Ozon» — всегда все 4 метрики
   const subLabels = ['Остаток','Заказы','Дн.','Поставить'];
   let head2 = `<th class="sticky" data-col="0" data-wkey="product"></th>`;
   for (let i = 0; i < 4; i++) {
     head2 += `<th class="wh-sub tot-col${i===0?' wh-start':''}" data-col="${1+i}" data-wkey="metric">${subLabels[i]}</th>`;
   }
   head2 += `<th class="wh-sub wh-start" style="background:#FFF8F0" data-col="5" data-wkey="metric">Ост.</th>`;
+  let colIdx = 6;
   warehouses.forEach((w, wi) => {
     const off = isWhEnabled(w) ? '' : ' cell-off';
     const stripe = wi % 2 ? 'wh-b wh-even' : 'wh-a';
-    ['Ост.','Зак.','Дн.','Пост.'].forEach((lab, j) => {
-      const idx = 1 + 4 + 1 + wi * 4 + j;
-      head2 += `<th class="wh-sub ${stripe}${j===0?' wh-start':''}${off}" data-col="${idx}" data-wkey="metric">${lab}</th>`;
+    whMetrics.forEach(([key, lab], j) => {
+      head2 += `<th class="wh-sub ${stripe}${j===0?' wh-start':''}${off}" data-col="${colIdx++}" data-wkey="metric">${lab}</th>`;
     });
   });
 
@@ -1852,16 +1901,20 @@ function renderStocks() {
       const c = a.cells[w];
       const off = isWhEnabled(w) ? '' : 'cell-off';
       const stripe = wi % 2 ? 'wh-b' : 'wh-a';
-      if (!c) {
-        html += `<td class="num muted wh-start ${stripe} ${off}">—</td><td class="num muted ${stripe} ${off}">—</td><td class="num muted ${stripe} ${off}">—</td><td class="num muted ${stripe} ${off}">—</td>`;
-        return;
-      }
-      const dcls = c.daysLeft == null ? 'muted' : (c.daysLeft < TARGET_DAYS ? 'm-urgent' : 'm-ok');
-      const d = c.daysLeft == null ? '—' : Math.round(c.daysLeft);
-      html += `<td class="num wh-start ${stripe} ${off}">${fmt(c.stock)}</td>
-        <td class="num ${stripe} ${off}">${fmt(c.orders)}</td>
-        <td class="num ${dcls} ${stripe} ${off}">${d}</td>
-        <td class="num ${stripe} ${off}">${fmt(c.recommend)}</td>`;
+      const dcls = (!c || c.daysLeft == null) ? 'muted' : (c.daysLeft < TARGET_DAYS ? 'm-urgent' : 'm-ok');
+      const d = (!c || c.daysLeft == null) ? '—' : Math.round(c.daysLeft);
+      const vals = {
+        stock: c ? fmt(c.stock) : '—',
+        orders: c ? fmt(c.orders) : '—',
+        days: d,
+        rec: c ? fmt(c.recommend) : '—',
+      };
+      const clsExtra = { days: dcls };
+      whMetrics.forEach(([key], j) => {
+        const muted = !c || key === 'days' && d === '—' ? (key === 'days' ? '' : 'muted') : '';
+        const extra = clsExtra[key] || muted;
+        html += `<td class="num ${j===0?'wh-start':''} ${stripe} ${off} ${extra}">${vals[key]}</td>`;
+      });
     });
     html += '</tr>';
     return html;
@@ -1879,6 +1932,7 @@ function renderStocks() {
       <b>📌</b> закрепить товар сверху · перетащи закреплённые строки, чтобы поменять порядок ·
       <b>⠿</b> перетащи заголовок склада · тяни край колонки для ширины ·
       галочка склада — включить/выключить из расчёта.
+      Кнопки <b>Зак. / Дн. / Пост.</b> скрывают эти столбцы сразу на всех складах; блок <b>Весь Ozon</b> не трогают.
       <b>Наш склад</b> — остаток с WB-дашборда (с учётом отгрузок), матч по артикулу.
       Формулы: темп = заказы/окно · дней = остаток/темп · поставить = темп×цель − остаток.
       Склады вправо/влево — ползунок под таблицей (как на WB).
