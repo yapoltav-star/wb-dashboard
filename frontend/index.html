@@ -882,11 +882,10 @@ td.tc{text-align:center}
 <div class="page" id="page-own-warehouse">
   <div class="upload-banner hint" id="ownWhHowTo">
     <span>
-      ⚠️ <b>Как вести учёт:</b>
-      1) <b>+ Поступление</b> — Excel с приходом (Артикул + Количество) или ручной список.
-      2) <b>Поставка на WB</b> — файлы shk-excel / лист подбора (отгрузка на склады WB).
-      3) <b>Отгрузка FBS</b> — файлы отгрузок со своего склада покупателям.
-      Всё сохраняется на сервере; ниже — <b>учёт по неделям</b>. Google Sheets — база остатка; файлы накладываются сверху, пока не внесёшь то же в таблицу и не сбросишь оверлеи.
+      ⚠️ <b>Один физический склад для WB и Ozon.</b>
+      Артикулы считаются одинаково (плюс семьи). Google Sheets — стартовая база.
+      Грузи отгрузки/поставки WB и Ozon — остаток общий.
+      <b>В пятницу:</b> сотрудник правит реальные остатки в таблице → жмёт «Инвентаризация» — оверлеи уходят в архив по дате, активные сбрасываются.
     </span>
   </div>
   <div class="toolbar">
@@ -901,12 +900,16 @@ td.tc{text-align:center}
     <span id="ownWhInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
     <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <a class="action-btn" href="https://docs.google.com/spreadsheets/d/1Lhoy4s_KX0pWndsd3Y5oCOjTFCtfEfVUM4AgtBv4Crc/edit?gid=1829622647" target="_blank" rel="noopener" style="text-decoration:none">↗ Таблица</a>
+      <button class="action-btn" onclick="openOwnWhAliasesModal()" title="Если на Ozon другой SKU — привяжи к артикулу WB">🔗 Артикулы Ozon↔WB</button>
       <button class="action-btn primary" onclick="startOwnWhReceiptUpload()" title="Excel: артикул + количество">＋ Поступление</button>
       <button class="action-btn" onclick="openOwnWhReceiptManual()" title="Ввести артикулы вручную">✏️ Список</button>
-      <button class="action-btn" onclick="startOwnWhUpload('fbw')" title="shk-excel или лист подбора WB-GI">📦 Поставка на WB</button>
-      <button class="action-btn" onclick="startOwnWhUpload('fbs')" title="Отгрузка со склада продавца (FBS)">📦 Отгрузка FBS</button>
+      <button class="action-btn" onclick="startOwnWhUpload('fbw')" title="shk-excel или лист подбора WB-GI">📦 Поставка WB</button>
+      <button class="action-btn" onclick="startOwnWhUpload('fbs')" title="Отгрузка FBS WB">📦 FBS WB</button>
+      <button class="action-btn" onclick="startOwnWhUpload('ozon_fbo')" title="Поставка / FBO Ozon">📦 Поставка Ozon</button>
+      <button class="action-btn" onclick="startOwnWhUpload('ozon_fbs')" title="Отгрузка FBS Ozon">📦 FBS Ozon</button>
       <input type="file" id="ownWhShipInput" accept=".xlsx,.xls" multiple style="display:none" onchange="uploadOwnWhShipments(this.files)">
       <input type="file" id="ownWhReceiptInput" accept=".xlsx,.xls" multiple style="display:none" onchange="uploadOwnWhReceipts(this.files)">
+      <button class="action-btn" style="background:#ECFDF5;border-color:#059669;color:#047857" onclick="runOwnWhFridayReset()" title="После пересчёта в Sheets: архив оверлеев + сброс">🗓 Инвентаризация</button>
       <button class="action-btn" id="ownWhSyncBtn" onclick="triggerOwnWarehouseSync()">↻ Обновить</button>
     </div>
   </div>
@@ -914,6 +917,7 @@ td.tc{text-align:center}
   <div id="ownWhWeekly" style="display:none;padding:12px 20px;border-bottom:1px solid var(--wb-border);background:#F8FAFC"></div>
   <div id="ownWhChannelTables" style="display:none;padding:12px 20px;border-bottom:1px solid var(--wb-border);background:var(--wb-surface)"></div>
   <div id="ownWhShipLog" style="display:none;padding:10px 20px;border-bottom:1px solid var(--wb-border);background:#FFFBEB"></div>
+  <div id="ownWhArchive" style="display:none;padding:12px 20px;border-bottom:1px solid var(--wb-border);background:#F8FAFC"></div>
   <div id="ownWhRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить», чтобы подтянуть остатки из Google Sheets</div></div>
 </div>
 
@@ -926,6 +930,18 @@ td.tc{text-align:center}
     <div class="modal-btns" style="margin-top:12px">
       <button class="action-btn" onclick="closeOwnWhReceiptManual()">Отмена</button>
       <button class="action-btn primary" onclick="submitOwnWhReceiptManual()">Сохранить поступление</button>
+    </div>
+  </div>
+</div>
+
+<div id="ownWhAliasesModal" class="modal-overlay" onclick="if(event.target===this) closeOwnWhAliasesModal()">
+  <div class="modal" style="width:560px;max-width:94vw" onclick="event.stopPropagation()">
+    <h3>Артикулы Ozon ↔ WB</h3>
+    <p>Если на Ozon SKU другой, а остаток общий — укажи соответствие. Строка: <b>sku_ozon = артикул_wb</b>. Семьи берутся с канонического артикула WB.</p>
+    <textarea id="ownWhAliasesText" rows="12" placeholder="OZON-12345 = 044_LK_GT5Pro_black_O&#10;offer_987 = 037_G7Pro_black_O" style="width:100%;box-sizing:border-box;border:1px solid var(--wb-border);border-radius:var(--rs);padding:10px;font:inherit;font-size:13px;resize:vertical"></textarea>
+    <div class="modal-btns" style="margin-top:12px">
+      <button class="action-btn" onclick="closeOwnWhAliasesModal()">Отмена</button>
+      <button class="action-btn primary" onclick="saveOwnWhAliases()">Сохранить</button>
     </div>
   </div>
 </div>
@@ -1721,7 +1737,8 @@ async function triggerOwnWarehouseSync() {
 
 let OWN_WH_UPLOAD_CHANNEL = 'fbw';
 function startOwnWhUpload(channel) {
-  OWN_WH_UPLOAD_CHANNEL = (channel === 'fbs') ? 'fbs' : 'fbw';
+  const allowed = ['fbw', 'fbs', 'ozon_fbo', 'ozon_fbs'];
+  OWN_WH_UPLOAD_CHANNEL = allowed.includes(channel) ? channel : 'fbw';
   const inp = document.getElementById('ownWhShipInput');
   if(inp) inp.click();
 }
@@ -1743,10 +1760,46 @@ function closeOwnWhReceiptManual() {
   if(m) m.classList.remove('on');
 }
 
+function openOwnWhAliasesModal() {
+  const m = document.getElementById('ownWhAliasesModal');
+  const ta = document.getElementById('ownWhAliasesText');
+  const aliases = OWN_WH.sku_aliases || {};
+  if(ta) {
+    ta.value = Object.keys(aliases).sort().map(k => `${k} = ${aliases[k]}`).join('\n');
+  }
+  if(m) m.classList.add('on');
+}
+
+function closeOwnWhAliasesModal() {
+  const m = document.getElementById('ownWhAliasesModal');
+  if(m) m.classList.remove('on');
+}
+
+async function saveOwnWhAliases() {
+  const text = (document.getElementById('ownWhAliasesText') || {}).value || '';
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-sku-aliases`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text, replace: true}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+    applyOwnWhPayload(d);
+    closeOwnWhAliasesModal();
+    alert(`Сохранено соответствий: ${Object.keys(d.sku_aliases || {}).length}`);
+    drawOwnWarehouse();
+  } catch(e) {
+    alert('Не удалось сохранить: ' + e.message);
+  }
+}
+
 function ownWhChannelLabel(ch) {
-  if(ch === 'fbs') return 'FBS';
+  if(ch === 'fbs') return 'FBS WB';
+  if(ch === 'ozon_fbo') return 'Поставка Ozon';
+  if(ch === 'ozon_fbs') return 'FBS Ozon';
   if(ch === 'in' || ch === 'receipt') return 'Поступление';
-  return 'Поставка на WB';
+  return 'Поставка WB';
 }
 
 function applyOwnWhPayload(d) {
@@ -1759,6 +1812,8 @@ function applyOwnWhPayload(d) {
     receipts: d.receipts != null ? d.receipts : (OWN_WH.receipts || []),
     weekly_ledger: d.weekly_ledger != null ? d.weekly_ledger : (OWN_WH.weekly_ledger || []),
     channel_summaries: d.channel_summaries || OWN_WH.channel_summaries,
+    archives: d.archives != null ? d.archives : (OWN_WH.archives || []),
+    sku_aliases: d.sku_aliases != null ? d.sku_aliases : (OWN_WH.sku_aliases || {}),
     as_of: d.as_of || OWN_WH.as_of,
     updated_at: d.updated_at || OWN_WH.updated_at,
     error: null,
@@ -1794,7 +1849,7 @@ async function uploadOwnWhShipments(fileList) {
   const inp = document.getElementById('ownWhShipInput');
   if(inp) inp.value = '';
   if(!files.length) return;
-  const channel = OWN_WH_UPLOAD_CHANNEL === 'fbs' ? 'fbs' : 'fbw';
+  const channel = OWN_WH_UPLOAD_CHANNEL || 'fbw';
   const info = document.getElementById('ownWhInfo');
   if(info) info.textContent = `Списываем ${ownWhChannelLabel(channel)} (${files.length} файл)…`;
   const fd = new FormData();
@@ -1915,12 +1970,12 @@ async function undoOwnWhReceipt(id) {
 }
 
 async function clearOwnWhShipments() {
-  if(!confirm('Сбросить все списания отгрузок?\nДелай так, когда уже поправил остатки в Google Sheets — иначе цифры снова станут «до отгрузок».')) return;
+  if(!confirm('Сбросить все списания?\nОни уйдут в архив. Остаток станет = Sheets + активные поступления.\nДелай после правки Google Sheets или используй «Инвентаризация».')) return;
   try {
     const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-undo-shipment`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({all: true}),
+      body: JSON.stringify({all: true, archive: true}),
     });
     const d = await r.json().catch(() => ({}));
     if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
@@ -1932,12 +1987,12 @@ async function clearOwnWhShipments() {
 }
 
 async function clearOwnWhReceipts() {
-  if(!confirm('Сбросить все поступления?\nДелай так, когда уже внёс приходы в Google Sheets.')) return;
+  if(!confirm('Сбросить все поступления?\nОни уйдут в архив. Делай, когда уже внёс приходы в Google Sheets.')) return;
   try {
     const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-undo-receipt`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({all: true}),
+      body: JSON.stringify({all: true, archive: true}),
     });
     const d = await r.json().catch(() => ({}));
     if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
@@ -1948,11 +2003,43 @@ async function clearOwnWhReceipts() {
   }
 }
 
+async function runOwnWhFridayReset() {
+  if(!confirm('Пятничная инвентаризация?\n\n1) Сначала обнови реальные остатки в Google Sheets\n2) Сейчас подтянем таблицу\n3) Все активные поступления и отгрузки (WB+Ozon) уйдут в архив по дате\n4) Активные оверлеи сбросятся\n\nПродолжить?')) return;
+  const note = prompt('Комментарий к архиву (необязательно):', 'Пятничная инвентаризация') || '';
+  const info = document.getElementById('ownWhInfo');
+  if(info) info.textContent = 'Инвентаризация…';
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-friday-reset`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({note, refresh_sheets: true}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+    applyOwnWhPayload(d);
+    const a = d.archived;
+    let msg = 'Готово. База = Google Sheets.';
+    if(a && a.id) {
+      msg += `\nАрхив ${a.archived_at || ''}: приход ${a.receipts_qty||0} шт (${a.receipts_files||0} файл), списано ${a.shipments_qty||0} шт (${a.shipments_files||0} файл).`;
+    } else {
+      msg += '\nАктивных оверлеев не было.';
+    }
+    alert(msg);
+    drawOwnWarehouse();
+  } catch(e) {
+    alert('Инвентаризация не удалась: ' + e.message);
+    if(info) info.textContent = 'Ошибка инвентаризации';
+  }
+}
+
 function buildOwnWhChannelSummaryFromShipments(ships) {
-  const buckets = {fbw: {}, fbs: {}};
-  const meta = {fbw: {files:0, total_qty:0}, fbs: {files:0, total_qty:0}};
+  const channels = ['fbw','fbs','ozon_fbo','ozon_fbs'];
+  const buckets = {};
+  const meta = {};
+  channels.forEach(ch => { buckets[ch] = {}; meta[ch] = {files:0, total_qty:0}; });
   (ships || []).forEach(sh => {
-    const ch = (sh.channel === 'fbs') ? 'fbs' : 'fbw';
+    let ch = sh.channel || 'fbw';
+    if(!channels.includes(ch)) ch = 'fbw';
     meta[ch].files += 1;
     meta[ch].total_qty += (sh.total_qty || 0);
     (sh.items || []).forEach(it => {
@@ -1963,7 +2050,7 @@ function buildOwnWhChannelSummaryFromShipments(ships) {
     });
   });
   const out = {};
-  ['fbw','fbs'].forEach(ch => {
+  channels.forEach(ch => {
     const items = Object.entries(buckets[ch])
       .map(([vendor_code, qty]) => ({vendor_code, qty}))
       .sort((a,b) => b.qty - a.qty || a.vendor_code.localeCompare(b.vendor_code, 'ru'));
@@ -1989,17 +2076,18 @@ function drawOwnWhWeekly() {
     const netSign = net > 0 ? '+' : '';
     const docs = (w.docs || []).map(d => {
       const isIn = d.doc_type === 'receipt';
-      const ch = isIn ? 'receipt' : (d.channel === 'fbs' ? 'fbs' : 'fbw');
+      const ch = isIn ? 'receipt' : (d.channel || 'fbw');
       const sign = isIn ? '+' : '−';
-      const color = isIn ? '#027A48' : (ch === 'fbs' ? '#026AA2' : '#B54708');
-      const label = isIn ? 'Приход' : (ch === 'fbs' ? 'FBS' : 'На склады WB');
+      const colorMap = {receipt:'#027A48', fbs:'#026AA2', fbw:'#B54708', ozon_fbo:'#7C3AED', ozon_fbs:'#9333EA'};
+      const color = colorMap[ch] || '#B54708';
+      const label = ownWhChannelLabel(ch);
       const safeId = String(d.id || '').replace(/'/g, '');
       const undo = isIn
         ? `undoOwnWhReceipt('${safeId}')`
         : `undoOwnWhShipment('${safeId}')`;
       return `<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 8px;background:#fff;border:1px solid var(--wb-border);border-radius:6px;font-size:12px">
         <div>
-          <span style="display:inline-block;min-width:92px;font-weight:600;color:${color}">${label}</span>
+          <span style="display:inline-block;min-width:110px;font-weight:600;color:${color}">${label}</span>
           <b>${escapeHtml(d.filename || '')}</b>
           <span style="color:var(--wb-muted)"> · ${sign}${fmt(d.total_qty||0)} шт · ${fmt(d.articles||0)} арт.${d.created_at ? ' · ' + escapeHtml(d.created_at) : ''}</span>
         </div>
@@ -2012,10 +2100,10 @@ function drawOwnWhWeekly() {
           <div style="font-size:14px;font-weight:700">${escapeHtml(w.label || w.week_key)}</div>
           <div style="font-size:11px;color:var(--wb-muted);margin-top:2px">${escapeHtml(w.week_key)} · ${(w.docs||[]).length} док.</div>
         </div>
-        <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;align-items:center">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;align-items:center">
           <span title="Поступления">＋ <b style="color:#027A48">${fmt(w.receipts_qty||0)}</b></span>
-          <span title="На склады WB">WB <b style="color:#B54708">−${fmt(w.fbw_qty||0)}</b></span>
-          <span title="FBS">FBS <b style="color:#026AA2">−${fmt(w.fbs_qty||0)}</b></span>
+          <span title="WB">WB <b style="color:#B54708">−${fmt((w.fbw_qty||0)+(w.fbs_qty||0))}</b></span>
+          <span title="Ozon">Oz <b style="color:#7C3AED">−${fmt((w.ozon_fbo_qty||0)+(w.ozon_fbs_qty||0))}</b></span>
           <span title="Нетто">Δ <b style="color:${netColor}">${netSign}${fmt(net)}</b></span>
           <span style="color:var(--wb-faint)">${open ? '▾' : '▸'}</span>
         </div>
@@ -2028,7 +2116,7 @@ function drawOwnWhWeekly() {
     <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;margin-bottom:10px">
       <div>
         <div style="font-size:12px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px">Учёт по неделям</div>
-        <div style="font-size:12px;color:var(--wb-muted);margin-top:2px">Приход + поступления · расход на склады WB и FBS. Данные сохраняются.</div>
+        <div style="font-size:12px;color:var(--wb-muted);margin-top:2px">Один склад · WB + Ozon · приход и расход. Данные сохраняются.</div>
       </div>
     </div>
     ${cards}`;
@@ -2048,6 +2136,8 @@ function drawOwnWhChannelTables() {
   const summaries = OWN_WH.channel_summaries || buildOwnWhChannelSummaryFromShipments(OWN_WH.shipments || []);
   const fbw = summaries.fbw || {items: [], total_qty: 0, articles: 0, files: 0};
   const fbs = summaries.fbs || {items: [], total_qty: 0, articles: 0, files: 0};
+  const ozFbo = summaries.ozon_fbo || {items: [], total_qty: 0, articles: 0, files: 0};
+  const ozFbs = summaries.ozon_fbs || {items: [], total_qty: 0, articles: 0, files: 0};
   const receipts = OWN_WH.receipts || [];
   const recvMap = {};
   receipts.forEach(rc => {
@@ -2062,7 +2152,7 @@ function drawOwnWhChannelTables() {
     .map(([vendor_code, qty]) => ({vendor_code, qty}))
     .sort((a,b) => b.qty - a.qty || a.vendor_code.localeCompare(b.vendor_code, 'ru'));
   const recvTotal = recvItems.reduce((s, it) => s + it.qty, 0);
-  if(!fbw.items.length && !fbs.items.length && !recvItems.length) {
+  if(!fbw.items.length && !fbs.items.length && !ozFbo.items.length && !ozFbs.items.length && !recvItems.length) {
     box.style.display = 'none';
     box.innerHTML = '';
     return;
@@ -2088,11 +2178,13 @@ function drawOwnWhChannelTables() {
   };
   box.style.display = 'block';
   box.innerHTML = `
-    <div style="font-size:12px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:8px">Сводка по артикулам (весь период)</div>
+    <div style="font-size:12px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:8px">Сводка по артикулам (активные оверлеи)</div>
     <div class="ow-sum-grid">
       ${renderCol('Поступления', 'Excel / ручной список', {items: recvItems, total_qty: recvTotal, articles: recvItems.length, files: receipts.length}, '#027A48', '+')}
-      ${renderCol('На склады WB', 'shk-excel / лист подбора', fbw, '#B54708', '−')}
-      ${renderCol('Отгрузки FBS', 'со склада продавца', fbs, '#026AA2', '−')}
+      ${renderCol('Поставка WB', 'на склады WB', fbw, '#B54708', '−')}
+      ${renderCol('FBS WB', 'со склада продавца', fbs, '#026AA2', '−')}
+      ${renderCol('Поставка Ozon', 'FBO / поставка', ozFbo, '#7C3AED', '−')}
+      ${renderCol('FBS Ozon', 'отгрузки Ozon', ozFbs, '#9333EA', '−')}
     </div>`;
 }
 
@@ -2112,14 +2204,86 @@ function drawOwnWhShipLog() {
   box.innerHTML = `
     <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
       <div>
-        <div style="font-size:12px;font-weight:600;color:#92400E">Оверлеи на Sheets · приход +${fmt(recvTotal)} · списано −${fmt(shipTotal)}</div>
-        <div style="font-size:11px;color:#B54708;margin-top:2px">Остаток = Google Sheets + поступления − отгрузки. Сам Sheets не меняется.</div>
+        <div style="font-size:12px;font-weight:600;color:#92400E">Активные оверлеи · приход +${fmt(recvTotal)} · списано −${fmt(shipTotal)}</div>
+        <div style="font-size:11px;color:#B54708;margin-top:2px">Остаток = Sheets + поступления − отгрузки (WB+Ozon). В пятницу после пересчёта — «Инвентаризация».</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        ${receipts.length ? `<button class="action-btn" onclick="clearOwnWhReceipts()">Сбросить поступления</button>` : ''}
-        ${ships.length ? `<button class="action-btn" onclick="clearOwnWhShipments()">Сбросить списания</button>` : ''}
+        ${receipts.length ? `<button class="action-btn" onclick="clearOwnWhReceipts()">Сбросить поступления → архив</button>` : ''}
+        ${ships.length ? `<button class="action-btn" onclick="clearOwnWhShipments()">Сбросить списания → архив</button>` : ''}
       </div>
     </div>`;
+}
+
+function drawOwnWhArchive() {
+  const box = document.getElementById('ownWhArchive');
+  if(!box) return;
+  const archives = OWN_WH.archives || [];
+  if(!archives.length) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  const openId = window._owArchOpen || '';
+  const rows = archives.map(a => {
+    const open = a.id === openId;
+    const reason = a.reason === 'friday' ? 'Инвентаризация' : (a.reason || 'архив');
+    return `<div style="border:1px solid var(--wb-border);border-radius:8px;background:#fff;margin-bottom:6px;overflow:hidden">
+      <button type="button" onclick="toggleOwnWhArchive('${escapeHtml(a.id||'')}')" style="width:100%;text-align:left;border:0;background:${open?'#EEF2FF':'#fff'};padding:10px 12px;cursor:pointer;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <div>
+          <b style="font-size:13px">${escapeHtml(a.archived_at || a.id || '')}</b>
+          <span style="font-size:11px;color:var(--wb-muted)"> · ${escapeHtml(reason)}${a.sheet_as_of ? ' · Sheets ' + escapeHtml(a.sheet_as_of) : ''}</span>
+          ${a.note ? `<div style="font-size:11px;color:var(--wb-muted);margin-top:2px">${escapeHtml(a.note)}</div>` : ''}
+        </div>
+        <div style="font-size:12px;color:var(--wb-muted)">
+          ＋${fmt(a.receipts_qty||0)} / −${fmt(a.shipments_qty||0)}
+          · ${(a.receipts_files||0)+(a.shipments_files||0)} файл
+          ${open?'▾':'▸'}
+        </div>
+      </button>
+      ${open ? `<div id="owArchBody_${escapeHtml(a.id||'')}" style="padding:10px 12px;border-top:1px solid var(--wb-border);font-size:12px;color:var(--wb-muted)">Загрузка…</div>` : ''}
+    </div>`;
+  }).join('');
+  box.style.display = 'block';
+  box.innerHTML = `
+    <div style="font-size:12px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:8px">Архив по датам (аудит)</div>
+    ${rows}`;
+  if(openId) loadOwnWhArchiveDetail(openId);
+}
+
+function toggleOwnWhArchive(id) {
+  window._owArchOpen = (window._owArchOpen === id) ? '' : id;
+  drawOwnWhArchive();
+}
+
+async function loadOwnWhArchiveDetail(id) {
+  const el = document.getElementById('owArchBody_' + id);
+  if(!el) return;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-archive/${encodeURIComponent(id)}`);
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    const docs = [
+      ...(d.receipts || []).map(x => ({...x, _t: 'receipt'})),
+      ...(d.shipments || []).map(x => ({...x, _t: 'shipment'})),
+    ];
+    if(!docs.length) {
+      el.innerHTML = 'Пустой архив';
+      return;
+    }
+    el.innerHTML = docs.map(doc => {
+      const isIn = doc._t === 'receipt';
+      const label = isIn ? 'Приход' : ownWhChannelLabel(doc.channel || 'fbw');
+      return `<div style="padding:6px 0;border-bottom:1px solid var(--wb-border)">
+        <b style="color:${isIn?'#027A48':'#B54708'}">${label}</b>
+        ${escapeHtml(doc.filename || '')}
+        · ${isIn?'+':'−'}${fmt(doc.total_qty||0)} шт
+        · ${fmt(doc.articles||0)} арт.
+        ${doc.created_at ? ' · ' + escapeHtml(doc.created_at) : ''}
+      </div>`;
+    }).join('');
+  } catch(e) {
+    el.innerHTML = 'Ошибка: ' + escapeHtml(e.message);
+  }
 }
 
 function drawOwnWarehouse() {
@@ -2130,6 +2294,7 @@ function drawOwnWarehouse() {
   drawOwnWhWeekly();
   drawOwnWhChannelTables();
   drawOwnWhShipLog();
+  drawOwnWhArchive();
 
   if(OWN_WH.error) {
     if(info) info.textContent = 'Ошибка: ' + OWN_WH.error;
@@ -2178,9 +2343,11 @@ function drawOwnWarehouse() {
       ['Сумма остатков', fmt(totalQty)],
     ];
     if(receivedQty || (OWN_WH.receipts || []).length) cardItems.push(['Поступления', '+' + fmt(receivedQty || (OWN_WH.receipts||[]).reduce((s,x)=>s+(x.total_qty||0),0))]);
-    if((summaries.fbw || {}).total_qty) cardItems.push(['На склады WB', '−' + fmt(summaries.fbw.total_qty)]);
-    if((summaries.fbs || {}).total_qty) cardItems.push(['Отгрузки FBS', '−' + fmt(summaries.fbs.total_qty)]);
-    else if(shippedQty) cardItems.push(['Списано Excel', '−' + fmt(shippedQty)]);
+    if((summaries.fbw || {}).total_qty) cardItems.push(['Поставка WB', '−' + fmt(summaries.fbw.total_qty)]);
+    if((summaries.fbs || {}).total_qty) cardItems.push(['FBS WB', '−' + fmt(summaries.fbs.total_qty)]);
+    if((summaries.ozon_fbo || {}).total_qty) cardItems.push(['Поставка Ozon', '−' + fmt(summaries.ozon_fbo.total_qty)]);
+    if((summaries.ozon_fbs || {}).total_qty) cardItems.push(['FBS Ozon', '−' + fmt(summaries.ozon_fbs.total_qty)]);
+    else if(shippedQty && !(summaries.fbw||{}).total_qty && !(summaries.fbs||{}).total_qty) cardItems.push(['Списано Excel', '−' + fmt(shippedQty)]);
     if(OWN_WH.as_of) cardItems.unshift(['Остатки на', OWN_WH.as_of]);
     cards.innerHTML = cardItems.map(([l,v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${l==='Остатки на'?'font-size:20px':''}">${v}</div></div>`).join('');
   }
@@ -4084,7 +4251,8 @@ async function renderSupplyRecs() {
     note = '<div class="empty" style="margin-bottom:10px">Колонка «Наш склад» пустая — не удалось подтянуть Google Sheets. Открой вкладку «Наш склад» и нажми Обновить.</div>';
   } else if(OWN_WH && OWN_WH.as_of) {
     note = `<div style="margin-bottom:10px;padding:8px 12px;background:#FFF0E8;border:1px solid #F5D0B5;border-radius:var(--rs);font-size:12px;color:var(--wb-text)">
-      Колонка «Наш склад» — остатки из Google Sheets <b>на ${OWN_WH.as_of}</b>${OWN_WH.updated_at ? ` <span style="color:var(--wb-muted)">(подтянуто ${OWN_WH.updated_at})</span>` : ''}
+      Колонка «Наш склад» — общий остаток WB+Ozon из Google Sheets <b>на ${OWN_WH.as_of}</b>${OWN_WH.updated_at ? ` <span style="color:var(--wb-muted)">(подтянуто ${OWN_WH.updated_at})</span>` : ''}
+      · семьи артикулов · отгрузки обоих МП списывают одно и то же.
     </div>`;
   }
   document.getElementById('supplyRoot').innerHTML = note + renderSupplyMatrixTable(matrix);

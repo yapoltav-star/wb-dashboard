@@ -863,7 +863,12 @@ OWN_WAREHOUSE_CACHE = {
 
 OWN_WH_SHIPMENTS_KEY = "own_wh_shipments"
 OWN_WH_RECEIPTS_KEY = "own_wh_receipts"
+OWN_WH_ARCHIVE_KEY = "own_wh_archive"
+OWN_WH_SKU_ALIASES_KEY = "own_wh_sku_aliases"  # {alias_sku: canonical_vendor_code}
+OWN_WH_STOCK_SNAPSHOT_KEY = "own_wh_stock_snapshot"  # общий снимок для WB+Ozon
 OWN_WH_DOCS_KEEP = 200
+OWN_WH_ARCHIVE_KEEP = 60
+OWN_WH_CHANNELS = ("fbw", "fbs", "ozon_fbo", "ozon_fbs")
 _RU_MONTHS_SHORT = (
     "", "янв", "фев", "мар", "апр", "май", "июн",
     "июл", "авг", "сен", "окт", "ноя", "дек",
@@ -880,11 +885,74 @@ def _own_wh_receipts() -> list:
     return raw if isinstance(raw, list) else []
 
 
+def _own_wh_archives() -> list:
+    raw = get_setting_json(OWN_WH_ARCHIVE_KEY, []) or []
+    return raw if isinstance(raw, list) else []
+
+
+def _own_wh_sku_aliases() -> dict:
+    raw = get_setting_json(OWN_WH_SKU_ALIASES_KEY, {}) or {}
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for k, v in raw.items():
+        ak = str(k or "").strip()
+        cv = str(v or "").strip()
+        if ak and cv:
+            out[ak] = cv
+    return out
+
+
+def _own_wh_canonical_vc(vc: str, aliases: dict | None = None) -> str:
+    """Приводит артикул Ozon/альяс к каноническому (WB / Sheets), чтобы семьи считались одинаково."""
+    vc = str(vc or "").strip()
+    if not vc:
+        return ""
+    aliases = aliases if aliases is not None else _own_wh_sku_aliases()
+    if vc in aliases:
+        return str(aliases[vc]).strip() or vc
+    low = vc.lower()
+    for ak, cv in aliases.items():
+        if str(ak).lower() == low:
+            return str(cv).strip() or vc
+    return vc
+
+
+def _own_wh_normalize_items(items: list) -> list:
+    """Агрегирует qty по каноническому артикулу (алиасы Ozon → WB)."""
+    aliases = _own_wh_sku_aliases()
+    agg = {}
+    for it in items or []:
+        raw_vc = str((it or {}).get("vendor_code") or "").strip()
+        if not raw_vc:
+            continue
+        try:
+            qty = int((it or {}).get("qty") or 0)
+        except Exception:
+            qty = 0
+        if qty <= 0:
+            continue
+        vc = _own_wh_canonical_vc(raw_vc, aliases)
+        if vc not in agg:
+            agg[vc] = {"vendor_code": vc, "qty": 0, "aliases": set()}
+        agg[vc]["qty"] += qty
+        if raw_vc != vc:
+            agg[vc]["aliases"].add(raw_vc)
+    out = []
+    for vc, row in sorted(agg.items(), key=lambda x: (-x[1]["qty"], x[0])):
+        item = {"vendor_code": vc, "qty": row["qty"]}
+        if row["aliases"]:
+            item["source_skus"] = sorted(row["aliases"])
+        out.append(item)
+    return out
+
+
 def _own_wh_qty_map_from_docs(docs: list) -> dict:
     out = {}
+    aliases = _own_wh_sku_aliases()
     for sh in docs or []:
         for it in sh.get("items") or []:
-            vc = str(it.get("vendor_code") or "").strip()
+            vc = _own_wh_canonical_vc(str(it.get("vendor_code") or "").strip(), aliases)
             if not vc:
                 continue
             try:
@@ -895,6 +963,70 @@ def _own_wh_qty_map_from_docs(docs: list) -> dict:
                 continue
             out[vc] = out.get(vc, 0) + qty
     return out
+
+
+def _persist_own_wh_snapshot():
+    """Пишет общий снимок остатков (WB+Ozon читают одно и то же)."""
+    by_vendor = OWN_WAREHOUSE_CACHE.get("by_vendor") or {}
+    slim = {}
+    for vc, meta in by_vendor.items():
+        if not vc or not isinstance(meta, dict):
+            continue
+        slim[str(vc)] = {
+            "stock": int(meta.get("stock") or 0),
+            "family_stock": int(meta.get("family_stock") or 0),
+            "family": list(meta.get("family") or [vc]),
+            "root": meta.get("root") or vc,
+            "model_name": meta.get("model_name") or "",
+        }
+    snap = {
+        "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
+        "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
+        "title": OWN_WAREHOUSE_CACHE.get("title"),
+        "by_vendor": slim,
+        "shared": True,
+        "marketplaces": ["wb", "ozon"],
+    }
+    save_setting_value(OWN_WH_STOCK_SNAPSHOT_KEY, snap)
+    OWN_WAREHOUSE_CACHE["stock_snapshot"] = snap
+    return snap
+
+
+def _own_wh_archive_active(
+    reason: str = "friday",
+    note: str = "",
+    include_shipments: bool = True,
+    include_receipts: bool = True,
+) -> dict | None:
+    """Переносит активные поступления/отгрузки в архив по дате (для аудита)."""
+    ships = _own_wh_shipments() if include_shipments else []
+    receipts = _own_wh_receipts() if include_receipts else []
+    if not ships and not receipts:
+        return None
+    created_at, created_iso = _own_wh_now_stamp()
+    ship_qty = sum(int(s.get("total_qty") or 0) for s in ships)
+    recv_qty = sum(int(s.get("total_qty") or 0) for s in receipts)
+    entry = {
+        "id": f"arch_{int(time.time())}",
+        "archived_at": created_at,
+        "archived_at_iso": created_iso,
+        "reason": reason,
+        "note": str(note or "").strip(),
+        "sheet_as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
+        "shipments": ships,
+        "receipts": receipts,
+        "shipments_qty": ship_qty,
+        "receipts_qty": recv_qty,
+        "shipments_files": len(ships),
+        "receipts_files": len(receipts),
+    }
+    archive = _own_wh_archives()
+    archive.insert(0, entry)
+    archive = archive[:OWN_WH_ARCHIVE_KEEP]
+    if not save_setting_value(OWN_WH_ARCHIVE_KEY, archive):
+        raise RuntimeError("Не удалось сохранить архив в settings")
+    OWN_WAREHOUSE_CACHE["archives"] = archive
+    return entry
 
 
 def _own_wh_deduction_map() -> dict:
@@ -979,6 +1111,10 @@ def _own_wh_weekly_ledger(shipments: list = None, receipts: list = None) -> list
                 "fbw_files": 0,
                 "fbs_qty": 0,
                 "fbs_files": 0,
+                "ozon_fbo_qty": 0,
+                "ozon_fbo_files": 0,
+                "ozon_fbs_qty": 0,
+                "ozon_fbs_files": 0,
                 "docs": [],
             }
         return weeks[key]
@@ -1012,6 +1148,12 @@ def _own_wh_weekly_ledger(shipments: list = None, receipts: list = None) -> list
         if ch == "fbs":
             w["fbs_qty"] += qty
             w["fbs_files"] += 1
+        elif ch == "ozon_fbo":
+            w["ozon_fbo_qty"] += qty
+            w["ozon_fbo_files"] += 1
+        elif ch == "ozon_fbs":
+            w["ozon_fbs_qty"] += qty
+            w["ozon_fbs_files"] += 1
         else:
             w["fbw_qty"] += qty
             w["fbw_files"] += 1
@@ -1031,7 +1173,11 @@ def _own_wh_weekly_ledger(shipments: list = None, receipts: list = None) -> list
     out = []
     for key in sorted(weeks.keys(), reverse=True):
         w = weeks[key]
-        w["net_qty"] = int(w["receipts_qty"]) - int(w["fbw_qty"]) - int(w["fbs_qty"])
+        w["net_qty"] = (
+            int(w["receipts_qty"])
+            - int(w["fbw_qty"]) - int(w["fbs_qty"])
+            - int(w["ozon_fbo_qty"]) - int(w["ozon_fbs_qty"])
+        )
         w["docs"].sort(
             key=lambda d: str(d.get("created_at_iso") or d.get("created_at") or ""),
             reverse=True,
@@ -1376,6 +1522,10 @@ def _rebuild_own_wh_from_cache():
             "family": meta.get("family", [vc] if vc else []),
         })
     OWN_WAREHOUSE_CACHE["rows"] = new_rows
+    try:
+        _persist_own_wh_snapshot()
+    except Exception as e:
+        logger.warning(f"own-wh snapshot persist: {e}")
     return True
 
 
@@ -1385,6 +1535,12 @@ def refresh_own_warehouse_stock():
     try:
         data = fetch_own_warehouse_stock()
         OWN_WAREHOUSE_CACHE.update(data)
+        OWN_WAREHOUSE_CACHE["archives"] = _own_wh_archives()
+        OWN_WAREHOUSE_CACHE["sku_aliases"] = _own_wh_sku_aliases()
+        try:
+            _persist_own_wh_snapshot()
+        except Exception as e:
+            logger.warning(f"own-wh snapshot persist: {e}")
         OWN_WAREHOUSE_CACHE["syncing"] = False
         logger.info(f"own-warehouse: {len(data['rows'])} rows, as_of={data.get('as_of')}")
     except Exception as e:
@@ -1394,7 +1550,7 @@ def refresh_own_warehouse_stock():
 
 @app.get("/api/own-warehouse-stock")
 def get_own_warehouse_stock(refresh: bool = False):
-    """Остатки нашего склада из Google Sheets."""
+    """Остатки нашего склада (один физический склад для WB и Ozon)."""
     if refresh or not OWN_WAREHOUSE_CACHE.get("rows"):
         if OWN_WAREHOUSE_CACHE.get("syncing"):
             return {**OWN_WAREHOUSE_CACHE, "syncing": True}
@@ -1403,6 +1559,14 @@ def get_own_warehouse_stock(refresh: bool = False):
         # подтянуть актуальные ручные привязки моделей
         if not _rebuild_own_wh_from_cache():
             refresh_own_warehouse_stock()
+    archives = OWN_WAREHOUSE_CACHE.get("archives")
+    if archives is None:
+        archives = _own_wh_archives()
+        OWN_WAREHOUSE_CACHE["archives"] = archives
+    aliases = OWN_WAREHOUSE_CACHE.get("sku_aliases")
+    if aliases is None:
+        aliases = _own_wh_sku_aliases()
+        OWN_WAREHOUSE_CACHE["sku_aliases"] = aliases
     return {
         "title": OWN_WAREHOUSE_CACHE.get("title"),
         "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
@@ -1416,6 +1580,24 @@ def get_own_warehouse_stock(refresh: bool = False):
         "channel_summaries": _own_wh_channel_summaries(
             OWN_WAREHOUSE_CACHE.get("shipments") or _own_wh_shipments()
         ),
+        "archives": [
+            {
+                "id": a.get("id"),
+                "archived_at": a.get("archived_at"),
+                "archived_at_iso": a.get("archived_at_iso"),
+                "reason": a.get("reason"),
+                "note": a.get("note"),
+                "sheet_as_of": a.get("sheet_as_of"),
+                "shipments_qty": a.get("shipments_qty"),
+                "receipts_qty": a.get("receipts_qty"),
+                "shipments_files": a.get("shipments_files"),
+                "receipts_files": a.get("receipts_files"),
+            }
+            for a in (archives or [])[:30]
+        ],
+        "sku_aliases": aliases,
+        "shared_stock": True,
+        "marketplaces": ["wb", "ozon"],
         "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
         "error": OWN_WAREHOUSE_CACHE.get("error"),
         "syncing": OWN_WAREHOUSE_CACHE.get("syncing", False),
@@ -1553,9 +1735,9 @@ def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
 
 
 def _own_wh_shipment_channel(sh: dict) -> str:
-    """fbw = поставка на склады WB; fbs = отгрузка FBS."""
+    """fbw/fbs = WB; ozon_fbo/ozon_fbs = Ozon. Все списывают один физический склад."""
     ch = str((sh or {}).get("channel") or "").strip().lower()
-    if ch in ("fbw", "fbs"):
+    if ch in OWN_WH_CHANNELS:
         return ch
     kind = str((sh or {}).get("kind") or "")
     # shk-excel и лист подбора WB-GI — это поставки на склады WB
@@ -1565,16 +1747,19 @@ def _own_wh_shipment_channel(sh: dict) -> str:
 
 
 def _own_wh_channel_summaries(shipments: list | None = None) -> dict:
-    """Сводки по артикулам: поставки на WB и отгрузки FBS."""
+    """Сводки по артикулам: WB (fbw/fbs) и Ozon (ozon_fbo/ozon_fbs)."""
     shipments = shipments if shipments is not None else _own_wh_shipments()
-    buckets = {"fbw": {}, "fbs": {}}
-    meta = {"fbw": {"files": 0, "total_qty": 0}, "fbs": {"files": 0, "total_qty": 0}}
+    buckets = {ch: {} for ch in OWN_WH_CHANNELS}
+    meta = {ch: {"files": 0, "total_qty": 0} for ch in OWN_WH_CHANNELS}
+    aliases = _own_wh_sku_aliases()
     for sh in shipments:
         ch = _own_wh_shipment_channel(sh)
+        if ch not in meta:
+            ch = "fbw"
         meta[ch]["files"] += 1
         meta[ch]["total_qty"] += int(sh.get("total_qty") or 0)
         for it in sh.get("items") or []:
-            vc = str(it.get("vendor_code") or "").strip()
+            vc = _own_wh_canonical_vc(str(it.get("vendor_code") or "").strip(), aliases)
             if not vc:
                 continue
             try:
@@ -1585,7 +1770,7 @@ def _own_wh_channel_summaries(shipments: list | None = None) -> dict:
                 continue
             buckets[ch][vc] = buckets[ch].get(vc, 0) + qty
     out = {}
-    for ch in ("fbw", "fbs"):
+    for ch in OWN_WH_CHANNELS:
         items = [
             {"vendor_code": vc, "qty": q}
             for vc, q in sorted(buckets[ch].items(), key=lambda x: (-x[1], x[0]))
@@ -1616,11 +1801,32 @@ def _own_wh_now_stamp():
 def _own_wh_response_payload() -> dict:
     ships = OWN_WAREHOUSE_CACHE.get("shipments") or _own_wh_shipments()
     receipts = OWN_WAREHOUSE_CACHE.get("receipts") or _own_wh_receipts()
+    archives = OWN_WAREHOUSE_CACHE.get("archives")
+    if archives is None:
+        archives = _own_wh_archives()
     return {
         "shipments": ships[:40],
         "receipts": receipts[:40],
         "weekly_ledger": _own_wh_weekly_ledger(ships, receipts),
         "channel_summaries": _own_wh_channel_summaries(ships),
+        "archives": [
+            {
+                "id": a.get("id"),
+                "archived_at": a.get("archived_at"),
+                "archived_at_iso": a.get("archived_at_iso"),
+                "reason": a.get("reason"),
+                "note": a.get("note"),
+                "sheet_as_of": a.get("sheet_as_of"),
+                "shipments_qty": a.get("shipments_qty"),
+                "receipts_qty": a.get("receipts_qty"),
+                "shipments_files": a.get("shipments_files"),
+                "receipts_files": a.get("receipts_files"),
+            }
+            for a in (archives or [])[:30]
+        ],
+        "sku_aliases": OWN_WAREHOUSE_CACHE.get("sku_aliases") or _own_wh_sku_aliases(),
+        "shared_stock": True,
+        "marketplaces": ["wb", "ozon"],
         "rows": OWN_WAREHOUSE_CACHE.get("rows") or [],
         "by_vendor": OWN_WAREHOUSE_CACHE.get("by_vendor") or {},
         "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
@@ -1633,12 +1839,12 @@ async def own_warehouse_upload_shipment(
     files: list[UploadFile] = File(...),
     channel: str = Form("auto"),
 ):
-    """Загрузка Excel отгрузки → списание с «Наш склад» (поверх Google Sheets).
-    channel: auto|fbw|fbs — поставка на склады WB или отгрузка FBS."""
+    """Загрузка Excel отгрузки → списание с общего склада (WB или Ozon).
+    channel: auto|fbw|fbs|ozon_fbo|ozon_fbs"""
     if not files:
         raise HTTPException(status_code=400, detail="files required")
     ch_req = str(channel or "auto").strip().lower()
-    if ch_req not in ("auto", "fbw", "fbs"):
+    if ch_req not in ("auto",) + OWN_WH_CHANNELS:
         ch_req = "auto"
 
     if not OWN_WAREHOUSE_CACHE.get("rows") and not OWN_WAREHOUSE_CACHE.get("personal_sheet"):
@@ -1661,7 +1867,12 @@ async def own_warehouse_upload_shipment(
         if parsed.get("error"):
             errors.append({"filename": f.filename, "error": parsed["error"]})
             continue
-        if ch_req in ("fbw", "fbs"):
+        items = _own_wh_normalize_items(parsed.get("items") or [])
+        if not items:
+            errors.append({"filename": f.filename, "error": "нет артикулов после нормализации"})
+            continue
+        total_qty = sum(int(it["qty"]) for it in items)
+        if ch_req in OWN_WH_CHANNELS:
             ch = ch_req
         else:
             ch = "fbw" if parsed.get("kind") in ("shk", "picking") else "fbw"
@@ -1671,11 +1882,12 @@ async def own_warehouse_upload_shipment(
             "filename": f.filename or parsed.get("filename") or "",
             "kind": parsed.get("kind"),
             "channel": ch,
+            "marketplace": "ozon" if ch.startswith("ozon") else "wb",
             "created_at": created_at,
             "created_at_iso": created_iso,
-            "items": parsed["items"],
-            "total_qty": parsed["total_qty"],
-            "articles": parsed["articles"],
+            "items": items,
+            "total_qty": total_qty,
+            "articles": len(items),
         }
         shipments.insert(0, entry)
         applied.append(entry)
@@ -1697,6 +1909,7 @@ async def own_warehouse_upload_shipment(
                 "filename": a["filename"],
                 "kind": a["kind"],
                 "channel": a.get("channel"),
+                "marketplace": a.get("marketplace"),
                 "total_qty": a["total_qty"],
                 "articles": a["articles"],
                 "items": a["items"][:40],
@@ -1705,7 +1918,7 @@ async def own_warehouse_upload_shipment(
         ],
         "errors": errors,
         **payload,
-        "note": "Списано в остатках сайта. Google Sheets сам не меняется — когда поправишь таблицу, нажми «Сбросить списания».",
+        "note": "Списано с общего склада (WB+Ozon). Google Sheets сам не меняется — в пятницу после пересчёта нажми «Инвентаризация».",
     }
 
 
@@ -1740,6 +1953,11 @@ async def own_warehouse_upload_receipt(
         if parsed.get("error"):
             errors.append({"filename": f.filename, "error": parsed["error"]})
             continue
+        items = _own_wh_normalize_items(parsed.get("items") or [])
+        if not items:
+            errors.append({"filename": f.filename, "error": "нет артикулов после нормализации"})
+            continue
+        total_qty = sum(int(it["qty"]) for it in items)
         rid = f"rc_{int(time.time())}_{len(receipts)}_{len(applied)}"
         entry = {
             "id": rid,
@@ -1748,9 +1966,9 @@ async def own_warehouse_upload_receipt(
             "note": note_s,
             "created_at": created_at,
             "created_at_iso": created_iso,
-            "items": parsed["items"],
-            "total_qty": parsed["total_qty"],
-            "articles": parsed["articles"],
+            "items": items,
+            "total_qty": total_qty,
+            "articles": len(items),
         }
         receipts.insert(0, entry)
         applied.append(entry)
@@ -1824,7 +2042,9 @@ async def own_warehouse_add_receipt(request: dict):
     if not agg:
         raise HTTPException(status_code=400, detail="Не удалось разобрать артикулы")
 
-    items = [{"vendor_code": vc, "qty": q} for vc, q in sorted(agg.items(), key=lambda x: -x[1])]
+    items = _own_wh_normalize_items(
+        [{"vendor_code": vc, "qty": q} for vc, q in agg.items()]
+    )
     created_at, created_iso = _own_wh_now_stamp()
     receipts = _own_wh_receipts()
     rid = f"rc_{int(time.time())}_{len(receipts)}_m"
@@ -1855,9 +2075,20 @@ async def own_warehouse_add_receipt(request: dict):
 
 @app.post("/api/own-warehouse-undo-shipment")
 async def own_warehouse_undo_shipment(request: dict):
-    """Отменить одно списание по id или все (all=true)."""
+    """Отменить одно списание по id или все (all=true).
+    all=true + archive=true (по умолчанию) — сначала в архив."""
     shipments = _own_wh_shipments()
     if request.get("all"):
+        if request.get("archive", True) and shipments:
+            try:
+                _own_wh_archive_active(
+                    reason=str(request.get("reason") or "clear_shipments"),
+                    note=str(request.get("note") or "Сброс списаний"),
+                    include_shipments=True,
+                    include_receipts=False,
+                )
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
         shipments = []
     else:
         sid = str(request.get("id") or "").strip()
@@ -1877,6 +2108,16 @@ async def own_warehouse_undo_receipt(request: dict):
     """Отменить одно поступление по id или все (all=true)."""
     receipts = _own_wh_receipts()
     if request.get("all"):
+        if request.get("archive", True) and receipts:
+            try:
+                _own_wh_archive_active(
+                    reason=str(request.get("reason") or "clear_receipts"),
+                    note=str(request.get("note") or "Сброс поступлений"),
+                    include_shipments=False,
+                    include_receipts=True,
+                )
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
         receipts = []
     else:
         rid = str(request.get("id") or "").strip()
@@ -1889,6 +2130,134 @@ async def own_warehouse_undo_receipt(request: dict):
     if not _rebuild_own_wh_from_cache():
         refresh_own_warehouse_stock()
     return {"status": "ok", **_own_wh_response_payload()}
+
+
+@app.post("/api/own-warehouse-friday-reset")
+async def own_warehouse_friday_reset(request: dict = None):
+    """Пятничная инвентаризация: подтянуть Sheets → архивировать оверлеи → очистить активные.
+    Сотрудник сначала правит реальные остатки в Google Sheets, потом жмёт эту кнопку."""
+    request = request or {}
+    note = str(request.get("note") or "").strip()
+    refresh_sheets = request.get("refresh_sheets", True)
+
+    if refresh_sheets:
+        try:
+            refresh_own_warehouse_stock()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Не удалось обновить Sheets: {e}")
+
+    ships = _own_wh_shipments()
+    receipts = _own_wh_receipts()
+    archived = None
+    if ships or receipts:
+        try:
+            archived = _own_wh_archive_active(reason="friday", note=note or "Пятничная инвентаризация")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    if not _save_own_wh_shipments([]):
+        raise HTTPException(status_code=500, detail="Не удалось очистить списания")
+    if not _save_own_wh_receipts([]):
+        raise HTTPException(status_code=500, detail="Не удалось очистить поступления")
+
+    OWN_WAREHOUSE_CACHE["shipments"] = []
+    OWN_WAREHOUSE_CACHE["receipts"] = []
+    OWN_WAREHOUSE_CACHE["archives"] = _own_wh_archives()
+    if not _rebuild_own_wh_from_cache():
+        refresh_own_warehouse_stock()
+
+    return {
+        "status": "ok",
+        "archived": {
+            "id": (archived or {}).get("id"),
+            "archived_at": (archived or {}).get("archived_at"),
+            "shipments_qty": (archived or {}).get("shipments_qty", 0),
+            "receipts_qty": (archived or {}).get("receipts_qty", 0),
+            "shipments_files": (archived or {}).get("shipments_files", 0),
+            "receipts_files": (archived or {}).get("receipts_files", 0),
+        } if archived else None,
+        "note": "База = Google Sheets. Активные отгрузки/поступления ушли в архив.",
+        **_own_wh_response_payload(),
+    }
+
+
+@app.get("/api/own-warehouse-archive")
+def own_warehouse_archive_list():
+    """Список архивов инвентаризаций / сбросов (без полного состава файлов)."""
+    archives = _own_wh_archives()
+    return {
+        "archives": [
+            {
+                "id": a.get("id"),
+                "archived_at": a.get("archived_at"),
+                "archived_at_iso": a.get("archived_at_iso"),
+                "reason": a.get("reason"),
+                "note": a.get("note"),
+                "sheet_as_of": a.get("sheet_as_of"),
+                "shipments_qty": a.get("shipments_qty"),
+                "receipts_qty": a.get("receipts_qty"),
+                "shipments_files": a.get("shipments_files"),
+                "receipts_files": a.get("receipts_files"),
+            }
+            for a in archives
+        ]
+    }
+
+
+@app.get("/api/own-warehouse-archive/{archive_id}")
+def own_warehouse_archive_detail(archive_id: str):
+    """Полный архив за дату (файлы отгрузок/поступлений для аудита)."""
+    aid = str(archive_id or "").strip()
+    for a in _own_wh_archives():
+        if str(a.get("id")) == aid:
+            return a
+    raise HTTPException(status_code=404, detail="archive not found")
+
+
+@app.post("/api/own-warehouse-sku-aliases")
+async def own_warehouse_sku_aliases(request: dict):
+    """Сохранить карту алиасов Ozon/других SKU → канонический артикул WB.
+    body: {aliases: {ozon_sku: wb_vendor_code}} или text: 'ozon_sku = wb_article' по строкам.
+    replace=true — заменить целиком, иначе merge."""
+    aliases = _own_wh_sku_aliases()
+    if request.get("replace"):
+        aliases = {}
+    incoming = request.get("aliases")
+    if isinstance(incoming, dict):
+        for k, v in incoming.items():
+            ak = str(k or "").strip()
+            cv = str(v or "").strip()
+            if not ak:
+                continue
+            if not cv:
+                aliases.pop(ak, None)
+            else:
+                aliases[ak] = cv
+    text = str(request.get("text") or "").strip()
+    if text:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                left, right = line.split("=", 1)
+            elif "\t" in line:
+                left, right = line.split("\t", 1)
+            else:
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                left, right = parts[0], parts[1]
+            ak = left.strip()
+            cv = right.strip()
+            if ak and cv:
+                aliases[ak] = cv
+    if not save_setting_value(OWN_WH_SKU_ALIASES_KEY, aliases):
+        raise HTTPException(status_code=500, detail="Не удалось сохранить алиасы")
+    OWN_WAREHOUSE_CACHE["sku_aliases"] = aliases
+    if not _rebuild_own_wh_from_cache():
+        refresh_own_warehouse_stock()
+    return {"status": "ok", "sku_aliases": aliases, **_own_wh_response_payload()}
 
 
 # ---------- Рекомендации по поставкам: заказы + продажи по складам (WB Statistics API) ----------
