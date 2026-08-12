@@ -514,14 +514,15 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
     <div class="search">
       <input id="owSearch" placeholder="Артикул или название…" oninput="drawOwnWarehouse()">
     </div>
-    <button class="filter-btn on" id="owFltAll" onclick="setOwFilter('all')">Все</button>
+    <button class="filter-btn on" id="owFltOzon" onclick="setOwFilter('ozon')" title="Только артикулы, которые есть в кабинете Ozon">На Ozon</button>
+    <button class="filter-btn" id="owFltAll" onclick="setOwFilter('all')">Все</button>
     <button class="filter-btn" id="owFltIn" onclick="setOwFilter('instock')">В наличии</button>
     <button class="filter-btn" id="owFltZero" onclick="setOwFilter('zero')">Ноль</button>
     <span id="owInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
     <button class="action-btn primary ml-auto" id="owSyncBtn" onclick="triggerOwnWarehouseSync()">↻ Обновить</button>
   </div>
   <div class="cards" id="owCards"></div>
-  <div id="owRoot"><div class="empty"><b>Наш склад</b>Остатки с WB-дашборда (с учётом загруженных туда отгрузок). Матч к Ozon по артикулу продавца.</div></div>
+  <div id="owRoot"><div class="empty"><b>Наш склад</b>Сверху — только то, что продаётся на Ozon. Остальное скрыто.</div></div>
 </div>
 
 <!-- SUPPLIES (внутри Остатки) -->
@@ -1472,21 +1473,30 @@ function drawSupplies() {
     </table></div>`;
 }
 
-/* ── Наш склад (Google Sheets, как WB) ── */
+/* ── Наш склад (с WB-дашборда) ── */
 let OWN_WH = { title: null, as_of: null, rows: [], by_vendor: {}, updated_at: null, error: null, syncing: false };
 let OWN_WH_LOADED = false;
-let OWN_WH_FILTER = 'all';
+let OWN_WH_FILTER = 'ozon'; // по умолчанию только то, что продаётся на Ozon
 let OWN_WH_BY_VENDOR = {};
+let OWN_WH_SHOW_OTHER = false; // показать скрытые (не на Ozon)
+let OZON_OFFER_SET = null; // Set норм. ключей + сырых offer_id
+let OZON_OFFER_SET_LOADING = null;
 let owPoll = null;
 
 function setOwFilter(f) {
-  OWN_WH_FILTER = f || 'all';
-  ['All', 'In', 'Zero'].forEach(k => {
+  OWN_WH_FILTER = f || 'ozon';
+  ['Ozon', 'All', 'In', 'Zero'].forEach(k => {
     const el = document.getElementById('owFlt' + k);
     if (!el) return;
-    const map = { All: 'all', In: 'instock', Zero: 'zero' };
+    const map = { Ozon: 'ozon', All: 'all', In: 'instock', Zero: 'zero' };
     el.classList.toggle('on', map[k] === OWN_WH_FILTER);
   });
+  if (OWN_WH_FILTER === 'ozon') OWN_WH_SHOW_OTHER = false;
+  drawOwnWarehouse();
+}
+
+function toggleOwShowOther() {
+  OWN_WH_SHOW_OTHER = !OWN_WH_SHOW_OTHER;
   drawOwnWarehouse();
 }
 
@@ -1496,6 +1506,39 @@ function ownWhNormKey(s) {
   t = t.replace(/[оаесрхукмтвн]/g, ch => map[ch] || ch);
   if (t.endsWith('0')) t = t.slice(0, -1) + 'o';
   return t;
+}
+
+async function ensureOzonOfferSet() {
+  if (OZON_OFFER_SET) return OZON_OFFER_SET;
+  if (OZON_OFFER_SET_LOADING) return OZON_OFFER_SET_LOADING;
+  OZON_OFFER_SET_LOADING = (async () => {
+    const set = new Set();
+    try {
+      // без сортировки по заказам — быстрый список артикулов кабинета
+      const r = await fetch('/api/products?archived=active&limit=500&sort=offer_id&offset=0');
+      if (r.ok) {
+        const d = await r.json();
+        for (const it of (d.items || [])) {
+          const oid = String(it.offer_id || '').trim();
+          if (!oid) continue;
+          set.add(oid);
+          set.add(oid.toLowerCase());
+          set.add(ownWhNormKey(oid));
+        }
+      }
+    } catch (_) {}
+    OZON_OFFER_SET = set;
+    OZON_OFFER_SET_LOADING = null;
+    return set;
+  })();
+  return OZON_OFFER_SET_LOADING;
+}
+
+function isOwnWhOnOzon(vendorCode) {
+  const vc = String(vendorCode || '').trim();
+  if (!vc || !OZON_OFFER_SET || !OZON_OFFER_SET.size) return false;
+  if (OZON_OFFER_SET.has(vc) || OZON_OFFER_SET.has(vc.toLowerCase())) return true;
+  return OZON_OFFER_SET.has(ownWhNormKey(vc));
 }
 
 function ownWhLookup(offerId) {
@@ -1557,6 +1600,32 @@ async function triggerOwnWarehouseSync() {
   }
 }
 
+function owRowHtml(r, { onOzon } = {}) {
+  const fam = (r.family || []).filter(x => x && x !== r.vendor_code);
+  const badge = onOzon
+    ? '<span class="badge fbo" style="margin-left:6px">Ozon</span>'
+    : '<span class="badge" style="margin-left:6px;background:#F2F4F7;color:var(--oz-muted)">не на Ozon</span>';
+  return `<tr>
+    <td><b>${esc(r.vendor_code || '—')}</b>${badge}</td>
+    <td>${esc(r.name || '—')}</td>
+    <td class="num">${fmt(r.stock || 0)}</td>
+    <td class="num">${fmt(r.shipped || 0)}</td>
+    <td class="num">${fmt(r.family_stock != null ? r.family_stock : (r.stock || 0))}</td>
+    <td class="prod-meta">${fam.length ? esc(fam.join(', ')) : '—'}</td>
+    <td class="prod-meta">${esc(r.note || '')}</td>
+  </tr>`;
+}
+
+function owTable(rows, opts) {
+  if (!rows.length) return '';
+  return `<div class="tbl-wrap"><table>
+    <thead><tr>
+      <th>Артикул</th><th>Название</th><th class="num">Остаток</th><th class="num">Списано</th><th class="num">Семья</th><th>Семья (артикулы)</th><th>Примечание</th>
+    </tr></thead>
+    <tbody>${rows.map(r => owRowHtml(r, opts)).join('')}</tbody>
+  </table></div>`;
+}
+
 async function renderOwnWarehouse(forceLoad) {
   if (forceLoad || !OWN_WH_LOADED) {
     try {
@@ -1569,6 +1638,7 @@ async function renderOwnWarehouse(forceLoad) {
       OWN_WH = { rows: [], error: e.message || String(e), by_vendor: {} };
     }
   }
+  await ensureOzonOfferSet();
   drawOwnWarehouse();
   if (OWN_WH.syncing) {
     clearTimeout(owPoll);
@@ -1582,6 +1652,11 @@ function drawOwnWarehouse() {
   const info = document.getElementById('owInfo');
   const ban = document.getElementById('owBanner');
   if (!root) return;
+
+  // подтянуть артикулы Ozon, если ещё нет
+  if (!OZON_OFFER_SET && !OZON_OFFER_SET_LOADING) {
+    ensureOzonOfferSet().then(() => drawOwnWarehouse());
+  }
 
   if (OWN_WH.error) {
     if (info) info.textContent = 'Ошибка: ' + OWN_WH.error;
@@ -1603,60 +1678,95 @@ function drawOwnWarehouse() {
     if (info) info.textContent = bits.join(' · ');
   }
 
-  let rows = OWN_WH.rows || [];
+  let all = OWN_WH.rows || [];
   const q = ((document.getElementById('owSearch') || {}).value || '').toLowerCase().trim();
   if (q) {
-    rows = rows.filter(r =>
+    all = all.filter(r =>
       String(r.vendor_code || '').toLowerCase().includes(q) ||
       String(r.name || '').toLowerCase().includes(q)
     );
   }
-  if (OWN_WH_FILTER === 'instock') rows = rows.filter(r => (r.stock || 0) > 0);
-  else if (OWN_WH_FILTER === 'zero') rows = rows.filter(r => !(r.stock > 0));
 
-  const withStock = (OWN_WH.rows || []).filter(r => (r.stock || 0) > 0);
-  const totalQty = withStock.reduce((s, r) => s + (r.stock || 0), 0);
-  const shippedTotal = (OWN_WH.rows || []).reduce((s, r) => s + (r.shipped || 0), 0);
+  const ozonRows = [];
+  const otherRows = [];
+  for (const r of all) {
+    if (isOwnWhOnOzon(r.vendor_code)) ozonRows.push(r);
+    else otherRows.push(r);
+  }
+  const byStock = (a, b) => (b.stock || 0) - (a.stock || 0) || String(a.vendor_code || '').localeCompare(String(b.vendor_code || ''));
+  ozonRows.sort(byStock);
+  otherRows.sort(byStock);
+
+  let visible = ozonRows;
+  if (OWN_WH_FILTER === 'all') visible = [...ozonRows, ...(OWN_WH_SHOW_OTHER ? otherRows : [])];
+  else if (OWN_WH_FILTER === 'instock') visible = ozonRows.filter(r => (r.stock || 0) > 0);
+  else if (OWN_WH_FILTER === 'zero') visible = ozonRows.filter(r => !(r.stock > 0));
+  else if (OWN_WH_FILTER === 'ozon') visible = ozonRows;
+
+  const ozonQty = ozonRows.reduce((s, r) => s + (r.stock || 0), 0);
+  const ozonInStock = ozonRows.filter(r => (r.stock || 0) > 0).length;
+  const otherQty = otherRows.reduce((s, r) => s + (r.stock || 0), 0);
   if (cards) {
     cards.innerHTML = [
-      ['Строк', fmt(rows.length)],
-      ['С остатком', fmt(withStock.length)],
-      ['Шт. на складе', fmt(totalQty)],
-      ['Списано отгрузками', fmt(shippedTotal)],
+      ['На Ozon', fmt(ozonRows.length)],
+      ['С остатком (Ozon)', fmt(ozonInStock)],
+      ['Шт. на Ozon-артикулах', fmt(ozonQty)],
+      ['Скрыто (не на Ozon)', fmt(otherRows.length) + (otherQty ? ` · ${fmt(otherQty)} шт` : '')],
       ['На дату', OWN_WH.as_of || '—'],
     ].map(([l, v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v">${v}</div></div>`).join('');
   }
 
-  if (!rows.length) {
+  if (!(OWN_WH.rows || []).length) {
     root.innerHTML = OWN_WH.syncing
       ? '<div class="loading"><div class="spinner"></div>Тянем с WB…</div>'
-      : '<div class="empty"><b>Пусто</b>Нет данных с WB-дашборда. Открой на WB вкладку «Наш склад» и обнови, либо проверь <code>WB_DASHBOARD_URL</code> в Railway.</div>';
+      : '<div class="empty"><b>Пусто</b>Нет данных с WB-дашборда. Открой на WB вкладку «Наш склад» и обнови.</div>';
     return;
+  }
+
+  if (!OZON_OFFER_SET) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div>Сверяем с товарами Ozon…</div>';
+    return;
+  }
+
+  const hideNote = otherRows.length
+    ? `<div class="hint" style="margin:12px 0">
+        Скрыто <b>${fmt(otherRows.length)}</b> позиций, которых нет в кабинете Ozon
+        (${fmt(otherQty)} шт) — чтобы не мешали.
+        <button class="filter-btn ${OWN_WH_SHOW_OTHER ? 'on' : ''}" style="margin-left:8px" onclick="toggleOwShowOther()">
+          ${OWN_WH_SHOW_OTHER ? 'Скрыть лишнее' : 'Показать скрытые'}
+        </button>
+      </div>`
+    : '';
+
+  let body = '';
+  if (OWN_WH_FILTER === 'ozon' || OWN_WH_FILTER === 'instock' || OWN_WH_FILTER === 'zero') {
+    body = visible.length
+      ? owTable(visible, { onOzon: true })
+      : '<div class="empty"><b>Нет совпадений с Ozon</b>Обнови товары в кабинете или проверь артикулы (offer_id = артикул на складе).</div>';
+    if (OWN_WH_SHOW_OTHER && otherRows.length) {
+      let extras = otherRows;
+      if (OWN_WH_FILTER === 'instock') extras = extras.filter(r => (r.stock || 0) > 0);
+      if (OWN_WH_FILTER === 'zero') extras = extras.filter(r => !(r.stock > 0));
+      body += hideNote + (extras.length ? `<div class="hint" style="margin-bottom:8px"><b>Не на Ozon</b></div>` + owTable(extras, { onOzon: false }) : '');
+    } else {
+      body += hideNote;
+    }
+  } else {
+    // все: сверху Ozon, снизу скрытые
+    body = (ozonRows.length ? owTable(ozonRows, { onOzon: true }) : '<div class="empty"><b>Нет артикулов Ozon на складе</b></div>')
+      + hideNote
+      + (OWN_WH_SHOW_OTHER && otherRows.length
+        ? `<div class="hint" style="margin-bottom:8px"><b>Не на Ozon</b></div>` + owTable(otherRows, { onOzon: false })
+        : '');
   }
 
   root.innerHTML = `
     <div class="hint" style="margin-bottom:10px">
-      Источник — <b>WB-дашборд</b> (не сырая Google-таблица): остатки уже с учётом загруженных туда отгрузок/поставок.
-      В матрице Ozon колонка <b>Наш склад</b> матчится по артикулу продавца (<code>offer_id</code>).
-      ${OWN_WH.wb_url ? `URL: <code>${esc(OWN_WH.wb_url)}</code>` : ''}
+      По умолчанию сверху только артикулы из кабинета <b>Ozon</b> (матч по <code>offer_id</code>).
+      Остальное с WB-склада спрятано.
+      ${OWN_WH.wb_url ? `Источник: <code>${esc(OWN_WH.wb_url)}</code>` : ''}
     </div>
-    <div class="tbl-wrap"><table>
-      <thead><tr>
-        <th>Артикул</th><th>Название</th><th class="num">Остаток</th><th class="num">Списано</th><th class="num">Семья</th><th>Семья (артикулы)</th><th>Примечание</th>
-      </tr></thead>
-      <tbody>${rows.map(r => {
-        const fam = (r.family || []).filter(x => x && x !== r.vendor_code);
-        return `<tr>
-          <td><b>${esc(r.vendor_code || '—')}</b></td>
-          <td>${esc(r.name || '—')}</td>
-          <td class="num">${fmt(r.stock || 0)}</td>
-          <td class="num">${fmt(r.shipped || 0)}</td>
-          <td class="num">${fmt(r.family_stock != null ? r.family_stock : (r.stock || 0))}</td>
-          <td class="prod-meta">${fam.length ? esc(fam.join(', ')) : '—'}</td>
-          <td class="prod-meta">${esc(r.note || '')}</td>
-        </tr>`;
-      }).join('')}</tbody>
-    </table></div>`;
+    ${body}`;
 }
 
 async function loadStocks() {
