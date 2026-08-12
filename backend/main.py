@@ -4,6 +4,7 @@ import io
 import json
 import time
 import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone, date
@@ -3912,8 +3913,12 @@ async def upload_competitor_report(file: UploadFile = File(...)):
         return {"error": str(e)}
 
 @app.get("/api/own-articles-all")
-def own_articles_all():
-    """Свои карточки с заказами или выкупами за окно поставок (не весь каталог)."""
+def own_articles_all(shelf_focus: bool = False):
+    """Свои карточки с заказами или выкупами за окно поставок (не весь каталог).
+
+    shelf_focus=1 — только интересные для полок: цена ≥1200₽, не зарядки/кабели/аксессуары,
+    с минимальными продажами. Для мониторинга «слабых полок» и задач по ним.
+    """
     window_days = get_setting_int("sales_window_days", 14)
     by_nm = {}
     try:
@@ -3974,6 +3979,36 @@ def own_articles_all():
         if not a.get("vendor_code"):
             a["vendor_code"] = str(a["nm_id"])
 
+    skipped = []
+    if shelf_focus:
+        price_map, meta_map = _shelf_focus_enrichment([a["nm_id"] for a in active])
+        focused = []
+        for a in active:
+            nm = a["nm_id"]
+            meta = meta_map.get(nm) or {}
+            price = price_map.get(nm)
+            a["price"] = price
+            a["name"] = meta.get("name") or ""
+            a["subject"] = meta.get("subject") or ""
+            reason = _shelf_focus_skip_reason(
+                vendor_code=a.get("vendor_code"),
+                name=a.get("name"),
+                subject=a.get("subject"),
+                price=price,
+                ordered_qty=a.get("ordered_qty") or 0,
+            )
+            if reason:
+                skipped.append({
+                    "nm_id": nm,
+                    "vendor_code": a.get("vendor_code"),
+                    "reason": reason,
+                    "price": price,
+                    "ordered_qty": a.get("ordered_qty") or 0,
+                })
+                continue
+            focused.append(a)
+        active = focused
+
     active.sort(
         key=lambda a: (
             -(a["ordered_qty"] or 0),
@@ -3981,19 +4016,126 @@ def own_articles_all():
             str(a.get("vendor_code") or "").lower(),
         )
     )
+    out_articles = []
+    for a in active:
+        row = {
+            "nm_id": a["nm_id"],
+            "vendor_code": a["vendor_code"],
+            "ordered_qty": a["ordered_qty"],
+            "buyout_qty": a["buyout_qty"],
+        }
+        if shelf_focus:
+            row["price"] = a.get("price")
+            row["name"] = a.get("name") or ""
+            row["subject"] = a.get("subject") or ""
+        out_articles.append(row)
     return {
-        "articles": [
-            {
-                "nm_id": a["nm_id"],
-                "vendor_code": a["vendor_code"],
-                "ordered_qty": a["ordered_qty"],
-                "buyout_qty": a["buyout_qty"],
-            }
-            for a in active
-        ],
-        "count": len(active),
+        "articles": out_articles,
+        "count": len(out_articles),
         "days": window_days,
+        "shelf_focus": bool(shelf_focus),
+        "shelf_focus_min_price": SHELF_FOCUS_MIN_PRICE if shelf_focus else None,
+        "shelf_focus_min_orders": SHELF_FOCUS_MIN_ORDERS if shelf_focus else None,
+        "skipped": skipped[:80] if shelf_focus else [],
+        "skipped_count": len(skipped) if shelf_focus else 0,
     }
+
+
+# Карточки для мониторинга полок: без дешёвых и аксессуаров (зарядки и т.п.)
+SHELF_FOCUS_MIN_PRICE = 1200
+SHELF_FOCUS_MIN_ORDERS = 5
+SHELF_FOCUS_SKIP_RE = re.compile(
+    r"(заряд|charger|кабел|cable|адаптер|adapter|power\s*bank|powerbank|"
+    r"провод|шнур|usb[\s\-]?[ac]|type[\s\-]?c|док[\s\-]?станц)",
+    re.IGNORECASE,
+)
+
+
+def _shelf_focus_skip_reason(
+    vendor_code: str = "",
+    name: str = "",
+    subject: str = "",
+    price=None,
+    ordered_qty: int = 0,
+):
+    """Почему карточку не смотрим в задачах по слабым полкам. None = ок."""
+    blob = " ".join([str(vendor_code or ""), str(name or ""), str(subject or "")])
+    if SHELF_FOCUS_SKIP_RE.search(blob):
+        return "accessory"  # зарядки/кабели/чехлы и т.п.
+    if price is not None:
+        try:
+            if float(price) < SHELF_FOCUS_MIN_PRICE:
+                return "cheap"
+        except (TypeError, ValueError):
+            pass
+    try:
+        if int(ordered_qty or 0) < SHELF_FOCUS_MIN_ORDERS:
+            return "low_sales"
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _shelf_focus_enrichment(nm_ids: list) -> tuple:
+    """Цена + название/предмет для фильтра полок."""
+    price_map = {}
+    meta_map = {}
+    # 1) живой кэш СПП
+    for a in (SPP_CACHE.get("articles") or []):
+        try:
+            nm = int(a.get("nm_id"))
+        except (TypeError, ValueError):
+            continue
+        p = a.get("client_price")
+        if p is None:
+            p = a.get("sale_price")
+        if p is None:
+            p = a.get("price")
+        if p is not None:
+            try:
+                price_map[nm] = float(p)
+            except (TypeError, ValueError):
+                pass
+        meta_map.setdefault(nm, {})
+        if a.get("name"):
+            meta_map[nm]["name"] = a.get("name")
+    # 2) stock_totals — subject_name
+    if nm_ids and SUPABASE_URL and SUPABASE_KEY:
+        try:
+            ids = ",".join(str(int(x)) for x in nm_ids[:500])
+            resp = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/stock_totals",
+                params={"select": "nm_id,subject_name,vendor_code", "nm_id": f"in.({ids})"},
+                headers=sb_headers(),
+                timeout=20,
+            )
+            if resp.is_success:
+                for row in resp.json() or []:
+                    try:
+                        nm = int(row.get("nm_id"))
+                    except (TypeError, ValueError):
+                        continue
+                    meta_map.setdefault(nm, {})
+                    if row.get("subject_name"):
+                        meta_map[nm]["subject"] = row.get("subject_name")
+        except Exception as e:
+            logger.warning(f"shelf focus stock_totals: {e}")
+        # 3) последний снимок цены, если нет в кэше
+        missing = [nm for nm in nm_ids if nm not in price_map]
+        if missing:
+            try:
+                prev = fetch_latest_price_snapshots(missing)
+                for nm, row in (prev or {}).items():
+                    p = _num_or_none(row.get("client_price"))
+                    if p is None:
+                        p = _num_or_none(row.get("sale_price"))
+                    if p is None:
+                        p = _num_or_none(row.get("price"))
+                    if p is not None:
+                        price_map[int(nm)] = float(p)
+            except Exception as e:
+                logger.warning(f"shelf focus snapshots: {e}")
+    return price_map, meta_map
 
 
 @app.get("/api/search-own-articles")

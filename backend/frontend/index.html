@@ -1281,7 +1281,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
       <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Мои карточки · 📌 закрепить · ⋮⋮ перетащить</div>
       <div id="myShelfChips" style="display:flex;gap:8px;flex-wrap:wrap;min-height:32px;align-items:center"></div>
     </div>
-    <div id="myShelfStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Только карточки с заказами/выкупами за окно поставок · клик — топ-15 полки и доли конкурентов</div>
+    <div id="myShelfStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Только карточки с продажами · без товаров &lt;1200₽ и аксессуаров (зарядки/кабели) · клик — топ-15 полки</div>
   </div>
 
   <div id="myShelfRoot" style="overflow:auto">
@@ -8321,7 +8321,7 @@ async function loadAllMyShelfCards(silent) {
   if(btn) btn.disabled = true;
   if(status && !silent) status.textContent = 'Загружаю карточки с продажами…';
   try {
-    const r = await fetch(`${RAILWAY_URL}/api/own-articles-all`);
+    const r = await fetch(`${RAILWAY_URL}/api/own-articles-all?shelf_focus=1`);
     const d = await r.json().catch(() => ({}));
     const arts = Array.isArray(d.articles) ? d.articles : [];
     const days = d.days || '';
@@ -8331,7 +8331,7 @@ async function loadAllMyShelfCards(silent) {
       MY_SHELF_ACTIVE = null;
       saveMyShelfState();
       buildMyShelfChips();
-      if(status) status.textContent = d.error ? `Ошибка: ${d.error}` : 'Нет карточек с продажами за окно';
+      if(status) status.textContent = d.error ? `Ошибка: ${d.error}` : 'Нет карточек для полок (после фильтра по цене/аксессуарам)';
       return;
     }
     const prevByNm = new Map(MY_SHELF_CARDS.map(c => [Number(c.nm_id), c]));
@@ -8342,10 +8342,11 @@ async function loadAllMyShelfCards(silent) {
         nm_id: nm,
         vendor_code: a.vendor_code || prev.vendor_code || String(nm),
         brand: prev.brand || '',
-        name: prev.name || '',
+        name: a.name || prev.name || '',
         thumb: prev.thumb || wbThumbUrl(nm),
         ordered_qty: a.ordered_qty || 0,
         buyout_qty: a.buyout_qty || 0,
+        price: a.price != null ? a.price : prev.price,
       };
     });
     const activeSet = new Set(MY_SHELF_CARDS.map(c => Number(c.nm_id)));
@@ -8356,8 +8357,11 @@ async function loadAllMyShelfCards(silent) {
     saveMyShelfState();
     buildMyShelfChips();
     if(status) {
-      status.textContent = `${MY_SHELF_CARDS.length} карточек с заказами/выкупами` +
-        (days ? ` за ${days} дн.` : '') + ' · без продаж скрыты';
+      const skipN = d.skipped_count || 0;
+      status.textContent = `${MY_SHELF_CARDS.length} карточек для полок` +
+        (days ? ` за ${days} дн.` : '') +
+        ' · без <1200₽, зарядок/кабелей и слабых продаж' +
+        (skipN ? ` · скрыто ${skipN}` : '');
     }
     if(MY_SHELF_ACTIVE) loadMyShelfFor(MY_SHELF_ACTIVE, false);
   } catch(e) {
