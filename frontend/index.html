@@ -704,6 +704,10 @@ td.tc{text-align:center}
   <div class="sn-item on" onclick="showPage('supply-recs',this)">Рекомендации поставок</div>
   <div class="sn-item" onclick="showPage('own-warehouse',this)">Наш склад</div>
 </div>
+<div class="subnav" id="subnav-analytics" style="display:none">
+  <div class="sn-item on" onclick="showPage('competitors',this)">Сравнение карточек</div>
+  <div class="sn-item" onclick="showPage('who-shelves',this)">У кого мы в полках</div>
+</div>
 <div class="subnav" id="subnav-positions" style="display:none">
   <div class="sn-item on" onclick="showPage('positions',this)">Позиции в поиске</div>
   <div class="sn-item" onclick="showPage('shelves',this)">Полки у конкурентов</div>
@@ -1054,6 +1058,57 @@ td.tc{text-align:center}
   <div id="compRoot"><div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners</div></div>
 </div>
 
+<!-- У КОГО МЫ В ПОЛКАХ -->
+<div class="page" id="page-who-shelves">
+  <div class="toolbar">
+    <span style="font-size:13px;font-weight:600">У кого мы в полках</span>
+    <span style="font-size:12px;color:var(--wb-muted);margin-left:10px">Где наша карточка в «Смотрите также» у конкурентов из сравнения</span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="action-btn primary" id="whoShelfCheckBtn" onclick="runWhoShelfCheck()" disabled>Проверить полки</button>
+    </div>
+  </div>
+
+  <div style="padding:12px 20px 10px;border-bottom:1px solid var(--wb-border);background:var(--wb-surface)">
+    <div style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap">
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Мой артикул</div>
+        <div style="position:relative">
+          <input id="whoShelfArtSearch" placeholder="Артикул продавца, напр. 034…" autocomplete="off"
+            style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:260px"
+            oninput="searchWhoShelfArticles(this.value)" onfocus="searchWhoShelfArticles(this.value)">
+          <div id="whoShelfArtDropdown" style="display:none;position:absolute;top:100%;left:0;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--rs);z-index:100;min-width:280px;max-height:280px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.1)"></div>
+        </div>
+        <div id="whoShelfOwnChip" style="margin-top:8px;min-height:28px"></div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Период сравнения</div>
+        <div id="whoShelfPeriodBtns" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Город</div>
+        <select id="whoShelfCity"
+          style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;min-width:180px;background:#fff">
+          <option value="-1257786">Москва</option>
+        </select>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Глубина полки</div>
+        <select id="whoShelfLimit"
+          style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;min-width:100px;background:#fff">
+          <option value="15" selected>топ-15</option>
+          <option value="20">топ-20</option>
+          <option value="30">топ-30</option>
+        </select>
+      </div>
+    </div>
+    <div id="whoShelfStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Выбери свой артикул и период из «Сравнение карточек» — проверим полки у конкурентов из отчёта</div>
+  </div>
+
+  <div id="whoShelfRoot" style="overflow:auto">
+    <div class="empty" style="padding:40px 20px">Выбери свой артикул, чтобы увидеть, у каких конкурентов мы в полках и на какой позиции</div>
+  </div>
+</div>
+
 <!-- ПОЗИЦИИ В ПОИСКЕ -->
 <div class="page" id="page-positions">
   <div class="toolbar">
@@ -1364,12 +1419,14 @@ function showSection(sec, btn) {
   if(sp) sp.style.display = sec === 'promotions' ? 'flex' : 'none';
   const spos = document.getElementById('subnav-positions');
   if(spos) spos.style.display = sec === 'positions' ? 'flex' : 'none';
+  const sa = document.getElementById('subnav-analytics');
+  if(sa) sa.style.display = sec === 'analytics' ? 'flex' : 'none';
   if(sec === 'products') showPage('products', document.querySelector('#subnav-products .sn-item'));
   else if(sec === 'growth') showPage('sales-pace', document.querySelector('#subnav-growth .sn-item'));
   else if(sec === 'promotions') showPage('promotions', document.querySelector('#subnav-promotions .sn-item'));
   else if(sec === 'supplies') showPage('supply-recs', document.querySelector('#subnav-supplies .sn-item'));
   else if(sec === 'ads') showPage('ads', null);
-  else if(sec === 'analytics') showPage('competitors', null);
+  else if(sec === 'analytics') showPage('competitors', document.querySelector('#subnav-analytics .sn-item'));
   else if(sec === 'positions') showPage('positions', document.querySelector('#subnav-positions .sn-item'));
   else if(sec === 'finance') showPage('finance', null);
 }
@@ -1401,6 +1458,7 @@ function showPage(id, btn) {
   if(id === 'own-warehouse') renderOwnWarehouse(true);
   if(id === 'ads') loadAdsPage();
   if(id === 'competitors') renderCompetitors();
+  if(id === 'who-shelves') renderWhoShelvesPage();
   if(id === 'promotions') renderPromotions();
   if(id === 'prices') renderSppPrices(true);
   if(id === 'sales-pace') renderSalesPace(true);
@@ -7056,6 +7114,334 @@ async function runPositionCheck() {
     if(checkBtn) checkBtn.textContent = 'Проверить позиции';
     updatePosCheckBtn();
   }
+}
+
+// ─────────── У кого мы в полках ───────────
+let WHO_SHELF_OWN = null; // {nm_id, vendor_code}
+let WHO_SHELF_COMPS = []; // metrics from selected comparison sessions
+let WHO_SHELF_SELECTED = new Set();
+let WHO_SHELF_RUNNING = false;
+let WHO_SHELF_LAST = null;
+
+function whoShelfDest() {
+  return Number((document.getElementById('whoShelfCity') || {}).value || -1257786);
+}
+
+function whoShelfLimit() {
+  return Number((document.getElementById('whoShelfLimit') || {}).value || 15);
+}
+
+function fillWhoShelfCities() {
+  const sel = document.getElementById('whoShelfCity');
+  if(!sel) return;
+  const apply = (cities, saved) => {
+    if(!cities || !cities.length) return;
+    sel.innerHTML = cities.map(c =>
+      `<option value="${c.dest}"${String(c.dest)===String(saved)?' selected':''}>${c.name}</option>`
+    ).join('');
+  };
+  const saved = localStorage.getItem('who_shelf_dest') || localStorage.getItem('shelf_dest') || '-1257786';
+  if(typeof POS_CITIES !== 'undefined' && POS_CITIES.length) {
+    apply(POS_CITIES, saved);
+    return;
+  }
+  fetch(`${RAILWAY_URL}/api/search-keywords`).then(r => r.json()).then(d => {
+    if(typeof POS_CITIES !== 'undefined') POS_CITIES = Array.isArray(d.cities) ? d.cities : POS_CITIES;
+    apply(Array.isArray(d.cities) ? d.cities : [], saved || String(d.default_dest || -1257786));
+  }).catch(() => {});
+}
+
+async function searchWhoShelfArticles(q) {
+  const dd = document.getElementById('whoShelfArtDropdown');
+  if(!dd) return;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/search-own-articles?q=${encodeURIComponent((q || '').trim())}`);
+    const results = await r.json();
+    if(!Array.isArray(results) || !results.length) {
+      dd.style.display = (q || '').trim() ? 'block' : 'none';
+      dd.innerHTML = (q || '').trim()
+        ? `<div style="padding:10px 12px;font-size:12px;color:var(--wb-muted)">Ничего не найдено по «${(q || '').trim()}»</div>`
+        : '';
+      return;
+    }
+    const prefix = (q || '').trim().replace(/\.+$/, '').toLowerCase();
+    dd.style.display = 'block';
+    dd.innerHTML = results.map(a => {
+      const vc = String(a.vendor_code || '');
+      let label = vc;
+      if(prefix && vc.toLowerCase().startsWith(prefix)) {
+        label = `<span style="color:var(--wb-purple)">${vc.slice(0, prefix.length)}</span>${vc.slice(prefix.length)}`;
+      } else {
+        label = `<b>${vc}</b>`;
+      }
+      const safeVc = vc.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      return `<div style="padding:8px 12px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--wb-border)"
+        onmousedown="selectWhoShelfOwn(${a.nm_id},'${safeVc}')"
+        onmouseover="this.style.background='var(--wb-bg)'" onmouseout="this.style.background=''">
+        <b>${label}</b> <span style="color:var(--wb-faint)">${a.nm_id}</span>
+      </div>`;
+    }).join('');
+  } catch(e) { dd.style.display = 'none'; }
+}
+
+document.addEventListener('click', e => {
+  const dd = document.getElementById('whoShelfArtDropdown');
+  if(dd && !e.target.closest('#whoShelfArtSearch') && !e.target.closest('#whoShelfArtDropdown'))
+    dd.style.display = 'none';
+});
+
+function selectWhoShelfOwn(nmId, vendorCode) {
+  const dd = document.getElementById('whoShelfArtDropdown');
+  if(dd) dd.style.display = 'none';
+  const inp = document.getElementById('whoShelfArtSearch');
+  if(inp) inp.value = '';
+  WHO_SHELF_OWN = {nm_id: Number(nmId), vendor_code: vendorCode || String(nmId)};
+  buildWhoShelfOwnChip();
+  updateWhoShelfCheckBtn();
+  const st = document.getElementById('whoShelfStatus');
+  if(st) st.textContent = `Выбран ${WHO_SHELF_OWN.vendor_code} · конкурентов в отчёте: ${WHO_SHELF_COMPS.length}`;
+}
+
+function clearWhoShelfOwn() {
+  WHO_SHELF_OWN = null;
+  buildWhoShelfOwnChip();
+  updateWhoShelfCheckBtn();
+}
+
+function buildWhoShelfOwnChip() {
+  const el = document.getElementById('whoShelfOwnChip');
+  if(!el) return;
+  if(!WHO_SHELF_OWN) {
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = `
+    <div style="display:inline-flex;align-items:center;gap:8px;padding:4px 10px;background:var(--wb-purple-light);border:1px solid var(--wb-purple);border-radius:6px;font-size:12px">
+      ${typeof wbThumbHtml === 'function' ? wbThumbHtml(WHO_SHELF_OWN.nm_id) : ''}
+      <b>${WHO_SHELF_OWN.vendor_code}</b>
+      <span style="color:var(--wb-faint)">${WHO_SHELF_OWN.nm_id}</span>
+      <span style="cursor:pointer;color:var(--wb-faint)" onclick="clearWhoShelfOwn()">✕</span>
+    </div>`;
+}
+
+function updateWhoShelfCheckBtn() {
+  const btn = document.getElementById('whoShelfCheckBtn');
+  if(!btn) return;
+  btn.disabled = WHO_SHELF_RUNNING || !WHO_SHELF_OWN || !WHO_SHELF_COMPS.length;
+  btn.textContent = WHO_SHELF_RUNNING ? 'Проверяю…' : 'Проверить полки';
+}
+
+function buildWhoShelfPeriodBtns() {
+  const el = document.getElementById('whoShelfPeriodBtns');
+  if(!el) return;
+  const active = (COMP_SESSIONS || []).filter(s => !COMP_ARCHIVED.has(s.id));
+  if(!active.length) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--wb-muted)">Нет загруженных отчётов — загрузи в «Сравнение карточек»</span>';
+    return;
+  }
+  el.innerHTML = active.map(s => {
+    const label = typeof formatCompSessionLabel === 'function' ? formatCompSessionLabel(s) : `${s.period_begin}–${s.period_end}`;
+    const on = WHO_SHELF_SELECTED.has(s.id) ? ' on' : '';
+    return `<button class="comp-period-btn${on}" onclick="toggleWhoShelfPeriod(${s.id})">${label}</button>`;
+  }).join('');
+}
+
+async function toggleWhoShelfPeriod(sessionId) {
+  if(WHO_SHELF_SELECTED.has(sessionId)) {
+    if(WHO_SHELF_SELECTED.size <= 1) return;
+    WHO_SHELF_SELECTED.delete(sessionId);
+  } else {
+    WHO_SHELF_SELECTED.add(sessionId);
+  }
+  buildWhoShelfPeriodBtns();
+  await loadWhoShelfCompetitors();
+}
+
+async function loadWhoShelfCompetitors() {
+  WHO_SHELF_COMPS = [];
+  const st = document.getElementById('whoShelfStatus');
+  if(!WHO_SHELF_SELECTED.size) {
+    updateWhoShelfCheckBtn();
+    if(st) st.textContent = 'Выбери период сравнения';
+    return;
+  }
+  if(st) st.textContent = 'Загружаем список конкурентов из отчёта…';
+  try {
+    const all = [];
+    const seen = new Set();
+    for(const sid of WHO_SHELF_SELECTED) {
+      const r = await fetch(`${RAILWAY_URL}/api/competitor-data/${sid}`);
+      const d = await r.json();
+      for(const m of (d.metrics || [])) {
+        const nid = Number(m.nm_id);
+        if(!nid || seen.has(nid)) continue;
+        seen.add(nid);
+        all.push(m);
+      }
+    }
+    const ownIds = new Set([
+      ...(WHO_SHELF_OWN ? [Number(WHO_SHELF_OWN.nm_id)] : []),
+      ...(COMP_OWN_ARTICLES || []).map(a => Number(a.nm_id)),
+    ]);
+    WHO_SHELF_COMPS = all.filter(m => !ownIds.has(Number(m.nm_id)));
+    if(st) {
+      st.textContent = WHO_SHELF_OWN
+        ? `Выбран ${WHO_SHELF_OWN.vendor_code} · конкурентов в отчёте: ${WHO_SHELF_COMPS.length}`
+        : `Конкурентов в отчёте: ${WHO_SHELF_COMPS.length} · выбери свой артикул`;
+    }
+  } catch(e) {
+    if(st) st.textContent = `Ошибка загрузки отчёта: ${e.message}`;
+  }
+  updateWhoShelfCheckBtn();
+}
+
+async function renderWhoShelvesPage() {
+  fillWhoShelfCities();
+  buildWhoShelfOwnChip();
+  const citySel = document.getElementById('whoShelfCity');
+  if(citySel && !citySel._bound) {
+    citySel._bound = true;
+    citySel.addEventListener('change', () => localStorage.setItem('who_shelf_dest', citySel.value));
+  }
+  try {
+    if(!COMP_SESSIONS.length) {
+      const r = await fetch(`${RAILWAY_URL}/api/competitor-sessions`);
+      COMP_SESSIONS = await r.json();
+    }
+  } catch(e) {
+    document.getElementById('whoShelfRoot').innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка: ${e.message}</div>`;
+    return;
+  }
+  const active = (COMP_SESSIONS || []).filter(s => !COMP_ARCHIVED.has(s.id));
+  WHO_SHELF_SELECTED = new Set([...WHO_SHELF_SELECTED].filter(id => active.find(s => s.id === id)));
+  if(!WHO_SHELF_SELECTED.size) {
+    if(COMP_SELECTED_SESSIONS && COMP_SELECTED_SESSIONS.size) {
+      for(const id of COMP_SELECTED_SESSIONS) {
+        if(active.find(s => s.id === id)) WHO_SHELF_SELECTED.add(id);
+      }
+    }
+    if(!WHO_SHELF_SELECTED.size && active.length) WHO_SHELF_SELECTED.add(active[0].id);
+  }
+  buildWhoShelfPeriodBtns();
+  await loadWhoShelfCompetitors();
+  if(WHO_SHELF_LAST) drawWhoShelfResults(WHO_SHELF_LAST);
+  else if(!active.length) {
+    document.getElementById('whoShelfRoot').innerHTML =
+      '<div class="empty" style="padding:40px 20px">Сначала загрузи файл «Сравнение карточек» во вкладке сравнения</div>';
+  }
+  updateWhoShelfCheckBtn();
+}
+
+async function runWhoShelfCheck() {
+  if(WHO_SHELF_RUNNING || !WHO_SHELF_OWN || !WHO_SHELF_COMPS.length) return;
+  const ownNm = Number(WHO_SHELF_OWN.nm_id);
+  const comps = WHO_SHELF_COMPS
+    .map(m => Number(m.nm_id))
+    .filter(n => n && n !== ownNm);
+  if(!comps.length) {
+    alert('В выбранном периоде нет конкурентов');
+    return;
+  }
+  WHO_SHELF_RUNNING = true;
+  updateWhoShelfCheckBtn();
+  const st = document.getElementById('whoShelfStatus');
+  const root = document.getElementById('whoShelfRoot');
+  if(st) st.textContent = `Проверяем полки у ${comps.length} конкурентов… это может занять минуту`;
+  if(root) root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Смотрим полки конкурентов…</span></div>';
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/shelf-presence`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        own_nm_id: ownNm,
+        competitor_nm_ids: comps,
+        dest: whoShelfDest(),
+        limit: whoShelfLimit(),
+      }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+    WHO_SHELF_LAST = d;
+    drawWhoShelfResults(d);
+    if(st) st.textContent = `Готово · нашли у ${d.found_count || 0} из ${d.checked || 0} · ${d.city || ''} · топ-${d.limit || 15}`;
+  } catch(e) {
+    if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка: ${e.message}</div>`;
+    if(st) st.textContent = `Ошибка: ${e.message}`;
+  } finally {
+    WHO_SHELF_RUNNING = false;
+    updateWhoShelfCheckBtn();
+  }
+}
+
+function drawWhoShelfResults(data) {
+  const root = document.getElementById('whoShelfRoot');
+  if(!root || !data) return;
+  const meta = {};
+  for(const m of WHO_SHELF_COMPS) meta[Number(m.nm_id)] = m;
+  const rows = data.results || [];
+  const found = rows.filter(r => r.found);
+  const missed = rows.filter(r => !r.found);
+
+  const rowHtml = (r, i) => {
+    const m = meta[Number(r.competitor_nm_id)] || {};
+    const brand = m.brand || m.vendor_code || '';
+    const name = String(m.name || '').slice(0, 48);
+    const pos = r.found
+      ? `<span style="display:inline-block;min-width:36px;padding:2px 8px;border-radius:6px;background:#ECFDF5;color:#047857;font-weight:700;font-size:13px">#${r.position}</span>`
+      : `<span style="color:var(--wb-faint);font-size:12px">нет в топ-${data.limit || 15}</span>`;
+    const err = r.error ? `<div style="font-size:10px;color:var(--red)">${r.error}</div>` : '';
+    return `<tr style="border-bottom:1px solid var(--wb-border)">
+      <td style="padding:10px 12px;color:var(--wb-faint);font-size:11px">${i + 1}</td>
+      <td style="padding:10px 12px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <a href="${r.url || '#'}" target="_blank" rel="noopener">${typeof wbThumbHtml === 'function' ? wbThumbHtml(r.competitor_nm_id) : ''}</a>
+          <div>
+            <div style="font-weight:600;font-size:13px">${brand || r.competitor_nm_id}</div>
+            ${name ? `<div style="font-size:11px;color:var(--wb-muted);max-width:280px">${name}</div>` : ''}
+            <div style="font-size:10px;color:var(--wb-faint)">${r.competitor_nm_id}</div>
+            ${err}
+          </div>
+        </div>
+      </td>
+      <td style="padding:10px 12px;text-align:center">${pos}</td>
+      <td style="padding:10px 12px;text-align:center;font-size:12px;color:var(--wb-muted)">${r.shelf_checked || 0}</td>
+    </tr>`;
+  };
+
+  root.innerHTML = `
+    <div style="padding:16px 20px">
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--wb-purple-light);border-radius:8px">
+          ${typeof wbThumbHtml === 'function' ? wbThumbHtml(data.own_nm_id) : ''}
+          <div>
+            <div style="font-size:11px;color:var(--wb-muted)">Наша карточка</div>
+            <div style="font-weight:600">${(WHO_SHELF_OWN && WHO_SHELF_OWN.vendor_code) || data.own_nm_id}</div>
+          </div>
+        </div>
+        <div style="font-size:13px">
+          <b style="color:#047857">${found.length}</b> нашли ·
+          <span style="color:var(--wb-muted)">${missed.length} нет в полке</span>
+        </div>
+      </div>
+      ${!rows.length ? '<div class="empty">Нет данных</div>' : `
+      <div style="overflow-x:auto;border:1px solid var(--wb-border);border-radius:8px">
+        <table style="width:100%;border-collapse:collapse;background:var(--wb-surface)">
+          <thead>
+            <tr style="background:var(--wb-bg);border-bottom:1px solid var(--wb-border);text-align:left">
+              <th style="padding:10px 12px;font-size:11px;color:var(--wb-muted);width:40px">#</th>
+              <th style="padding:10px 12px;font-size:11px;color:var(--wb-muted)">Конкурент</th>
+              <th style="padding:10px 12px;font-size:11px;color:var(--wb-muted);text-align:center">Позиция нашей карточки</th>
+              <th style="padding:10px 12px;font-size:11px;color:var(--wb-muted);text-align:center">Проверено позиций</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${found.map((r, i) => rowHtml(r, i)).join('')}
+            ${missed.length && found.length ? `<tr><td colspan="4" style="padding:8px 12px;font-size:11px;color:var(--wb-muted);background:var(--wb-bg)">Не найдены в полке</td></tr>` : ''}
+            ${missed.map((r, i) => rowHtml(r, found.length + i)).join('')}
+          </tbody>
+        </table>
+      </div>`}
+    </div>`;
 }
 
 // ─────────── Полки у конкурентов («Смотрите также») ───────────

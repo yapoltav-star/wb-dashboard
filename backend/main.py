@@ -7361,6 +7361,96 @@ def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
     }
 
 
+@app.post("/api/shelf-presence")
+def shelf_presence(request: dict):
+    """Где наша карточка стоит в полках «Смотрите также» у списка конкурентов.
+
+    Body: {own_nm_id, competitor_nm_ids: [int], dest?, limit?}
+    limit — глубина полки (1–30, по умолчанию 15).
+    """
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    try:
+        own_nm_id = int(request.get("own_nm_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="own_nm_id required")
+    if own_nm_id < 1:
+        raise HTTPException(status_code=400, detail="own_nm_id required")
+
+    try:
+        dest = int(request.get("dest") if request.get("dest") is not None else -1257786)
+    except (TypeError, ValueError):
+        dest = -1257786
+
+    limit = request.get("limit", 15)
+    try:
+        limit = max(1, min(int(limit or 15), 30))
+    except (TypeError, ValueError):
+        limit = 15
+
+    raw_ids = request.get("competitor_nm_ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(status_code=400, detail="competitor_nm_ids required (non-empty list)")
+
+    competitor_ids = []
+    seen = set()
+    for x in raw_ids:
+        try:
+            nid = int(x)
+        except (TypeError, ValueError):
+            continue
+        if nid < 1 or nid == own_nm_id or nid in seen:
+            continue
+        seen.add(nid)
+        competitor_ids.append(nid)
+        if len(competitor_ids) >= 80:
+            break
+
+    if not competitor_ids:
+        raise HTTPException(status_code=400, detail="no valid competitor_nm_ids")
+
+    results = []
+    for i, nm in enumerate(competitor_ids):
+        if i:
+            time.sleep(0.35)
+        shelf = fetch_wb_see_also_shelf(nm, dest=dest, limit=limit)
+        items = shelf.get("items") or []
+        position = None
+        for it in items:
+            try:
+                if int(it.get("nm_id")) == own_nm_id:
+                    position = it.get("position")
+                    break
+            except (TypeError, ValueError):
+                continue
+        results.append({
+            "competitor_nm_id": nm,
+            "found": position is not None,
+            "position": position,
+            "shelf_total": shelf.get("total") or len(items),
+            "shelf_checked": len(items),
+            "error": shelf.get("error"),
+            "thumb": wb_product_thumb_url(nm),
+            "url": f"https://www.wildberries.ru/catalog/{nm}/detail.aspx",
+        })
+
+    city_name = next((c["name"] for c in WB_SEARCH_CITIES if c["dest"] == dest), str(dest))
+    found = [r for r in results if r["found"]]
+    found.sort(key=lambda r: (r["position"] is None, r["position"] or 999))
+    not_found = [r for r in results if not r["found"]]
+    return {
+        "own_nm_id": own_nm_id,
+        "dest": dest,
+        "city": city_name,
+        "limit": limit,
+        "checked": len(results),
+        "found_count": len(found),
+        "own_thumb": wb_product_thumb_url(own_nm_id),
+        "own_url": f"https://www.wildberries.ru/catalog/{own_nm_id}/detail.aspx",
+        "results": found + not_found,
+    }
+
+
 # ---------- «Продавец рекомендует» (Content API, настраиваемый блок на КТ) ----------
 
 SELLER_RECS_PATHS = (
