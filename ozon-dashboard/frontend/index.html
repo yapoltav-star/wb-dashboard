@@ -1603,8 +1603,8 @@ async function triggerOwnWarehouseSync() {
 function owRowHtml(r, { onOzon } = {}) {
   const fam = (r.family || []).filter(x => x && x !== r.vendor_code);
   const badge = onOzon
-    ? '<span class="badge fbo" style="margin-left:6px">Ozon</span>'
-    : '<span class="badge" style="margin-left:6px;background:#F2F4F7;color:var(--oz-muted)">не на Ozon</span>';
+    ? '<span class="tag stock" style="margin-left:6px">Ozon</span>'
+    : '<span class="tag" style="margin-left:6px;background:#F2F4F7;color:var(--oz-muted)">не на Ozon</span>';
   return `<tr>
     <td><b>${esc(r.vendor_code || '—')}</b>${badge}</td>
     <td>${esc(r.name || '—')}</td>
