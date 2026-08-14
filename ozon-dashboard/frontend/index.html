@@ -226,6 +226,26 @@ a.offer-link:hover{text-decoration:underline}
 .col-resizer:hover,.col-resizer.active{background:rgba(0,91,255,.35)}
 .hint{margin-top:10px;font-size:12px;color:var(--oz-muted);line-height:1.45}
 .cell-off{opacity:.35}
+.cluster-picker{
+  position:absolute;top:calc(100% + 6px);left:0;z-index:40;
+  width:min(360px,90vw);max-height:420px;overflow:auto;
+  background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:10px;
+  box-shadow:0 12px 32px rgba(16,24,40,.14);padding:10px;
+}
+.cluster-picker .cp-head{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}
+.cluster-picker .cp-head input[type=search]{
+  flex:1;min-width:120px;border:1px solid var(--oz-border);border-radius:8px;
+  padding:6px 8px;font:inherit;font-size:12px;
+}
+.cluster-picker .cp-list{display:flex;flex-direction:column;gap:2px}
+.cluster-picker label.cp-item{
+  display:flex;align-items:flex-start;gap:8px;padding:6px 8px;border-radius:8px;
+  cursor:pointer;font-size:12px;line-height:1.35;user-select:none;
+}
+.cluster-picker label.cp-item:hover{background:#F5F7FA}
+.cluster-picker label.cp-item input{margin-top:2px;accent-color:var(--oz-blue);flex-shrink:0}
+.cluster-picker .cp-meta{font-size:11px;color:var(--oz-muted)}
+.cluster-picker .cp-empty{padding:12px;font-size:12px;color:var(--oz-muted);text-align:center}
 .pace-delta-up{color:var(--green);font-weight:600}
 .pace-delta-down{color:var(--red);font-weight:600}
 .pace-delta-flat{color:var(--oz-faint)}
@@ -500,6 +520,10 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
     <button class="filter-btn on" id="stColOrders" onclick="toggleStockWhCol('orders')" title="Показать/скрыть «Зак.» на всех складах">Зак.</button>
     <button class="filter-btn on" id="stColDays" onclick="toggleStockWhCol('days')" title="Показать/скрыть «Дн.» на всех складах">Дн.</button>
     <button class="filter-btn on" id="stColRec" onclick="toggleStockWhCol('rec')" title="Показать/скрыть «Пост.» на всех складах">Пост.</button>
+    <span style="position:relative;display:inline-flex;align-items:center">
+      <button class="filter-btn" id="stClusterBtn" onclick="toggleClusterPicker(event)" title="Выбрать кластеры/склады в таблице">Кластеры</button>
+      <div id="clusterPicker" class="cluster-picker" style="display:none" onclick="event.stopPropagation()"></div>
+    </span>
     <span id="stocksSyncInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
     <button class="action-btn primary ml-auto" id="stocksSyncBtn" onclick="syncStocks()">↻ Обновить остатки</button>
   </div>
@@ -800,7 +824,16 @@ let STOCK_TOTALS = [];
 let STOCK_WH = [];
 let WH_DISABLED = JSON.parse(localStorage.getItem('oz_wh_disabled') || '[]');
 let WH_ORDER = JSON.parse(localStorage.getItem('oz_wh_order') || 'null') || [];
+// скрытые кластеры (не показываем колонками в таблице); пусто = все видны
+let WH_HIDDEN = (() => {
+  try {
+    const raw = JSON.parse(localStorage.getItem('oz_wh_hidden') || 'null');
+    return Array.isArray(raw) ? raw : [];
+  } catch (_) { return []; }
+})();
 let STOCK_PINNED = JSON.parse(localStorage.getItem('oz_stock_pinned') || 'null') || [];
+let CLUSTER_PICKER_Q = '';
+let CLUSTER_PICKER_OPEN = false;
 let COL_WIDTHS = JSON.parse(localStorage.getItem('oz_col_widths') || 'null') || { product: 320, metric: 72 };
 if (!COL_WIDTHS.product || COL_WIDTHS.product < 280) COL_WIDTHS.product = 320;
 // видимость метрик только у складов (города); «Весь Ozon» всегда полный
@@ -1094,12 +1127,152 @@ async function syncProducts() {
 /* ── Stocks matrix (как WB: заказы / дни / поставить) ── */
 
 function isWhEnabled(w) { return !WH_DISABLED.includes(w); }
+function isWhVisible(w) { return !WH_HIDDEN.includes(w); }
+function saveWhHidden() {
+  localStorage.setItem('oz_wh_hidden', JSON.stringify(WH_HIDDEN));
+}
 function toggleWh(w) {
   if (WH_DISABLED.includes(w)) WH_DISABLED = WH_DISABLED.filter(x => x !== w);
   else WH_DISABLED.push(w);
   localStorage.setItem('oz_wh_disabled', JSON.stringify(WH_DISABLED));
   renderStocks();
 }
+
+function allStockWarehouses() {
+  return [...new Set(STOCK_WH.map(w => w.warehouse_name).filter(Boolean))];
+}
+
+function clusterShortName(w) {
+  return String(w || '').replace(/^FBO\s*·\s*/i, '').replace(/^FBS\s*·\s*/i, '');
+}
+
+function syncClusterBtn() {
+  const btn = document.getElementById('stClusterBtn');
+  if (!btn) return;
+  const all = allStockWarehouses();
+  const hidden = WH_HIDDEN.filter(w => all.includes(w));
+  WH_HIDDEN = hidden;
+  const visible = all.length - hidden.length;
+  if (!all.length) {
+    btn.textContent = 'Кластеры';
+    btn.classList.remove('on');
+    return;
+  }
+  if (hidden.length === 0) {
+    btn.textContent = `Кластеры · все (${all.length})`;
+    btn.classList.add('on');
+  } else {
+    btn.textContent = `Кластеры · ${visible}/${all.length}`;
+    btn.classList.toggle('on', visible > 0);
+  }
+}
+
+function toggleClusterPicker(e) {
+  if (e) e.stopPropagation();
+  const pan = document.getElementById('clusterPicker');
+  if (!pan) return;
+  CLUSTER_PICKER_OPEN = pan.style.display === 'none' || !pan.style.display;
+  if (CLUSTER_PICKER_OPEN) {
+    drawClusterPicker();
+    pan.style.display = 'block';
+  } else {
+    pan.style.display = 'none';
+  }
+}
+
+function closeClusterPicker() {
+  const pan = document.getElementById('clusterPicker');
+  if (pan) pan.style.display = 'none';
+  CLUSTER_PICKER_OPEN = false;
+}
+
+function setClusterPickerQ(v) {
+  CLUSTER_PICKER_Q = String(v || '');
+  drawClusterPicker();
+}
+
+function setAllClustersVisible(on) {
+  const all = allStockWarehouses();
+  WH_HIDDEN = on ? [] : [...all];
+  saveWhHidden();
+  drawClusterPicker();
+  renderStocks();
+}
+
+function toggleClusterVisible(name, checked) {
+  if (checked) WH_HIDDEN = WH_HIDDEN.filter(x => x !== name);
+  else if (!WH_HIDDEN.includes(name)) WH_HIDDEN.push(name);
+  saveWhHidden();
+  syncClusterBtn();
+  // перерисуем только кнопку и таблицу; пикер оставим открытым
+  const open = CLUSTER_PICKER_OPEN;
+  renderStocks();
+  if (open) {
+    const pan = document.getElementById('clusterPicker');
+    if (pan) {
+      drawClusterPicker();
+      pan.style.display = 'block';
+      CLUSTER_PICKER_OPEN = true;
+    }
+  }
+}
+
+function drawClusterPicker() {
+  const pan = document.getElementById('clusterPicker');
+  if (!pan) return;
+  const all = reconcileWhOrder(
+    allStockWarehouses(),
+    [...allStockWarehouses()].sort((a, b) => {
+      const stock = {};
+      STOCK_WH.forEach(w => {
+        stock[w.warehouse_name] = (stock[w.warehouse_name] || 0) + (w.free_to_sell || w.present || 0);
+      });
+      return (stock[b] || 0) - (stock[a] || 0);
+    })
+  );
+  const q = CLUSTER_PICKER_Q.toLowerCase().trim();
+  const filtered = q
+    ? all.filter(w => w.toLowerCase().includes(q) || clusterShortName(w).toLowerCase().includes(q))
+    : all;
+  const visibleN = all.filter(isWhVisible).length;
+
+  const stockBy = {};
+  STOCK_WH.forEach(w => {
+    stockBy[w.warehouse_name] = (stockBy[w.warehouse_name] || 0) + (w.free_to_sell || w.present || 0);
+  });
+
+  pan.innerHTML = `
+    <div class="cp-head">
+      <input type="search" placeholder="Поиск кластера…" value="${esc(CLUSTER_PICKER_Q)}"
+        oninput="setClusterPickerQ(this.value)" onclick="event.stopPropagation()">
+      <button class="filter-btn" onclick="setAllClustersVisible(true)">Все</button>
+      <button class="filter-btn" onclick="setAllClustersVisible(false)">Скрыть все</button>
+    </div>
+    <div class="cp-meta" style="margin-bottom:6px">В таблице: <b>${fmt(visibleN)}</b> из ${fmt(all.length)}</div>
+    <div class="cp-list">
+      ${filtered.length ? filtered.map(w => {
+        const on = isWhVisible(w);
+        const ch = String(w).startsWith('FBS') ? 'FBS' : 'FBO';
+        return `<label class="cp-item">
+          <input type="checkbox" ${on ? 'checked' : ''}
+            onchange='toggleClusterVisible(${JSON.stringify(w)}, this.checked)'>
+          <span>
+            <b>${esc(clusterShortName(w))}</b>
+            <div class="cp-meta">${esc(ch)} · ост. ${fmt(stockBy[w] || 0)}</div>
+          </span>
+        </label>`;
+      }).join('') : '<div class="cp-empty">Ничего не найдено</div>'}
+    </div>`;
+}
+
+document.addEventListener('click', (e) => {
+  if (!CLUSTER_PICKER_OPEN) return;
+  const pan = document.getElementById('clusterPicker');
+  const btn = document.getElementById('stClusterBtn');
+  if (pan && !pan.contains(e.target) && e.target !== btn && !(btn && btn.contains(e.target))) {
+    closeClusterPicker();
+  }
+});
 
 function reconcileWhOrder(all, defaultSorted) {
   const known = WH_ORDER.filter(w => all.includes(w));
@@ -1832,8 +2005,11 @@ function buildStockMatrix() {
   const whStock = {};
   STOCK_WH.forEach(w => { whStock[w.warehouse_name] = (whStock[w.warehouse_name] || 0) + (w.free_to_sell || w.present || 0); });
   const defaultSorted = [...allWh].sort((a, b) => (whStock[b] || 0) - (whStock[a] || 0));
-  const whNames = reconcileWhOrder(allWh, defaultSorted);
-  WH_DISABLED = WH_DISABLED.filter(w => whNames.includes(w));
+  const ordered = reconcileWhOrder(allWh, defaultSorted);
+  // в таблице только выбранные кластеры
+  WH_HIDDEN = WH_HIDDEN.filter(w => allWh.includes(w));
+  const whNames = ordered.filter(isWhVisible);
+  WH_DISABLED = WH_DISABLED.filter(w => allWh.includes(w));
   STOCK_PINNED = STOCK_PINNED.filter(o => STOCK_TOTALS.some(t => t.offer_id === o));
 
   const byOfferWh = {};
@@ -1906,8 +2082,10 @@ function renderStocks() {
   const matrix = buildStockMatrix();
   const { warehouses, articles } = matrix;
   syncStockWhColButtons();
+  syncClusterBtn();
   const whMetrics = stockWhMetrics();
   const whSpan = whMetrics.length; // минимум 1 (Ост.)
+  const allWhN = allStockWarehouses().length;
 
   let critical = 0;
   articles.forEach(a => {
@@ -1925,7 +2103,7 @@ function renderStocks() {
 
   document.getElementById('stocksCards').innerHTML = [
     ['Артикулов', fmt(articles.length)],
-    ['Складов', enabledN === warehouses.length ? fmt(warehouses.length) : `${enabledN}/${warehouses.length}`],
+    ['Кластеров в таблице', allWhN ? `${fmt(warehouses.length)}/${fmt(allWhN)}` : fmt(warehouses.length)],
     ['Остаток на Ozon, шт', fmt(totalStock)],
     ['Наш склад, шт', matchedOwn ? fmt(totalOwn) : '—', matchedOwn ? '' : 'color:var(--oz-muted)'],
     ['FBO / FBS', `${fmt(articles.reduce((s,a)=>s+a.fbo,0))} / ${fmt(articles.reduce((s,a)=>s+a.fbs,0))}`],
@@ -2043,6 +2221,7 @@ function renderStocks() {
       <b>⠿</b> перетащи заголовок склада · тяни край колонки для ширины ·
       галочка склада — включить/выключить из расчёта.
       Кнопки <b>Зак. / Дн. / Пост.</b> скрывают эти столбцы сразу на всех складах; блок <b>Весь Ozon</b> не трогают.
+      <b>Кластеры</b> — выбрать, какие склады/РФЦ показывать колонками в таблице (выбор сохраняется).
       <b>Наш склад</b> — остаток с WB-дашборда (с учётом отгрузок), матч по артикулу.
       Формулы: темп = заказы/окно · дней = остаток/темп · поставить = темп×цель − остаток.
       Склады вправо/влево — ползунок под таблицей (как на WB).
