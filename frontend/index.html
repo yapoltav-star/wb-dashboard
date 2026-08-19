@@ -700,6 +700,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
   <div class="sn-item on" onclick="showPage('products',this)">Последние отзывы</div>
   <div class="sn-item" onclick="showPage('ratings',this)">Оценки</div>
   <div class="sn-item" onclick="showPage('groups',this)">Склейки</div>
+  <div class="sn-item" onclick="showPage('wb-chats',this)">Чаты WB</div>
 </div>
 <div class="subnav" id="subnav-growth">
   <div class="sn-item on" onclick="showPage('sales-pace',this)">Темп к вчера</div>
@@ -835,6 +836,34 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
   </div>
   <div class="section-sub" id="manualSortHint" style="display:none;margin-bottom:10px">Перетаскивай строки чтобы изменить порядок. Закреплённые (📌) артикулы можно перетаскивать отдельно внутри своего блока — он всегда сверху.</div>
   <div id="prodRoot"></div>
+</div>
+
+
+<div class="page" id="page-wb-chats">
+  <div class="section-wrap" style="max-width:720px">
+    <div class="section-title">Автоответы в чатах покупателей</div>
+    <div class="section-sub" style="margin-bottom:16px">Раз в минуту дашборд смотрит новые сообщения в чатах WB и шлёт шаблон. Старые чаты при включении не трогаем.</div>
+    <label style="display:flex;align-items:center;gap:10px;margin-bottom:16px;cursor:pointer;font-size:14px">
+      <input type="checkbox" id="wbChatEnabled" style="width:16px;height:16px">
+      Включить автоответы
+    </label>
+    <div style="font-size:12px;color:var(--wb-muted);margin-bottom:6px">Текст ответа (до 1000 символов)</div>
+    <textarea id="wbChatText" maxlength="1000" rows="6" oninput="this.dataset.dirty='1'" style="width:100%;border:1px solid var(--wb-border);border-radius:var(--rs);padding:10px 12px;font-size:13px;font-family:inherit;color:var(--wb-text);background:var(--wb-surface);resize:vertical;line-height:1.45;margin-bottom:12px"></textarea>
+    <label style="display:flex;align-items:center;gap:10px;margin-bottom:16px;cursor:pointer;font-size:13px;color:var(--wb-text)">
+      <input type="checkbox" id="wbChatOnce" checked style="width:16px;height:16px">
+      Один раз на чат (не спамить, если покупатель пишет ещё)
+    </label>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
+      <button class="action-btn primary" onclick="saveWbChatAutoreply()">Сохранить</button>
+      <button class="action-btn" onclick="testWbChatAccess()">Проверить доступ</button>
+      <button class="action-btn" onclick="runWbChatAutoreply()">Ответить сейчас</button>
+      <span class="saved-note" id="wbChatSaved">✓ Сохранено</span>
+    </div>
+    <div id="wbChatStatus" style="font-size:13px;color:var(--wb-muted);line-height:1.5"></div>
+    <div class="upload-banner hint" style="margin-top:16px;margin-bottom:0">
+      <span>Токен WB должен включать категорию <b>«Чат с покупателями»</b>. Если проверка доступа даёт 401 — перевыпусти токен в кабинете WB и обнови <b>WB_TOKEN</b> в Railway. Возвраты через этот API не оформляются, только текст в чат.</span>
+    </div>
+  </div>
 </div>
 
 
@@ -1072,8 +1101,12 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
       </div>
 
       <!-- Периоды (мультивыбор) -->
-      <div>
-        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Периоды конкурентов <span style="font-weight:400;text-transform:none">(можно несколько)</span></div>
+      <div style="flex:1;min-width:280px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+          <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px">Периоды конкурентов <span style="font-weight:400;text-transform:none">(можно несколько)</span></div>
+          <button class="action-btn" onclick="selectAllCompPeriods()" style="font-size:11px;padding:3px 10px">Отметить все периоды</button>
+          <button class="action-btn" onclick="archiveOldCompSessions()" style="font-size:11px;padding:3px 10px" title="Оставить только текущий отчётный период (пересекающиеся недели), остальное в архив">В архив старые</button>
+        </div>
         <div id="compPeriodBtns" style="display:flex;gap:6px;flex-wrap:wrap"></div>
       </div>
     </div>
@@ -1491,6 +1524,105 @@ function showPage(id, btn) {
   if(id === 'my-shelves') renderMyShelvesPage();
   if(id === 'rec-agg') renderRecAggPage();
   if(id === 'finance') renderFinance();
+  if(id === 'wb-chats') loadWbChatAutoreply();
+}
+
+function _wbChatFmtTime(iso) {
+  if(!iso) return 'ещё не запускалось';
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return iso;
+  return d.toLocaleString('ru-RU', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'});
+}
+
+function renderWbChatStatus(d) {
+  const el = document.getElementById('wbChatStatus');
+  if(!el) return;
+  const parts = [];
+  parts.push(d.enabled ? 'Автоответы включены.' : 'Автоответы выключены.');
+  if(d.running) parts.push('Сейчас проверяем чаты…');
+  parts.push('Последний запуск: ' + _wbChatFmtTime(d.last_run) + '.');
+  if(d.last_result) parts.push(d.last_result + '.');
+  parts.push('Ответили в ' + (d.replied_chats || 0) + ' чатах, всего отправок: ' + (d.sent_total || 0) + '.');
+  if(d.last_error) parts.push('Ошибка: ' + d.last_error);
+  el.innerHTML = parts.join('<br>');
+  el.style.color = d.last_error ? 'var(--red)' : 'var(--wb-muted)';
+}
+
+async function loadWbChatAutoreply() {
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/wb-chat-autoreply`);
+    const d = await r.json();
+    const en = document.getElementById('wbChatEnabled');
+    const tx = document.getElementById('wbChatText');
+    const once = document.getElementById('wbChatOnce');
+    if(en) en.checked = !!d.enabled;
+    if(tx && !tx.dataset.dirty) tx.value = d.text || d.default_text || '';
+    if(once) once.checked = d.once_per_chat !== false;
+    renderWbChatStatus(d);
+    if(d.running) {
+      clearTimeout(window._wbChatPoll);
+      window._wbChatPoll = setTimeout(loadWbChatAutoreply, 2500);
+    }
+  } catch(e) {
+    const el = document.getElementById('wbChatStatus');
+    if(el) { el.textContent = 'Не удалось загрузить настройки: ' + e; el.style.color = 'var(--red)'; }
+  }
+}
+
+async function saveWbChatAutoreply() {
+  const payload = {
+    enabled: !!document.getElementById('wbChatEnabled').checked,
+    text: (document.getElementById('wbChatText').value || '').trim(),
+    once_per_chat: !!document.getElementById('wbChatOnce').checked,
+  };
+  const r = await fetch(`${RAILWAY_URL}/api/wb-chat-autoreply`, {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+  const d = await r.json();
+  if(d.error) {
+    const el = document.getElementById('wbChatStatus');
+    if(el) { el.textContent = d.error; el.style.color = 'var(--red)'; }
+    return;
+  }
+  const note = document.getElementById('wbChatSaved');
+  if(note) { note.style.display = 'inline'; setTimeout(() => { note.style.display = 'none'; }, 1800); }
+  const tx = document.getElementById('wbChatText');
+  if(tx) delete tx.dataset.dirty;
+  renderWbChatStatus(d);
+}
+
+async function testWbChatAccess() {
+  const el = document.getElementById('wbChatStatus');
+  if(el) { el.textContent = 'Проверяем доступ к чатам WB…'; el.style.color = 'var(--wb-muted)'; }
+  const r = await fetch(`${RAILWAY_URL}/api/wb-chat-autoreply/test`, {method: 'POST'});
+  const d = await r.json();
+  if(el) {
+    if(d.ok) {
+      el.textContent = 'Доступ есть. Чатов в кабинете: ' + (d.chats || 0) + '. Можно включать автоответы.';
+      el.style.color = 'var(--green)';
+    } else {
+      el.textContent = d.error || 'Нет доступа к чатам WB';
+      el.style.color = 'var(--red)';
+    }
+  }
+}
+
+async function runWbChatAutoreply() {
+  const r = await fetch(`${RAILWAY_URL}/api/wb-chat-autoreply/run`, {method: 'POST'});
+  const d = await r.json();
+  const el = document.getElementById('wbChatStatus');
+  if(d.status === 'started' || d.status === 'already_running') {
+    if(el) { el.textContent = 'Проверяем новые сообщения…'; el.style.color = 'var(--wb-muted)'; }
+    clearTimeout(window._wbChatPoll);
+    window._wbChatPoll = setTimeout(loadWbChatAutoreply, 2500);
+    return;
+  }
+  if(el) {
+    el.textContent = d.error || d.status || 'не удалось запустить';
+    el.style.color = 'var(--red)';
+  }
 }
 
 async function loadAdsPage() {
@@ -6198,6 +6330,7 @@ let DYN_CHART = null;
 let DYN_METRIC = 'open_card';
 let COMP_SESSIONS = [];
 let COMP_SELECTED_SESSIONS = new Set();
+let COMP_SELECTED_NMS = new Set(JSON.parse(localStorage.getItem('comp_selected_nms') || '[]').map(Number).filter(Boolean));
 let COMP_ARCHIVED = new Set(JSON.parse(localStorage.getItem('comp_archived_sessions') || '[]'));
 let COMP_ARCHIVE_OPEN = false;
 let COMP_OWN_ARTICLES = JSON.parse(localStorage.getItem('comp_own_articles') || '[]');
@@ -6294,6 +6427,115 @@ function buildPeriodButtons() {
   el.innerHTML = html;
 }
 
+function saveCompSelectedNms() {
+  localStorage.setItem('comp_selected_nms', JSON.stringify([...COMP_SELECTED_NMS]));
+}
+
+function compPeriodDates(s) {
+  const begin = s.period_begin ? new Date(s.period_begin + 'T00:00:00') : null;
+  const end = s.period_end ? new Date(s.period_end + 'T00:00:00') : null;
+  if(!begin || !end || isNaN(begin) || isNaN(end)) return null;
+  return {begin, end};
+}
+
+function compPeriodsOverlap(a, b) {
+  const da = compPeriodDates(a), db = compPeriodDates(b);
+  if(!da || !db) return false;
+  return da.begin <= db.end && db.begin <= da.end;
+}
+
+function getCurrentCompPeriodIds(activeSessions) {
+  const parsed = (activeSessions || []).filter(s => compPeriodDates(s));
+  if(!parsed.length) return new Set((activeSessions || []).map(s => s.id));
+  parsed.sort((a, b) => compPeriodDates(b).end - compPeriodDates(a).end);
+  const keep = new Set([parsed[0].id]);
+  let changed = true;
+  while(changed) {
+    changed = false;
+    for(const s of parsed) {
+      if(keep.has(s.id)) continue;
+      for(const kid of keep) {
+        const keeper = parsed.find(p => p.id === kid);
+        if(keeper && compPeriodsOverlap(s, keeper)) {
+          keep.add(s.id);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  return keep;
+}
+
+async function selectAllCompPeriods() {
+  const active = COMP_SESSIONS.filter(s => !COMP_ARCHIVED.has(s.id));
+  if(!active.length) return;
+  COMP_SELECTED_SESSIONS = new Set(active.map(s => s.id));
+  buildPeriodButtons();
+  await loadAllSelectedSessions();
+}
+
+async function archiveOldCompSessions() {
+  const active = COMP_SESSIONS.filter(s => !COMP_ARCHIVED.has(s.id));
+  if(!active.length) {
+    alert('Нет активных отчётов');
+    return;
+  }
+  const keep = getCurrentCompPeriodIds(active);
+  const toArchive = active.filter(s => !keep.has(s.id));
+  if(!toArchive.length) {
+    alert('Старых отчётов нет — все активные относятся к текущему периоду');
+    return;
+  }
+  const keepLabels = active.filter(s => keep.has(s.id)).map(formatCompSessionLabel).join('\n');
+  const archiveLabels = toArchive.map(formatCompSessionLabel).join('\n');
+  if(!confirm(
+    `Отправить в архив ${toArchive.length} старых отчётов?\n\n` +
+    `Останутся активными (${keep.size}):\n${keepLabels}\n\n` +
+    `В архив:\n${archiveLabels}`
+  )) return;
+  toArchive.forEach(s => COMP_ARCHIVED.add(s.id));
+  saveArchived();
+  COMP_SELECTED_SESSIONS = new Set([...COMP_SELECTED_SESSIONS].filter(id => keep.has(id)));
+  if(!COMP_SELECTED_SESSIONS.size && keep.size) COMP_SELECTED_SESSIONS.add([...keep][0]);
+  buildPeriodButtons();
+  if(COMP_SELECTED_SESSIONS.size) await loadAllSelectedSessions();
+  else document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Все файлы в архиве. Верни нужный из архива или загрузи новый.</div>';
+}
+
+function syncCompSelectedNms() {
+  const compIds = COMP_ALL_METRICS
+    .filter(m => !COMP_OWN_ARTICLES.find(a => Number(a.nm_id) === Number(m.nm_id)))
+    .map(m => Number(m.nm_id))
+    .filter(Boolean);
+  COMP_SELECTED_NMS = new Set([...COMP_SELECTED_NMS].filter(id => compIds.includes(id)));
+  if(!COMP_SELECTED_NMS.size && compIds.length) compIds.forEach(id => COMP_SELECTED_NMS.add(id));
+  saveCompSelectedNms();
+}
+
+function selectAllCompetitors() {
+  COMP_ALL_METRICS
+    .filter(m => !COMP_OWN_ARTICLES.find(a => Number(a.nm_id) === Number(m.nm_id)))
+    .forEach(m => COMP_SELECTED_NMS.add(Number(m.nm_id)));
+  saveCompSelectedNms();
+  renderCompetitorView();
+}
+
+function clearCompetitorSelection() {
+  COMP_SELECTED_NMS.clear();
+  saveCompSelectedNms();
+  renderCompetitorView();
+}
+
+function toggleCompetitorNm(nmId) {
+  nmId = Number(nmId);
+  if(!nmId) return;
+  if(COMP_SELECTED_NMS.has(nmId)) COMP_SELECTED_NMS.delete(nmId);
+  else COMP_SELECTED_NMS.add(nmId);
+  saveCompSelectedNms();
+  renderCompetitorView();
+}
+
 function saveArchived() {
   localStorage.setItem('comp_archived_sessions', JSON.stringify([...COMP_ARCHIVED]));
 }
@@ -6361,6 +6603,7 @@ async function loadAllSelectedSessions() {
       }
     }
     COMP_ALL_METRICS = allMetrics;
+    syncCompSelectedNms();
     await refreshOwnArticleStats();
     if(DAILY_STATS.length) buildDynChart();
     renderCompetitorView();
@@ -6617,19 +6860,39 @@ function renderCompetitorView() {
 
   const compMetrics = COMP_ALL_METRICS
     .filter(m => !COMP_OWN_ARTICLES.find(a => a.nm_id === m.nm_id))
-    .map(m => ({...m, is_own: false}));  // «мой» только у явно добавленных через поиск
+    .filter(m => COMP_SELECTED_NMS.has(Number(m.nm_id)))
+    .map(m => ({...m, is_own: false}));
+  const allCompetitors = COMP_ALL_METRICS
+    .filter(m => !COMP_OWN_ARTICLES.find(a => Number(a.nm_id) === Number(m.nm_id)));
+  const hiddenCompetitors = allCompetitors.filter(m => !COMP_SELECTED_NMS.has(Number(m.nm_id)));
+  const allCompCount = allCompetitors.length;
   const allMetrics = [...ownMetrics, ...compMetrics];
 
   if(!allMetrics.length) {
-    document.getElementById('compRoot').innerHTML = '<div class="empty">Добавь свои артикулы через поиск или загрузи файл конкурентов</div>';
+    document.getElementById('compRoot').innerHTML = '<div class="empty">Добавь свои артикулы через поиск, отметь конкурентов или загрузи файл</div>';
     return;
   }
+
+  const hiddenChips = hiddenCompetitors.length
+    ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${hiddenCompetitors.map(m =>
+        `<button class="filter-btn" onclick="toggleCompetitorNm(${m.nm_id})" title="Добавить в таблицу" style="font-size:11px;padding:3px 8px">+ ${escapeHtml(m.brand || m.nm_id)}</button>`
+      ).join('')}</div>`
+    : '';
 
   document.getElementById('compRoot').innerHTML = `
     <div class="comp-tabs">
       <div class="comp-tab${COMP_TAB==='metrics'?' on':''}" onclick="switchCompTab('metrics')">Показатели</div>
     </div>
     <div id="compTabMetrics">
+      <div style="padding:10px 16px;border-bottom:1px solid var(--wb-border);background:var(--wb-surface)">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--wb-muted)">Конкуренты в таблице: <b>${compMetrics.length}</b> из ${allCompCount}</span>
+          <button class="action-btn primary" onclick="selectAllCompetitors()" style="font-size:11px;padding:4px 10px">Отметить всех</button>
+          <button class="action-btn" onclick="clearCompetitorSelection()" style="font-size:11px;padding:4px 10px">Снять всех</button>
+          <span style="font-size:11px;color:var(--wb-faint)">Галочки в шапке колонок · «Отметить все периоды» — подтянуть все отчёты</span>
+        </div>
+        ${hiddenChips}
+      </div>
       ${buildCompTopAnalysis(compMetrics)}
       <div style="overflow-x:auto">${buildCompMetricsTable(allMetrics, ownMetrics[0]?.nm_id)}</div>
     </div>`;
@@ -6777,7 +7040,12 @@ function buildCompMetricsTable(metrics, ownNm) {
     const subtitle = m.is_own
       ? ((m.name && m.name !== m.vendor_code) ? String(m.name).slice(0,30) : '')
       : String(m.name || '').slice(0,30);
+    const checked = m.is_own || COMP_SELECTED_NMS.has(Number(m.nm_id));
+    const pickBox = m.is_own ? '' : `<label style="display:flex;align-items:center;justify-content:center;gap:4px;margin-bottom:4px;cursor:pointer" title="Показать в таблице">
+      <input type="checkbox" ${checked?'checked':''} onclick="event.stopPropagation();toggleCompetitorNm(${m.nm_id})" style="width:14px;height:14px;cursor:pointer">
+    </label>`;
     return `<th class="${m.nm_id===ownNm || m.is_own?'own-col':''}">
+    ${pickBox}
     ${wbThumbHtml(m.nm_id)}
     <div style="color:${m.color};font-weight:600;font-size:12px;white-space:normal;max-width:120px">${title}</div>
     ${subtitle ? `<div style="font-size:10px;font-weight:400;color:var(--wb-muted);max-width:120px;white-space:normal;line-height:1.3;margin-top:2px">${subtitle}</div>` : ''}
@@ -6899,8 +7167,8 @@ async function uploadCompetitorReport(file) {
       });
       status.textContent = `✅ Загружено: ${label}, ${result.articles} артикулов`;
       COMP_DATA = null;
-      COMP_SESSION_ID = result.session_id;
       COMP_SELECTED_NMS = new Set();
+      saveCompSelectedNms();
       COMP_SESSIONS = await (await fetch(`${RAILWAY_URL}/api/competitor-sessions`)).json();
       if(COMP_ARCHIVED.delete(result.session_id)) saveArchived();  // свежий файл всегда активен
       COMP_SELECTED_SESSIONS = new Set([result.session_id]);

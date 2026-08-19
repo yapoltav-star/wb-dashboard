@@ -34,6 +34,12 @@ WB_CALENDAR_URL = "https://dp-calendar-api.wildberries.ru"
 WB_CONTENT_URL = "https://content-api.wildberries.ru"
 WB_PRICES_URL = "https://discounts-prices-api.wildberries.ru"
 WB_MARKETPLACE_URL = "https://marketplace-api.wildberries.ru"
+WB_CHAT_URL = "https://buyer-chat-api.wildberries.ru"
+WB_CHAT_AUTOREPLY_KEY = "wb_chat_autoreply"
+WB_CHAT_DEFAULT_TEXT = "Здравствуйте! Сообщение получено, ответим в ближайшее время."
+WB_CHAT_REPLIED_KEEP = 2500
+_WB_CHAT_LOCK = threading.Lock()
+_WB_CHAT_RUNNING = False
 
 # Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
 # а агрегаты — переносим их в отдельные поля stock_totals вместо списка складов.
@@ -6085,6 +6091,402 @@ async def trigger_spp_prices_sync():
     threading.Thread(target=sync_spp_prices, daemon=True).start()
     return {"status": "started"}
 
+
+def _wb_chat_now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _wb_chat_load_state() -> dict:
+    raw = get_setting_json(WB_CHAT_AUTOREPLY_KEY, {}) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    text = str(raw.get("text") or WB_CHAT_DEFAULT_TEXT).strip()[:1000]
+    replied = raw.get("replied_chats")
+    if not isinstance(replied, dict):
+        replied = {}
+    events_next = raw.get("events_next")
+    try:
+        events_next = int(events_next) if events_next not in (None, "", 0, "0") else None
+    except (TypeError, ValueError):
+        events_next = None
+    try:
+        since_ts = int(raw.get("since_ts") or 0)
+    except (TypeError, ValueError):
+        since_ts = 0
+    try:
+        sent_total = int(raw.get("sent_total") or 0)
+    except (TypeError, ValueError):
+        sent_total = 0
+    try:
+        sent_last_run = int(raw.get("sent_last_run") or 0)
+    except (TypeError, ValueError):
+        sent_last_run = 0
+    return {
+        "enabled": bool(raw.get("enabled")),
+        "text": text or WB_CHAT_DEFAULT_TEXT,
+        "once_per_chat": raw.get("once_per_chat", True) is not False,
+        "since_ts": since_ts,
+        "events_next": events_next,
+        "replied_chats": replied,
+        "last_run": raw.get("last_run"),
+        "last_error": str(raw.get("last_error") or ""),
+        "last_result": str(raw.get("last_result") or ""),
+        "sent_total": sent_total,
+        "sent_last_run": sent_last_run,
+    }
+
+
+def _wb_chat_save_state(state: dict) -> bool:
+    payload = dict(state)
+    replied = payload.get("replied_chats") or {}
+    if isinstance(replied, dict) and len(replied) > WB_CHAT_REPLIED_KEEP:
+        items = sorted(
+            replied.items(),
+            key=lambda kv: str((kv[1] or {}).get("at") if isinstance(kv[1], dict) else kv[1] or ""),
+            reverse=True,
+        )
+        payload["replied_chats"] = dict(items[:WB_CHAT_REPLIED_KEEP])
+    return save_setting_value(WB_CHAT_AUTOREPLY_KEY, payload)
+
+
+def _wb_chat_public(state: dict) -> dict:
+    replied = state.get("replied_chats") or {}
+    return {
+        "enabled": bool(state.get("enabled")),
+        "text": state.get("text") or WB_CHAT_DEFAULT_TEXT,
+        "once_per_chat": state.get("once_per_chat", True) is not False,
+        "last_run": state.get("last_run"),
+        "last_error": state.get("last_error") or "",
+        "last_result": state.get("last_result") or "",
+        "sent_total": int(state.get("sent_total") or 0),
+        "sent_last_run": int(state.get("sent_last_run") or 0),
+        "replied_chats": len(replied) if isinstance(replied, dict) else 0,
+        "running": _WB_CHAT_RUNNING,
+        "default_text": WB_CHAT_DEFAULT_TEXT,
+    }
+
+
+def _wb_chat_auth_hint(status_code: int) -> str:
+    if status_code in (401, 403):
+        return (
+            "WB_TOKEN без категории «Чат с покупателями». "
+            "В кабинете WB → Настройки → Доступ к API перевыпусти токен с этой категорией "
+            "и обнови WB_TOKEN в Railway."
+        )
+    if status_code == 402:
+        return "WB API: не оплачен доступ к категории «Чат с покупателями»."
+    return ""
+
+
+def _wb_chat_get(path: str, params: dict = None, timeout: float = 20):
+    return httpx.get(
+        f"{WB_CHAT_URL}{path}",
+        headers=wb_headers(),
+        params=params or {},
+        timeout=timeout,
+    )
+
+
+def _wb_chat_fetch_chats() -> tuple:
+    """→ (chatID → replySign, error)."""
+    try:
+        resp = _wb_chat_get("/api/v1/seller/chats")
+    except Exception as e:
+        return {}, f"чаты: {e}"
+    if not resp.is_success:
+        hint = _wb_chat_auth_hint(resp.status_code)
+        return {}, hint or f"чаты HTTP {resp.status_code}: {resp.text[:180]}"
+    body = resp.json() if resp.content else {}
+    rows = body.get("result") if isinstance(body, dict) else body
+    if not isinstance(rows, list):
+        rows = []
+    signs = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cid = str(row.get("chatID") or "").strip()
+        sign = str(row.get("replySign") or "").strip()
+        if cid and sign:
+            signs[cid] = sign
+    return signs, None
+
+
+def _wb_chat_fetch_events(next_cursor=None) -> tuple:
+    """→ (result_dict, error)."""
+    params = {}
+    if next_cursor:
+        params["next"] = int(next_cursor)
+    try:
+        resp = _wb_chat_get("/api/v1/seller/events", params=params)
+    except Exception as e:
+        return {}, f"события: {e}"
+    if resp.status_code == 400 and next_cursor:
+        try:
+            resp = _wb_chat_get("/api/v1/seller/events")
+        except Exception as e:
+            return {}, f"события: {e}"
+    if not resp.is_success:
+        hint = _wb_chat_auth_hint(resp.status_code)
+        return {}, hint or f"события HTTP {resp.status_code}: {resp.text[:180]}"
+    body = resp.json() if resp.content else {}
+    result = body.get("result") if isinstance(body, dict) else {}
+    if not isinstance(result, dict):
+        result = {}
+    return result, None
+
+
+def _wb_chat_event_ts(ev: dict) -> int:
+    ts = ev.get("addTimestamp")
+    try:
+        return int(ts)
+    except (TypeError, ValueError):
+        pass
+    add_time = ev.get("addTime") or ""
+    if add_time:
+        try:
+            dt = datetime.fromisoformat(str(add_time).replace("Z", "+00:00"))
+            return int(dt.timestamp() * 1000)
+        except (ValueError, TypeError):
+            return 0
+    return 0
+
+
+def _wb_chat_is_client(ev: dict) -> bool:
+    sender = str(ev.get("sender") or "").strip().lower()
+    if sender in ("seller", "wb", "support", "employee"):
+        return False
+    if sender in ("client", "buyer", "customer", "user", "клиент"):
+        return True
+    source = str(ev.get("source") or "").strip().lower()
+    if source in ("seller-public-api", "seller"):
+        return False
+    if ev.get("isNewChat"):
+        return True
+    if source in ("rusite", "site", "android", "ios", "mobile"):
+        return True
+    return False
+
+
+def _wb_chat_send(reply_sign: str, text: str) -> tuple:
+    """→ (ok, error)."""
+    try:
+        resp = httpx.post(
+            f"{WB_CHAT_URL}/api/v1/seller/message",
+            headers={"Authorization": WB_TOKEN},
+            data={"replySign": reply_sign, "message": text},
+            timeout=30,
+        )
+    except Exception as e:
+        return False, str(e)
+    if resp.is_success:
+        return True, None
+    hint = _wb_chat_auth_hint(resp.status_code)
+    return False, hint or f"отправка HTTP {resp.status_code}: {resp.text[:180]}"
+
+
+def sync_wb_chat_autoreply(force: bool = False):
+    """Автоответ на входящие сообщения в чатах WB. Один шаблон, по умолчанию один раз на чат."""
+    global _WB_CHAT_RUNNING
+    if not WB_TOKEN:
+        return {"status": "error", "error": "WB_TOKEN не задан"}
+    with _WB_CHAT_LOCK:
+        if _WB_CHAT_RUNNING:
+            return {"status": "already_running"}
+        _WB_CHAT_RUNNING = True
+    try:
+        state = _wb_chat_load_state()
+        if not state.get("enabled") and not force:
+            return {"status": "disabled"}
+        text = (state.get("text") or WB_CHAT_DEFAULT_TEXT).strip()[:1000]
+        if not text:
+            state["last_run"] = datetime.now(timezone.utc).isoformat()
+            state["last_error"] = "пустой текст автоответа"
+            state["last_result"] = ""
+            state["sent_last_run"] = 0
+            _wb_chat_save_state(state)
+            return {"status": "error", "error": state["last_error"]}
+
+        since_ts = int(state.get("since_ts") or 0)
+        if not since_ts:
+            since_ts = _wb_chat_now_ms()
+            state["since_ts"] = since_ts
+
+        cursor = state.get("events_next") or since_ts
+        events = []
+        last_next = cursor
+        pages = 0
+        err = None
+        while pages < 6:
+            pages += 1
+            result, err = _wb_chat_fetch_events(cursor)
+            if err:
+                break
+            batch = result.get("events") or []
+            if not isinstance(batch, list):
+                batch = []
+            events.extend(ev for ev in batch if isinstance(ev, dict))
+            nxt = result.get("next")
+            total = result.get("totalEvents")
+            try:
+                total = int(total) if total is not None else len(batch)
+            except (TypeError, ValueError):
+                total = len(batch)
+            if nxt not in (None, "", 0, "0"):
+                try:
+                    last_next = int(nxt)
+                    cursor = last_next
+                except (TypeError, ValueError):
+                    pass
+            if total == 0 or not batch:
+                break
+            time.sleep(1.1)
+
+        if err and not events:
+            state["last_run"] = datetime.now(timezone.utc).isoformat()
+            state["last_error"] = err
+            state["last_result"] = ""
+            state["sent_last_run"] = 0
+            _wb_chat_save_state(state)
+            logger.error(f"wb chat autoreply: {err}")
+            return {"status": "error", "error": err}
+
+        if last_next:
+            state["events_next"] = last_next
+
+        latest = {}
+        for ev in events:
+            if str(ev.get("eventType") or "message").lower() not in ("message", ""):
+                continue
+            ts = _wb_chat_event_ts(ev)
+            if ts and ts < since_ts:
+                continue
+            cid = str(ev.get("chatID") or "").strip()
+            if not cid:
+                continue
+            prev = latest.get(cid)
+            if prev is None or ts >= _wb_chat_event_ts(prev):
+                latest[cid] = ev
+
+        need = []
+        replied = state.get("replied_chats") or {}
+        once = state.get("once_per_chat", True) is not False
+        for cid, ev in latest.items():
+            if not _wb_chat_is_client(ev):
+                continue
+            prev = replied.get(cid)
+            if once and prev:
+                continue
+            if isinstance(prev, dict) and prev.get("event_id") and prev.get("event_id") == ev.get("eventID"):
+                continue
+            need.append((cid, ev))
+
+        sent = 0
+        errors = []
+        signs = {}
+        if need:
+            time.sleep(1.1)
+            signs, chat_err = _wb_chat_fetch_chats()
+            if chat_err:
+                errors.append(chat_err)
+
+        for cid, ev in need[:8]:
+            sign = signs.get(cid) or ""
+            if not sign and ev.get("isNewChat"):
+                sign = str(ev.get("replySign") or "").strip()
+            if not sign:
+                errors.append(f"{cid}: нет replySign — чат ещё не появился в списке")
+                continue
+            ok, send_err = _wb_chat_send(sign, text)
+            time.sleep(1.1)
+            if not ok:
+                errors.append(f"{cid}: {send_err}")
+                continue
+            sent += 1
+            replied[cid] = {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "event_id": ev.get("eventID") or "",
+                "client": ev.get("clientName") or "",
+            }
+
+        state["replied_chats"] = replied
+        state["sent_total"] = int(state.get("sent_total") or 0) + sent
+        state["sent_last_run"] = sent
+        state["last_run"] = datetime.now(timezone.utc).isoformat()
+        state["last_error"] = "; ".join(errors[:4]) if errors else ""
+        parts = [f"проверено чатов: {len(latest)}", f"отправленных: {sent}"]
+        if err:
+            parts.append(f"события: {err}")
+        state["last_result"] = ", ".join(parts)
+        _wb_chat_save_state(state)
+        if sent:
+            logger.info(f"wb chat autoreply sent={sent} checked={len(latest)}")
+        return {
+            "status": "ok",
+            "sent": sent,
+            "checked": len(latest),
+            "error": state["last_error"] or None,
+        }
+    except Exception as e:
+        logger.exception("wb chat autoreply failed")
+        try:
+            state = _wb_chat_load_state()
+            state["last_run"] = datetime.now(timezone.utc).isoformat()
+            state["last_error"] = str(e)
+            _wb_chat_save_state(state)
+        except Exception:
+            pass
+        return {"status": "error", "error": str(e)}
+    finally:
+        _WB_CHAT_RUNNING = False
+
+
+@app.get("/api/wb-chat-autoreply")
+def get_wb_chat_autoreply():
+    return _wb_chat_public(_wb_chat_load_state())
+
+
+@app.put("/api/wb-chat-autoreply")
+async def put_wb_chat_autoreply(request: dict):
+    state = _wb_chat_load_state()
+    was_enabled = bool(state.get("enabled"))
+    if "enabled" in request:
+        state["enabled"] = bool(request.get("enabled"))
+    if "text" in request:
+        text = str(request.get("text") or "").strip()[:1000]
+        state["text"] = text or WB_CHAT_DEFAULT_TEXT
+    if "once_per_chat" in request:
+        state["once_per_chat"] = bool(request.get("once_per_chat"))
+    if state["enabled"] and not was_enabled:
+        state["since_ts"] = _wb_chat_now_ms()
+        state["events_next"] = state["since_ts"]
+        state["last_error"] = ""
+        state["last_result"] = "включено — старые чаты не трогаем, отвечаем только на новые"
+    if not _wb_chat_save_state(state):
+        return {"error": "не удалось сохранить настройки"}
+    return _wb_chat_public(state)
+
+
+@app.post("/api/wb-chat-autoreply/run")
+def trigger_wb_chat_autoreply():
+    state = _wb_chat_load_state()
+    if not state.get("enabled"):
+        return {"status": "disabled", "error": "сначала включи автоответы"}
+    if _WB_CHAT_RUNNING:
+        return {"status": "already_running"}
+    threading.Thread(target=sync_wb_chat_autoreply, daemon=True).start()
+    return {"status": "started"}
+
+
+@app.post("/api/wb-chat-autoreply/test")
+def test_wb_chat_access():
+    if not WB_TOKEN:
+        return {"ok": False, "error": "WB_TOKEN не задан"}
+    signs, err = _wb_chat_fetch_chats()
+    if err:
+        return {"ok": False, "error": err, "chats": 0}
+    return {"ok": True, "chats": len(signs), "error": None}
+
+
 scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
 scheduler.add_job(sync_stock, "interval", hours=3, id="sync_stock")
@@ -6094,6 +6496,7 @@ scheduler.add_job(lambda: sync_article_daily_stats(30), "interval", hours=6, id=
 scheduler.add_job(sync_promotions, "interval", hours=6, id="sync_promotions")
 scheduler.add_job(lambda: sync_sales_pace("day"), "interval", hours=1, id="sync_sales_pace")
 scheduler.add_job(sync_spp_prices, "interval", hours=3, id="sync_spp_prices")
+scheduler.add_job(sync_wb_chat_autoreply, "interval", minutes=1, id="wb_chat_autoreply")
 scheduler.start()
 # Разово чистим ошибочные api-рейтинги после деплоя (item-rating ломал склейки).
 threading.Thread(target=sync_ratings_official, daemon=True).start()
