@@ -6438,10 +6438,18 @@ function compPeriodDates(s) {
   return {begin, end};
 }
 
-function compPeriodsOverlap(a, b) {
+function compPeriodOverlapDays(a, b) {
   const da = compPeriodDates(a), db = compPeriodDates(b);
-  if(!da || !db) return false;
-  return da.begin <= db.end && db.begin <= da.end;
+  if(!da || !db) return 0;
+  const start = Math.max(da.begin.getTime(), db.begin.getTime());
+  const end = Math.min(da.end.getTime(), db.end.getTime());
+  if(end < start) return 0;
+  return Math.floor((end - start) / 86400000) + 1;
+}
+
+/** Один общий день (5–11 и 11–17) — не «тот же период». Нужно ≥3 дней пересечения. */
+function compPeriodsOverlap(a, b) {
+  return compPeriodOverlapDays(a, b) >= 3;
 }
 
 function getCurrentCompPeriodIds(activeSessions) {
@@ -6894,7 +6902,7 @@ function renderCompetitorView() {
         ${hiddenChips}
       </div>
       ${buildCompTopAnalysis(compMetrics)}
-      <div style="overflow-x:auto">${buildCompMetricsTable(allMetrics, ownMetrics[0]?.nm_id, allCompetitors)}</div>
+      <div style="overflow-x:auto">${buildCompMetricsTable(allMetrics, ownMetrics[0]?.nm_id)}</div>
     </div>`;
 }
 
@@ -7030,7 +7038,7 @@ function switchCompTab(tab) {
   document.getElementById('compTabSearch').style.display = tab==='search' ? '' : 'none';
 }
 
-function buildCompMetricsTable(metrics, ownNm, allCompetitorsForPick) {
+function buildCompMetricsTable(metrics, ownNm) {
   const arts = metrics.map((m,i) => ({...m, color: COMP_COLORS[i % COMP_COLORS.length]}));
 
   const thCells = arts.map(m => {

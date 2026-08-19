@@ -6438,10 +6438,18 @@ function compPeriodDates(s) {
   return {begin, end};
 }
 
-function compPeriodsOverlap(a, b) {
+function compPeriodOverlapDays(a, b) {
   const da = compPeriodDates(a), db = compPeriodDates(b);
-  if(!da || !db) return false;
-  return da.begin <= db.end && db.begin <= da.end;
+  if(!da || !db) return 0;
+  const start = Math.max(da.begin.getTime(), db.begin.getTime());
+  const end = Math.min(da.end.getTime(), db.end.getTime());
+  if(end < start) return 0;
+  return Math.floor((end - start) / 86400000) + 1;
+}
+
+/** Один общий день (5–11 и 11–17) — не «тот же период». Нужно ≥3 дней пересечения. */
+function compPeriodsOverlap(a, b) {
+  return compPeriodOverlapDays(a, b) >= 3;
 }
 
 function getCurrentCompPeriodIds(activeSessions) {
