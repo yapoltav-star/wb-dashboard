@@ -724,6 +724,7 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
       <button class="action-btn primary" onclick="document.getElementById('compFileInput').click()">📊 Загрузить отчёт</button>
     </div>
   </div>
+  <div id="brandReportList" class="own-brand-bar" style="margin-top:-4px;margin-bottom:12px"></div>
   <div class="cards" id="brandCards"></div>
   <div id="brandCharts" class="charts" style="display:none"></div>
   <div class="toolbar">
@@ -4012,6 +4013,9 @@ function drawCompBrands() {
     const openBtn = r.has_detail
       ? `<button class="action-btn" style="padding:3px 8px;font-size:11px" onclick="openBrandDetail(${JSON.stringify(r.brand)})">Отчёт →</button>`
       : `<span class="tag">нет отчёта</span>`;
+    const delDetailBtn = r.has_detail
+      ? `<button class="action-btn" style="padding:3px 8px;font-size:11px" title="Удалить детальный отчёт бренда" onclick="event.stopPropagation();deleteCompReport('brand_detail', ${JSON.stringify(r.brand)})">🗑</button>`
+      : '';
     const hideBtn = r.is_hidden
       ? `<button class="action-btn" style="padding:3px 8px;font-size:11px" onclick="setBrandHidden(${JSON.stringify(r.brand)}, false)">Показать</button>`
       : `<button class="action-btn" style="padding:3px 8px;font-size:11px" onclick="setBrandHidden(${JSON.stringify(r.brand)}, true)">Скрыть</button>`;
@@ -4025,13 +4029,13 @@ function drawCompBrands() {
       <td class="num">${fmt(Math.round(r.avg_price || 0))}</td>
       <td class="num">${pct1(r.buyout_share)}</td>
       <td class="num">${pct1(r.category_share)}</td>
-      <td style="white-space:nowrap;display:flex;gap:6px;align-items:center">${hideBtn}${openBtn}</td>
+      <td style="white-space:nowrap"><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${hideBtn}${openBtn}${delDetailBtn}</div></td>
     </tr>`;
   }).join('');
   root.innerHTML = `<div class="tbl-wrap"><table>
     <thead><tr><th>#</th><th>Бренд</th><th>Сумма, ₽</th><th>Динамика</th><th>Шт</th><th>Ср. цена</th><th>Выкуп</th><th>Доля</th><th></th></tr></thead>
     <tbody>${body}</tbody></table></div>
-    <div class="hint">Скрытые бренды не попадают в карточки оборота · список общий для всех устройств</div>`;
+    <div class="hint">🗑 у бренда с отчётом — удалить детальный Excel из общей базы · скрытие брендов общее для всех устройств</div>`;
 }
 function renderBrandsCharts(rows) {
   const el = document.getElementById('brandsCharts');
@@ -4215,6 +4219,11 @@ function fillBrandSelect() {
   const sel = document.getElementById('brandSelect');
   if (!sel) return;
   const keys = detailBrandKeys();
+  // если выбран бренд из сводки с другим регистром — привяжем к ключу map
+  if (COMP_BRAND) {
+    const soft = brandDetailKey(COMP_BRAND);
+    if (soft) COMP_BRAND = soft;
+  }
   if (COMP_BRAND && !keys.includes(COMP_BRAND) && keys.length) COMP_BRAND = keys[0];
   if (!COMP_BRAND && keys.length) COMP_BRAND = keys[0];
   sel.innerHTML = keys.length
@@ -4222,9 +4231,27 @@ function fillBrandSelect() {
     : '<option value="">нет загруженных отчётов</option>';
   const hint = document.getElementById('brandHint');
   if (hint) hint.textContent = COMP_BRAND ? ('отчёт: ' + COMP_BRAND) : 'загрузи Excel отчёта бренда';
+  renderBrandReportList();
+}
+function renderBrandReportList() {
+  const el = document.getElementById('brandReportList');
+  if (!el) return;
+  const keys = detailBrandKeys();
+  if (!keys.length) {
+    el.innerHTML = '<span style="color:var(--oz-muted)">Загруженных отчётов брендов нет</span>';
+    return;
+  }
+  el.innerHTML = `<span style="color:var(--oz-muted);margin-right:4px">В базе (${keys.length}):</span>` + keys.map(k => {
+    const on = k === COMP_BRAND;
+    return `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 4px 2px 8px;border:1px solid var(--oz-border);border-radius:999px;background:${on ? 'var(--oz-blue-light)' : '#fff'};font-size:12px">
+      <a href="#" style="color:inherit;text-decoration:none;font-weight:${on ? 700 : 500}" onclick="event.preventDefault();selectBrandDetail(${JSON.stringify(k)})">${esc(k)}</a>
+      <button type="button" title="Удалить отчёт «${esc(k)}»" style="border:none;background:transparent;cursor:pointer;padding:0 4px;line-height:1;opacity:.7"
+        onclick="event.stopPropagation();deleteCompReport('brand_detail', ${JSON.stringify(k)})">✕</button>
+    </span>`;
+  }).join(' ');
 }
 function selectBrandDetail(v) {
-  COMP_BRAND = v;
+  COMP_BRAND = brandDetailKey(v) || v;
   drawBrandDetail();
 }
 function selectRivalBrand(v) {
@@ -4402,8 +4429,13 @@ function drawBrandDetail() {
   if (!root) return;
   fillBrandSelect();
   const map = COMP_ALL.brand_detail_map || {};
+  const softKey = brandDetailKey(COMP_BRAND);
+  if (softKey) COMP_BRAND = softKey;
   const rep = COMP_BRAND ? map[COMP_BRAND] : null;
-  if (delBtn) delBtn.style.display = rep ? '' : 'none';
+  if (delBtn) {
+    delBtn.style.display = rep ? '' : 'none';
+    delBtn.textContent = rep ? (`🗑 Удалить «${COMP_BRAND}»`) : '🗑 Удалить отчёт';
+  }
 
   if (!rep) {
     if (ban) ban.style.display = 'none';
@@ -4412,7 +4444,10 @@ function drawBrandDetail() {
     destroyCompCharts('brand-');
     const ch = document.getElementById('brandCharts');
     if (ch) { ch.style.display = 'none'; ch.innerHTML = ''; }
-    root.innerHTML = '<div class="empty"><b>Нет отчёта бренда</b>Загрузи Excel по бренду (показы / воронка) — сохранится в общую базу.</div>';
+    const keys = detailBrandKeys();
+    root.innerHTML = keys.length
+      ? `<div class="empty"><b>Выбери бренд</b>Сверху список загруженных отчётов — клик открывает, ✕ удаляет.</div>`
+      : '<div class="empty"><b>Нет отчёта бренда</b>Загрузи Excel по бренду (показы / воронка) — сохранится в общую базу.</div>';
     return;
   }
   const rowsAll = rep.rows || [];
