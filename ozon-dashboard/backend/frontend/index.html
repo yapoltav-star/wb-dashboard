@@ -4438,15 +4438,21 @@ function drawBrandDetail() {
   const info = document.getElementById('brandInfo');
   const ban = document.getElementById('brandBanner');
   const delBtn = document.getElementById('brandDelBtn');
+  const delAllBtn = document.getElementById('brandDelAllBtn');
   if (!root) return;
   fillBrandSelect();
   const map = COMP_ALL.brand_detail_map || {};
   const softKey = brandDetailKey(COMP_BRAND);
   if (softKey) COMP_BRAND = softKey;
   const rep = COMP_BRAND ? map[COMP_BRAND] : null;
+  const detailCount = Object.keys(map).length;
   if (delBtn) {
     delBtn.style.display = rep ? '' : 'none';
     delBtn.textContent = rep ? (`🗑 Удалить «${COMP_BRAND}»`) : '🗑 Удалить отчёт';
+  }
+  if (delAllBtn) {
+    delAllBtn.style.display = detailCount ? '' : 'none';
+    delAllBtn.textContent = detailCount > 1 ? `🗑 Удалить все (${detailCount})` : '🗑 Удалить все';
   }
 
   if (!rep) {
