@@ -1741,6 +1741,95 @@ def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
     return best
 
 
+def _own_wh_looks_like_vendor_code(vc: str) -> bool:
+    """Грубая проверка: артикул продавца, не число/дата/заголовок."""
+    s = str(vc or "").strip()
+    if not s or len(s) < 2 or len(s) > 80:
+        return False
+    low = s.lower()
+    if low in ("nan", "none", "итого", "артикул", "количество", "qty", "sku", "offer_id"):
+        return False
+    if low.startswith("артикул") or low.startswith("количество"):
+        return False
+    # чистое число без букв — скорее qty/nm, не наш vendor_code
+    if re.fullmatch(r"\d+([.,]\d+)?", s):
+        return False
+    return True
+
+
+def parse_own_wh_receipt_excel(content: bytes, filename: str = "") -> dict:
+    """Поступление / приёмка.
+    1) Как отгрузка: заголовки «Артикул…» + «Количество»
+    2) Простой файл «Приемка …xlsx»: без шапки, колонка A = артикул, B = кол-во
+    """
+    # Сначала пробуем общий парсер с заголовками
+    headed = parse_own_wh_shipment_excel(content, filename)
+    if not headed.get("error") and headed.get("items"):
+        headed["kind"] = "receipt"
+        return headed
+
+    import io as _io
+    try:
+        xl = pd.ExcelFile(_io.BytesIO(content))
+    except Exception as e:
+        return {"error": f"Не удалось прочитать Excel: {e}"}
+
+    best = None
+    for sheet in xl.sheet_names:
+        try:
+            df_raw = pd.read_excel(xl, sheet_name=sheet, header=None, dtype=object)
+        except Exception:
+            continue
+        if df_raw is None or df_raw.empty or df_raw.shape[1] < 2:
+            continue
+
+        agg = {}
+        for i in range(len(df_raw)):
+            row = list(df_raw.iloc[i].values)
+            if len(row) < 2:
+                continue
+            # ищем первую «артикулоподобную» ячейку и ближайшее число справа
+            vc = None
+            qty = None
+            for j, cell in enumerate(row):
+                s = str(cell or "").strip()
+                if not s or s.lower() in ("nan", "none"):
+                    continue
+                if _own_wh_looks_like_vendor_code(s):
+                    vc = s
+                    for k in range(j + 1, len(row)):
+                        q = _parse_int_cell(row[k])
+                        if q is not None and q > 0:
+                            qty = q
+                            break
+                    break
+            if not vc or not qty:
+                continue
+            agg[vc] = agg.get(vc, 0) + qty
+
+        items = [{"vendor_code": vc, "qty": q} for vc, q in sorted(agg.items(), key=lambda x: -x[1])]
+        cand = {
+            "kind": "receipt",
+            "sheet": sheet,
+            "items": items,
+            "total_qty": sum(i["qty"] for i in items),
+            "articles": len(items),
+        }
+        if items and (best is None or cand["total_qty"] > best["total_qty"]):
+            best = cand
+
+    if not best or not best["items"]:
+        err = headed.get("error") if isinstance(headed, dict) else None
+        return {
+            "error": err or (
+                "Не нашёл артикулы в приёмке. Ожидаю файл «Артикул + Количество» "
+                "(можно без заголовков, как «Приемка 19.08.xlsx»)."
+            )
+        }
+    best["filename"] = filename or ""
+    return best
+
+
 def _own_wh_shipment_channel(sh: dict) -> str:
     """fbw/fbs = WB; ozon_fbo/ozon_fbs = Ozon. Все списывают один физический склад."""
     ch = str((sh or {}).get("channel") or "").strip().lower()
@@ -1956,7 +2045,7 @@ async def own_warehouse_upload_receipt(
         except Exception as e:
             errors.append({"filename": f.filename, "error": str(e)})
             continue
-        parsed = parse_own_wh_shipment_excel(content, f.filename or "")
+        parsed = parse_own_wh_receipt_excel(content, f.filename or "")
         if parsed.get("error"):
             errors.append({"filename": f.filename, "error": parsed["error"]})
             continue
