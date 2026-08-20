@@ -742,23 +742,30 @@ def delete_report(save_setting: Callable, get_setting: Callable, kind: str, bran
     elif kind == "brands":
         save_setting(KEY_BRANDS, {})
         CACHE["brands"] = None
-    elif kind in ("brand_detail", "brand"):
-        if not brand:
-            raise ValueError("нужен brand")
+    elif kind in ("brand_detail", "brand", "brand_details", "brand_detail_all", "all_brand_details"):
         details = CACHE.get("brand_details") or _load_json(get_setting, KEY_BRAND_DETAILS, {}) or {}
-        for k in list(details.keys()):
-            if k.lower() == brand.lower():
-                details.pop(k, None)
+        clear_all = kind in ("brand_details", "brand_detail_all", "all_brand_details") or (
+            isinstance(brand, str) and brand.strip() in ("*", "all", "__all__")
+        )
+        if clear_all:
+            details = {}
+        else:
+            if not brand:
+                raise ValueError("нужен brand")
+            for k in list(details.keys()):
+                if k.lower() == str(brand).lower():
+                    details.pop(k, None)
         save_setting(KEY_BRAND_DETAILS, details)
         CACHE["brand_details"] = details
         brands = CACHE.get("brands") or _load_json(get_setting, KEY_BRANDS, None)
         if brands:
+            detail_keys = {x.lower() for x in details}
             for r in brands.get("rows") or []:
-                r["has_detail"] = str(r.get("brand") or "").lower() in {x.lower() for x in details}
+                r["has_detail"] = str(r.get("brand") or "").lower() in detail_keys
             save_setting(KEY_BRANDS, brands)
             CACHE["brands"] = brands
     else:
-        raise ValueError("kind: position | brands | brand_detail")
+        raise ValueError("kind: position | brands | brand_detail | brand_details")
     return summarize()
 
 

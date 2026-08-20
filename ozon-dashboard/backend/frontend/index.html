@@ -721,6 +721,7 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
     <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button class="action-btn" onclick="showCompPage('compare')">⇄ Сравнить</button>
       <button class="action-btn" id="brandDelBtn" onclick="deleteCurrentBrandDetail()" style="display:none">🗑 Удалить отчёт</button>
+      <button class="action-btn" id="brandDelAllBtn" onclick="deleteAllBrandDetails()" style="display:none">🗑 Удалить все</button>
       <button class="action-btn primary" onclick="document.getElementById('compFileInput').click()">📊 Загрузить отчёт</button>
     </div>
   </div>
@@ -3755,7 +3756,12 @@ async function uploadCompetitors(file) {
   }
 }
 async function deleteCompReport(kind, brand) {
-  const labels = { position: 'отчёт по товарам категории', brands: 'сводку по брендам', brand_detail: `отчёт бренда «${brand || ''}»` };
+  const labels = {
+    position: 'отчёт по товарам категории',
+    brands: 'сводку по брендам',
+    brand_detail: `отчёт бренда «${brand || ''}»`,
+    brand_details: 'все отчёты брендов',
+  };
   if (!confirm('Удалить ' + (labels[kind] || kind) + ' из общей базы?')) return;
   try {
     const r = await fetch('/api/delete-competitors', {
@@ -3767,9 +3773,10 @@ async function deleteCompReport(kind, brand) {
     if (!r.ok) throw new Error(d.detail || d.error || ('HTTP ' + r.status));
     COMP_ALL = d;
     COMP_ALL._loaded = true;
-    if (kind === 'brand_detail') {
+    if (kind === 'brand_detail' || kind === 'brand_details') {
       const keys = Object.keys(COMP_ALL.brand_detail_map || {});
       COMP_BRAND = keys[0] || '';
+      COMP_RIVAL = keys.find(k => k.toLowerCase() !== (COMP_ALL.own_brand || '').toLowerCase()) || keys[0] || '';
     }
     renderCompetitors(false);
   } catch (e) {
@@ -3779,6 +3786,11 @@ async function deleteCompReport(kind, brand) {
 function deleteCurrentBrandDetail() {
   if (!COMP_BRAND) return;
   deleteCompReport('brand_detail', COMP_BRAND);
+}
+function deleteAllBrandDetails() {
+  const n = Object.keys(COMP_ALL.brand_detail_map || {}).length;
+  if (!n) return;
+  deleteCompReport('brand_details');
 }
 
 function setCompFilter(f) {

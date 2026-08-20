@@ -1806,7 +1806,7 @@ async def upload_competitors(file: UploadFile = File(...)):
 
 @app.post("/api/delete-competitors")
 def delete_competitors(body: dict = Body(...)):
-    """Удалить отчёт. kind=position|brands|brand_detail, для brand_detail нужен brand."""
+    """Удалить отчёт. kind=position|brands|brand_detail|brand_details; для brand_detail нужен brand."""
     kind = str(body.get("kind") or "").strip()
     brand = body.get("brand")
     try:
