@@ -883,10 +883,10 @@ OWN_WH_MODEL_DEFAULTS = {
     "046_LK11_Promax_grey_O": "046_LK11_Promax_grey_O",
     "046_LK11_Promax_gold_O": "046_LK11_Promax_gold_O",
     "046_LK11_Promax_black_0": "046_LK11_Promax_black_O",  # опечатка в приёмках
-    "038_LK11_gold_O": "041_Х10_gold_O",          # S11 middle золото
-    "038_LK11_black_O": "038_LK11_black_O",        # S11 middle чёрный (корень)
-    "038_LK11_orahge_O": "038_LK11_orahge_O",      # S11 middle оранжевый
-    "038_S11grey_3bras_O": "031_LK11_grey_O",      # S11 middle серебро
+    "038_LK11_gold_O": "031_LK11_gold_O",              # S11 Pro золото
+    "038_LK11_black_O": "038_LK11_black_O",            # S11 middle чёрный (корень)
+    "038_LK11_orahge_O": "038_LK11_orahge_O",          # S11 middle оранжевый
+    "038_S11grey_3bras_O": "031_LK11_grey_O",          # S11 middle серебро
 }
 OWN_WH_MODEL_NAME_OVERRIDES = {
     "046_LK11_Promax_black_O": "LK11 Pro Max (Черный)",
@@ -922,8 +922,8 @@ def _own_wh_archives() -> list:
 def _own_wh_sku_aliases() -> dict:
     raw = get_setting_json(OWN_WH_SKU_ALIASES_KEY, {}) or {}
     if not isinstance(raw, dict):
-        return {}
-    out = {}
+        raw = {}
+    out = {str(k): str(v) for k, v in OWN_WH_SKU_ALIAS_DEFAULTS.items() if k and v}
     for k, v in raw.items():
         ak = str(k or "").strip()
         cv = str(v or "").strip()
