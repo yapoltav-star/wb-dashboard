@@ -876,6 +876,28 @@ OWN_WH_STOCK_SNAPSHOT_KEY = "own_wh_stock_snapshot"  # общий снимок �
 OWN_WH_DOCS_KEEP = 200
 OWN_WH_ARCHIVE_KEEP = 60
 OWN_WH_CHANNELS = ("fbw", "fbs", "ozon_fbo", "ozon_fbs")
+# Жёсткие семьи склада: LK11 Pro Max = только 046; 038 = S11 middle.
+# Ручной model_map в settings перекрывает эти дефолты.
+OWN_WH_MODEL_DEFAULTS = {
+    "046_LK11_Promax_black_O": "046_LK11_Promax_black_O",
+    "046_LK11_Promax_grey_O": "046_LK11_Promax_grey_O",
+    "046_LK11_Promax_gold_O": "046_LK11_Promax_gold_O",
+    "046_LK11_Promax_black_0": "046_LK11_Promax_black_O",  # опечатка в приёмках
+    "038_LK11_gold_O": "041_Х10_gold_O",          # S11 middle золото
+    "038_LK11_black_O": "038_LK11_black_O",        # S11 middle чёрный (корень)
+    "038_LK11_orahge_O": "038_LK11_orahge_O",      # S11 middle оранжевый
+    "038_S11grey_3bras_O": "031_LK11_grey_O",      # S11 middle серебро
+}
+OWN_WH_MODEL_NAME_OVERRIDES = {
+    "046_LK11_Promax_black_O": "LK11 Pro Max (Черный)",
+    "046_LK11_Promax_grey_O": "LK11 Pro Max (Серебро)",
+    "046_LK11_Promax_gold_O": "LK11 Pro Max (Золото)",
+    "038_LK11_black_O": "S11 middle (Черный)",
+    "038_LK11_orahge_O": "S11 middle (Оранжевый)",
+}
+OWN_WH_SKU_ALIAS_DEFAULTS = {
+    "046_LK11_Promax_black_0": "046_LK11_Promax_black_O",
+}
 _RU_MONTHS_SHORT = (
     "", "янв", "фев", "мар", "апр", "май", "июн",
     "июл", "авг", "сен", "окт", "ноя", "дек",
@@ -1419,10 +1441,23 @@ def fetch_own_warehouse_stock() -> dict:
     }
 
 
+def _own_wh_effective_model_map(model_map: dict = None) -> dict:
+    """Дефолты Pro Max/038 + ручные привязки из settings (ручные важнее)."""
+    saved = model_map if model_map is not None else (get_setting_json("own_wh_model_map", {}) or {})
+    if not isinstance(saved, dict):
+        saved = {}
+    out = {str(k): str(v) for k, v in OWN_WH_MODEL_DEFAULTS.items() if k and v}
+    for k, v in saved.items():
+        if k and v:
+            out[str(k)] = str(v)
+    return out
+
+
 def _apply_own_wh_model_map(auto_by_vendor: dict, personal: dict, name_by_vc: dict, model_map: dict):
     """Пересобирает семьи с учётом ручных привязок артикул → корень модели.
     model_map: {vendor_code: root_vendor_code}. Если root == vendor — отдельно."""
-    model_map = {str(k): str(v) for k, v in (model_map or {}).items() if k and v}
+    saved_map = {str(k): str(v) for k, v in (model_map or {}).items() if k and v}
+    model_map = _own_wh_effective_model_map(saved_map)
 
     all_vcs = set(auto_by_vendor.keys()) | set(personal.keys()) | set(model_map.keys())
     # эффективный корень
@@ -1457,10 +1492,17 @@ def _apply_own_wh_model_map(auto_by_vendor: dict, personal: dict, name_by_vc: di
     for root, members in sorted(groups.items(), key=lambda x: x[0]):
         members = sorted(members)
         fam_stock = sum(personal.get(m, 0) for m in members)
-        model_name = name_by_vc.get(root) or (auto_by_vendor.get(root) or {}).get("model_name")
+        model_name = (
+            OWN_WH_MODEL_NAME_OVERRIDES.get(root)
+            or name_by_vc.get(root)
+            or (auto_by_vendor.get(root) or {}).get("model_name")
+        )
         if not model_name:
             # любое имя из членов
             for m in members:
+                if OWN_WH_MODEL_NAME_OVERRIDES.get(m):
+                    model_name = OWN_WH_MODEL_NAME_OVERRIDES[m]
+                    break
                 if name_by_vc.get(m):
                     model_name = name_by_vc[m]
                     break
@@ -1479,7 +1521,7 @@ def _apply_own_wh_model_map(auto_by_vendor: dict, personal: dict, name_by_vc: di
                 "family": members,
                 "root": root,
                 "model_name": model_name,
-                "manual": m in model_map,
+                "manual": m in saved_map or m in OWN_WH_MODEL_DEFAULTS,
             }
     models.sort(key=lambda x: (x["name"] or "").lower())
     return by_vendor, models
