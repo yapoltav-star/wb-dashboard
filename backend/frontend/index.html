@@ -8235,7 +8235,10 @@ function buildShelfSuggestPanel(data) {
 
   let body = '';
   if(!suggest.length) {
-    body = `<div style="font-size:12px;color:var(--wb-muted);padding:12px 0">Все из топ-${topN} уже в полке или нет данных воронки за ${days} дн.</div>`;
+    const why = (!(data.top_sellers || []).length)
+      ? `Нет данных воронки за ${days} дн. — обнови «Темп к вчера» или подожди синк.`
+      : `Все из топ-${topN} уже стоят в этой полке.`;
+    body = `<div style="font-size:12px;color:var(--wb-muted);padding:12px 0">${why}</div>`;
   } else if(data.comp_shape === 'round' || data.comp_shape === 'square') {
     if(same.length) {
       body += `<div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin:4px 0 6px">Сначала та же форма (${escapeHtml(shapeLabel)})</div>`;
