@@ -8450,12 +8450,257 @@ def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
     return {"items": [], "total": 0, "error": last_err or "unknown"}
 
 
+def _watch_shape(vendor_code: str = "", name: str = "", brand: str = "") -> str:
+    """круглые / квадратные / неясно / skip (не часы)."""
+    vc = str(vendor_code or "").strip()
+    blob = f"{vc} {name or ''} {brand or ''}".lower().replace("ё", "е")
+    vc_l = vc.lower()
+    if any(k in blob for k in (
+        "заряд", "charger", "ремеш", "браслет", "бланк", "переходник",
+        "кабел", "adapter", "powerbank", "pods", "наушник",
+    )):
+        return "skip"
+    if any(k in blob for k in ("кругл", "round")):
+        return "round"
+    if any(k in blob for k in ("квадрат", "square")):
+        return "square"
+    # квадратные: линейка 11 / S11 / LK11 / HK11 / Pro Max / mini
+    if re.search(r"(^|[_/])(031|034|035|038|039|040|042|046)([_/]|$)", vc_l):
+        return "square"
+    if any(k in vc_l for k in ("lk11", "hk11", "s11", "promax", "dt11")):
+        return "square"
+    if any(k in blob for k in ("11 series", "11 серия", "11 сери", "pro max", "promax", "s11", "lk11", "hk11")):
+        return "square"
+    # круглые: GT5 / Ultra / Watch 6 Pro / X8–X10
+    if re.search(r"(^|[_/])(026|033|036|037|041|044|045)([_/]|$)", vc_l):
+        return "round"
+    if any(k in vc_l for k in ("gt5", "g7pro", "ultra", "x8", "x10", "watch_6", "6pro", "х10", "х8")):
+        return "round"
+    if any(k in blob for k in ("gt5", "gt 5", "ultra", "x8", "x10", "6pro", "6 pro", "х10", "х8")):
+        return "round"
+    return "unknown"
+
+
+_WATCH_SHAPE_LABEL = {
+    "round": "круглые",
+    "square": "квадратные",
+    "unknown": "неясно",
+    "skip": "не часы",
+}
+
+
+def _own_nm_vendor_map() -> dict:
+    """nm_id(int) → vendor_code для наших карточек."""
+    out = {}
+    try:
+        st = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&limit=5000",
+            headers=sb_headers(), timeout=15,
+        )
+        if st.is_success:
+            for r in st.json() or []:
+                nm = r.get("nm_id")
+                if nm is None:
+                    continue
+                try:
+                    nm = int(nm)
+                except (TypeError, ValueError):
+                    continue
+                vc = (r.get("vendor_code") or "").strip()
+                if nm and (nm not in out or (vc and not out[nm])):
+                    out[nm] = vc or str(nm)
+    except Exception as e:
+        logger.warning(f"own nm map stock_totals: {e}")
+    try:
+        rt = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?select=nm_id,article&nm_id=not.is.null&limit=5000",
+            headers=sb_headers(), timeout=15,
+        )
+        if rt.is_success:
+            for r in rt.json() or []:
+                nm = r.get("nm_id")
+                art = (r.get("article") or "").strip()
+                if nm is None:
+                    continue
+                try:
+                    nm = int(nm)
+                except (TypeError, ValueError):
+                    continue
+                if nm and art and (nm not in out or not out.get(nm) or out[nm] == str(nm)):
+                    out[nm] = art
+    except Exception as e:
+        logger.warning(f"own nm map ratings: {e}")
+    return out
+
+
+def _own_top_sellers_week(top_n: int = 20, days: int = 7) -> list:
+    """Топ наших nm по заказам за последние days дней (article_daily_stats)."""
+    top_n = max(1, min(int(top_n or 20), 40))
+    days = max(1, min(int(days or 7), 30))
+    dt_from = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
+    own_map = _own_nm_vendor_map()
+    if not own_map:
+        return []
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/article_daily_stats"
+            f"?dt=gte.{dt_from}&select=nm_id,vendor_code,orders,open_card,add_to_cart,dt&order=dt.desc",
+            headers=sb_headers(), timeout=30,
+        )
+        if not resp.is_success:
+            logger.warning(f"top sellers week: {resp.status_code}")
+            rows = []
+        else:
+            rows = resp.json() or []
+    except Exception as e:
+        logger.warning(f"top sellers week: {e}")
+        rows = []
+
+    agg = {}
+    for r in rows:
+        try:
+            nm = int(r.get("nm_id"))
+        except (TypeError, ValueError):
+            continue
+        if nm not in own_map:
+            continue
+        slot = agg.setdefault(nm, {
+            "nm_id": nm,
+            "vendor_code": (r.get("vendor_code") or own_map.get(nm) or str(nm)).strip(),
+            "orders": 0,
+            "opens": 0,
+            "cart": 0,
+        })
+        vc = (r.get("vendor_code") or "").strip()
+        if vc and (not slot["vendor_code"] or slot["vendor_code"] == str(nm)):
+            slot["vendor_code"] = vc
+        try:
+            slot["orders"] += int(r.get("orders") or 0)
+            slot["opens"] += int(r.get("open_card") or 0)
+            slot["cart"] += int(r.get("add_to_cart") or 0)
+        except (TypeError, ValueError):
+            pass
+
+    if not agg:
+        cached = ((SALES_PACE_CACHE.get("by_period") or {}).get("week") or {})
+        for a in cached.get("articles") or []:
+            try:
+                nm = int(a.get("nm_id"))
+            except (TypeError, ValueError):
+                continue
+            if nm not in own_map:
+                continue
+            agg[nm] = {
+                "nm_id": nm,
+                "vendor_code": (a.get("vendor_code") or own_map.get(nm) or str(nm)).strip(),
+                "orders": int(a.get("orders_today") or 0),
+                "opens": int(a.get("opens_today") or a.get("clicks_today") or 0),
+                "cart": int(a.get("cart_today") or 0),
+                "name": a.get("name") or "",
+            }
+
+    items = []
+    for nm, slot in agg.items():
+        vc = slot.get("vendor_code") or own_map.get(nm) or str(nm)
+        name = slot.get("name") or ""
+        shape = _watch_shape(vc, name)
+        if shape == "skip":
+            continue
+        items.append({
+            "nm_id": nm,
+            "vendor_code": vc,
+            "name": name,
+            "orders": int(slot.get("orders") or 0),
+            "opens": int(slot.get("opens") or 0),
+            "cart": int(slot.get("cart") or 0),
+            "shape": shape,
+            "shape_label": _WATCH_SHAPE_LABEL.get(shape, shape),
+            "thumb": wb_product_thumb_url(nm),
+            "url": f"https://www.wildberries.ru/catalog/{nm}/detail.aspx",
+        })
+    items.sort(key=lambda x: (-x["orders"], -x["cart"], -x["opens"], x["vendor_code"]))
+    return items[:top_n]
+
+
+def _shelf_suggest_add(competitor: dict, shelf_items: list, top_n: int = 20) -> dict:
+    """Какие наши топ-продажи ещё не стоят в полке конкурента (с учётом формы)."""
+    own_map = _own_nm_vendor_map()
+    own_set = set(own_map.keys())
+    shelf_nms = set()
+    already = []
+    for it in shelf_items or []:
+        try:
+            nid = int(it.get("nm_id"))
+        except (TypeError, ValueError):
+            continue
+        shelf_nms.add(nid)
+        if nid in own_set:
+            vc = own_map.get(nid) or ""
+            already.append({
+                "nm_id": nid,
+                "vendor_code": vc,
+                "position": it.get("position"),
+                "brand": it.get("brand") or "",
+                "name": it.get("name") or "",
+                "thumb": it.get("thumb") or wb_product_thumb_url(nid),
+            })
+
+    comp_shape = _watch_shape("", competitor.get("name") or "", competitor.get("brand") or "")
+    if comp_shape == "unknown" and already:
+        shapes = [_watch_shape(a.get("vendor_code") or "", a.get("name") or "") for a in already]
+        sq = sum(1 for s in shapes if s == "square")
+        rd = sum(1 for s in shapes if s == "round")
+        if sq >= 2 and sq > rd:
+            comp_shape = "square"
+        elif rd >= 2 and rd > sq:
+            comp_shape = "round"
+
+    top = _own_top_sellers_week(top_n=top_n, days=7)
+    missing = [t for t in top if t["nm_id"] not in shelf_nms]
+
+    def sort_key(t):
+        sh = t.get("shape") or "unknown"
+        if comp_shape in ("round", "square"):
+            if sh == comp_shape:
+                bucket = 0
+            elif sh == "unknown":
+                bucket = 1
+            else:
+                bucket = 2
+        else:
+            bucket = 0
+        return (bucket, -int(t.get("orders") or 0), -int(t.get("cart") or 0))
+
+    missing.sort(key=sort_key)
+    same = [t for t in missing if t.get("shape") == comp_shape] if comp_shape in ("round", "square") else list(missing)
+    other = [t for t in missing if t not in same]
+
+    return {
+        "own_nm_ids": sorted(own_set),
+        "comp_shape": comp_shape,
+        "comp_shape_label": _WATCH_SHAPE_LABEL.get(comp_shape, comp_shape),
+        "top_period_days": 7,
+        "top_n": top_n,
+        "already_in_shelf": already,
+        "already_count": len(already),
+        "top_in_shelf_count": sum(1 for t in top if t["nm_id"] in shelf_nms),
+        "suggest_add": missing,
+        "suggest_same_shape": same,
+        "suggest_other_shape": other,
+        "top_sellers": top,
+    }
+
+
 @app.get("/api/competitor-shelf")
-def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
-    """Топ полки «Смотрите также» у конкурента + краткая карточка конкурента."""
+def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15, top: int = 20):
+    """Топ полки «Смотрите также» у конкурента + предложения из нашего топ-20 продаж за неделю."""
     if not nm_id or nm_id < 1:
         raise HTTPException(status_code=400, detail="nm_id required")
     limit = max(1, min(int(limit or 15), 30))
+    try:
+        top = max(5, min(int(top or 20), 40))
+    except (TypeError, ValueError):
+        top = 20
     try:
         dest = int(dest)
     except (TypeError, ValueError):
@@ -8464,21 +8709,25 @@ def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
     card = fetch_wb_card_brief(nm_id, dest=dest)
     shelf = fetch_wb_see_also_shelf(nm_id, dest=dest, limit=limit)
     city_name = next((c["name"] for c in WB_SEARCH_CITIES if c["dest"] == dest), str(dest))
+    competitor = card or {
+        "nm_id": nm_id,
+        "brand": "",
+        "name": "",
+        "thumb": wb_product_thumb_url(nm_id),
+        "url": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
+    }
+    items = shelf.get("items") or []
+    suggest = _shelf_suggest_add(competitor=competitor, shelf_items=items, top_n=top)
     return {
         "nm_id": nm_id,
         "dest": dest,
         "city": city_name,
         "limit": limit,
-        "competitor": card or {
-            "nm_id": nm_id,
-            "brand": "",
-            "name": "",
-            "thumb": wb_product_thumb_url(nm_id),
-            "url": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
-        },
-        "items": shelf.get("items") or [],
+        "competitor": competitor,
+        "items": items,
         "shelf_total": shelf.get("total") or 0,
         "error": shelf.get("error"),
+        **suggest,
     }
 
 

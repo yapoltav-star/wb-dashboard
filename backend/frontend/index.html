@@ -8194,6 +8194,77 @@ function isShelfMine(it, ownSet) {
   return ownSet.has(Number(it.nm_id)) || String(it.brand || '').toUpperCase() === 'PVS';
 }
 
+function copyShelfNm(nmId) {
+  const s = String(nmId || '');
+  if(!s) return;
+  if(navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(s).catch(()=>{});
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = s; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch(e) {}
+    document.body.removeChild(ta);
+  }
+}
+
+function buildShelfSuggestPanel(data) {
+  const suggest = data.suggest_add || [];
+  const same = data.suggest_same_shape || [];
+  const other = data.suggest_other_shape || [];
+  const already = data.already_in_shelf || [];
+  const topN = data.top_n || 20;
+  const days = data.top_period_days || 7;
+  const shapeLabel = data.comp_shape_label || 'неясно';
+  const inTop = data.top_in_shelf_count || 0;
+
+  const row = (t, dim) => {
+    const orders = Number(t.orders || 0);
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--wb-border);${dim?'opacity:.72':''}">
+      <img src="${t.thumb || wbThumbUrl(t.nm_id)}" width="40" height="40" alt="" loading="lazy"
+        style="border-radius:4px;object-fit:cover;background:#f3f3f3;flex-shrink:0"
+        onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(t.nm_id,'jpg')}';}else{this.style.display='none'}">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(t.vendor_code || t.nm_id)}</div>
+        <div style="font-size:10px;color:var(--wb-faint)">${t.nm_id} · ${orders} зак. · ${escapeHtml(t.shape_label || '')}</div>
+      </div>
+      <button class="filter-btn" onclick="copyShelfNm(${t.nm_id})" style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Скопировать nmID">копир.</button>
+      <a href="${t.url || ('https://www.wildberries.ru/catalog/'+t.nm_id+'/detail.aspx')}" target="_blank" rel="noopener"
+        style="font-size:11px;color:var(--wb-purple);flex-shrink:0">WB</a>
+    </div>`;
+  };
+
+  let body = '';
+  if(!suggest.length) {
+    body = `<div style="font-size:12px;color:var(--wb-muted);padding:12px 0">Все из топ-${topN} уже в полке или нет данных воронки за ${days} дн.</div>`;
+  } else if(data.comp_shape === 'round' || data.comp_shape === 'square') {
+    if(same.length) {
+      body += `<div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin:4px 0 6px">Сначала та же форма (${escapeHtml(shapeLabel)})</div>`;
+      body += same.map(t => row(t, false)).join('');
+    }
+    if(other.length) {
+      const otherLabel = data.comp_shape === 'square' ? 'круглые' : 'квадратные';
+      body += `<div style="font-size:11px;font-weight:600;color:var(--wb-faint);text-transform:uppercase;letter-spacing:.3px;margin:14px 0 6px">Потом другая форма (${otherLabel})</div>`;
+      body += other.map(t => row(t, true)).join('');
+    }
+  } else {
+    body = suggest.map(t => row(t, false)).join('');
+  }
+
+  const alreadyHtml = already.length
+    ? `<div style="font-size:11px;color:#047857;margin-top:8px">Уже в полке: ${already.map(a => escapeHtml(a.vendor_code || a.nm_id)).join(', ')}</div>`
+    : '';
+
+  return `<div style="border:1px solid var(--wb-border);border-radius:8px;background:var(--wb-surface);padding:12px 14px;min-width:300px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:4px">Что добавить в полку</div>
+    <div style="font-size:12px;color:var(--wb-muted);line-height:1.4;margin-bottom:8px">
+      Из нашего топ-${topN} продаж за ${days} дн. · форма конкурента: <b>${escapeHtml(shapeLabel)}</b><br>
+      Уже в полке из топа: <b>${inTop}</b> · предлагаем: <b>${suggest.length}</b>
+    </div>
+    ${alreadyHtml}
+    <div style="margin-top:8px;max-height:520px;overflow:auto">${body}</div>
+  </div>`;
+}
+
 function shelfBrandShares(items, ownSet) {
   const total = items.length || 1;
   const byBrand = {};
@@ -8238,6 +8309,7 @@ function drawShelfTable(data, opts) {
     return;
   }
   const ownSet = new Set((COMP_OWN_ARTICLES||[]).map(a => Number(a.nm_id)));
+  (data.own_nm_ids || []).forEach(n => ownSet.add(Number(n)));
   if(POS_ARTICLE && POS_ARTICLE.nm_id) ownSet.add(Number(POS_ARTICLE.nm_id));
   (typeof MY_SHELF_CARDS !== 'undefined' ? MY_SHELF_CARDS : []).forEach(a => {
     if(a && a.nm_id) ownSet.add(Number(a.nm_id));
@@ -8265,31 +8337,10 @@ function drawShelfTable(data, opts) {
     || `${comp.brand || 'Конкурент'} · ${comp.nm_id || data.nm_id}`;
   const titleSub = opts.subtitle
     || (opts.vendorCode ? `${comp.brand || ''} · ${comp.nm_id || data.nm_id}`.replace(/^\s·\s/, '') : (comp.name || ''));
-  root.innerHTML = `
-    <div style="padding:10px 20px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--wb-border);background:#FAFAFA">
-      <img src="${comp.thumb || wbThumbUrl(comp.nm_id || data.nm_id)}" width="48" height="48"
-        style="border-radius:6px;object-fit:cover;background:#eee"
-        onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(comp.nm_id||data.nm_id,'jpg')}';}else{this.style.display='none'}">
-      <div>
-        <div style="font-size:14px;font-weight:600">${escapeHtml(titleMain)}</div>
-        <div style="font-size:12px;color:var(--wb-muted)">${escapeHtml(titleSub || '')}${opts.vendorCode && comp.name ? ' · ' + escapeHtml(comp.name) : ''}</div>
-        <a href="${comp.url || ('https://www.wildberries.ru/catalog/'+(comp.nm_id||data.nm_id)+'/detail.aspx')}" target="_blank" rel="noopener"
-          style="font-size:12px;color:var(--wb-purple)">Открыть карточку на WB ↗</a>
-      </div>
-    </div>
 
-    <div style="padding:14px 20px;border-bottom:1px solid var(--wb-border)">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
-        <div style="font-size:13px;font-weight:600">Доля в топ-${shares.total}</div>
-        <div style="font-size:12px;color:var(--wb-muted)">
-          <b style="color:var(--wb-purple)">Я: ${shares.minePct}%</b> (${shares.mineCount})
-          · конкуренты: <b>${shares.othersPct}%</b> (${shares.othersCount})
-        </div>
-      </div>
-      <div style="display:flex;height:14px;border-radius:7px;overflow:hidden;background:#EEE;margin-bottom:12px">${barHtml}</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">${shareCards}</div>
-    </div>
-
+  const showSuggest = !opts.rootId || opts.rootId === 'shelfRoot';
+  const suggestHtml = showSuggest ? buildShelfSuggestPanel(data) : '';
+  const shelfTable = `
     <table class="comp-tbl" style="width:100%">
       <thead><tr>
         <th style="width:56px">#</th>
@@ -8317,6 +8368,38 @@ function drawShelfTable(data, opts) {
         }).join('')}
       </tbody>
     </table>`;
+
+  root.innerHTML = `
+    <div style="padding:10px 20px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--wb-border);background:#FAFAFA">
+      <img src="${comp.thumb || wbThumbUrl(comp.nm_id || data.nm_id)}" width="48" height="48"
+        style="border-radius:6px;object-fit:cover;background:#eee"
+        onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(comp.nm_id||data.nm_id,'jpg')}';}else{this.style.display='none'}">
+      <div>
+        <div style="font-size:14px;font-weight:600">${escapeHtml(titleMain)}</div>
+        <div style="font-size:12px;color:var(--wb-muted)">${escapeHtml(titleSub || '')}${opts.vendorCode && comp.name ? ' · ' + escapeHtml(comp.name) : ''}</div>
+        <a href="${comp.url || ('https://www.wildberries.ru/catalog/'+(comp.nm_id||data.nm_id)+'/detail.aspx')}" target="_blank" rel="noopener"
+          style="font-size:12px;color:var(--wb-purple)">Открыть карточку на WB ↗</a>
+      </div>
+    </div>
+
+    <div style="padding:14px 20px;border-bottom:1px solid var(--wb-border)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+        <div style="font-size:13px;font-weight:600">Доля в топ-${shares.total}</div>
+        <div style="font-size:12px;color:var(--wb-muted)">
+          <b style="color:var(--wb-purple)">Я: ${shares.minePct}%</b> (${shares.mineCount})
+          · конкуренты: <b>${shares.othersPct}%</b> (${shares.othersCount})
+        </div>
+      </div>
+      <div style="display:flex;height:14px;border-radius:7px;overflow:hidden;background:#EEE;margin-bottom:12px">${barHtml}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${shareCards}</div>
+    </div>
+
+    ${showSuggest
+      ? `<div style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(280px,.9fr);gap:16px;padding:14px 20px;align-items:start">
+          <div style="overflow:auto">${shelfTable}</div>
+          ${suggestHtml}
+        </div>`
+      : shelfTable}`;
 }
 
 // ─────────── Полки у моих карточек ───────────
