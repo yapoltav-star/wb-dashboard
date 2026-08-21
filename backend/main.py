@@ -8533,78 +8533,161 @@ def _own_nm_vendor_map() -> dict:
     return out
 
 
+_SHELF_TOP_CACHE = {"ts": 0.0, "days": 0, "items": []}
+
+
 def _own_top_sellers_week(top_n: int = 20, days: int = 7) -> list:
-    """Топ наших nm по заказам за последние days дней (article_daily_stats)."""
+    """Топ наших nm по заказам за последние days дней.
+    Источники: article_daily_stats → кэш sales-pace → живая воронка WB."""
     top_n = max(1, min(int(top_n or 20), 40))
     days = max(1, min(int(days or 7), 30))
-    dt_from = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
+    now_ts = time.time()
+    if (
+        _SHELF_TOP_CACHE.get("items")
+        and _SHELF_TOP_CACHE.get("days") == days
+        and now_ts - float(_SHELF_TOP_CACHE.get("ts") or 0) < 600
+    ):
+        return list(_SHELF_TOP_CACHE["items"])[:top_n]
+
     own_map = _own_nm_vendor_map()
-    if not own_map:
-        return []
-    try:
-        resp = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/article_daily_stats"
-            f"?dt=gte.{dt_from}&select=nm_id,vendor_code,orders,open_card,add_to_cart,dt&order=dt.desc",
-            headers=sb_headers(), timeout=30,
-        )
-        if not resp.is_success:
-            logger.warning(f"top sellers week: {resp.status_code}")
-            rows = []
-        else:
-            rows = resp.json() or []
-    except Exception as e:
-        logger.warning(f"top sellers week: {e}")
-        rows = []
-
+    dt_from = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
     agg = {}
-    for r in rows:
-        try:
-            nm = int(r.get("nm_id"))
-        except (TypeError, ValueError):
-            continue
-        if nm not in own_map:
-            continue
-        slot = agg.setdefault(nm, {
-            "nm_id": nm,
-            "vendor_code": (r.get("vendor_code") or own_map.get(nm) or str(nm)).strip(),
-            "orders": 0,
-            "opens": 0,
-            "cart": 0,
-        })
-        vc = (r.get("vendor_code") or "").strip()
-        if vc and (not slot["vendor_code"] or slot["vendor_code"] == str(nm)):
-            slot["vendor_code"] = vc
-        try:
-            slot["orders"] += int(r.get("orders") or 0)
-            slot["opens"] += int(r.get("open_card") or 0)
-            slot["cart"] += int(r.get("add_to_cart") or 0)
-        except (TypeError, ValueError):
-            pass
 
-    if not agg:
-        cached = ((SALES_PACE_CACHE.get("by_period") or {}).get("week") or {})
-        for a in cached.get("articles") or []:
+    # 1) дневная статистика в Supabase
+    if own_map:
+        try:
+            resp = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/article_daily_stats"
+                f"?dt=gte.{dt_from}&select=nm_id,vendor_code,orders,open_card,add_to_cart,dt&order=dt.desc",
+                headers=sb_headers(), timeout=30,
+            )
+            rows = resp.json() if resp.is_success else []
+        except Exception as e:
+            logger.warning(f"top sellers daily: {e}")
+            rows = []
+        for r in rows or []:
             try:
-                nm = int(a.get("nm_id"))
+                nm = int(r.get("nm_id"))
             except (TypeError, ValueError):
                 continue
             if nm not in own_map:
                 continue
-            agg[nm] = {
+            slot = agg.setdefault(nm, {
                 "nm_id": nm,
-                "vendor_code": (a.get("vendor_code") or own_map.get(nm) or str(nm)).strip(),
-                "orders": int(a.get("orders_today") or 0),
-                "opens": int(a.get("opens_today") or a.get("clicks_today") or 0),
-                "cart": int(a.get("cart_today") or 0),
-                "name": a.get("name") or "",
-            }
+                "vendor_code": (r.get("vendor_code") or own_map.get(nm) or str(nm)).strip(),
+                "orders": 0, "opens": 0, "cart": 0, "name": "",
+            })
+            vc = (r.get("vendor_code") or "").strip()
+            if vc and (not slot["vendor_code"] or slot["vendor_code"] == str(nm)):
+                slot["vendor_code"] = vc
+            try:
+                slot["orders"] += int(r.get("orders") or 0)
+                slot["opens"] += int(r.get("open_card") or 0)
+                slot["cart"] += int(r.get("add_to_cart") or 0)
+            except (TypeError, ValueError):
+                pass
+
+    # 2) кэш sales-pace (day/week)
+    if not agg:
+        by = SALES_PACE_CACHE.get("by_period") or {}
+        for key in ("week", "day"):
+            cached = by.get(key) or {}
+            arts = cached.get("articles") or []
+            if not arts:
+                continue
+            for a in arts:
+                try:
+                    nm = int(a.get("nm_id"))
+                except (TypeError, ValueError):
+                    continue
+                if own_map and nm not in own_map:
+                    continue
+                agg[nm] = {
+                    "nm_id": nm,
+                    "vendor_code": (a.get("vendor_code") or (own_map or {}).get(nm) or str(nm)).strip(),
+                    "orders": int(a.get("orders_today") or 0),
+                    "opens": int(a.get("opens_today") or a.get("clicks_today") or 0),
+                    "cart": int(a.get("cart_today") or 0),
+                    "name": a.get("name") or "",
+                }
+            if agg:
+                break
+
+    # 3) живая воронка WB за период (nm-report detail — все карточки продавца)
+    if not agg and WB_TOKEN:
+        end_d = datetime.now(timezone.utc).date()
+        begin_d = end_d - timedelta(days=days)
+        try:
+            resp = httpx.post(
+                f"{WB_ANALYTICS_URL}/api/analytics/v2/nm-report/detail",
+                headers=wb_headers(),
+                json={
+                    "period": {"begin": begin_d.isoformat(), "end": end_d.isoformat()},
+                    "brandNames": [], "objectIDs": [], "tagIDs": [],
+                    "nmIDs": [],
+                    "timezone": "Europe/Moscow",
+                    "page": 1,
+                },
+                timeout=45,
+            )
+            if resp.is_success:
+                cards = (resp.json() or {}).get("data", {}).get("cards") or []
+                for c in cards:
+                    nm = c.get("nmID") or c.get("nmId")
+                    try:
+                        nm = int(nm)
+                    except (TypeError, ValueError):
+                        continue
+                    if own_map and nm not in own_map:
+                        # всё равно берём — это карточки кабинета
+                        pass
+                    stats = (c.get("statistics") or {}).get("selectedPeriod") or {}
+                    vc = (own_map or {}).get(nm) or c.get("vendorCode") or str(nm)
+                    agg[nm] = {
+                        "nm_id": nm,
+                        "vendor_code": str(vc).strip(),
+                        "orders": int(stats.get("ordersCount") or 0),
+                        "opens": int(stats.get("openCardCount") or 0),
+                        "cart": int(stats.get("addToCartCount") or 0),
+                        "name": c.get("objectName") or c.get("brandName") or "",
+                    }
+            else:
+                logger.warning(f"top sellers live nm-report: {resp.status_code} {resp.text[:180]}")
+        except Exception as e:
+            logger.warning(f"top sellers live: {e}")
+
+    # 4) fallback: sales-funnel v3 по списку own nm (батчами)
+    if not agg and WB_TOKEN and own_map:
+        end_d = datetime.now(timezone.utc).date()
+        begin_d = end_d - timedelta(days=days)
+        ids = list(own_map.keys())
+        for i in range(0, len(ids), 100):
+            chunk = ids[i:i + 100]
+            stats = fetch_own_stats_v3(chunk, begin_d.isoformat(), end_d.isoformat())
+            for s in (stats or {}).values():
+                try:
+                    nm = int(s.get("nm_id"))
+                except (TypeError, ValueError):
+                    continue
+                agg[nm] = {
+                    "nm_id": nm,
+                    "vendor_code": (s.get("vendor_code") or own_map.get(nm) or str(nm)).strip(),
+                    "orders": int(s.get("orders") or 0),
+                    "opens": int(s.get("card_opens") or 0),
+                    "cart": int(s.get("cart_adds") or 0),
+                    "name": s.get("name") or "",
+                }
+            if i + 100 < len(ids):
+                time.sleep(1.1)
 
     items = []
     for nm, slot in agg.items():
-        vc = slot.get("vendor_code") or own_map.get(nm) or str(nm)
+        vc = slot.get("vendor_code") or (own_map or {}).get(nm) or str(nm)
         name = slot.get("name") or ""
         shape = _watch_shape(vc, name)
         if shape == "skip":
+            continue
+        if int(slot.get("orders") or 0) <= 0 and int(slot.get("cart") or 0) <= 0:
             continue
         items.append({
             "nm_id": nm,
@@ -8619,7 +8702,11 @@ def _own_top_sellers_week(top_n: int = 20, days: int = 7) -> list:
             "url": f"https://www.wildberries.ru/catalog/{nm}/detail.aspx",
         })
     items.sort(key=lambda x: (-x["orders"], -x["cart"], -x["opens"], x["vendor_code"]))
-    return items[:top_n]
+    items = items[:top_n]
+    _SHELF_TOP_CACHE["ts"] = now_ts
+    _SHELF_TOP_CACHE["days"] = days
+    _SHELF_TOP_CACHE["items"] = items
+    return items
 
 
 def _shelf_suggest_add(competitor: dict, shelf_items: list, top_n: int = 20) -> dict:
