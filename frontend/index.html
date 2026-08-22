@@ -8005,6 +8005,25 @@ let SHELF_COMPETITORS = JSON.parse(localStorage.getItem('shelf_competitors') || 
 let SHELF_ACTIVE = Number(localStorage.getItem('shelf_active_nm') || 0) || null;
 let SHELF_CACHE = {}; // nm_id -> {items, competitor, loaded_at, error}
 let SHELF_LOADING = false;
+let SHELF_SUGGEST_ADDED = JSON.parse(localStorage.getItem('shelf_suggest_added') || '{}'); // comp_nm -> [{nm_id, vendor_code, thumb?}]
+
+function shelfSuggestAddedList(compNm) {
+  const k = String(compNm || SHELF_ACTIVE || '');
+  return Array.isArray(SHELF_SUGGEST_ADDED[k]) ? SHELF_SUGGEST_ADDED[k] : [];
+}
+
+function saveShelfSuggestAdded(compNm, list) {
+  const k = String(compNm || SHELF_ACTIVE || '');
+  if(!k) return;
+  SHELF_SUGGEST_ADDED[k] = list;
+  localStorage.setItem('shelf_suggest_added', JSON.stringify(SHELF_SUGGEST_ADDED));
+}
+
+function refreshShelfSuggestPanel() {
+  if(SHELF_ACTIVE && SHELF_CACHE[SHELF_ACTIVE] && SHELF_CACHE[SHELF_ACTIVE].items) {
+    drawShelfTable(SHELF_CACHE[SHELF_ACTIVE]);
+  }
+}
 
 function saveShelfCompetitors() {
   localStorage.setItem('shelf_competitors', JSON.stringify(SHELF_COMPETITORS));
@@ -8207,6 +8226,95 @@ function copyShelfNm(nmId) {
   }
 }
 
+function shelfSuggestItemRow(t, compNm, compBrand, compName, opts) {
+  opts = opts || {};
+  const orders = Number(t.orders || 0);
+  const vcJs = String(t.vendor_code || t.nm_id || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const metaBits = [`${t.nm_id}`];
+  if(orders) metaBits.push(`${orders} зак.`);
+  if(t.shape_label) metaBits.push(String(t.shape_label));
+  if(opts.inShelf) metaBits.push('уже в полке');
+  const removeBtn = opts.removable
+    ? `<span style="cursor:pointer;color:var(--wb-faint);font-size:14px;flex-shrink:0" title="Убрать из списка"
+        onclick="removeShelfSuggestArticle(${t.nm_id})">✕</span>`
+    : '';
+  return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--wb-border);flex-wrap:wrap;${opts.dim?'opacity:.72':''}">
+      <img src="${t.thumb || wbThumbUrl(t.nm_id)}" width="40" height="40" alt="" loading="lazy"
+        style="border-radius:4px;object-fit:cover;background:#f3f3f3;flex-shrink:0"
+        onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(t.nm_id,'jpg')}';}else{this.style.display='none'}">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(t.vendor_code || t.nm_id)}</div>
+        <div style="font-size:10px;color:var(--wb-faint)">${metaBits.map(x => escapeHtml(x)).join(' · ')}</div>
+      </div>
+      ${removeBtn}
+      <button class="filter-btn" onclick="copyShelfNm(${t.nm_id})" style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Скопировать nmID">копир.</button>
+      <a href="${t.url || ('https://www.wildberries.ru/catalog/'+t.nm_id+'/detail.aspx')}" target="_blank" rel="noopener"
+        style="font-size:11px;color:var(--wb-purple);flex-shrink:0">WB</a>
+      <button class="filter-btn" onclick="sendShelfBoostTask('afina','${vcJs}',${t.nm_id},${compNm},'${compBrand}','${compName}',this)"
+        style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Задача в CRM: прокачать полки">Афине</button>
+      <button class="filter-btn" onclick="sendShelfBoostTask('zaira','${vcJs}',${t.nm_id},${compNm},'${compBrand}','${compName}',this)"
+        style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Задача в CRM: прокачать полки">Заире</button>
+    </div>`;
+}
+
+async function searchShelfSuggestArticles(q) {
+  const dd = document.getElementById('shelfSuggestArtDropdown');
+  if(!dd) return;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/search-own-articles?q=${encodeURIComponent((q||'').trim())}`);
+    const results = await r.json();
+    if(!Array.isArray(results) || !results.length) {
+      dd.style.display = (q||'').trim() ? 'block' : 'none';
+      dd.innerHTML = (q||'').trim()
+        ? `<div style="padding:10px 12px;font-size:12px;color:var(--wb-muted)">Ничего не найдено</div>`
+        : '';
+      return;
+    }
+    const prefix = (q||'').trim().replace(/\.+$/,'').toLowerCase();
+    dd.style.display = 'block';
+    dd.innerHTML = results.map(a => {
+      const vc = String(a.vendor_code || '');
+      let label = vc;
+      if(prefix && vc.toLowerCase().startsWith(prefix)) {
+        label = `<span style="color:var(--wb-purple)">${escapeHtml(vc.slice(0, prefix.length))}</span>${escapeHtml(vc.slice(prefix.length))}`;
+      } else {
+        label = `<b>${escapeHtml(vc)}</b>`;
+      }
+      const safeVc = vc.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      return `<div style="padding:8px 12px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--wb-border)"
+        onmousedown="addShelfSuggestArticle(${a.nm_id},'${safeVc}')"
+        onmouseover="this.style.background='var(--wb-bg)'" onmouseout="this.style.background=''">
+        ${label} <span style="color:var(--wb-faint)">${a.nm_id}</span>
+      </div>`;
+    }).join('');
+  } catch(e) { dd.style.display = 'none'; }
+}
+
+function addShelfSuggestArticle(nmId, vendorCode) {
+  if(!SHELF_ACTIVE) return;
+  const dd = document.getElementById('shelfSuggestArtDropdown');
+  if(dd) dd.style.display = 'none';
+  const inp = document.getElementById('shelfSuggestArtSearch');
+  if(inp) inp.value = '';
+  const list = shelfSuggestAddedList(SHELF_ACTIVE);
+  if(list.some(x => Number(x.nm_id) === Number(nmId))) return;
+  list.unshift({
+    nm_id: Number(nmId),
+    vendor_code: vendorCode || String(nmId),
+    thumb: wbThumbUrl(nmId),
+    url: `https://www.wildberries.ru/catalog/${nmId}/detail.aspx`,
+  });
+  saveShelfSuggestAdded(SHELF_ACTIVE, list);
+  refreshShelfSuggestPanel();
+}
+
+function removeShelfSuggestArticle(nmId) {
+  if(!SHELF_ACTIVE) return;
+  const list = shelfSuggestAddedList(SHELF_ACTIVE).filter(x => Number(x.nm_id) !== Number(nmId));
+  saveShelfSuggestAdded(SHELF_ACTIVE, list);
+  refreshShelfSuggestPanel();
+}
+
 async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, competitorBrand, competitorName, btn) {
   const who = manager === 'zaira' ? 'Заире' : 'Афине';
   if(!ownNm || !competitorNm) {
@@ -8259,27 +8367,11 @@ function buildShelfSuggestPanel(data) {
   const compNm = Number(data.nm_id || SHELF_ACTIVE || 0) || 0;
   const compBrand = String((data.competitor && data.competitor.brand) || '').replace(/'/g, "\\'");
   const compName = String((data.competitor && data.competitor.name) || '').replace(/'/g, "\\'");
+  const shelfNmSet = new Set((data.items || []).map(it => Number(it.nm_id)));
+  const addedManual = shelfSuggestAddedList(compNm);
+  const addedNms = new Set(addedManual.map(x => Number(x.nm_id)));
 
-  const row = (t, dim) => {
-    const orders = Number(t.orders || 0);
-    const vcJs = String(t.vendor_code || t.nm_id || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--wb-border);flex-wrap:wrap;${dim?'opacity:.72':''}">
-      <img src="${t.thumb || wbThumbUrl(t.nm_id)}" width="40" height="40" alt="" loading="lazy"
-        style="border-radius:4px;object-fit:cover;background:#f3f3f3;flex-shrink:0"
-        onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(t.nm_id,'jpg')}';}else{this.style.display='none'}">
-      <div style="flex:1;min-width:0">
-        <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(t.vendor_code || t.nm_id)}</div>
-        <div style="font-size:10px;color:var(--wb-faint)">${t.nm_id} · ${orders} зак. · ${escapeHtml(t.shape_label || '')}</div>
-      </div>
-      <button class="filter-btn" onclick="copyShelfNm(${t.nm_id})" style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Скопировать nmID">копир.</button>
-      <a href="${t.url || ('https://www.wildberries.ru/catalog/'+t.nm_id+'/detail.aspx')}" target="_blank" rel="noopener"
-        style="font-size:11px;color:var(--wb-purple);flex-shrink:0">WB</a>
-      <button class="filter-btn" onclick="sendShelfBoostTask('afina','${vcJs}',${t.nm_id},${compNm},'${compBrand}','${compName}',this)"
-        style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Задача в CRM: прокачать полки">Афине</button>
-      <button class="filter-btn" onclick="sendShelfBoostTask('zaira','${vcJs}',${t.nm_id},${compNm},'${compBrand}','${compName}',this)"
-        style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Задача в CRM: прокачать полки">Заире</button>
-    </div>`;
-  };
+  const row = (t, dim, extra) => shelfSuggestItemRow(t, compNm, compBrand, compName, {dim, ...(extra || {})});
 
   let body = '';
   if(!suggest.length) {
@@ -8290,29 +8382,47 @@ function buildShelfSuggestPanel(data) {
   } else if(data.comp_shape === 'round' || data.comp_shape === 'square') {
     if(same.length) {
       body += `<div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin:4px 0 6px">Сначала та же форма (${escapeHtml(shapeLabel)})</div>`;
-      body += same.map(t => row(t, false)).join('');
+      body += same.filter(t => !addedNms.has(Number(t.nm_id))).map(t => row(t, false)).join('');
     }
     if(other.length) {
       const otherLabel = data.comp_shape === 'square' ? 'круглые' : 'квадратные';
       body += `<div style="font-size:11px;font-weight:600;color:var(--wb-faint);text-transform:uppercase;letter-spacing:.3px;margin:14px 0 6px">Потом другая форма (${otherLabel})</div>`;
-      body += other.map(t => row(t, true)).join('');
+      body += other.filter(t => !addedNms.has(Number(t.nm_id))).map(t => row(t, true)).join('');
     }
   } else {
-    body = suggest.map(t => row(t, false)).join('');
+    body = suggest.filter(t => !addedNms.has(Number(t.nm_id))).map(t => row(t, false)).join('');
   }
 
   const alreadyHtml = already.length
     ? `<div style="font-size:11px;color:#047857;margin-top:8px">Уже в полке: ${already.map(a => escapeHtml(a.vendor_code || a.nm_id)).join(', ')}</div>`
     : '';
 
+  const addedBody = addedManual.length
+    ? addedManual.map(t => row(t, false, { removable: true, inShelf: shelfNmSet.has(Number(t.nm_id)) })).join('')
+    : `<div style="font-size:12px;color:var(--wb-muted);padding:8px 0">Пока пусто — найди артикул выше и кликни в списке</div>`;
+
   return `<div style="border:1px solid var(--wb-border);border-radius:8px;background:var(--wb-surface);padding:12px 14px;min-width:300px">
+    <div style="position:relative;margin-bottom:12px">
+      <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Наш артикул</div>
+      <input id="shelfSuggestArtSearch" placeholder="Артикул продавца, напр. 034…" autocomplete="off"
+        style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:100%;box-sizing:border-box"
+        oninput="searchShelfSuggestArticles(this.value)" onfocus="searchShelfSuggestArticles(this.value)">
+      <div id="shelfSuggestArtDropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--rs);z-index:120;max-height:240px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.1)"></div>
+    </div>
+
+    <div style="margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--wb-border)">
+      <div style="font-size:13px;font-weight:600;margin-bottom:4px">Добавленные <span style="font-weight:500;color:var(--wb-muted)">(${addedManual.length})</span></div>
+      <div style="font-size:11px;color:var(--wb-muted);margin-bottom:6px">Вручную выбранные · сохраняются для этого конкурента</div>
+      <div style="max-height:220px;overflow:auto">${addedBody}</div>
+    </div>
+
     <div style="font-size:13px;font-weight:600;margin-bottom:4px">Что добавить в полку</div>
     <div style="font-size:12px;color:var(--wb-muted);line-height:1.4;margin-bottom:8px">
       Из нашего топ-${topN} продаж за ${days} дн. · форма конкурента: <b>${escapeHtml(shapeLabel)}</b><br>
-      Уже в полке из топа: <b>${inTop}</b> · предлагаем: <b>${suggest.length}</b>
+      Уже в полке из топа: <b>${inTop}</b> · предлагаем: <b>${suggest.filter(t => !addedNms.has(Number(t.nm_id))).length}</b>
     </div>
     ${alreadyHtml}
-    <div style="margin-top:8px;max-height:520px;overflow:auto">${body}</div>
+    <div style="margin-top:8px;max-height:360px;overflow:auto">${body}</div>
   </div>`;
 }
 
@@ -8605,6 +8715,9 @@ document.addEventListener('click', e => {
   const dd = document.getElementById('myShelfArtDropdown');
   if(dd && !e.target.closest('#myShelfArtSearch') && !e.target.closest('#myShelfArtDropdown'))
     dd.style.display = 'none';
+  const sdd = document.getElementById('shelfSuggestArtDropdown');
+  if(sdd && !e.target.closest('#shelfSuggestArtSearch') && !e.target.closest('#shelfSuggestArtDropdown'))
+    sdd.style.display = 'none';
 });
 
 function upsertMyShelfCard(card, {select = false, toFront = false} = {}) {
