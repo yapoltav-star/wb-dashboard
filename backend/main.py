@@ -41,6 +41,14 @@ WB_CHAT_REPLIED_KEEP = 2500
 _WB_CHAT_LOCK = threading.Lock()
 _WB_CHAT_RUNNING = False
 
+# Team CRM — задачи «прокачать полки» менеджерам (Афина / Заира)
+CRM_API_URL = (os.getenv("CRM_API_URL") or os.getenv("TEAM_CRM_URL") or "").rstrip("/")
+CRM_PASSWORD = os.getenv("CRM_PASSWORD") or os.getenv("CRM_WEB_PASSWORD") or ""
+CRM_MANAGER_ALIASES = {
+    "afina": ("афина", "афине", "afina"),
+    "zaira": ("заира", "заире", "zaira"),
+}
+
 # Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
 # а агрегаты — переносим их в отдельные поля stock_totals вместо списка складов.
 STOCK_SPECIAL_FIELDS = {
@@ -8815,6 +8823,145 @@ def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15, top:
         "shelf_total": shelf.get("total") or 0,
         "error": shelf.get("error"),
         **suggest,
+    }
+
+
+def _crm_headers() -> dict:
+    h = {"Content-Type": "application/json"}
+    if CRM_PASSWORD:
+        h["x-crm-password"] = CRM_PASSWORD
+    return h
+
+
+def _crm_find_employee(employees: list, aliases: tuple) -> dict | None:
+    for emp in employees or []:
+        if not emp.get("active", True):
+            continue
+        name = str(emp.get("name") or "").strip().lower().replace("ё", "е")
+        if not name:
+            continue
+        for a in aliases:
+            if a in name:
+                return emp
+    return None
+
+
+@app.post("/api/crm-shelf-boost-task")
+async def crm_shelf_boost_task(request: dict):
+    """Создать в Team CRM задачу «прокачать полки» на Афину или Заиру.
+
+    Body: {
+      manager: "afina"|"zaira",
+      own_vendor_code, own_nm_id,
+      competitor_nm_id, competitor_brand?, competitor_name?
+    }
+    """
+    if not CRM_API_URL:
+        return {
+            "ok": False,
+            "error": "CRM_API_URL не задан в Railway (URL team-crm без слэша в конце)",
+        }
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+
+    manager_key = str(request.get("manager") or "").strip().lower()
+    aliases = CRM_MANAGER_ALIASES.get(manager_key)
+    if not aliases:
+        return {"ok": False, "error": "manager: укажи afina или zaira"}
+
+    own_vc = str(request.get("own_vendor_code") or "").strip()
+    try:
+        own_nm = int(request.get("own_nm_id"))
+        competitor_nm = int(request.get("competitor_nm_id"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "нужны own_nm_id и competitor_nm_id"}
+    if not own_vc:
+        own_vc = str(own_nm)
+    if own_nm < 1 or competitor_nm < 1:
+        return {"ok": False, "error": "некорректные nm_id"}
+
+    comp_brand = str(request.get("competitor_brand") or "").strip()
+    comp_name = str(request.get("competitor_name") or "").strip()
+
+    title = (
+        f'Раздача "{own_vc}" и {own_nm}, '
+        f'через этого конкурента "{competitor_nm}".'
+    )
+    marker = f"[dash:shelf-boost:{own_nm}:{competitor_nm}]"
+    comp_bits = [str(competitor_nm)]
+    if comp_brand:
+        comp_bits.insert(0, comp_brand)
+    if comp_name:
+        comp_bits.append(comp_name)
+    description = (
+        f"{marker}\n"
+        f"Прокачать полки.\n"
+        f"Наш: {own_vc} · https://www.wildberries.ru/catalog/{own_nm}/detail.aspx\n"
+        f"Конкурент: {' · '.join(comp_bits)} · "
+        f"https://www.wildberries.ru/catalog/{competitor_nm}/detail.aspx"
+    )
+
+    try:
+        board_resp = httpx.get(
+            f"{CRM_API_URL}/api/board",
+            headers=_crm_headers(),
+            timeout=25,
+        )
+    except Exception as e:
+        return {"ok": False, "error": f"CRM недоступен: {e}"}
+    if board_resp.status_code == 401:
+        return {"ok": False, "error": "CRM: неверный CRM_PASSWORD (x-crm-password)"}
+    if not board_resp.is_success:
+        return {"ok": False, "error": f"CRM board HTTP {board_resp.status_code}: {board_resp.text[:180]}"}
+
+    board = board_resp.json() or {}
+    employees = board.get("employees") or []
+    assignee = _crm_find_employee(employees, aliases)
+    if not assignee:
+        names = ", ".join(str(e.get("name") or "") for e in employees[:20])
+        return {
+            "ok": False,
+            "error": f"В CRM не найден менеджер «{manager_key}». Есть: {names}",
+        }
+
+    owner = next((e for e in employees if str(e.get("role") or "") == "owner"), None)
+    created_by_id = (owner or assignee).get("id")
+
+    payload = {
+        "title": title[:500],
+        "description": description[:2000],
+        "articles": f"{own_vc} {own_nm} / {competitor_nm}"[:500],
+        "assignee_id": assignee.get("id"),
+        "assignee_ids": [assignee.get("id")],
+        "created_by_id": created_by_id,
+        "status": "todo",
+        "kind": "once",
+        "priority": "normal",
+        "notify_now": True,
+    }
+    try:
+        create_resp = httpx.post(
+            f"{CRM_API_URL}/api/tasks",
+            headers=_crm_headers(),
+            json=payload,
+            timeout=30,
+        )
+    except Exception as e:
+        return {"ok": False, "error": f"CRM create: {e}"}
+    if not create_resp.is_success:
+        return {
+            "ok": False,
+            "error": f"CRM tasks HTTP {create_resp.status_code}: {create_resp.text[:220]}",
+        }
+    task = create_resp.json() or {}
+    return {
+        "ok": True,
+        "task_id": task.get("id"),
+        "title": task.get("title") or title,
+        "assignee_name": task.get("assignee_name") or assignee.get("name"),
+        "notified": task.get("notified"),
+        "notify_error": task.get("notify_error"),
+        "manager": manager_key,
     }
 
 

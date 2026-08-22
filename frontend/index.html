@@ -8207,6 +8207,45 @@ function copyShelfNm(nmId) {
   }
 }
 
+async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, competitorBrand, competitorName, btn) {
+  const who = manager === 'zaira' ? 'Заире' : 'Афине';
+  if(!ownNm || !competitorNm) {
+    alert('Нет артикулов для задачи');
+    return;
+  }
+  const preview = `Раздача "${ownVendor || ownNm}" и ${ownNm}, через этого конкурента "${competitorNm}".`;
+  if(!confirm(`Отправить задачу ${who}?\n\n${preview}`)) return;
+  const prev = btn ? btn.textContent : '';
+  if(btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/crm-shelf-boost-task`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        manager,
+        own_vendor_code: ownVendor || String(ownNm),
+        own_nm_id: Number(ownNm),
+        competitor_nm_id: Number(competitorNm),
+        competitor_brand: competitorBrand || '',
+        competitor_name: competitorName || '',
+      }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok || !d.ok) {
+      throw new Error(d.error || d.detail || `HTTP ${r.status}`);
+    }
+    let msg = `Задача #${d.task_id} → ${d.assignee_name || who}`;
+    if(d.notified === false) {
+      msg += `\nTelegram: ${d.notify_error || 'не ушло — пусть нажмёт /start у бота'}`;
+    }
+    alert(msg);
+    if(btn) btn.textContent = '✓';
+  } catch(e) {
+    alert('Не отправилось: ' + (e.message || e));
+    if(btn) { btn.disabled = false; btn.textContent = prev; }
+  }
+}
+
 function buildShelfSuggestPanel(data) {
   const suggest = data.suggest_add || [];
   const same = data.suggest_same_shape || [];
@@ -8217,9 +8256,14 @@ function buildShelfSuggestPanel(data) {
   const shapeLabel = data.comp_shape_label || 'неясно';
   const inTop = data.top_in_shelf_count || 0;
 
+  const compNm = Number(data.nm_id || SHELF_ACTIVE || 0) || 0;
+  const compBrand = String((data.competitor && data.competitor.brand) || '').replace(/'/g, "\\'");
+  const compName = String((data.competitor && data.competitor.name) || '').replace(/'/g, "\\'");
+
   const row = (t, dim) => {
     const orders = Number(t.orders || 0);
-    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--wb-border);${dim?'opacity:.72':''}">
+    const vcJs = String(t.vendor_code || t.nm_id || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--wb-border);flex-wrap:wrap;${dim?'opacity:.72':''}">
       <img src="${t.thumb || wbThumbUrl(t.nm_id)}" width="40" height="40" alt="" loading="lazy"
         style="border-radius:4px;object-fit:cover;background:#f3f3f3;flex-shrink:0"
         onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(t.nm_id,'jpg')}';}else{this.style.display='none'}">
@@ -8230,6 +8274,10 @@ function buildShelfSuggestPanel(data) {
       <button class="filter-btn" onclick="copyShelfNm(${t.nm_id})" style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Скопировать nmID">копир.</button>
       <a href="${t.url || ('https://www.wildberries.ru/catalog/'+t.nm_id+'/detail.aspx')}" target="_blank" rel="noopener"
         style="font-size:11px;color:var(--wb-purple);flex-shrink:0">WB</a>
+      <button class="filter-btn" onclick="sendShelfBoostTask('afina','${vcJs}',${t.nm_id},${compNm},'${compBrand}','${compName}',this)"
+        style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Задача в CRM: прокачать полки">Афине</button>
+      <button class="filter-btn" onclick="sendShelfBoostTask('zaira','${vcJs}',${t.nm_id},${compNm},'${compBrand}','${compName}',this)"
+        style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Задача в CRM: прокачать полки">Заире</button>
     </div>`;
   };
 
