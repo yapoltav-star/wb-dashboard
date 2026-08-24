@@ -1276,7 +1276,12 @@ def fetch_own_warehouse_stock() -> dict:
 
     col_vc = find_col("артикул продавца", "артикул")
     col_name = find_col("наименование", "название")
-    col_stock = find_col("остататки на складе", "остатки на складе")
+    col_stock = find_col(
+        "остататки на складе",
+        "остатки на складе",
+        "остаток на складе",
+        "остатки",
+    )
     col_note = find_col("примечание")
     if col_stock is None and len(header) > 11:
         col_stock = 11
@@ -1703,11 +1708,65 @@ def sync_own_warehouse():
     return {"status": "started"}
 
 
+_BARCODE_VENDOR_CACHE = {"ts": 0.0, "map": {}}
+_BARCODE_VENDOR_TTL = 3600
+
+
+def _normalize_barcode(bc: str) -> str:
+    s = str(bc or "").strip()
+    if s.endswith(".0"):
+        head = s[:-2]
+        if head.isdigit():
+            s = head
+    return s
+
+
+def _barcode_vendor_map(force: bool = False) -> dict[str, dict]:
+    """Баркод → {vendor_code, nm_id} из Content API."""
+    now = time.time()
+    cached = _BARCODE_VENDOR_CACHE.get("map") or {}
+    if not force and cached and now - float(_BARCODE_VENDOR_CACHE.get("ts") or 0) < _BARCODE_VENDOR_TTL:
+        return cached
+    mp: dict[str, dict] = {}
+    for row in fetch_all_card_skus():
+        bc = _normalize_barcode(row.get("sku"))
+        vc = (row.get("vendor_code") or "").strip()
+        if not bc or not vc:
+            continue
+        mp[bc] = {"vendor_code": vc, "nm_id": row.get("nm_id")}
+    _BARCODE_VENDOR_CACHE["ts"] = now
+    _BARCODE_VENDOR_CACHE["map"] = mp
+    return mp
+
+
+def _resolve_barcode_items(agg_by_bc: dict) -> tuple[list, list]:
+    bc_map = _barcode_vendor_map()
+    by_vc: dict[str, int] = {}
+    unmapped = []
+    for bc, qty in (agg_by_bc or {}).items():
+        bc_n = _normalize_barcode(bc)
+        try:
+            q = int(qty or 0)
+        except (TypeError, ValueError):
+            q = 0
+        if not bc_n or q <= 0:
+            continue
+        meta = bc_map.get(bc_n)
+        vc = (meta or {}).get("vendor_code") if meta else None
+        if not vc:
+            unmapped.append({"barcode": bc_n, "qty": q})
+            continue
+        by_vc[vc] = by_vc.get(vc, 0) + q
+    items = [{"vendor_code": vc, "qty": q} for vc, q in sorted(by_vc.items(), key=lambda x: -x[1])]
+    return items, unmapped
+
+
 def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
     """
-    Два формата отгрузки со своего склада:
-    1) shk-excel: колонки «Артикул поставщика» + «Количество»
-    2) WB-GI лист подбора: «Артикул продавца» (1 строка = 1 шт)
+    Форматы отгрузки / поступления со своего склада:
+    1) shk-excel: «Артикул поставщика» + «Количество» (или «Количество, шт»)
+    2) WB template: только «Баркод» + «Количество» → маппим в артикулы через Content API
+    3) WB-GI лист подбора: «Артикул продавца» (1 строка = 1 шт)
     """
     import io as _io
     try:
@@ -1730,18 +1789,40 @@ def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
         for i in range(min(12, len(df_raw))):
             vals = [str(v).strip().lower() if v is not None and str(v) != "nan" else "" for v in list(df_raw.iloc[i].values)]
             joined = " | ".join(vals)
+            has_vendor_col = any(
+                "артикул поставщика" in v or v == "артикул продавца"
+                for v in vals
+            )
             # shk / поставка: артикул + количество
-            vc_i = next((j for j, v in enumerate(vals) if "артикул поставщика" in v or v == "артикул продавца" or (v.startswith("артикул") and "wb" not in v and "баркод" not in v)), None)
+            vc_i = next(
+                (
+                    j
+                    for j, v in enumerate(vals)
+                    if "артикул поставщика" in v
+                    or v == "артикул продавца"
+                    or (
+                        v.startswith("артикул")
+                        and "wildberries" not in v
+                        and "баркод" not in v
+                    )
+                ),
+                None,
+            )
             qty_i = next((j for j, v in enumerate(vals) if v.startswith("количество")), None)
             if vc_i is not None and qty_i is not None:
                 header_row, col_vc, col_qty, kind = i, vc_i, qty_i, "shk"
                 break
             # лист подбора WB-GI
             if "артикул продавца" in joined and ("стикер" in joined or "баркод" in joined):
-                vc_i = next((j for j, v in enumerate(vals) if "артикул продавца" in v), None)
+                vc_i = next((j for j, v in enumerate(vals) if v == "артикул продавца"), None)
                 if vc_i is not None:
                     header_row, col_vc, col_qty, kind = i, vc_i, None, "picking"
                     break
+            # новый шаблон WB: только баркод + количество
+            bc_i = next((j for j, v in enumerate(vals) if v in ("баркод", "barcode", "штрихкод")), None)
+            if bc_i is not None and qty_i is not None and not has_vendor_col:
+                header_row, col_vc, col_qty, kind = i, bc_i, qty_i, "barcode"
+                break
             # fallback: shk headers slightly different
             if "артикул поставщика" in joined and "количество" in joined:
                 vc_i = next((j for j, v in enumerate(vals) if "артикул" in v), None)
@@ -1754,39 +1835,57 @@ def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
             continue
 
         agg = {}
+        unmapped_barcodes = []
         for i in range(header_row + 1, len(df_raw)):
             row = list(df_raw.iloc[i].values)
             if col_vc >= len(row):
                 continue
-            vc = str(row[col_vc] or "").strip()
-            if not vc or vc.lower() in ("nan", "none", "итого"):
+            raw_key = str(row[col_vc] or "").strip()
+            if not raw_key or raw_key.lower() in ("nan", "none", "итого"):
                 continue
             if kind == "picking":
                 qty = 1
+                vc = raw_key
+            elif kind == "barcode":
+                qty = _parse_int_cell(row[col_qty] if col_qty is not None and col_qty < len(row) else None) or 0
+                if qty <= 0:
+                    continue
+                agg[_normalize_barcode(raw_key)] = agg.get(_normalize_barcode(raw_key), 0) + qty
+                continue
             else:
+                vc = raw_key
                 qty = _parse_int_cell(row[col_qty] if col_qty is not None and col_qty < len(row) else None) or 0
             if qty <= 0:
                 continue
             agg[vc] = agg.get(vc, 0) + qty
 
-        items = [{"vendor_code": vc, "qty": q} for vc, q in sorted(agg.items(), key=lambda x: -x[1])]
+        if kind == "barcode":
+            items, unmapped_barcodes = _resolve_barcode_items(agg)
+        else:
+            items = [{"vendor_code": vc, "qty": q} for vc, q in sorted(agg.items(), key=lambda x: -x[1])]
+
         cand = {
             "kind": kind,
             "sheet": sheet,
             "items": items,
             "total_qty": sum(i["qty"] for i in items),
             "articles": len(items),
+            "unmapped_barcodes": unmapped_barcodes[:50],
         }
         if best is None or cand["total_qty"] > best["total_qty"]:
             best = cand
 
     if not best or not best["items"]:
-        return {
-            "error": (
-                "Не нашёл артикулы в файле. Ожидаю shk-excel "
-                "(Артикул поставщика + Количество) или лист подбора WB-GI (Артикул продавца)."
-            )
-        }
+        hint = (
+            "Не нашёл артикулы в файле. Ожидаю shk-excel "
+            "(Артикул поставщика + Количество), шаблон WB (Баркод + Количество) "
+            "или лист подбора WB-GI (Артикул продавца)."
+        )
+        unmapped = (best or {}).get("unmapped_barcodes") or []
+        if unmapped:
+            sample = ", ".join(f"{u['barcode']}×{u['qty']}" for u in unmapped[:5])
+            hint += f" Не сопоставлены баркоды ({len(unmapped)}): {sample}."
+        return {"error": hint}
     best["filename"] = filename or ""
     return best
 
@@ -2034,6 +2133,7 @@ async def own_warehouse_upload_shipment(
             "items": items,
             "total_qty": total_qty,
             "articles": len(items),
+            "unmapped_barcodes": parsed.get("unmapped_barcodes") or [],
         }
         shipments.insert(0, entry)
         applied.append(entry)
@@ -2059,6 +2159,7 @@ async def own_warehouse_upload_shipment(
                 "total_qty": a["total_qty"],
                 "articles": a["articles"],
                 "items": a["items"][:40],
+                "unmapped_barcodes": (a.get("unmapped_barcodes") or [])[:20],
             }
             for a in applied
         ],
@@ -2115,6 +2216,7 @@ async def own_warehouse_upload_receipt(
             "items": items,
             "total_qty": total_qty,
             "articles": len(items),
+            "unmapped_barcodes": parsed.get("unmapped_barcodes") or [],
         }
         receipts.insert(0, entry)
         applied.append(entry)
@@ -2136,6 +2238,7 @@ async def own_warehouse_upload_receipt(
                 "total_qty": a["total_qty"],
                 "articles": a["articles"],
                 "items": a["items"][:40],
+                "unmapped_barcodes": (a.get("unmapped_barcodes") or [])[:20],
             }
             for a in applied
         ],

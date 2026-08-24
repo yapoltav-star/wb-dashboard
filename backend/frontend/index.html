@@ -940,7 +940,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
       <button class="action-btn" onclick="openOwnWhAliasesModal()" title="Если на Ozon другой SKU — привяжи к артикулу WB">🔗 Артикулы Ozon↔WB</button>
       <button class="action-btn primary" onclick="startOwnWhReceiptUpload()" title="Excel приёмки: артикул + количество (можно без заголовков)">＋ Поступление</button>
       <button class="action-btn" onclick="openOwnWhReceiptManual()" title="Ввести артикулы вручную">✏️ Список</button>
-      <button class="action-btn" onclick="startOwnWhUpload('fbw')" title="shk-excel или лист подбора WB-GI">📦 Поставка WB</button>
+      <button class="action-btn" onclick="startOwnWhUpload('fbw')" title="shk-excel, шаблон WB (Баркод+Количество) или лист подбора WB-GI">📦 Поставка WB</button>
       <button class="action-btn" onclick="startOwnWhUpload('fbs')" title="Отгрузка FBS WB">📦 FBS WB</button>
       <button class="action-btn" onclick="startOwnWhUpload('ozon_fbo')" title="Поставка / FBO Ozon">📦 Поставка Ozon</button>
       <button class="action-btn" onclick="startOwnWhUpload('ozon_fbs')" title="Отгрузка FBS Ozon">📦 FBS Ozon</button>
@@ -2010,6 +2010,12 @@ async function uploadOwnWhShipments(fileList) {
       const top = applied[0].items.slice(0, 8).map(it => `${it.vendor_code} −${it.qty}`).join('\n');
       msg += '\n\nАртикулы:\n' + top + (applied[0].items.length > 8 ? '\n…' : '');
     }
+    const unmapped = (applied[0] && applied[0].unmapped_barcodes) || [];
+    if(unmapped.length) {
+      msg += `\n\n⚠ Не сопоставлены баркоды (${unmapped.length}): ` +
+        unmapped.slice(0, 5).map(u => `${u.barcode}×${u.qty}`).join(', ') +
+        (unmapped.length > 5 ? '…' : '');
+    }
     if(errs.length) msg += `\n\nОшибки: ${errs.map(e => e.filename + ': ' + e.error).join('; ')}`;
     alert(msg + (d.note ? '\n\n' + d.note : ''));
     drawOwnWarehouse();
@@ -2038,6 +2044,12 @@ async function uploadOwnWhReceipts(fileList) {
     let msg = applied.length
       ? `Поступление: +${sumQty} шт из ${applied.length} файл(ов)`
       : 'Ничего не добавлено';
+    const unmapped = (applied[0] && applied[0].unmapped_barcodes) || [];
+    if(unmapped.length) {
+      msg += `\n\n⚠ Не сопоставлены баркоды (${unmapped.length}): ` +
+        unmapped.slice(0, 5).map(u => `${u.barcode}×${u.qty}`).join(', ') +
+        (unmapped.length > 5 ? '…' : '');
+    }
     if((d.errors || []).length) msg += `\n\nОшибки: ${d.errors.map(e => e.filename + ': ' + e.error).join('; ')}`;
     alert(msg + (d.note ? '\n\n' + d.note : ''));
     drawOwnWarehouse();
