@@ -7002,13 +7002,102 @@ WB_PRODUCTS_CACHE = {
     "updated_at": None,
     "stock_updated_at": None,
     "prices_updated_at": None,
+    "sales_updated_at": None,
     "syncing": False,
     "error": None,
+    "sales_by_nm": {},  # nm -> {yesterday, d7, d28}
 }
 
 
-def build_wb_products_catalog() -> dict:
-    """Каталог товаров: цена покупателя, остаток по складам, канал FBW/FBS."""
+def _fetch_orders_sales_periods_fast() -> dict:
+    """Только Supabase article_daily_stats (без медленного Statistics API)."""
+    now = _msk_now()
+    today = now.date()
+    yest = today - timedelta(days=1)
+    start_7 = today - timedelta(days=6)
+    start_28 = today - timedelta(days=27)
+    out = {}
+    try:
+        dt_from = start_28.isoformat()
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/article_daily_stats"
+            f"?dt=gte.{dt_from}&select=nm_id,dt,orders&limit=50000",
+            headers=sb_headers(),
+            timeout=30,
+        )
+        rows = resp.json() if resp.is_success else []
+        if not isinstance(rows, list):
+            return out
+        for row in rows:
+            try:
+                nm = int(row.get("nm_id"))
+            except (TypeError, ValueError):
+                continue
+            try:
+                d = datetime.strptime(str(row.get("dt"))[:10], "%Y-%m-%d").date()
+            except Exception:
+                continue
+            qty = int(row.get("orders") or 0)
+            if qty <= 0:
+                continue
+            slot = out.setdefault(nm, {"yesterday": 0, "d7": 0, "d28": 0})
+            if d == yest:
+                slot["yesterday"] += qty
+            if start_7 <= d <= today:
+                slot["d7"] += qty
+            if start_28 <= d <= today:
+                slot["d28"] += qty
+    except Exception as e:
+        logger.error(f"wb-products daily_stats sales: {e}")
+    return out
+
+
+def _fetch_orders_sales_periods() -> dict:
+    """Заказы: сначала daily_stats, иначе Statistics API supplier/orders. Даты по Москве."""
+    out = _fetch_orders_sales_periods_fast()
+    if out:
+        logger.info(f"wb-products sales from daily_stats: {len(out)} nms")
+        return out
+
+    now = _msk_now()
+    today = now.date()
+    yest = today - timedelta(days=1)
+    start_7 = today - timedelta(days=6)
+    start_28 = today - timedelta(days=27)
+    if not WB_TOKEN:
+        return out
+    try:
+        date_from = start_28.strftime("%Y-%m-%dT00:00:00")
+        orders = fetch_supplier_feed("/api/v1/supplier/orders", date_from, max_pages=5)
+        for o in orders or []:
+            nm = o.get("nmId")
+            if not nm:
+                continue
+            try:
+                nm = int(nm)
+            except (TypeError, ValueError):
+                continue
+            d = parse_wb_dt(o.get("date", ""))
+            if d is None:
+                continue
+            day = d.date() if hasattr(d, "date") else d
+            if day < start_28 or day > today:
+                continue
+            slot = out.setdefault(nm, {"yesterday": 0, "d7": 0, "d28": 0})
+            if day == yest:
+                slot["yesterday"] += 1
+            if start_7 <= day <= today:
+                slot["d7"] += 1
+            if start_28 <= day <= today:
+                slot["d28"] += 1
+        logger.info(f"wb-products sales from orders API: {len(out)} nms, rows={len(orders or [])}")
+    except Exception as e:
+        logger.error(f"wb-products orders sales: {e}")
+    return out
+
+
+def build_wb_products_catalog(sales_by_nm: dict | None = None) -> dict:
+    """Каталог товаров: цена покупателя, остаток по складам, канал FBW/FBS, продажи."""
     totals = []
     warehouses = []
     try:
@@ -7078,7 +7167,23 @@ def build_wb_products_catalog() -> dict:
             continue
         price_map[nm] = a
 
-    nm_ids = set(totals_map.keys()) | set(by_nm_wh.keys()) | set(price_map.keys())
+    if sales_by_nm is None:
+        sales_by_nm = WB_PRODUCTS_CACHE.get("sales_by_nm") or {}
+    # ключи могли прийти строками из JSON-кэша
+    sales_norm = {}
+    for k, v in (sales_by_nm or {}).items():
+        try:
+            sales_norm[int(k)] = v if isinstance(v, dict) else {}
+        except (TypeError, ValueError):
+            continue
+
+    vc_map = {}
+    try:
+        vc_map = build_nm_to_vendor_map() or {}
+    except Exception:
+        vc_map = {}
+
+    nm_ids = set(totals_map.keys()) | set(by_nm_wh.keys()) | set(price_map.keys()) | set(sales_norm.keys())
     products = []
     for nm in nm_ids:
         t = totals_map.get(nm) or {}
@@ -7097,9 +7202,17 @@ def build_wb_products_catalog() -> dict:
                 channels.append(ch)
         if not channels and stock > 0:
             channels = ["FBW"]
-        vc = (p.get("vendor_code") or t.get("vendor_code") or "").strip() or str(nm)
+        vc = (
+            (p.get("vendor_code") or "").strip()
+            or (t.get("vendor_code") or "").strip()
+            or (vc_map.get(nm) or "").strip()
+            or str(nm)
+        )
+        if vc == str(nm) and vc_map.get(nm):
+            vc = str(vc_map.get(nm)).strip()
         client_price = p.get("client_price")
         sale_price = p.get("sale_price")
+        sales = sales_norm.get(nm) or {}
         products.append({
             "nm_id": nm,
             "vendor_code": vc,
@@ -7111,10 +7224,17 @@ def build_wb_products_catalog() -> dict:
             "warehouse_count": len(wh_list),
             "warehouses": wh_list,
             "channels": channels,
+            "sales_yesterday": int(sales.get("yesterday") or 0),
+            "sales_7d": int(sales.get("d7") or 0),
+            "sales_28d": int(sales.get("d28") or 0),
             "url": f"https://www.wildberries.ru/catalog/{nm}/detail.aspx",
         })
 
-    products.sort(key=lambda x: (-(x.get("stock") or 0), str(x.get("vendor_code") or "").lower()))
+    products.sort(key=lambda x: (
+        -(x.get("sales_7d") or 0),
+        -(x.get("stock") or 0),
+        str(x.get("vendor_code") or "").lower(),
+    ))
     stock_updated_fmt = None
     if stock_updated:
         try:
@@ -7130,6 +7250,8 @@ def build_wb_products_catalog() -> dict:
         "updated_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
         "stock_updated_at": stock_updated_fmt,
         "prices_updated_at": SPP_CACHE.get("updated_at"),
+        "sales_updated_at": WB_PRODUCTS_CACHE.get("sales_updated_at"),
+        "sales_by_nm": sales_norm,
         "error": None,
     }
 
@@ -7150,7 +7272,26 @@ def refresh_wb_products_catalog(sync_sources: bool = False):
                     sync_spp_prices()
                 except Exception as e:
                     logger.error(f"wb-products sync_spp: {e}")
-        data = build_wb_products_catalog()
+            try:
+                # подтянуть дневную статистику (если таблица есть) — для быстрых периодов
+                sync_article_daily_stats(30)
+            except Exception as e:
+                logger.warning(f"wb-products sync_daily: {e}")
+            try:
+                sales = _fetch_orders_sales_periods()
+                WB_PRODUCTS_CACHE["sales_by_nm"] = sales
+                WB_PRODUCTS_CACHE["sales_updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+            except Exception as e:
+                logger.error(f"wb-products sales: {e}")
+        elif not WB_PRODUCTS_CACHE.get("sales_by_nm"):
+            try:
+                sales = _fetch_orders_sales_periods_fast()
+                WB_PRODUCTS_CACHE["sales_by_nm"] = sales
+                if sales:
+                    WB_PRODUCTS_CACHE["sales_updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+            except Exception as e:
+                logger.error(f"wb-products sales soft: {e}")
+        data = build_wb_products_catalog(WB_PRODUCTS_CACHE.get("sales_by_nm") or {})
         WB_PRODUCTS_CACHE.update(data)
         WB_PRODUCTS_CACHE["syncing"] = False
     except Exception as e:
@@ -7161,11 +7302,20 @@ def refresh_wb_products_catalog(sync_sources: bool = False):
 
 @app.get("/api/wb-products")
 def get_wb_products(refresh: bool = False):
-    """Товары WB: цена покупателя, остаток (склады), канал FBW/FBS."""
+    """Товары WB: цена покупателя, остаток (склады), канал FBW/FBS, продажи."""
     need = refresh or not WB_PRODUCTS_CACHE.get("products")
     if need and not WB_PRODUCTS_CACHE.get("syncing"):
         try:
-            data = build_wb_products_catalog()
+            # продажи: только быстрый daily_stats; полный orders — через sync-wb-products
+            if not WB_PRODUCTS_CACHE.get("sales_by_nm"):
+                try:
+                    sales = _fetch_orders_sales_periods_fast()
+                    if sales:
+                        WB_PRODUCTS_CACHE["sales_by_nm"] = sales
+                        WB_PRODUCTS_CACHE["sales_updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+                except Exception:
+                    pass
+            data = build_wb_products_catalog(WB_PRODUCTS_CACHE.get("sales_by_nm") or {})
             WB_PRODUCTS_CACHE.update({**data, "syncing": False, "error": None})
         except Exception as e:
             WB_PRODUCTS_CACHE["error"] = str(e)
@@ -7176,6 +7326,7 @@ def get_wb_products(refresh: bool = False):
         "updated_at": WB_PRODUCTS_CACHE.get("updated_at"),
         "stock_updated_at": WB_PRODUCTS_CACHE.get("stock_updated_at"),
         "prices_updated_at": WB_PRODUCTS_CACHE.get("prices_updated_at"),
+        "sales_updated_at": WB_PRODUCTS_CACHE.get("sales_updated_at"),
         "syncing": WB_PRODUCTS_CACHE.get("syncing", False),
         "error": WB_PRODUCTS_CACHE.get("error"),
     }
