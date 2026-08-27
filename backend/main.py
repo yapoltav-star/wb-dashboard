@@ -866,7 +866,9 @@ OWN_WAREHOUSE_SHEET_ID = os.getenv(
     "OWN_WAREHOUSE_SHEET_ID",
     "1Lhoy4s_KX0pWndsd3Y5oCOjTFCtfEfVUM4AgtBv4Crc",
 )
-OWN_WAREHOUSE_GID = os.getenv("OWN_WAREHOUSE_GID", "1829622647")
+# Вкладка «Остатки на складе» (если на Railway задан старый OWN_WAREHOUSE_GID — обнови)
+OWN_WAREHOUSE_GID = os.getenv("OWN_WAREHOUSE_GID", "787686207")
+OWN_WAREHOUSE_GID_FALLBACKS = ("787686207", "0")
 OWN_WAREHOUSE_CACHE = {
     "title": None,
     "as_of": None,
@@ -1232,31 +1234,67 @@ def _parse_int_cell(v):
     except Exception:
         return None
 
+def _download_own_warehouse_csv() -> str:
+    """Скачивает CSV вкладки остатков. export → gviz; при 400 пробует запасные gid."""
+    if not OWN_WAREHOUSE_SHEET_ID:
+        raise RuntimeError("OWN_WAREHOUSE_SHEET_ID не задан — вкладка «Наш склад» опциональна")
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; wb-dashboard/1.0)"}
+    gids = []
+    for g in (OWN_WAREHOUSE_GID, *OWN_WAREHOUSE_GID_FALLBACKS):
+        g = str(g or "").strip()
+        if g and g not in gids:
+            gids.append(g)
+    last_err = None
+    for gid in gids:
+        urls = [
+            f"https://docs.google.com/spreadsheets/d/{OWN_WAREHOUSE_SHEET_ID}/export?format=csv&gid={gid}",
+            f"https://docs.google.com/spreadsheets/d/{OWN_WAREHOUSE_SHEET_ID}/gviz/tq?tqx=out:csv&gid={gid}",
+        ]
+        for url in urls:
+            try:
+                resp = httpx.get(url, timeout=30, follow_redirects=True, headers=headers)
+            except Exception as e:
+                last_err = e
+                continue
+            if not resp.is_success:
+                last_err = RuntimeError(f"Google Sheets HTTP {resp.status_code} (gid={gid})")
+                continue
+            text = resp.text or ""
+            if not text.strip() or text.lstrip().startswith("<!"):
+                last_err = RuntimeError("Таблица недоступна (нужен доступ «все у кого есть ссылка»)")
+                continue
+            # похоже на вкладку остатков
+            low = text[:2000].lower()
+            if "артикул" in low or "остатк" in low or "наименование" in low:
+                return text
+            last_err = RuntimeError(f"Не похоже на лист остатков (gid={gid})")
+    raise RuntimeError(str(last_err) if last_err else "Не удалось скачать Google Sheets")
+
+
 def fetch_own_warehouse_stock() -> dict:
     """Тянет CSV из Google Sheets «Остатки на складе».
     Берём только 1-ю таблицу (до ИТОГО / «Принято на склад»), без блоков принято/обмен.
-    Строим семьи артикулов: пустые строки-артикулы под основным (044→037) делят остаток."""
-    if not OWN_WAREHOUSE_SHEET_ID:
-        raise RuntimeError("OWN_WAREHOUSE_SHEET_ID не задан — вкладка «Наш склад» опциональна")
+    Строим семьи артикулов: пустые строки-артикулы под основным (044→037) делят остаток.
+    Строки без артикула продавца (есть только наименование) — тоже в списке как «товар без продаж»."""
     import csv as _csv
     import re as _re
-    gid = OWN_WAREHOUSE_GID or "0"
-    url = (
-        f"https://docs.google.com/spreadsheets/d/{OWN_WAREHOUSE_SHEET_ID}"
-        f"/export?format=csv&gid={gid}"
-    )
-    resp = httpx.get(url, timeout=30, follow_redirects=True)
-    if not resp.is_success:
-        raise RuntimeError(f"Google Sheets HTTP {resp.status_code}")
-    text = resp.text
-    if not text.strip() or text.lstrip().startswith("<!"):
-        raise RuntimeError("Таблица недоступна (нужен доступ «все у кого есть ссылка»)")
 
+    text = _download_own_warehouse_csv()
     rows_raw = list(_csv.reader(io.StringIO(text)))
     if len(rows_raw) < 2:
         raise RuntimeError("Пустая таблица")
 
-    title = (rows_raw[0][0] if rows_raw[0] else "").strip()
+    # Иногда gviz склеивает заголовок в одну строку — ищем строку с «артикул»
+    header_idx = 1
+    for i, r in enumerate(rows_raw[:5]):
+        joined = " ".join(str(c).lower() for c in r)
+        if "артикул" in joined and ("наименован" in joined or "остатк" in joined or "на складе" in joined):
+            header_idx = i
+            break
+    title_row = rows_raw[0] if header_idx > 0 else rows_raw[header_idx]
+    title = (title_row[0] if title_row else "").strip()
+    if "артикул" in title.lower():
+        title = "Остатки на складе"
     as_of = None
     m = _re.search(r"(\d{1,2})[./](\d{1,2})[./](\d{2,4})", title)
     if m:
@@ -1264,8 +1302,15 @@ def fetch_own_warehouse_stock() -> dict:
         if len(y) == 2:
             y = "20" + y
         as_of = f"{int(d):02d}.{int(mo):02d}.{y}"
+    if not as_of:
+        m2 = _re.search(r"(\d{1,2})[./](\d{1,2})[./](\d{2,4})", " ".join(str(c) for c in rows_raw[0]))
+        if m2:
+            d, mo, y = m2.group(1), m2.group(2), m2.group(3)
+            if len(y) == 2:
+                y = "20" + y
+            as_of = f"{int(d):02d}.{int(mo):02d}.{y}"
 
-    header = [str(h).strip().lower() for h in rows_raw[1]]
+    header = [str(h).strip().lower() for h in rows_raw[header_idx]]
 
     def find_col(*needles):
         for i, h in enumerate(header):
@@ -1282,9 +1327,9 @@ def fetch_own_warehouse_stock() -> dict:
         "остаток на складе",
         "остатки",
     )
-    col_note = find_col("примечание")
+    col_note = find_col("примечание", "комплект")
     if col_stock is None and len(header) > 11:
-        col_stock = 11
+        col_stock = 12 if len(header) > 12 else 11
     if col_vc is None:
         col_vc = 1
     if col_name is None:
@@ -1292,7 +1337,7 @@ def fetch_own_warehouse_stock() -> dict:
 
     # ── Только 1-я таблица ──
     raw_rows = []
-    for r in rows_raw[2:]:
+    for r in rows_raw[header_idx + 1:]:
         if not r or not any(str(c).strip() for c in r):
             continue
         pn = str(r[0]).strip() if r else ""
@@ -1312,12 +1357,16 @@ def fetch_own_warehouse_stock() -> dict:
         stock = _parse_int_cell(stock_raw)
         if not vc and not name:
             continue
+        # служебная строка-заголовок второй таблицы
+        if not vc and name.lower() in ("наименование", "название"):
+            break
         raw_rows.append({
             "vendor_code": vc or None,
             "name": name or None,
             "stock": stock if stock is not None else 0,
             "note": note or None,
             "has_stock_cell": bool(stock_raw),
+            "no_sales": not bool(vc),
         })
 
     # Личный остаток по артикулу (сумма, если vc повторяется)
@@ -1420,19 +1469,24 @@ def fetch_own_warehouse_stock() -> dict:
             seen_vc.add(vc)
         meta = by_vendor.get(vc, {}) if vc else {}
         sheet_qty = personal_sheet.get(vc, row["stock"] or 0) if vc else (row["stock"] or 0)
+        no_sales = bool(row.get("no_sales")) or not bool(vc)
+        display_name = row["name"]
+        if no_sales and not display_name:
+            display_name = "товар без продаж"
         out.append({
             "vendor_code": vc,
-            "name": row["name"],
-            "model_name": meta.get("model_name") or row["name"],
+            "name": display_name,
+            "model_name": meta.get("model_name") or display_name,
             "model_root": meta.get("root"),
             "model_manual": bool(vc and vc in model_map),
-            "stock": meta.get("stock", row["stock"] or 0),
+            "stock": meta.get("stock", row["stock"] or 0) if vc else (row["stock"] or 0),
             "stock_sheet": sheet_qty,
             "shipped": shipped_map.get(vc, 0) if vc else 0,
             "received": received_map.get(vc, 0) if vc else 0,
-            "family_stock": meta.get("family_stock", row["stock"] or 0),
+            "family_stock": meta.get("family_stock", row["stock"] or 0) if vc else (row["stock"] or 0),
             "family": meta.get("family", [vc] if vc else []),
             "note": row["note"],
+            "no_sales": no_sales,
         })
 
     return {

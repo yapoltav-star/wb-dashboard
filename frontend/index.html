@@ -522,6 +522,9 @@ td.tc{text-align:center}
 .comp-tbl tr:hover td{background:#FAFAF9}
 .comp-tbl .own-col{background:var(--wb-purple-light)!important}
 .comp-thumb{width:48px;height:64px;object-fit:cover;border-radius:6px;background:#F0EDE8;display:block;margin:0 auto 6px;border:1px solid var(--wb-border)}
+a.comp-thumb-link{display:inline-block;line-height:0;border-radius:6px}
+a.comp-thumb-link:hover .comp-thumb{border-color:var(--wb-purple);opacity:.92}
+a.comp-thumb-link:focus-visible{outline:2px solid var(--wb-purple);outline-offset:2px}
 .comp-tbl .rank-1{background:#FFF3CD;color:#856404;font-weight:700;border-radius:3px;padding:1px 5px}
 .comp-tbl .rank-2{background:#E8E8E8;color:#555;font-weight:700;border-radius:3px;padding:1px 5px}
 .comp-tbl .rank-3{background:#F2E4D5;color:#7D4E1F;font-weight:700;border-radius:3px;padding:1px 5px}
@@ -936,7 +939,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
     <button class="filter-btn" id="owFltNoArt" onclick="setOwnWhFilter('noart')">Без артикула</button>
     <span id="ownWhInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
     <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <a class="action-btn" href="https://docs.google.com/spreadsheets/d/1Lhoy4s_KX0pWndsd3Y5oCOjTFCtfEfVUM4AgtBv4Crc/edit?gid=1829622647" target="_blank" rel="noopener" style="text-decoration:none">↗ Таблица</a>
+      <a class="action-btn" href="https://docs.google.com/spreadsheets/d/1Lhoy4s_KX0pWndsd3Y5oCOjTFCtfEfVUM4AgtBv4Crc/edit?gid=787686207" target="_blank" rel="noopener" style="text-decoration:none">↗ Таблица</a>
       <button class="action-btn" onclick="openOwnWhAliasesModal()" title="Если на Ozon другой SKU — привяжи к артикулу WB">🔗 Артикулы Ozon↔WB</button>
       <button class="action-btn primary" onclick="startOwnWhReceiptUpload()" title="Excel приёмки: артикул + количество (можно без заголовков)">＋ Поступление</button>
       <button class="action-btn" onclick="openOwnWhReceiptManual()" title="Ввести артикулы вручную">✏️ Список</button>
@@ -2523,7 +2526,8 @@ function drawOwnWarehouse() {
     const stockCls = stock > 0 ? '' : ' style="color:var(--wb-faint)"';
     const vc = r.vendor_code || '';
     const safeVc = encodeURIComponent(vc);
-    const modelLabel = r.model_name || r.name || r.model_root || '—';
+    const noSales = !!r.no_sales || !vc;
+    const modelLabel = r.model_name || r.name || r.model_root || (noSales ? 'товар без продаж' : '—');
     const fam = (r.family || []).filter(x => x && x !== vc);
     const famHint = fam.length ? `общий с ${fam.join(', ')}` : (famStock !== stock ? `семья: ${fmt(famStock)}` : '');
     const modelBtn = vc
@@ -2534,7 +2538,7 @@ function drawOwnWarehouse() {
         </button>
         ${famHint?`<div style="font-size:10px;color:var(--wb-faint);margin-top:3px">${escapeHtml(famHint)}</div>`:''}
         <div id="owModelEdit_${safeVc}"></div>`
-      : '—';
+      : `<div style="text-align:left;font-weight:600">${escapeHtml(modelLabel)}</div>`;
     const overlayBits = [];
     if(sheetQty != null && (shipped || received)) {
       let line = `Sheets ${fmt(sheetQty)}`;
@@ -2542,8 +2546,8 @@ function drawOwnWarehouse() {
       if(shipped) line += ` − ${fmt(shipped)}`;
       overlayBits.push(`<div style="font-size:10px;color:#B54708">${line}</div>`);
     }
-    return `<tr>
-      <td><span class="ow-art" title="${vc ? escapeHtml(vc) : ''}">${vc ? escapeHtml(vc) : '<span style="color:var(--wb-faint)">—</span>'}</span></td>
+    return `<tr${noSales?' style="background:#FFFBEB"':''}>
+      <td><span class="ow-art" title="${vc ? escapeHtml(vc) : 'товар без продаж'}">${vc ? escapeHtml(vc) : '<span style="color:#B54708;font-weight:600">товар без продаж</span>'}</span></td>
       <td style="text-align:left">${modelBtn}</td>
       <td class="num"${stockCls}><b>${fmt(stock)}</b>${famStock!==stock?`<div style="font-size:10px;color:var(--wb-muted)">семья ${fmt(famStock)}</div>`:''}${overlayBits.join('')}</td>
       <td class="num" style="color:${received?'#027A48':'var(--wb-faint)'}">${received?('+'+fmt(received)):'—'}</td>
@@ -6877,12 +6881,24 @@ function wbThumbUrl(nmId, ext='webp') {
   return `https://basket-${String(basket).padStart(2,'0')}.wbbasket.ru/vol${vol}/part${part}/${nm}/images/tm/1.${ext}`;
 }
 
-function wbThumbHtml(nmId) {
+function wbCatalogUrl(nmId) {
+  const nm = Number(nmId);
+  if(!nm) return '';
+  return `https://www.wildberries.ru/catalog/${nm}/detail.aspx`;
+}
+
+function wbThumbHtml(nmId, opts) {
+  opts = opts || {};
   const webp = wbThumbUrl(nmId, 'webp');
   if(!webp) return '';
   const jpg = wbThumbUrl(nmId, 'jpg');
-  return `<img class="comp-thumb" src="${webp}" alt="" loading="lazy"
+  const cls = opts.className || 'comp-thumb';
+  const img = `<img class="${cls}" src="${webp}" alt="" loading="lazy"
     onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${jpg}';}else{this.style.display='none'}">`;
+  if(opts.link === false) return img;
+  const url = wbCatalogUrl(nmId);
+  if(!url) return img;
+  return `<a class="comp-thumb-link" href="${url}" target="_blank" rel="noopener" title="Открыть на WB" onclick="event.stopPropagation()">${img}</a>`;
 }
 
 function renderCompetitorView() {
@@ -7037,12 +7053,19 @@ function buildCompTopAnalysis(compMetrics) {
       const safeName = String(m.name || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
       return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--wb-border)">
         <div style="width:18px;font-size:12px;font-weight:700;color:var(--wb-faint)">${i+1}</div>
-        <img src="${wbThumbUrl(m.nm_id)}" width="32" height="32" alt="" loading="lazy"
-          style="border-radius:4px;object-fit:cover;background:#f3f3f3;flex-shrink:0"
-          onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(m.nm_id,'jpg')}';}else{this.style.display='none'}">
+        <a href="${wbCatalogUrl(m.nm_id)}" target="_blank" rel="noopener" title="Открыть на WB" onclick="event.stopPropagation()">
+          <img src="${wbThumbUrl(m.nm_id)}" width="32" height="32" alt="" loading="lazy"
+            style="border-radius:4px;object-fit:cover;background:#f3f3f3;flex-shrink:0;display:block"
+            onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(m.nm_id,'jpg')}';}else{this.style.display='none'}">
+        </a>
         <div style="flex:1;min-width:0">
-          <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(m.brand || '—')}</div>
-          <div style="font-size:10px;color:var(--wb-faint)">${m.nm_id} · ${fmt(m._score)}${compSppOf(m)!=null ? ' · СПП ' + compSppFmt(compSppOf(m)) : ''}</div>
+          <a href="${wbCatalogUrl(m.nm_id)}" target="_blank" rel="noopener"
+            style="font-size:12px;font-weight:600;color:inherit;text-decoration:none;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+            onmouseover="this.style.color='var(--wb-purple)'" onmouseout="this.style.color='inherit'">${escapeHtml(m.brand || '—')}</a>
+          <div style="font-size:10px;color:var(--wb-faint)">
+            <a href="${wbCatalogUrl(m.nm_id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${m.nm_id}</a>
+            · ${fmt(m._score)}${compSppOf(m)!=null ? ' · СПП ' + compSppFmt(compSppOf(m)) : ''}
+          </div>
         </div>
         <button data-shelf-btn="${m.nm_id}" class="filter-btn" ${on?'disabled':''}
           onclick="addToShelfFromComp(${m.nm_id},'${safeBrand}','${safeName}')"
@@ -7094,9 +7117,13 @@ function buildCompMetricsTable(metrics, ownNm) {
     return `<th class="${m.nm_id===ownNm || m.is_own?'own-col':''}">
     ${pickBox}
     ${wbThumbHtml(m.nm_id)}
-    <div style="color:${m.color};font-weight:600;font-size:12px;white-space:normal;max-width:120px">${title}</div>
+    <a href="${wbCatalogUrl(m.nm_id)}" target="_blank" rel="noopener"
+      style="color:${m.color};font-weight:600;font-size:12px;white-space:normal;max-width:120px;display:block;text-decoration:none;margin:0 auto"
+      onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${title}</a>
     ${subtitle ? `<div style="font-size:10px;font-weight:400;color:var(--wb-muted);max-width:120px;white-space:normal;line-height:1.3;margin-top:2px">${subtitle}</div>` : ''}
-    <div style="font-size:10px;color:var(--wb-faint);margin-top:2px">${m.nm_id}${m.is_own?'&nbsp;<b style="color:var(--wb-purple)">мой</b>':''}</div>
+    <div style="font-size:10px;color:var(--wb-faint);margin-top:2px">
+      <a href="${wbCatalogUrl(m.nm_id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${m.nm_id}</a>${m.is_own?'&nbsp;<b style="color:var(--wb-purple)">мой</b>':''}
+    </div>
     <div style="font-size:11px;font-weight:600;color:#0F766E;margin-top:4px" title="СПП${m.spp_source==='live'?' (сейчас)':(m.spp_source==='report'?' (из отчёта)':'')}">${compSppFmt(compSppOf(m))}</div>
   </th>`;
   }).join('');
@@ -8007,11 +8034,16 @@ function drawWhoShelfResults(data) {
       <td style="padding:10px 12px;color:var(--wb-faint);font-size:11px">${i + 1}</td>
       <td style="padding:10px 12px">
         <div style="display:flex;align-items:center;gap:10px">
-          <a href="${r.url || '#'}" target="_blank" rel="noopener">${typeof wbThumbHtml === 'function' ? wbThumbHtml(r.competitor_nm_id) : ''}</a>
+          ${typeof wbThumbHtml === 'function' ? wbThumbHtml(r.competitor_nm_id) : ''}
           <div>
-            <div style="font-weight:600;font-size:13px">${brand || r.competitor_nm_id}</div>
-            ${name ? `<div style="font-size:11px;color:var(--wb-muted);max-width:280px">${name}</div>` : ''}
-            <div style="font-size:10px;color:var(--wb-faint)">${r.competitor_nm_id}</div>
+            <div style="font-weight:600;font-size:13px">
+              <a href="${wbCatalogUrl(r.competitor_nm_id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none"
+                onmouseover="this.style.color='var(--wb-purple)'" onmouseout="this.style.color='inherit'">${escapeHtml(brand || String(r.competitor_nm_id))}</a>
+            </div>
+            ${name ? `<div style="font-size:11px;color:var(--wb-muted);max-width:280px">${escapeHtml(name)}</div>` : ''}
+            <div style="font-size:10px;color:var(--wb-faint)">
+              <a href="${wbCatalogUrl(r.competitor_nm_id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${r.competitor_nm_id}</a>
+            </div>
             ${sppHtml}
             ${err}
           </div>
@@ -8149,8 +8181,10 @@ function buildShelfChips() {
     return `<div onclick="selectShelfCompetitor(${c.nm_id})"
       style="display:inline-flex;align-items:center;gap:7px;padding:5px 10px 5px 5px;border-radius:8px;cursor:pointer;font-size:12px;
         border:1px solid ${on?'var(--wb-purple)':'var(--wb-border)'};background:${on?'var(--wb-purple-light)':'var(--wb-surface)'}">
-      <img src="${thumb}" alt="" width="28" height="28" style="border-radius:4px;object-fit:cover;background:#f3f3f3"
-        onerror="this.style.display='none'">
+      <a href="${wbCatalogUrl(c.nm_id)}" target="_blank" rel="noopener" title="Открыть на WB" onclick="event.stopPropagation()">
+        <img src="${thumb}" alt="" width="28" height="28" style="border-radius:4px;object-fit:cover;background:#f3f3f3;display:block"
+          onerror="this.style.display='none'">
+      </a>
       <span style="display:flex;flex-direction:column;gap:1px;line-height:1.2">
         <b>${label}</b>
         ${sppBit}
@@ -8255,6 +8289,9 @@ async function loadShelfFor(nmId, force) {
         brand: d.competitor.brand || SHELF_COMPETITORS[i].brand,
         name: d.competitor.name || SHELF_COMPETITORS[i].name,
         thumb: d.competitor.thumb || SHELF_COMPETITORS[i].thumb,
+        client_price: d.competitor.client_price ?? SHELF_COMPETITORS[i].client_price,
+        sale_price: d.competitor.sale_price ?? SHELF_COMPETITORS[i].sale_price,
+        spp: d.competitor.spp ?? SHELF_COMPETITORS[i].spp,
       };
       saveShelfCompetitors();
       buildShelfChips();
@@ -8304,16 +8341,17 @@ function shelfSuggestItemRow(t, compNm, compBrand, compName, opts) {
         onclick="removeShelfSuggestArticle(${t.nm_id})">✕</span>`
     : '';
   return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--wb-border);flex-wrap:wrap;${opts.dim?'opacity:.72':''}">
-      <img src="${t.thumb || wbThumbUrl(t.nm_id)}" width="40" height="40" alt="" loading="lazy"
-        style="border-radius:4px;object-fit:cover;background:#f3f3f3;flex-shrink:0"
-        onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(t.nm_id,'jpg')}';}else{this.style.display='none'}">
+      ${wbThumbHtml(t.nm_id)}
       <div style="flex:1;min-width:0">
-        <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(t.vendor_code || t.nm_id)}</div>
+        <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+          <a href="${wbCatalogUrl(t.nm_id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none"
+            onmouseover="this.style.color='var(--wb-purple)'" onmouseout="this.style.color='inherit'">${escapeHtml(t.vendor_code || t.nm_id)}</a>
+        </div>
         <div style="font-size:10px;color:var(--wb-faint)">${metaBits.map(x => escapeHtml(x)).join(' · ')}</div>
       </div>
       ${removeBtn}
       <button class="filter-btn" onclick="copyShelfNm(${t.nm_id})" style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Скопировать nmID">копир.</button>
-      <a href="${t.url || ('https://www.wildberries.ru/catalog/'+t.nm_id+'/detail.aspx')}" target="_blank" rel="noopener"
+      <a href="${wbCatalogUrl(t.nm_id)}" target="_blank" rel="noopener"
         style="font-size:11px;color:var(--wb-purple);flex-shrink:0">WB</a>
       <button class="filter-btn" onclick="sendShelfBoostTask('afina','${vcJs}',${t.nm_id},${compNm},'${compBrand}','${compName}',this)"
         style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Задача в CRM: прокачать полки">Афине</button>
@@ -8589,17 +8627,22 @@ function drawShelfTable(data, opts) {
           const spp = it.spp != null && !Number.isNaN(Number(it.spp))
             ? (Math.round(Number(it.spp) * 10) / 10).toLocaleString('ru-RU') + '%'
             : '—';
+          const wbUrl = it.url || wbCatalogUrl(it.nm_id);
           return `<tr style="${mine?'background:rgba(155,81,224,.07)':''}">
             <td style="font-weight:700;font-variant-numeric:tabular-nums">${it.position}</td>
-            <td><img src="${thumb}" alt="" width="40" height="40" loading="lazy"
-              style="border-radius:4px;object-fit:cover;background:#f3f3f3"
-              onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(it.nm_id,'jpg')}';}else{this.style.display='none'}"></td>
-            <td style="font-variant-numeric:tabular-nums"><b>${it.nm_id}</b>${mine?' <span style="color:var(--wb-purple);font-size:11px">мой</span>':''}</td>
+            <td><a href="${wbUrl}" target="_blank" rel="noopener" title="Открыть на WB">
+              <img src="${thumb}" alt="" width="40" height="40" loading="lazy"
+                style="border-radius:4px;object-fit:cover;background:#f3f3f3;display:block"
+                onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(it.nm_id,'jpg')}';}else{this.style.display='none'}">
+            </a></td>
+            <td style="font-variant-numeric:tabular-nums">
+              <a href="${wbUrl}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;font-weight:700">${it.nm_id}</a>${mine?' <span style="color:var(--wb-purple);font-size:11px">мой</span>':''}
+            </td>
             <td>${escapeHtml(it.brand || '—')}</td>
-            <td style="font-size:12px">${escapeHtml(it.name || '')}</td>
+            <td style="font-size:12px"><a href="${wbUrl}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${escapeHtml(it.name || '')}</a></td>
             <td style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;white-space:nowrap">${shelfPriceFmt(it.client_price)}</td>
             <td style="text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:var(--wb-muted)">${spp}</td>
-            <td><a href="${it.url || ('https://www.wildberries.ru/catalog/'+it.nm_id+'/detail.aspx')}" target="_blank" rel="noopener"
+            <td><a href="${wbUrl}" target="_blank" rel="noopener"
               style="font-size:12px;color:var(--wb-purple)">WB ↗</a></td>
           </tr>`;
         }).join('')}
@@ -8612,17 +8655,22 @@ function drawShelfTable(data, opts) {
   const compPriceHtml = compPriceBits.length
     ? `<div style="font-size:12px;color:var(--wb-muted);margin-top:2px">${compPriceBits.join(' · ')}</div>`
     : '';
+  const compWbUrl = comp.url || wbCatalogUrl(comp.nm_id || data.nm_id);
 
   root.innerHTML = `
     <div style="padding:10px 20px;display:flex;gap:12px;align-items:center;border-bottom:1px solid var(--wb-border);background:#FAFAFA">
-      <img src="${comp.thumb || wbThumbUrl(comp.nm_id || data.nm_id)}" width="48" height="48"
-        style="border-radius:6px;object-fit:cover;background:#eee"
-        onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(comp.nm_id||data.nm_id,'jpg')}';}else{this.style.display='none'}">
+      <a href="${compWbUrl}" target="_blank" rel="noopener" title="Открыть на WB">
+        <img src="${comp.thumb || wbThumbUrl(comp.nm_id || data.nm_id)}" width="48" height="48"
+          style="border-radius:6px;object-fit:cover;background:#eee;display:block"
+          onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(comp.nm_id||data.nm_id,'jpg')}';}else{this.style.display='none'}">
+      </a>
       <div>
-        <div style="font-size:14px;font-weight:600">${escapeHtml(titleMain)}</div>
+        <div style="font-size:14px;font-weight:600">
+          <a href="${compWbUrl}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${escapeHtml(titleMain)}</a>
+        </div>
         <div style="font-size:12px;color:var(--wb-muted)">${escapeHtml(titleSub || '')}${opts.vendorCode && comp.name ? ' · ' + escapeHtml(comp.name) : ''}</div>
         ${compPriceHtml}
-        <a href="${comp.url || ('https://www.wildberries.ru/catalog/'+(comp.nm_id||data.nm_id)+'/detail.aspx')}" target="_blank" rel="noopener"
+        <a href="${compWbUrl}" target="_blank" rel="noopener"
           style="font-size:12px;color:var(--wb-purple)">Открыть карточку на WB ↗</a>
       </div>
     </div>
@@ -8752,8 +8800,9 @@ function buildMyShelfChips() {
         background:${on?'var(--wb-purple-light)':(pinned?'#F5F3FF':'var(--wb-surface)')};
         opacity:1;user-select:none">
       <span style="cursor:grab;color:var(--wb-faint);font-size:11px;letter-spacing:-1px" title="Перетащить">⋮⋮</span>
-      <img src="${thumb}" alt="" width="28" height="28" style="border-radius:4px;object-fit:cover;background:#f3f3f3"
-        onerror="this.style.display='none'">
+      <a href="${wbCatalogUrl(nm)}" target="_blank" rel="noopener" class="comp-thumb-link" onclick="event.stopPropagation()" title="Открыть на WB">
+        <img src="${thumb}" alt="" width="28" height="28" style="border-radius:4px;object-fit:cover;background:#f3f3f3;display:block"
+          onerror="this.style.display='none'"></a>
       <span><b>${label}</b></span>
       <span style="cursor:pointer;font-size:12px;opacity:${pinned?1:.45}" title="${pinned?'Открепить':'Закрепить'}"
         onclick="event.stopPropagation();toggleMyShelfPin(${nm})">${pinned?'📌':'📍'}</span>
