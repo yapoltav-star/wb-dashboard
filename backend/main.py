@@ -4664,7 +4664,7 @@ def get_competitor_sessions():
 
 @app.get("/api/competitor-data/{session_id}")
 def get_competitor_data(session_id: int):
-    """Метрики и поисковые запросы по сессии."""
+    """Метрики и поисковые запросы по сессии (+ живая цена покупателя / СПП с витрины WB)."""
     try:
         metrics = httpx.get(
             f"{SUPABASE_URL}/rest/v1/competitor_metrics?session_id=eq.{session_id}&select=*",
@@ -4674,12 +4674,64 @@ def get_competitor_data(session_id: int):
             f"{SUPABASE_URL}/rest/v1/competitor_search_queries?session_id=eq.{session_id}&select=*&order=query_count.desc",
             headers=sb_headers(), timeout=15
         )
+        rows = metrics.json() if metrics.is_success else []
+        if isinstance(rows, list) and rows:
+            rows = _enrich_competitor_metrics_prices(rows)
         return {
-            "metrics": metrics.json() if metrics.is_success else [],
+            "metrics": rows,
             "search_queries": queries.json() if queries.is_success else []
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+def _enrich_competitor_metrics_prices(metrics: list) -> list:
+    """Добавляет client_price / sale_price / spp: живая витрина WB, иначе из отчёта (price + median_price)."""
+    if not metrics:
+        return metrics
+    nms = []
+    for m in metrics:
+        try:
+            nms.append(int(m.get("nm_id")))
+        except (TypeError, ValueError):
+            continue
+    live = {}
+    try:
+        live, _src = fetch_client_prices(nms)
+    except Exception as e:
+        logger.warning(f"enrich competitor prices: {e}")
+        live = {}
+
+    out = []
+    for m in metrics:
+        item = dict(m)
+        try:
+            nm = int(item.get("nm_id"))
+        except (TypeError, ValueError):
+            out.append(item)
+            continue
+        info = live.get(nm) or {}
+        live_client = _num_or_none(info.get("client_price"))
+        live_basic = _num_or_none(info.get("client_basic"))
+        report_sale = _num_or_none(item.get("price"))
+        report_buyer = _num_or_none(item.get("median_price"))
+
+        client_price = live_client if live_client is not None else report_buyer
+        sale_price = live_basic if live_basic is not None else report_sale
+        spp_live = _calc_spp(live_basic, live_client)
+        spp_report = _calc_spp(report_sale, report_buyer)
+        spp = spp_live if spp_live is not None else spp_report
+
+        item["client_price"] = client_price
+        item["sale_price"] = sale_price
+        item["spp"] = spp
+        item["spp_live"] = spp_live
+        item["spp_report"] = spp_report
+        item["spp_source"] = (
+            "live" if spp_live is not None else ("report" if spp_report is not None else None)
+        )
+        out.append(item)
+    return out
 
 @app.get("/api/my-article-stats")
 def my_article_stats(begin: str, end: str, nm_ids: str = ""):

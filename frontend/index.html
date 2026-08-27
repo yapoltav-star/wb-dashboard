@@ -1514,7 +1514,10 @@ function showPage(id, btn) {
   }
   if(id === 'own-warehouse') renderOwnWarehouse(true);
   if(id === 'ads') loadAdsPage();
-  if(id === 'competitors') renderCompetitors();
+  if(id === 'competitors') {
+    renderCompetitors();
+    if(!SPP_LOADED) loadSppPrices();
+  }
   if(id === 'who-shelves') renderWhoShelvesPage();
   if(id === 'promotions') renderPromotions();
   if(id === 'prices') renderSppPrices(true);
@@ -5595,6 +5598,26 @@ let SPP_LOADED = false;
 let sppPoll = null;
 let SPP_SORT = {key: 'spp', dir: -1};
 
+function getSppArticle(nmId) {
+  const nm = Number(nmId);
+  if(!nm || !SPP_DATA || !Array.isArray(SPP_DATA.articles)) return null;
+  return SPP_DATA.articles.find(a => Number(a.nm_id) === nm) || null;
+}
+
+function compSppOf(m) {
+  if(!m) return null;
+  if(m.spp != null && !Number.isNaN(Number(m.spp))) return Number(m.spp);
+  const sale = m.sale_price != null ? Number(m.sale_price) : (m.price != null ? Number(m.price) : null);
+  const buyer = m.client_price != null ? Number(m.client_price) : (m.median_price != null ? Number(m.median_price) : null);
+  if(sale == null || buyer == null || sale <= 0 || buyer <= 0) return null;
+  return Math.round((1 - buyer / sale) * 1000) / 10;
+}
+
+function compSppFmt(v) {
+  if(v == null || Number.isNaN(Number(v))) return '—';
+  return (Math.round(Number(v) * 10) / 10).toLocaleString('ru-RU') + '%';
+}
+
 function renderSppPrices(force) {
   if(force || !SPP_LOADED) {
     SPP_LOADED = true;
@@ -6867,7 +6890,7 @@ function renderCompetitorView() {
   const ownMetrics = COMP_OWN_ARTICLES.map(a => {
     const stats = OWN_ARTICLE_STATS[a.nm_id] || OWN_ARTICLE_STATS[String(a.nm_id)] || {};
     const vendor = a.vendor_code || stats.vendor_code || String(a.nm_id);
-    // vendor_code поверх stats — свои карточки всегда показываем артикулом продавца
+    const sppArt = getSppArticle(a.nm_id);
     return {
       ...stats,
       nm_id: a.nm_id,
@@ -6875,6 +6898,10 @@ function renderCompetitorView() {
       brand: vendor,
       name: stats.name || vendor,
       is_own: true,
+      client_price: sppArt?.client_price ?? stats.client_price ?? null,
+      sale_price: sppArt?.sale_price ?? stats.sale_price ?? null,
+      spp: sppArt?.spp ?? stats.spp ?? null,
+      spp_source: sppArt ? 'live' : (stats.spp_source || null),
     };
   });
 
@@ -7015,7 +7042,7 @@ function buildCompTopAnalysis(compMetrics) {
           onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(m.nm_id,'jpg')}';}else{this.style.display='none'}">
         <div style="flex:1;min-width:0">
           <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(m.brand || '—')}</div>
-          <div style="font-size:10px;color:var(--wb-faint)">${m.nm_id} · ${fmt(m._score)}</div>
+          <div style="font-size:10px;color:var(--wb-faint)">${m.nm_id} · ${fmt(m._score)}${compSppOf(m)!=null ? ' · СПП ' + compSppFmt(compSppOf(m)) : ''}</div>
         </div>
         <button data-shelf-btn="${m.nm_id}" class="filter-btn" ${on?'disabled':''}
           onclick="addToShelfFromComp(${m.nm_id},'${safeBrand}','${safeName}')"
@@ -7070,6 +7097,7 @@ function buildCompMetricsTable(metrics, ownNm) {
     <div style="color:${m.color};font-weight:600;font-size:12px;white-space:normal;max-width:120px">${title}</div>
     ${subtitle ? `<div style="font-size:10px;font-weight:400;color:var(--wb-muted);max-width:120px;white-space:normal;line-height:1.3;margin-top:2px">${subtitle}</div>` : ''}
     <div style="font-size:10px;color:var(--wb-faint);margin-top:2px">${m.nm_id}${m.is_own?'&nbsp;<b style="color:var(--wb-purple)">мой</b>':''}</div>
+    <div style="font-size:11px;font-weight:600;color:#0F766E;margin-top:4px" title="СПП${m.spp_source==='live'?' (сейчас)':(m.spp_source==='report'?' (из отчёта)':'')}">${compSppFmt(compSppOf(m))}</div>
   </th>`;
   }).join('');
 
@@ -7080,6 +7108,8 @@ function buildCompMetricsTable(metrics, ownNm) {
       ['Кол-во отзывов',['reviews_count'],false],
       ['Цена со скидкой, ₽',['price'],false],
       ['Медианная цена, ₽',['median_price'],false],
+      ['Цена покупателя сейчас, ₽',['client_price'],false],
+      ['СПП, %',['spp'],false],
       ['Позиция в поиске',['avg_position'],true],
     ],
     'Воронка продаж': [
@@ -7097,6 +7127,10 @@ function buildCompMetricsTable(metrics, ownNm) {
   };
 
   const getVal = (m, fields) => {
+    if(fields.includes('spp')) {
+      const s = compSppOf(m);
+      return s;
+    }
     for(const f of fields) {
       if(m[f] !== null && m[f] !== undefined) return m[f];
     }
@@ -7125,7 +7159,14 @@ function buildCompMetricsTable(metrics, ownNm) {
           else if(rank === 2) rankCls = 'rank-3';
         }
         const isStr = fieldArr.includes('delivery_time') || fieldArr.includes('name');
-        const display = raw === null || raw === undefined ? '—' : (isStr ? raw : (Number.isInteger(num) ? fmt(num) : num));
+        let display = '—';
+        if(raw !== null && raw !== undefined) {
+          if(isStr) display = raw;
+          else if(fieldArr.includes('spp')) display = compSppFmt(num);
+          else if(fieldArr.includes('client_price') || fieldArr.includes('median_price') || fieldArr.includes('price'))
+            display = Number.isFinite(num) ? Math.round(num).toLocaleString('ru-RU') : '—';
+          else display = Number.isInteger(num) ? fmt(num) : num;
+        }
         rows += `<td class="${m.is_own?'own-col':''}"><span class="${rankCls}">${display}</span></td>`;
       });
       rows += '</tr>';
@@ -7954,6 +7995,10 @@ function drawWhoShelfResults(data) {
     const m = meta[Number(r.competitor_nm_id)] || {};
     const brand = m.brand || m.vendor_code || '';
     const name = String(m.name || '').slice(0, 48);
+    const spp = compSppOf(m);
+    const sppHtml = spp != null
+      ? `<div style="font-size:10px;color:#0F766E;font-weight:600">СПП ${compSppFmt(spp)}${m.client_price!=null ? ' · ' + Math.round(Number(m.client_price)).toLocaleString('ru-RU') + ' ₽' : ''}</div>`
+      : '';
     const pos = r.found
       ? `<span style="display:inline-block;min-width:36px;padding:2px 8px;border-radius:6px;background:#ECFDF5;color:#047857;font-weight:700;font-size:13px">#${r.position}</span>`
       : `<span style="color:var(--wb-faint);font-size:12px">нет в топ-${data.limit || 15}</span>`;
@@ -7967,6 +8012,7 @@ function drawWhoShelfResults(data) {
             <div style="font-weight:600;font-size:13px">${brand || r.competitor_nm_id}</div>
             ${name ? `<div style="font-size:11px;color:var(--wb-muted);max-width:280px">${name}</div>` : ''}
             <div style="font-size:10px;color:var(--wb-faint)">${r.competitor_nm_id}</div>
+            ${sppHtml}
             ${err}
           </div>
         </div>
@@ -8096,12 +8142,19 @@ function buildShelfChips() {
     const on = Number(c.nm_id) === Number(SHELF_ACTIVE);
     const label = c.brand ? `${escapeHtml(c.brand)} · ${c.nm_id}` : String(c.nm_id);
     const thumb = c.thumb || wbThumbUrl(c.nm_id);
+    const cached = (SHELF_CACHE[c.nm_id] && SHELF_CACHE[c.nm_id].competitor) || {};
+    const fromComp = (COMP_ALL_METRICS || []).find(m => Number(m.nm_id) === Number(c.nm_id)) || {};
+    const spp = compSppOf({...fromComp, ...cached, ...c});
+    const sppBit = spp != null ? `<span style="font-size:10px;color:#0F766E;font-weight:600">СПП ${compSppFmt(spp)}</span>` : '';
     return `<div onclick="selectShelfCompetitor(${c.nm_id})"
       style="display:inline-flex;align-items:center;gap:7px;padding:5px 10px 5px 5px;border-radius:8px;cursor:pointer;font-size:12px;
         border:1px solid ${on?'var(--wb-purple)':'var(--wb-border)'};background:${on?'var(--wb-purple-light)':'var(--wb-surface)'}">
       <img src="${thumb}" alt="" width="28" height="28" style="border-radius:4px;object-fit:cover;background:#f3f3f3"
         onerror="this.style.display='none'">
-      <span><b>${label}</b></span>
+      <span style="display:flex;flex-direction:column;gap:1px;line-height:1.2">
+        <b>${label}</b>
+        ${sppBit}
+      </span>
       <span style="color:var(--wb-faint);margin-left:2px" onclick="event.stopPropagation();removeShelfCompetitor(${c.nm_id})" title="Удалить">✕</span>
     </div>`;
   }).join('');
