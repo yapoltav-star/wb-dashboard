@@ -6989,6 +6989,210 @@ def get_fbs_stocks(limit: int = 15):
         "error": data.get("error"),
     }
 
+
+def _warehouse_channel(name: str) -> str:
+    n = (name or "").lower()
+    if "fbs" in n or "маркетплейс" in n:
+        return "FBS"
+    return "FBW"
+
+
+WB_PRODUCTS_CACHE = {
+    "products": [],
+    "updated_at": None,
+    "stock_updated_at": None,
+    "prices_updated_at": None,
+    "syncing": False,
+    "error": None,
+}
+
+
+def build_wb_products_catalog() -> dict:
+    """Каталог товаров: цена покупателя, остаток по складам, канал FBW/FBS."""
+    totals = []
+    warehouses = []
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code,quantity_warehouses_full,updated_at",
+            headers=sb_headers(),
+            timeout=30,
+        )
+        totals = r.json() if r.is_success else []
+        if not isinstance(totals, list):
+            totals = []
+    except Exception as e:
+        logger.error(f"wb-products stock_totals: {e}")
+        totals = []
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_warehouses?select=nm_id,warehouse_name,quantity,updated_at",
+            headers=sb_headers(),
+            timeout=30,
+        )
+        warehouses = r.json() if r.is_success else []
+        if not isinstance(warehouses, list):
+            warehouses = []
+    except Exception as e:
+        logger.error(f"wb-products stock_warehouses: {e}")
+        warehouses = []
+
+    by_nm_wh = {}  # nm -> {name: qty}
+    stock_updated = None
+    for row in warehouses:
+        nm = row.get("nm_id")
+        if nm is None:
+            continue
+        try:
+            nm = int(nm)
+        except (TypeError, ValueError):
+            continue
+        name = (row.get("warehouse_name") or "").strip()
+        qty = int(row.get("quantity") or 0)
+        if not name or qty <= 0:
+            continue
+        by_nm_wh.setdefault(nm, {})
+        by_nm_wh[nm][name] = by_nm_wh[nm].get(name, 0) + qty
+        ua = row.get("updated_at")
+        if ua and (not stock_updated or str(ua) > str(stock_updated)):
+            stock_updated = ua
+
+    totals_map = {}
+    for row in totals:
+        nm = row.get("nm_id")
+        if nm is None:
+            continue
+        try:
+            nm = int(nm)
+        except (TypeError, ValueError):
+            continue
+        totals_map[nm] = row
+        ua = row.get("updated_at")
+        if ua and (not stock_updated or str(ua) > str(stock_updated)):
+            stock_updated = ua
+
+    price_map = {}
+    for a in (SPP_CACHE.get("articles") or []):
+        try:
+            nm = int(a.get("nm_id"))
+        except (TypeError, ValueError):
+            continue
+        price_map[nm] = a
+
+    nm_ids = set(totals_map.keys()) | set(by_nm_wh.keys()) | set(price_map.keys())
+    products = []
+    for nm in nm_ids:
+        t = totals_map.get(nm) or {}
+        p = price_map.get(nm) or {}
+        wh_map = by_nm_wh.get(nm) or {}
+        wh_list = [
+            {"name": name, "qty": qty, "channel": _warehouse_channel(name)}
+            for name, qty in sorted(wh_map.items(), key=lambda x: (-x[1], x[0].lower()))
+        ]
+        stock = sum(w["qty"] for w in wh_list)
+        if not stock:
+            stock = int(t.get("quantity_warehouses_full") or 0)
+        channels = []
+        for ch in ("FBW", "FBS"):
+            if any(w["channel"] == ch for w in wh_list):
+                channels.append(ch)
+        if not channels and stock > 0:
+            channels = ["FBW"]
+        vc = (p.get("vendor_code") or t.get("vendor_code") or "").strip() or str(nm)
+        client_price = p.get("client_price")
+        sale_price = p.get("sale_price")
+        products.append({
+            "nm_id": nm,
+            "vendor_code": vc,
+            "name": (p.get("name") or "").strip() or None,
+            "client_price": client_price,
+            "sale_price": sale_price,
+            "spp": p.get("spp"),
+            "stock": int(stock or 0),
+            "warehouse_count": len(wh_list),
+            "warehouses": wh_list,
+            "channels": channels,
+            "url": f"https://www.wildberries.ru/catalog/{nm}/detail.aspx",
+        })
+
+    products.sort(key=lambda x: (-(x.get("stock") or 0), str(x.get("vendor_code") or "").lower()))
+    stock_updated_fmt = None
+    if stock_updated:
+        try:
+            dt = datetime.fromisoformat(str(stock_updated).replace("Z", "+00:00"))
+            stock_updated_fmt = dt.astimezone(timezone.utc).strftime("%d.%m.%Y %H:%M")
+        except Exception:
+            stock_updated_fmt = str(stock_updated)[:16]
+
+    return {
+        "products": products,
+        "count": len(products),
+        "with_stock": sum(1 for x in products if (x.get("stock") or 0) > 0),
+        "updated_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
+        "stock_updated_at": stock_updated_fmt,
+        "prices_updated_at": SPP_CACHE.get("updated_at"),
+        "error": None,
+    }
+
+
+def refresh_wb_products_catalog(sync_sources: bool = False):
+    if WB_PRODUCTS_CACHE.get("syncing"):
+        return
+    WB_PRODUCTS_CACHE["syncing"] = True
+    WB_PRODUCTS_CACHE["error"] = None
+    try:
+        if sync_sources:
+            try:
+                sync_stock()
+            except Exception as e:
+                logger.error(f"wb-products sync_stock: {e}")
+            if not SPP_CACHE.get("articles") and not SPP_CACHE.get("syncing"):
+                try:
+                    sync_spp_prices()
+                except Exception as e:
+                    logger.error(f"wb-products sync_spp: {e}")
+        data = build_wb_products_catalog()
+        WB_PRODUCTS_CACHE.update(data)
+        WB_PRODUCTS_CACHE["syncing"] = False
+    except Exception as e:
+        logger.error(f"wb-products refresh: {e}")
+        WB_PRODUCTS_CACHE["syncing"] = False
+        WB_PRODUCTS_CACHE["error"] = str(e)
+
+
+@app.get("/api/wb-products")
+def get_wb_products(refresh: bool = False):
+    """Товары WB: цена покупателя, остаток (склады), канал FBW/FBS."""
+    need = refresh or not WB_PRODUCTS_CACHE.get("products")
+    if need and not WB_PRODUCTS_CACHE.get("syncing"):
+        try:
+            data = build_wb_products_catalog()
+            WB_PRODUCTS_CACHE.update({**data, "syncing": False, "error": None})
+        except Exception as e:
+            WB_PRODUCTS_CACHE["error"] = str(e)
+    return {
+        "products": WB_PRODUCTS_CACHE.get("products") or [],
+        "count": WB_PRODUCTS_CACHE.get("count") or len(WB_PRODUCTS_CACHE.get("products") or []),
+        "with_stock": WB_PRODUCTS_CACHE.get("with_stock"),
+        "updated_at": WB_PRODUCTS_CACHE.get("updated_at"),
+        "stock_updated_at": WB_PRODUCTS_CACHE.get("stock_updated_at"),
+        "prices_updated_at": WB_PRODUCTS_CACHE.get("prices_updated_at"),
+        "syncing": WB_PRODUCTS_CACHE.get("syncing", False),
+        "error": WB_PRODUCTS_CACHE.get("error"),
+    }
+
+
+@app.post("/api/sync-wb-products")
+def sync_wb_products():
+    if WB_PRODUCTS_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    threading.Thread(
+        target=refresh_wb_products_catalog,
+        kwargs={"sync_sources": True},
+        daemon=True,
+    ).start()
+    return {"status": "started"}
+
+
 @app.post("/api/sync-supply")
 def trigger_supply_sync():
     import threading

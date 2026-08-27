@@ -525,6 +525,24 @@ td.tc{text-align:center}
 a.comp-thumb-link{display:inline-block;line-height:0;border-radius:6px}
 a.comp-thumb-link:hover .comp-thumb{border-color:var(--wb-purple);opacity:.92}
 a.comp-thumb-link:focus-visible{outline:2px solid var(--wb-purple);outline-offset:2px}
+.wb-ch{display:inline-block;font-size:10px;padding:2px 7px;border-radius:4px;background:#EEF2FF;color:#3730A3;font-weight:600;margin:1px 3px 1px 0;letter-spacing:.02em}
+.wb-ch.fbs{background:#ECFDF5;color:#047857}
+.wb-prod-tbl{width:100%;border-collapse:collapse;font-size:13px;background:var(--wb-surface)}
+.wb-prod-tbl th,.wb-prod-tbl td{padding:10px 12px;border-bottom:1px solid var(--wb-border);vertical-align:middle}
+.wb-prod-tbl th{background:#FAFAF9;font-size:10px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;text-align:left;position:sticky;top:0;z-index:2}
+.wb-prod-tbl th.num,.wb-prod-tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
+.wb-prod-tbl tr:hover td{background:#FAFAF9}
+.wb-prod-art{color:var(--wb-purple);font-weight:600;text-decoration:none}
+.wb-prod-art:hover{text-decoration:underline}
+.wb-stock-tip{position:relative;cursor:help;display:inline-block}
+.wb-stock-tip .wb-stock-main{font-weight:700;border-bottom:1px dotted var(--wb-muted)}
+.wb-stock-tip .wb-stock-whn{color:var(--wb-muted);font-weight:500;font-size:12px}
+.wb-stock-tip .wb-tip{display:none;position:absolute;right:0;bottom:calc(100% + 8px);min-width:220px;max-width:320px;max-height:260px;overflow:auto;background:#1F2937;color:#F9FAFB;font-size:11px;line-height:1.45;padding:10px 12px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);z-index:20;text-align:left;white-space:normal}
+.wb-stock-tip .wb-tip::after{content:'';position:absolute;right:16px;top:100%;border:6px solid transparent;border-top-color:#1F2937}
+.wb-stock-tip:hover .wb-tip,.wb-stock-tip:focus-within .wb-tip{display:block}
+.wb-tip-row{display:flex;justify-content:space-between;gap:12px;padding:2px 0}
+.wb-tip-row span:last-child{font-variant-numeric:tabular-nums;opacity:.9;flex-shrink:0}
+.wb-prod-thumb{width:40px;height:52px;object-fit:cover;border-radius:4px;background:#f3f3f3;display:block;border:1px solid var(--wb-border)}
 .comp-tbl .rank-1{background:#FFF3CD;color:#856404;font-weight:700;border-radius:3px;padding:1px 5px}
 .comp-tbl .rank-2{background:#E8E8E8;color:#555;font-weight:700;border-radius:3px;padding:1px 5px}
 .comp-tbl .rank-3{background:#F2E4D5;color:#7D4E1F;font-weight:700;border-radius:3px;padding:1px 5px}
@@ -713,7 +731,8 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
   <div class="sn-item" onclick="showPage('prices',this)">Цены и СПП</div>
 </div>
 <div class="subnav" id="subnav-supplies" style="display:none">
-  <div class="sn-item on" onclick="showPage('supply-recs',this)">Рекомендации поставок</div>
+  <div class="sn-item on" onclick="showPage('wb-products',this)">Товары</div>
+  <div class="sn-item" onclick="showPage('supply-recs',this)">Рекомендации поставок</div>
   <div class="sn-item" onclick="showPage('own-warehouse',this)">Наш склад</div>
 </div>
 <div class="subnav" id="subnav-analytics" style="display:none">
@@ -891,6 +910,27 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
     </div>
     <div class="gm-grid" id="gmGrid"></div>
   </div>
+</div>
+
+<!-- ТОВАРЫ WB -->
+<div class="page" id="page-wb-products">
+  <div class="toolbar">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="wbProdSearch" placeholder="Артикул, nmID…" oninput="drawWbProducts()">
+    </div>
+    <button class="filter-btn on" id="wbProdFltAll" onclick="setWbProdFilter('all')">Все</button>
+    <button class="filter-btn" id="wbProdFltStock" onclick="setWbProdFilter('stock')">В наличии</button>
+    <button class="filter-btn" id="wbProdFltZero" onclick="setWbProdFilter('zero')">Нулевые</button>
+    <button class="filter-btn" id="wbProdFltFbw" onclick="setWbProdFilter('fbw')">FBW</button>
+    <button class="filter-btn" id="wbProdFltFbs" onclick="setWbProdFilter('fbs')">FBS</button>
+    <span id="wbProdInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
+    <div class="ml-auto">
+      <button class="action-btn primary" id="wbProdSyncBtn" onclick="triggerWbProductsSync()">↻ Обновить товары</button>
+    </div>
+  </div>
+  <div class="cards" id="wbProdCards"></div>
+  <div id="wbProdRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить товары» — подтянем цены покупателя и остатки по складам</div></div>
 </div>
 
 <div class="page" id="page-supply-recs">
@@ -1484,7 +1524,7 @@ function showSection(sec, btn) {
   if(sec === 'products') showPage('products', document.querySelector('#subnav-products .sn-item'));
   else if(sec === 'growth') showPage('sales-pace', document.querySelector('#subnav-growth .sn-item'));
   else if(sec === 'promotions') showPage('promotions', document.querySelector('#subnav-promotions .sn-item'));
-  else if(sec === 'supplies') showPage('supply-recs', document.querySelector('#subnav-supplies .sn-item'));
+  else if(sec === 'supplies') showPage('wb-products', document.querySelector('#subnav-supplies .sn-item'));
   else if(sec === 'ads') showPage('ads', null);
   else if(sec === 'analytics') showPage('competitors', document.querySelector('#subnav-analytics .sn-item'));
   else if(sec === 'positions') showPage('positions', document.querySelector('#subnav-positions .sn-item'));
@@ -1495,8 +1535,183 @@ function goToSupplyRecsForWh() {
   const btn = Array.from(document.querySelectorAll('.tb-nav-item')).find(el =>
     (el.textContent || '').includes('Остатки')
   );
-  if(btn) showSection('supplies', btn);
-  else showPage('supply-recs', document.querySelector('#subnav-supplies .sn-item'));
+  if(btn) {
+    document.querySelectorAll('.tb-nav-item').forEach(t => t.classList.remove('on'));
+    btn.classList.add('on');
+    document.getElementById('subnav-products').style.display = 'none';
+    document.getElementById('subnav-supplies').style.display = 'flex';
+    const sg = document.getElementById('subnav-growth');
+    if(sg) sg.style.display = 'none';
+    const sp = document.getElementById('subnav-promotions');
+    if(sp) sp.style.display = 'none';
+    const spos = document.getElementById('subnav-positions');
+    if(spos) spos.style.display = 'none';
+    const sa = document.getElementById('subnav-analytics');
+    if(sa) sa.style.display = 'none';
+  }
+  const sn = Array.from(document.querySelectorAll('#subnav-supplies .sn-item')).find(el =>
+    (el.textContent || '').includes('Рекомендации')
+  );
+  showPage('supply-recs', sn || document.querySelector('#subnav-supplies .sn-item'));
+}
+
+// ── Товары WB (цена / остаток / канал) ──
+let WB_PRODUCTS = {products: [], syncing: false, error: null};
+let WB_PRODUCTS_LOADED = false;
+let WB_PROD_FILTER = 'all';
+let wbProdPoll = null;
+
+function setWbProdFilter(f) {
+  WB_PROD_FILTER = f;
+  const map = {all: 'All', stock: 'Stock', zero: 'Zero', fbw: 'Fbw', fbs: 'Fbs'};
+  Object.keys(map).forEach(k => {
+    const el = document.getElementById('wbProdFlt' + map[k]);
+    if(el) el.classList.toggle('on', k === f);
+  });
+  drawWbProducts();
+}
+
+async function triggerWbProductsSync() {
+  const btn = document.getElementById('wbProdSyncBtn');
+  const info = document.getElementById('wbProdInfo');
+  if(btn) btn.disabled = true;
+  if(info) info.textContent = 'Обновляем остатки и цены…';
+  try {
+    await fetch(`${RAILWAY_URL}/api/sync-wb-products`, { method: 'POST' });
+    clearTimeout(wbProdPoll);
+    wbProdPoll = setTimeout(() => renderWbProducts(true), 2000);
+  } catch(e) {
+    if(info) info.textContent = 'Ошибка запроса';
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function renderWbProducts(force) {
+  if(force || !WB_PRODUCTS_LOADED) {
+    try {
+      const r = await fetch(`${RAILWAY_URL}/api/wb-products?refresh=${force ? 'true' : 'false'}`);
+      WB_PRODUCTS = await r.json();
+      WB_PRODUCTS_LOADED = true;
+    } catch(e) {
+      WB_PRODUCTS = {products: [], error: e.message, syncing: false};
+    }
+  }
+  drawWbProducts();
+  clearTimeout(wbProdPoll);
+  if(WB_PRODUCTS.syncing) {
+    wbProdPoll = setTimeout(() => renderWbProducts(true), 2500);
+  } else {
+    const btn = document.getElementById('wbProdSyncBtn');
+    if(btn) btn.disabled = false;
+  }
+}
+
+function wbProdStockTipHtml(p) {
+  const stock = Number(p.stock || 0);
+  const whs = p.warehouses || [];
+  const n = Number(p.warehouse_count != null ? p.warehouse_count : whs.length) || 0;
+  if(!whs.length) {
+    return `<span class="wb-stock-main">${fmt(stock)}</span>${n ? ` <span class="wb-stock-whn">(${fmt(n)})</span>` : ''}`;
+  }
+  const rows = whs.map(w =>
+    `<div class="wb-tip-row"><span>${escapeHtml(w.name)}</span><span>${fmt(w.qty)}</span></div>`
+  ).join('');
+  return `<span class="wb-stock-tip" tabindex="0">
+    <span class="wb-stock-main">${fmt(stock)}</span> <span class="wb-stock-whn">(${fmt(n)})</span>
+    <div class="wb-tip"><div style="font-weight:600;margin-bottom:4px">Склады с остатком</div>${rows}</div>
+  </span>`;
+}
+
+function drawWbProducts() {
+  const root = document.getElementById('wbProdRoot');
+  const cards = document.getElementById('wbProdCards');
+  const info = document.getElementById('wbProdInfo');
+  if(!root) return;
+
+  if(WB_PRODUCTS.error && !(WB_PRODUCTS.products || []).length) {
+    if(info) info.textContent = 'Ошибка: ' + WB_PRODUCTS.error;
+  } else if(WB_PRODUCTS.syncing) {
+    if(info) info.textContent = 'Обновляем…';
+  } else {
+    const bits = [];
+    if(WB_PRODUCTS.stock_updated_at) bits.push('остатки ' + WB_PRODUCTS.stock_updated_at);
+    if(WB_PRODUCTS.prices_updated_at) bits.push('цены ' + WB_PRODUCTS.prices_updated_at);
+    else if(WB_PRODUCTS.updated_at) bits.push('собрано ' + WB_PRODUCTS.updated_at);
+    if(WB_PRODUCTS.error) bits.push(WB_PRODUCTS.error);
+    if(info) info.textContent = bits.join(' · ');
+  }
+
+  let rows = [...(WB_PRODUCTS.products || [])];
+  const q = ((document.getElementById('wbProdSearch') || {}).value || '').trim().toLowerCase();
+  if(q) {
+    rows = rows.filter(p =>
+      String(p.vendor_code || '').toLowerCase().includes(q) ||
+      String(p.nm_id || '').includes(q) ||
+      String(p.name || '').toLowerCase().includes(q)
+    );
+  }
+  if(WB_PROD_FILTER === 'stock') rows = rows.filter(p => (p.stock || 0) > 0);
+  else if(WB_PROD_FILTER === 'zero') rows = rows.filter(p => !(p.stock > 0));
+  else if(WB_PROD_FILTER === 'fbw') rows = rows.filter(p => (p.channels || []).includes('FBW'));
+  else if(WB_PROD_FILTER === 'fbs') rows = rows.filter(p => (p.channels || []).includes('FBS'));
+
+  const all = WB_PRODUCTS.products || [];
+  const withStock = all.filter(p => (p.stock || 0) > 0).length;
+  const withPrice = all.filter(p => p.client_price != null).length;
+  const fbsN = all.filter(p => (p.channels || []).includes('FBS')).length;
+  if(cards) {
+    cards.innerHTML = [
+      ['Товаров', fmt(all.length)],
+      ['В наличии', fmt(withStock)],
+      ['С ценой покупателя', fmt(withPrice)],
+      ['С FBS', fmt(fbsN)],
+    ].map(([l,v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v">${v}</div></div>`).join('');
+  }
+
+  if(!rows.length) {
+    root.innerHTML = WB_PRODUCTS.syncing
+      ? '<div class="loading"><div class="spinner"></div><span>Собираем каталог…</span></div>'
+      : '<div class="empty" style="padding:40px 20px">Нет товаров. Нажми «Обновить товары» или сначала обнови остатки в рекомендациях поставок.</div>';
+    return;
+  }
+
+  const body = rows.map(p => {
+    const price = p.client_price != null
+      ? `${fmt(Math.round(Number(p.client_price)))} ₽`
+      : '<span style="color:var(--wb-faint)">—</span>';
+    const ch = (p.channels || []).map(c =>
+      `<span class="wb-ch${c === 'FBS' ? ' fbs' : ''}">${c}</span>`
+    ).join('') || '<span style="color:var(--wb-faint)">—</span>';
+    const thumb = typeof wbThumbHtml === 'function' ? wbThumbHtml(p.nm_id, {className: 'wb-prod-thumb'}) : '';
+    const art = escapeHtml(p.vendor_code || String(p.nm_id));
+    const url = p.url || (typeof wbCatalogUrl === 'function' ? wbCatalogUrl(p.nm_id) : '#');
+    const sub = p.name
+      ? `<div style="font-size:11px;color:var(--wb-muted);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.name)}</div>`
+      : `<div style="font-size:11px;color:var(--wb-faint)">${p.nm_id}</div>`;
+    return `<tr>
+      <td style="width:52px">${thumb}</td>
+      <td>
+        <a class="wb-prod-art" href="${url}" target="_blank" rel="noopener">${art}</a>
+        ${sub}
+      </td>
+      <td class="num">${price}</td>
+      <td class="num">${wbProdStockTipHtml(p)}</td>
+      <td>${ch}</td>
+    </tr>`;
+  }).join('');
+
+  root.innerHTML = `<div style="overflow:auto;max-height:calc(100vh - 260px)">
+    <table class="wb-prod-tbl">
+      <thead><tr>
+        <th></th>
+        <th>Артикул</th>
+        <th class="num">Цена покупателя</th>
+        <th class="num">Остаток</th>
+        <th>Канал</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  </div>`;
 }
 
 function showPage(id, btn) {
@@ -1509,6 +1724,7 @@ function showPage(id, btn) {
   }
   page.classList.add('on');
   if(btn) btn.classList.add('on');
+  if(id === 'wb-products') renderWbProducts(true);
   if(id === 'groups') renderGroupManager();
   if(id === 'products') renderProducts();
   if(id === 'supply-recs') {
