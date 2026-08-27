@@ -953,6 +953,15 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
     <span style="font-size:12px;color:var(--wb-muted);margin-left:10px">Целевой запас:</span>
     <input id="targetDaysInput" type="number" min="1" style="width:56px;border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 8px;font-size:12px;font-family:inherit" onchange="setTargetDays(this.value)">
     <span style="font-size:12px;color:var(--wb-muted)">дней</span>
+    <span style="width:1px;height:22px;background:var(--wb-border);margin:0 6px"></span>
+    <span style="font-size:12px;color:var(--wb-muted)">Склады:</span>
+    <button type="button" class="filter-btn on" id="supColOrders" onclick="toggleSupplyCol('orders')" title="Показать/скрыть колонку «Заказы»">Зак.</button>
+    <button type="button" class="filter-btn on" id="supColDays" onclick="toggleSupplyCol('days')" title="Показать/скрыть колонку «Дн.»">Дн.</button>
+    <button type="button" class="filter-btn on" id="supColSupply" onclick="toggleSupplyCol('supply')" title="Показать/скрыть колонку «Поставить»">Пост.</button>
+    <div style="position:relative;display:inline-flex">
+      <button type="button" class="action-btn" id="supWhPickerBtn" onclick="toggleSupplyWhPicker(event)" title="Включить/отключить склады">Склады</button>
+      <div id="supWhPicker" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;min-width:280px;max-height:360px;overflow:auto;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--rs);box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:80;padding:8px"></div>
+    </div>
     <button class="action-btn" id="barcodeToggleBtn" onclick="toggleBarcodeCol()">Баркод</button>
     <span id="supplyUploadInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
     <span id="supplyOwnWhDate" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
@@ -4112,12 +4121,118 @@ var WH_ORDER = JSON.parse(localStorage.getItem('wb_supply_wh_order') || 'null') 
 var WH_DISABLED = JSON.parse(localStorage.getItem('wb_supply_wh_disabled') || 'null') || [];
 var SUPPLY_PINNED = JSON.parse(localStorage.getItem('wb_supply_pinned') || 'null') || [];
 var SHOW_BARCODE = JSON.parse(localStorage.getItem('wb_supply_show_barcode') || 'true');
+var SUPPLY_COLS = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem('wb_supply_cols') || 'null');
+    if(v && typeof v === 'object') {
+      return {
+        orders: v.orders !== false,
+        days: v.days !== false,
+        supply: v.supply !== false,
+      };
+    }
+  } catch(e) {}
+  return {orders: true, days: true, supply: true};
+})();
 var dragWh = null, dragSupplyArt = null;
 var WH_DISABLED_LOADED = false;
+var SUPPLY_ALL_WAREHOUSES = [];
 var whAutoScrollRaf = null;
 var whAutoScrollDir = 0;
 var whAutoScrollWrap = null;
 var whAutoScrollSpeed = 0;
+
+function supplyColCount() {
+  return 1 + (SUPPLY_COLS.orders ? 1 : 0) + (SUPPLY_COLS.days ? 1 : 0) + (SUPPLY_COLS.supply ? 1 : 0);
+}
+
+function saveSupplyCols() {
+  localStorage.setItem('wb_supply_cols', JSON.stringify(SUPPLY_COLS));
+}
+
+function syncSupplyColButtons() {
+  const map = {orders: 'supColOrders', days: 'supColDays', supply: 'supColSupply'};
+  Object.keys(map).forEach(k => {
+    const el = document.getElementById(map[k]);
+    if(el) el.classList.toggle('on', !!SUPPLY_COLS[k]);
+  });
+}
+
+function toggleSupplyCol(key) {
+  if(!(key in SUPPLY_COLS)) return;
+  SUPPLY_COLS[key] = !SUPPLY_COLS[key];
+  // остаток всегда виден — нельзя выключить все метрики до нуля смысла, минимум остаток
+  saveSupplyCols();
+  syncSupplyColButtons();
+  renderSupplyRecs();
+}
+
+function updateSupplyWhPickerBtn() {
+  const btn = document.getElementById('supWhPickerBtn');
+  if(!btn) return;
+  const all = SUPPLY_ALL_WAREHOUSES || [];
+  const on = all.filter(w => isWhEnabled(w)).length;
+  btn.textContent = all.length ? `Склады · ${on}/${all.length}` : 'Склады';
+}
+
+function toggleSupplyWhPicker(e) {
+  if(e) e.stopPropagation();
+  const panel = document.getElementById('supWhPicker');
+  if(!panel) return;
+  if(panel.style.display === 'block') {
+    panel.style.display = 'none';
+    return;
+  }
+  drawSupplyWhPicker();
+  panel.style.display = 'block';
+}
+
+function drawSupplyWhPicker() {
+  const panel = document.getElementById('supWhPicker');
+  if(!panel) return;
+  const all = SUPPLY_ALL_WAREHOUSES || [];
+  if(!all.length) {
+    panel.innerHTML = '<div style="padding:8px;font-size:12px;color:var(--wb-muted)">Нет складов — сначала обнови данные</div>';
+    return;
+  }
+  const onN = all.filter(w => isWhEnabled(w)).length;
+  panel.innerHTML = `
+    <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+      <button type="button" class="filter-btn" onclick="setAllSupplyWh(true)">Включить все</button>
+      <button type="button" class="filter-btn" onclick="setAllSupplyWh(false)">Выключить все</button>
+      <span style="font-size:11px;color:var(--wb-muted);align-self:center">${onN}/${all.length}</span>
+    </div>
+    ${all.map(w => {
+      const on = isWhEnabled(w);
+      const enc = encodeURIComponent(w);
+      return `<label style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--wb-border);font-size:12px;cursor:pointer">
+        <input type="checkbox" ${on?'checked':''} onchange="toggleWhEnabled('${enc}',event)">
+        <span style="flex:1;${on?'':'color:var(--wb-faint);text-decoration:line-through'}">${escapeHtml(w)}</span>
+      </label>`;
+    }).join('')}
+  `;
+}
+
+async function setAllSupplyWh(enable) {
+  if(enable) WH_DISABLED = [];
+  else WH_DISABLED = [...(SUPPLY_ALL_WAREHOUSES || [])];
+  setWhDisabledList(WH_DISABLED);
+  await persistWhDisabled(true);
+  updateSupplyWhPickerBtn();
+  drawSupplyWhPicker();
+  renderSupplyRecs();
+  if(typeof loadSalesPace === 'function') {
+    try { loadSalesPace(); } catch(err) {}
+  }
+}
+
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('supWhPicker');
+  const btn = document.getElementById('supWhPickerBtn');
+  if(!panel || panel.style.display !== 'block') return;
+  if(panel.contains(e.target) || (btn && btn.contains(e.target))) return;
+  panel.style.display = 'none';
+});
 
 function parseSupplyWhDisabled(raw) {
   if(raw == null || raw === '') return null;
@@ -4235,6 +4350,9 @@ async function toggleWhEnabled(encodedName, e) {
   setWhDisabledList(WH_DISABLED);
   const ok = await persistWhDisabled(true);
   if(!ok) alert('Не удалось сохранить отключение склада на сервер — на другом устройстве галка не появится. Обнови страницу и попробуй ещё раз.');
+  updateSupplyWhPickerBtn();
+  const panel = document.getElementById('supWhPicker');
+  if(panel && panel.style.display === 'block') drawSupplyWhPicker();
   renderSupplyRecs();
   if(typeof loadSalesPace === 'function') {
     try { loadSalesPace(); } catch(err) {}
@@ -4503,8 +4621,18 @@ function toggleBarcodeCol() {
 }
 
 function renderSupplyMatrixTable(matrix) {
-  const { warehouses, articles } = matrix;
+  const { warehouses: allWh, articles } = matrix;
   if(!articles.length) return '<div class="empty">Ничего не найдено</div>';
+
+  SUPPLY_ALL_WAREHOUSES = allWh || [];
+  updateSupplyWhPickerBtn();
+  syncSupplyColButtons();
+
+  const warehouses = (allWh || []).filter(w => isWhEnabled(w));
+  const colN = supplyColCount();
+  const showOrders = !!SUPPLY_COLS.orders;
+  const showDays = !!SUPPLY_COLS.days;
+  const showSupply = !!SUPPLY_COLS.supply;
 
   const periodDays = (() => {
     const fromArt = articles.find(a => a.periodDays)?.periodDays;
@@ -4515,33 +4643,57 @@ function renderSupplyMatrixTable(matrix) {
   })();
 
   const whHead1 = warehouses.map((w,i) => {
-    const on = isWhEnabled(w);
     const enc = encodeURIComponent(w);
-    return `<th colspan="4" class="wh-block${i%2?' wh-even':''}${on?'':' wh-off'}" draggable="true" title="${on?'Перетащи чтобы поменять порядок. У края таблицы скролл поедет сам. Сними галочку — склад не участвует в расчётах':'Склад отключён — остатки и поставки не считаются'}"
+    return `<th colspan="${colN}" class="wh-block${i%2?' wh-even':''}" draggable="true" title="Перетащи чтобы поменять порядок. Сними галочку — склад скроется и не участвует в расчётах"
       ondragstart="whDS(event,'${enc}')" ondragend="whDE()" ondragover="whOver(event)" ondrop="whDrop(event,'${enc}')">
-      <input type="checkbox" class="wh-en-cb" ${on?'checked':''} onclick="event.stopPropagation()" onchange="toggleWhEnabled('${enc}',event)" title="${on?'Отключить склад':'Включить склад'}">
-      ⠿ ${w}
-      <button class="wh-dl-btn" onclick="downloadWarehouseXlsx(event,'${enc}')" title="Скачать Excel для склада ${w}">⬇ xlsx</button>
+      <input type="checkbox" class="wh-en-cb" checked onclick="event.stopPropagation()" onchange="toggleWhEnabled('${enc}',event)" title="Отключить склад">
+      ⠿ ${escapeHtml(w)}
+      <button class="wh-dl-btn" onclick="downloadWarehouseXlsx(event,'${enc}')" title="Скачать Excel для склада ${escapeHtml(w)}">⬇ xlsx</button>
     </th>`;
   }).join('');
-  const sub = (i, on) => `<th class="mhead wh-start m-stock${i%2?' wh-even':''}${on?'':' wh-off'}">Остаток</th><th class="mhead${i%2?' wh-even':''}${on?'':' wh-off'}">Заказы</th><th class="mhead${i%2?' wh-even':''}${on?'':' wh-off'}">Дн.</th><th class="mhead${i%2?' wh-even':''}${on?'':' wh-off'}">Поставить</th>`;
-  const whHead2 = warehouses.map((w,i) => sub(i, isWhEnabled(w))).join('');
+
+  const subHead = (i) => {
+    const even = i%2 ? ' wh-even' : '';
+    let h = `<th class="mhead wh-start m-stock${even}">Ост.</th>`;
+    if(showOrders) h += `<th class="mhead${even}">Зак.</th>`;
+    if(showDays) h += `<th class="mhead${even}">Дн.</th>`;
+    if(showSupply) h += `<th class="mhead${even}">Пост.</th>`;
+    return h;
+  };
+  const whHead2 = warehouses.map((w,i) => subHead(i)).join('');
+
+  const whCellsFor = (a, w, i) => {
+    const c = a.cells[w];
+    const even = i%2 ? ' wh-even' : '';
+    if(!c) {
+      let html = `<td class="wh-start m-stock${even}">—</td>`;
+      if(showOrders) html += `<td class="${even.trim()}">—</td>`;
+      if(showDays) html += `<td class="${even.trim()}">—</td>`;
+      if(showSupply) html += `<td class="${even.trim()}">—</td>`;
+      return html;
+    }
+    let html = `<td class="wh-start m-stock${even}">${fmt(c.current_stock)}</td>`;
+    if(showOrders) html += `<td class="${even.trim()}">${fmt(c.ordered_qty)}</td>`;
+    if(showDays) {
+      let dlCls = even.trim(), dl = '—';
+      if(c.daysLeft != null) {
+        dl = Math.round(c.daysLeft);
+        dlCls += (c.daysLeft < TARGET_DAYS) ? ' m-urgent' : ' m-ok';
+      }
+      html += `<td class="${dlCls}">${dl}</td>`;
+    }
+    if(showSupply) {
+      const rc2 = c.recommend>0
+        ? `<span class="m-recommend">+${fmt(c.recommend)}</span>`
+        : `<span class="m-recommend zero">—</span>`;
+      html += `<td class="${even.trim()}">${rc2}</td>`;
+    }
+    return html;
+  };
 
   const bodyRows = articles.map(a => {
     const safeVc = encodeURIComponent(a.vendor_code);
-    const cells = warehouses.map((w,i) => {
-      const c = a.cells[w];
-      const on = isWhEnabled(w);
-      const off = on ? '' : ' wh-off';
-      if(!c) return `<td class="wh-start m-stock${i%2?' wh-even':''}${off}">—</td><td class="${i%2?'wh-even':''}${off}">—</td><td class="${i%2?'wh-even':''}${off}">—</td><td class="${i%2?'wh-even':''}${off}">—</td>`;
-      const rc2 = c.recommend>0 ? `<span class="m-recommend">+${fmt(c.recommend)}</span>` : `<span class="m-recommend zero">—</span>`;
-      let dlCls = `${i%2?'wh-even':''}${off}`, dl = '—';
-      if(c.daysLeft != null) {
-        dl = Math.round(c.daysLeft);
-        if(on) dlCls += (c.daysLeft < TARGET_DAYS) ? ' m-urgent' : ' m-ok';
-      }
-      return `<td class="wh-start m-stock${i%2?' wh-even':''}${off}">${fmt(c.current_stock)}</td><td class="${i%2?'wh-even':''}${off}">${fmt(c.ordered_qty)}</td><td class="${dlCls}">${dl}</td><td class="${i%2?'wh-even':''}${off}">${rc2}</td>`;
-    }).join('');
+    const cells = warehouses.map((w,i) => whCellsFor(a, w, i)).join('');
     const fam = (a.ownFamily || []).filter(v => v && v !== a.vendor_code);
     const famTip = fam.length
       ? `Общий склад с: ${[a.vendor_code, ...fam].join(', ')}. Нужно по семье: ${fmt(a.familyNeed||0)}`
@@ -4553,7 +4705,7 @@ function renderSupplyMatrixTable(matrix) {
         ondragover="event.preventDefault()" ondrop="supDrop(event,'${safeVc}')">
       <td class="mcol-art">
         <span class="prod-pin${a.isPinned?' on':''}" onclick="toggleSupplyPin('${safeVc}', event)" title="${a.isPinned?'Открепить':'Закрепить'}">📌</span>
-        <div class="art" style="display:inline">${a.vendor_code}</div><div class="nmid">${a.nm_id||'—'}${SHOW_BARCODE && a.barcode ? ' · '+a.barcode : ''}</div>
+        <div class="art" style="display:inline">${escapeHtml(a.vendor_code)}</div><div class="nmid">${a.nm_id||'—'}${SHOW_BARCODE && a.barcode ? ' · '+a.barcode : ''}</div>
       </td>
       <td class="m-info">${a.plannedQty>0?fmt(a.plannedQty):'—'}</td>
       <td class="m-info" title="Сумма остатков по включённым складам WB">${fmt(a.wbStock||0)}</td>
@@ -4564,7 +4716,6 @@ function renderSupplyMatrixTable(matrix) {
     </tr>`;
   }).join('');
 
-  // Итого по складам: остаток, заказы, поставить
   const whSums = warehouses.map(w => {
     let stock = 0, orders = 0, recommend = 0;
     articles.forEach(a => {
@@ -4574,24 +4725,27 @@ function renderSupplyMatrixTable(matrix) {
       orders += c.ordered_qty || 0;
       recommend += c.recommend || 0;
     });
-    return { stock, orders, recommend, enabled: isWhEnabled(w) };
+    return { stock, orders, recommend };
   });
   const totPlanned = articles.reduce((s,a) => s + (a.plannedQty||0), 0);
   const totRecommend = articles.reduce((s,a) => s + (a.totalRecommend||0), 0);
   const totWbStock = articles.reduce((s,a) => s + (a.wbStock||0), 0);
   const totPeriodOrders = articles.reduce((s,a) => s + (a.periodOrders||0), 0);
   const totWhCells = whSums.map((t,i) => {
-    const off = t.enabled ? '' : ' wh-off';
-    const rc2 = t.recommend > 0
-      ? `<span class="m-recommend">+${fmt(t.recommend)}</span>`
-      : `<span class="m-recommend zero">—</span>`;
-    return `<td class="wh-start m-stock${i%2?' wh-even':''}${off}">${fmt(t.stock)}</td>`
-      + `<td class="${i%2?'wh-even':''}${off}">${fmt(t.orders)}</td>`
-      + `<td class="${i%2?'wh-even':''}${off}">—</td>`
-      + `<td class="${i%2?'wh-even':''}${off}">${rc2}</td>`;
+    const even = i%2 ? ' wh-even' : '';
+    let html = `<td class="wh-start m-stock${even}">${fmt(t.stock)}</td>`;
+    if(showOrders) html += `<td class="${even.trim()}">${fmt(t.orders)}</td>`;
+    if(showDays) html += `<td class="${even.trim()}">—</td>`;
+    if(showSupply) {
+      const rc2 = t.recommend > 0
+        ? `<span class="m-recommend">+${fmt(t.recommend)}</span>`
+        : `<span class="m-recommend zero">—</span>`;
+      html += `<td class="${even.trim()}">${rc2}</td>`;
+    }
+    return html;
   }).join('');
   const totalRow = `<tr class="total-row">
-      <td class="mcol-art"><div class="art">Итого</div><div class="nmid">${fmt(articles.length)} арт.</div></td>
+      <td class="mcol-art"><div class="art">Итого</div><div class="nmid">${fmt(articles.length)} арт. · складов ${warehouses.length}/${(allWh||[]).length}</div></td>
       <td class="m-info">${totPlanned>0?fmt(totPlanned):'—'}</td>
       <td class="m-info" title="Сумма остатков по включённым складам WB">${fmt(totWbStock)}</td>
       <td class="m-info" title="Сумма заказов по включённым складам за ${periodDays} дн.">${fmt(totPeriodOrders)}</td>
@@ -4600,7 +4754,11 @@ function renderSupplyMatrixTable(matrix) {
       ${totWhCells}
     </tr>`;
 
-  return `<div class="matrix-wrap"><table class="matrix">
+  const emptyWhNote = !warehouses.length
+    ? `<div class="empty" style="margin-bottom:10px">Все склады отключены. Открой «Склады · 0/${(allWh||[]).length}» и включи нужные.</div>`
+    : '';
+
+  return `${emptyWhNote}<div class="matrix-wrap"><table class="matrix">
     <thead>
       <tr>
         <th class="mcol-art" rowspan="2">Артикул продавца${SHOW_BARCODE ? ' / Баркод' : ''}</th>
