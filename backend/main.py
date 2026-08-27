@@ -8487,6 +8487,7 @@ def fetch_wb_card_brief(nm_id: int, dest: int = -1257786):
             if not products:
                 return None
             p = products[0]
+            price_info = _parse_client_product(p)
             return {
                 "nm_id": p.get("id") or nm_id,
                 "brand": p.get("brand") or "",
@@ -8494,6 +8495,9 @@ def fetch_wb_card_brief(nm_id: int, dest: int = -1257786):
                 "supplier": p.get("supplier") or "",
                 "thumb": wb_product_thumb_url(p.get("id") or nm_id),
                 "url": f"https://www.wildberries.ru/catalog/{p.get('id') or nm_id}/detail.aspx",
+                "client_price": price_info.get("client_price"),
+                "sale_price": price_info.get("client_basic"),
+                "spp": _calc_spp(price_info.get("client_basic"), price_info.get("client_price")),
             }
     except Exception as e:
         logger.warning(f"fetch_wb_card_brief {nm_id}: {e}")
@@ -8513,12 +8517,12 @@ def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
         "Referer": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
     }
     # query=<nm> даёт полку see-also для этой карточки
+    # spp не передаём — иначе WB подставит виртуальную скидку
     url = "https://recom.wb.ru/recom/ru/common/v8/search"
     params = {
         "appType": 1,
         "curr": "rub",
         "dest": dest,
-        "spp": 30,
         "resultset": "catalog",
         "query": str(nm_id),
         "suppressSpellcheck": "false",
@@ -8543,6 +8547,9 @@ def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
                 pid = p.get("id") or p.get("nmId") or p.get("nmID")
                 if not pid:
                     continue
+                price_info = _parse_client_product(p)
+                client_price = price_info.get("client_price")
+                sale_price = price_info.get("client_basic")
                 items.append({
                     "position": i,
                     "nm_id": pid,
@@ -8553,6 +8560,9 @@ def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
                     "feedbacks": p.get("feedbacks"),
                     "thumb": wb_product_thumb_url(pid),
                     "url": f"https://www.wildberries.ru/catalog/{pid}/detail.aspx",
+                    "client_price": client_price,
+                    "sale_price": sale_price,
+                    "spp": _calc_spp(sale_price, client_price),
                 })
             return {"items": items, "total": len(products), "error": None}
         except Exception as e:
