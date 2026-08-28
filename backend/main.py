@@ -10679,12 +10679,64 @@ def aggregate_orders_geo(
             "source": ORDERS_GEO_CACHE.get("source"),
             "filename": ORDERS_GEO_CACHE.get("filename"),
             "filtered": total_orders,
+            "city_note": _orders_geo_city_note(ORDERS_GEO_CACHE.get("source")),
         },
     }
 
 
+def _orders_geo_city_note(source: str) -> str:
+    if source == "ribbon":
+        return "Города точные — из отчёта «Лента заказов»."
+    if source == "statistics_api":
+        return "FBS — города из Marketplace API, FBW — область/край (Statistics API городов не отдаёт)."
+    if source == "ribbon+api":
+        return "Лента даёт города, свежие заказы с API — FBS города, FBW область/край."
+    return ""
+
+
+def fetch_fbs_office_cities(days: int = 30) -> dict:
+    """Города доставки FBS: Marketplace API v3 отдаёт offices (город ПВЗ/СЦ назначения).
+    Ключ — rid (он же srid в Statistics API)."""
+    if not WB_TOKEN:
+        return {}
+    date_from_ts = int((datetime.now(timezone.utc) - timedelta(days=max(1, min(int(days), 90)))).timestamp())
+    out = {}
+    try:
+        next_val = 0
+        for _ in range(30):
+            r = httpx.get(
+                f"{WB_MARKETPLACE_URL}/api/v3/orders",
+                headers=wb_headers(),
+                params={"limit": 1000, "next": next_val, "dateFrom": date_from_ts},
+                timeout=35,
+            )
+            if not r.is_success:
+                logger.warning(f"orders_geo fbs offices error {r.status_code} {r.text[:200]}")
+                break
+            data = r.json()
+            batch = data.get("orders") if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            if not batch:
+                break
+            for o in batch:
+                offices = o.get("offices") or []
+                city = str(offices[0]).strip() if offices else ""
+                if not city:
+                    continue
+                for key in (o.get("rid"), o.get("orderUid"), o.get("id")):
+                    if key:
+                        out[str(key)] = city
+            next_val = data.get("next", 0) if isinstance(data, dict) else 0
+            if not next_val or len(batch) < 1000:
+                break
+    except Exception as e:
+        logger.warning(f"orders_geo fbs offices exception: {e}")
+    logger.info(f"orders_geo fbs offices: {len(out)} rids with city")
+    return out
+
+
 def sync_orders_geo_from_statistics(days: int = 30) -> dict:
-    """Подтягивает заказы из Statistics API (склад + регион; города чаще пустые)."""
+    """Подтягивает заказы из Statistics API (склад + регион).
+    Города для FBS дотягиваем из Marketplace API v3 (offices)."""
     if not WB_TOKEN:
         return {"error": "WB_TOKEN не задан"}
     if ORDERS_GEO_CACHE.get("syncing"):
@@ -10695,6 +10747,7 @@ def sync_orders_geo_from_statistics(days: int = 30) -> dict:
         cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=max(1, min(int(days), 90)))
         date_from = cutoff.strftime("%Y-%m-%dT00:00:00")
         raw = fetch_supplier_feed("/api/v1/supplier/orders", date_from, max_pages=5)
+        fbs_cities = fetch_fbs_office_cities(days=days)
         records = []
         for o in raw or []:
             d = parse_wb_dt(o.get("date") or "")
@@ -10707,14 +10760,20 @@ def sync_orders_geo_from_statistics(days: int = 30) -> dict:
             if "seller" in wh.lower() or "продав" in wh.lower():
                 channel = "FBS"
             price = float(o.get("finishedPrice") or o.get("priceWithDisc") or o.get("totalPrice") or 0)
+            srid = str(o.get("srid") or "")
+            # Statistics API даёт только область/край. Для FBS город берём из Marketplace offices.
+            city = fbs_cities.get(srid) if srid else None
+            if not city:
+                city = str(o.get("regionName") or "").strip() or "Не указан"
             records.append({
-                "order_id": str(o.get("srid") or o.get("gNumber") or ""),
+                "order_id": srid or str(o.get("gNumber") or ""),
                 "date": d.strftime("%Y-%m-%d"),
                 "dt": d.strftime("%Y-%m-%d %H:%M:%S"),
                 "channel": channel,
                 "warehouse": wh,
                 "dest_region": str(o.get("oblastOkrugName") or o.get("regionName") or "").strip() or "Не указан",
-                "dest_city": str(o.get("regionName") or "").strip() or "Не указан",
+                "dest_city": city,
+                "dest_oblast": str(o.get("regionName") or "").strip() or "Не указан",
                 "article": str(o.get("supplierArticle") or "").strip(),
                 "nm_id": int(o.get("nmId") or 0),
                 "name": str(o.get("subject") or "").strip(),

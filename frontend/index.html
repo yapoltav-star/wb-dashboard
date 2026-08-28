@@ -2413,7 +2413,8 @@ function drawOrdersGeo() {
         <td class="num"><span style="color:#15803d">${geoFmt(c.fbs_orders)}</span> / <span style="color:#6d28d9">${geoFmt(c.fbw_orders)}</span></td>
         <td class="num">${geoMoney(c.revenue)}</td>
       </tr>`).join('');
-    cityEl.innerHTML = `<div class="geo-h">Города доставки (топ)</div>
+    const note = d.meta?.city_note ? `<div class="geo-sub">${geoEsc(d.meta.city_note)}</div>` : '';
+    cityEl.innerHTML = `<div class="geo-h">Города доставки (топ)</div>${note}
       <table class="geo-tbl"><thead><tr><th>Город</th><th class="num">Заказов</th><th class="num">FBS / FBW</th><th class="num">Выручка</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="4">Нет данных</td></tr>'}</tbody></table>`;
   }
