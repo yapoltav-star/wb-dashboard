@@ -10686,17 +10686,18 @@ def aggregate_orders_geo(
 
 def _orders_geo_city_note(source: str) -> str:
     if source == "ribbon":
-        return "Города точные — из отчёта «Лента заказов»."
+        return "Точные города — из отчёта «Лента заказов»."
     if source == "statistics_api":
-        return "FBS — города из Marketplace API, FBW — область/край (Statistics API городов не отдаёт)."
+        return "Данные с API: это область/край, а не город. Точные города — только в отчёте «Лента заказов»."
     if source == "ribbon+api":
-        return "Лента даёт города, свежие заказы с API — FBS города, FBW область/край."
+        return "Из ленты — точные города, из API — область/край."
     return ""
 
 
 def fetch_fbs_office_cities(days: int = 30) -> dict:
-    """Города доставки FBS: Marketplace API v3 отдаёт offices (город ПВЗ/СЦ назначения).
-    Ключ — rid (он же srid в Statistics API)."""
+    """Город сдачи заказа FBS: Marketplace API v3 отдаёт offices — куда везём заказ.
+    Statistics API для FBS пишет обезличенный «Склад WB РФ», поэтому этим уточняем склад
+    отгрузки. Ключ — rid (он же srid в Statistics API)."""
     if not WB_TOKEN:
         return {}
     date_from_ts = int((datetime.now(timezone.utc) - timedelta(days=max(1, min(int(days), 90)))).timestamp())
@@ -10761,10 +10762,11 @@ def sync_orders_geo_from_statistics(days: int = 30) -> dict:
                 channel = "FBS"
             price = float(o.get("finishedPrice") or o.get("priceWithDisc") or o.get("totalPrice") or 0)
             srid = str(o.get("srid") or "")
-            # Statistics API даёт только область/край. Для FBS город берём из Marketplace offices.
-            city = fbs_cities.get(srid) if srid else None
-            if not city:
-                city = str(o.get("regionName") or "").strip() or "Не указан"
+            # Для FBS Statistics API пишет обезличенный склад — берём город сдачи из Marketplace.
+            if channel == "FBS" and srid:
+                office = fbs_cities.get(srid)
+                if office:
+                    wh = f"Сдача: {office}"
             records.append({
                 "order_id": srid or str(o.get("gNumber") or ""),
                 "date": d.strftime("%Y-%m-%d"),
@@ -10772,8 +10774,7 @@ def sync_orders_geo_from_statistics(days: int = 30) -> dict:
                 "channel": channel,
                 "warehouse": wh,
                 "dest_region": str(o.get("oblastOkrugName") or o.get("regionName") or "").strip() or "Не указан",
-                "dest_city": city,
-                "dest_oblast": str(o.get("regionName") or "").strip() or "Не указан",
+                "dest_city": str(o.get("regionName") or "").strip() or "Не указан",
                 "article": str(o.get("supplierArticle") or "").strip(),
                 "nm_id": int(o.get("nmId") or 0),
                 "name": str(o.get("subject") or "").strip(),
