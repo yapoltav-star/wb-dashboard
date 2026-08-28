@@ -734,6 +734,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
 <div class="subnav" id="subnav-supplies" style="display:none">
   <div class="sn-item on" onclick="showPage('supply-recs',this)">Рекомендации поставок</div>
   <div class="sn-item" onclick="showPage('own-warehouse',this)">Наш склад</div>
+  <div class="sn-item" onclick="showPage('orders-geo',this)">География FBS/FBW</div>
 </div>
 <div class="subnav" id="subnav-analytics" style="display:none">
   <div class="sn-item on" onclick="showPage('competitors',this)">Сравнение карточек</div>
@@ -1014,6 +1015,78 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
   <div id="ownWhArchive" style="display:none;padding:12px 20px;border-bottom:1px solid var(--wb-border);background:#F8FAFC"></div>
   <div id="ownWhRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить», чтобы подтянуть остатки из Google Sheets</div></div>
 </div>
+
+<!-- ГЕОГРАФИЯ ЗАКАЗОВ FBS / FBW -->
+<div class="page" id="page-orders-geo">
+  <div class="upload-banner hint" id="geoHint">
+    <span>📦 <b>География заказов:</b> откуда (склады FBS/FBW) и куда (регионы/города) уезжают заказы. Данные из отчёта WB «Лента заказов» или Statistics API. Выбери период, канал и склад.</span>
+  </div>
+  <div class="toolbar" style="flex-wrap:wrap;gap:8px">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="geoSearch" placeholder="Артикул, город, склад..." oninput="debounceGeoLoad()">
+    </div>
+    <span style="font-size:12px;color:var(--wb-muted)">Период:</span>
+    <button class="filter-btn" id="geoPer7" onclick="setGeoPeriod(7)">7 дн</button>
+    <button class="filter-btn on" id="geoPer28" onclick="setGeoPeriod(28)">28 дн</button>
+    <button class="filter-btn" id="geoPerAll" onclick="setGeoPeriod('all')">Весь файл</button>
+    <input type="date" id="geoDateFrom" onchange="loadOrdersGeo()" style="font:inherit;font-size:12px;border:1px solid var(--wb-border);border-radius:6px;padding:4px 6px;background:#fff">
+    <span style="font-size:12px;color:var(--wb-muted)">—</span>
+    <input type="date" id="geoDateTo" onchange="loadOrdersGeo()" style="font:inherit;font-size:12px;border:1px solid var(--wb-border);border-radius:6px;padding:4px 6px;background:#fff">
+    <span style="width:1px;height:20px;background:var(--wb-border);margin:0 2px"></span>
+    <button class="filter-btn on" id="geoChAll" onclick="setGeoChannel('all')">Все</button>
+    <button class="filter-btn" id="geoChFbs" onclick="setGeoChannel('FBS')">FBS</button>
+    <button class="filter-btn" id="geoChFbw" onclick="setGeoChannel('FBW')">FBW</button>
+    <select id="geoWh" onchange="loadOrdersGeo()" style="max-width:200px;border:1px solid var(--wb-border);border-radius:6px;padding:5px 8px;font-size:12px;font-family:inherit;background:#fff">
+      <option value="all">Все склады</option>
+    </select>
+    <select id="geoReg" onchange="loadOrdersGeo()" style="max-width:180px;border:1px solid var(--wb-border);border-radius:6px;padding:5px 8px;font-size:12px;font-family:inherit;background:#fff">
+      <option value="all">Все регионы</option>
+    </select>
+    <span id="geoInfo" style="font-size:12px;color:var(--wb-muted);margin-left:4px"></span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="action-btn" onclick="document.getElementById('geoFileInput').click()">⬆ Лента заказов</button>
+      <input type="file" id="geoFileInput" accept=".xlsx,.xls" style="display:none" onchange="uploadOrdersGeo(this.files[0])">
+      <button class="action-btn" id="geoSyncBtn" onclick="syncOrdersGeo()">↻ С WB</button>
+      <button class="action-btn primary" onclick="loadOrdersGeo()">Показать</button>
+    </div>
+  </div>
+  <div class="cards" id="geoCards"></div>
+  <div id="geoDayChart" style="display:none;padding:12px 16px 4px;background:var(--wb-surface);border-bottom:1px solid var(--wb-border)"></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border-bottom:1px solid var(--wb-border)" class="geo-split">
+    <div id="geoWhTable" style="padding:12px 16px;border-right:1px solid var(--wb-border);overflow:auto;max-height:420px"></div>
+    <div id="geoRegTable" style="padding:12px 16px;overflow:auto;max-height:420px"></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0" class="geo-split">
+    <div id="geoCityTable" style="padding:12px 16px;border-right:1px solid var(--wb-border);overflow:auto;max-height:420px"></div>
+    <div id="geoArtTable" style="padding:12px 16px;overflow:auto;max-height:420px"></div>
+  </div>
+  <div id="geoRoot"><div class="empty" style="padding:40px 20px">Загрузи Excel «Лента заказов» (вкладка «Все заказы») или нажми «С WB»</div></div>
+</div>
+
+<style>
+@media(max-width:900px){
+  .geo-split{grid-template-columns:1fr !important}
+  .geo-split > div{border-right:none !important;border-bottom:1px solid var(--wb-border)}
+}
+.geo-bar-wrap{display:flex;align-items:flex-end;gap:3px;height:120px;overflow-x:auto;padding:8px 0 4px}
+.geo-bar-col{display:flex;flex-direction:column;align-items:center;min-width:28px;flex:1;max-width:48px;cursor:pointer}
+.geo-bar-col:hover .geo-bar{opacity:.85}
+.geo-bar{width:100%;border-radius:4px 4px 0 0;display:flex;flex-direction:column;justify-content:flex-end;min-height:2px;overflow:hidden}
+.geo-bar-fbs{background:#16a34a}
+.geo-bar-fbw{background:#7c3aed}
+.geo-bar-lbl{font-size:9px;color:var(--wb-faint);margin-top:4px;white-space:nowrap}
+.geo-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.geo-tbl th{text-align:left;font-size:11px;color:var(--wb-muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--wb-border);position:sticky;top:0;background:var(--wb-surface)}
+.geo-tbl td{padding:6px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top}
+.geo-tbl tr:hover td{background:#FAFAF8}
+.geo-tbl .num{text-align:right;font-variant-numeric:tabular-nums}
+.geo-pill{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600}
+.geo-pill-fbs{background:#dcfce7;color:#15803d}
+.geo-pill-fbw{background:#ede9fe;color:#6d28d9}
+.geo-h{font-size:13px;font-weight:600;margin-bottom:8px;letter-spacing:-.01em}
+.geo-sub{font-size:11px;color:var(--wb-muted);margin-bottom:8px}
+</style>
 
 <div id="ownWhReceiptModal" class="modal-overlay" onclick="if(event.target===this) closeOwnWhReceiptManual()">
   <div class="modal" style="width:520px;max-width:94vw" onclick="event.stopPropagation()">
@@ -1779,6 +1852,7 @@ function showPage(id, btn) {
     renderSupplyRecs();
   }
   if(id === 'own-warehouse') renderOwnWarehouse(true);
+  if(id === 'orders-geo') renderOrdersGeoPage(true);
   if(id === 'ads') loadAdsPage();
   if(id === 'competitors') {
     renderCompetitors();
@@ -2126,6 +2200,322 @@ function setOwnWhFilter(f) {
     el.classList.toggle('on', map[k] === f);
   });
   renderOwnWarehouse();
+}
+
+// ── География заказов FBS / FBW ──
+let GEO_DATA = null;
+let GEO_CHANNEL = 'all';
+let GEO_PERIOD = 28;
+let GEO_LOADED = false;
+let geoDebounce = null;
+let geoPoll = null;
+
+function setGeoChannel(ch) {
+  GEO_CHANNEL = ch;
+  ['All','Fbs','Fbw'].forEach(k => {
+    const el = document.getElementById('geoCh' + k);
+    if(!el) return;
+    const map = {All:'all', Fbs:'FBS', Fbw:'FBW'};
+    el.classList.toggle('on', map[k] === ch);
+  });
+  loadOrdersGeo();
+}
+
+function setGeoPeriod(p) {
+  GEO_PERIOD = p;
+  document.getElementById('geoPer7')?.classList.toggle('on', p === 7);
+  document.getElementById('geoPer28')?.classList.toggle('on', p === 28);
+  document.getElementById('geoPerAll')?.classList.toggle('on', p === 'all');
+  applyGeoPeriodDates();
+  loadOrdersGeo();
+}
+
+function applyGeoPeriodDates() {
+  const fromEl = document.getElementById('geoDateFrom');
+  const toEl = document.getElementById('geoDateTo');
+  if(!fromEl || !toEl) return;
+  const f = GEO_DATA?.filters || {};
+  const maxD = f.date_max || new Date().toISOString().slice(0, 10);
+  toEl.value = maxD;
+  if(GEO_PERIOD === 'all') {
+    fromEl.value = f.date_min || '';
+  } else {
+    const days = Number(GEO_PERIOD) || 28;
+    try {
+      const d = new Date(maxD + 'T12:00:00');
+      d.setDate(d.getDate() - (days - 1));
+      fromEl.value = d.toISOString().slice(0, 10);
+    } catch(e) {
+      fromEl.value = '';
+    }
+  }
+}
+
+function debounceGeoLoad() {
+  clearTimeout(geoDebounce);
+  geoDebounce = setTimeout(() => loadOrdersGeo(), 280);
+}
+
+function geoFmt(n) {
+  return Number(n || 0).toLocaleString('ru-RU');
+}
+function geoMoney(n) {
+  const v = Number(n || 0);
+  if(v >= 1e6) return (v / 1e6).toFixed(2).replace('.', ',') + ' млн ₽';
+  return geoFmt(Math.round(v)) + ' ₽';
+}
+function geoEsc(s) {
+  return escapeHtml(String(s == null ? '' : s));
+}
+
+function renderOrdersGeoPage(force) {
+  const root = document.getElementById('geoRoot');
+  if(root && !GEO_LOADED) root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Загружаем географию заказов...</span></div>';
+  if(force || !GEO_LOADED) loadOrdersGeo();
+  else drawOrdersGeo();
+}
+
+async function loadOrdersGeo() {
+  const info = document.getElementById('geoInfo');
+  const params = new URLSearchParams();
+  const fromEl = document.getElementById('geoDateFrom');
+  const toEl = document.getElementById('geoDateTo');
+  if(fromEl?.value) params.set('date_from', fromEl.value);
+  if(toEl?.value) params.set('date_to', toEl.value);
+  params.set('channel', GEO_CHANNEL || 'all');
+  const wh = document.getElementById('geoWh')?.value;
+  if(wh && wh !== 'all') params.set('warehouse', wh);
+  const reg = document.getElementById('geoReg')?.value;
+  if(reg && reg !== 'all') params.set('region', reg);
+  const q = document.getElementById('geoSearch')?.value?.trim();
+  if(q) params.set('search', q);
+
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/orders-geo?` + params.toString());
+    const d = await r.json();
+    GEO_DATA = d;
+    GEO_LOADED = true;
+    // заполнить селекты складов/регионов (сохраняя выбор)
+    const whSel = document.getElementById('geoWh');
+    const regSel = document.getElementById('geoReg');
+    const curWh = whSel?.value || 'all';
+    const curReg = regSel?.value || 'all';
+    if(whSel && d.filters?.warehouses) {
+      whSel.innerHTML = '<option value="all">Все склады</option>' +
+        d.filters.warehouses.map(w => `<option value="${String(w).replace(/"/g,'&quot;')}">${geoEsc(w)}</option>`).join('');
+      whSel.value = d.filters.warehouses.includes(curWh) ? curWh : 'all';
+    }
+    if(regSel && d.filters?.regions) {
+      regSel.innerHTML = '<option value="all">Все регионы</option>' +
+        d.filters.regions.map(w => `<option value="${String(w).replace(/"/g,'&quot;')}">${geoEsc(w)}</option>`).join('');
+      regSel.value = d.filters.regions.includes(curReg) ? curReg : 'all';
+    }
+    // если даты пустые — проставить из периода
+    if(fromEl && !fromEl.value) applyGeoPeriodDates();
+    if(info) {
+      const m = d.meta || {};
+      const src = m.source === 'ribbon' ? 'лента' : (m.source || '—');
+      info.textContent = `${geoFmt(d.summary?.total_orders || 0)} заказов · ${src}` +
+        (m.filename ? ` · ${m.filename}` : '') +
+        (d.filters?.total_cached ? ` · в кэше ${geoFmt(d.filters.total_cached)}` : '');
+    }
+    drawOrdersGeo();
+  } catch(e) {
+    if(info) info.textContent = 'Ошибка загрузки';
+    const root = document.getElementById('geoRoot');
+    if(root) root.innerHTML = '<div class="empty" style="padding:40px 20px">Не удалось загрузить данные. Загрузи ленту заказов или нажми «С WB».</div>';
+  }
+}
+
+function drawOrdersGeo() {
+  const d = GEO_DATA;
+  const root = document.getElementById('geoRoot');
+  if(!d) return;
+  if(d.meta?.empty || (!d.filters?.total_cached && !(d.summary?.total_orders))) {
+    if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">${geoEsc(d.hint || 'Загрузи Excel «Лента заказов» или нажми «С WB»')}</div>`;
+    document.getElementById('geoCards').innerHTML = '';
+    document.getElementById('geoDayChart').style.display = 'none';
+    ['geoWhTable','geoRegTable','geoCityTable','geoArtTable'].forEach(id => {
+      const el = document.getElementById(id); if(el) el.innerHTML = '';
+    });
+    return;
+  }
+  if(root) root.innerHTML = '';
+
+  const s = d.summary || {};
+  document.getElementById('geoCards').innerHTML = `
+    <div class="card"><div class="card-l">Заказов</div><div class="card-v">${geoFmt(s.total_orders)}</div><div class="card-sub">${geoMoney(s.total_revenue)} · ср. ${geoMoney(s.avg_order_price)}</div></div>
+    <div class="card"><div class="card-l">FBS</div><div class="card-v" style="color:#15803d">${geoFmt(s.fbs_orders)}</div><div class="card-sub">${s.fbs_share_pct || 0}% · ${geoMoney(s.fbs_revenue)}</div></div>
+    <div class="card"><div class="card-l">FBW</div><div class="card-v" style="color:#6d28d9">${geoFmt(s.fbw_orders)}</div><div class="card-sub">${s.fbw_share_pct || 0}% · ${geoMoney(s.fbw_revenue)}</div></div>
+    <div class="card"><div class="card-l">Складов / Регионов</div><div class="card-v">${(d.by_warehouse||[]).length} / ${(d.by_region||[]).length}</div><div class="card-sub">городов: ${(d.by_city||[]).length}</div></div>
+  `;
+
+  // Daily chart
+  const days = d.by_day || [];
+  const chart = document.getElementById('geoDayChart');
+  if(chart && days.length) {
+    const maxT = Math.max(...days.map(x => x.total), 1);
+    chart.style.display = 'block';
+    chart.innerHTML = `
+      <div class="geo-h">Динамика по дням <span class="geo-sub" style="display:inline;margin-left:8px"><span class="geo-pill geo-pill-fbs">FBS</span> <span class="geo-pill geo-pill-fbw">FBW</span> — клик по столбцу ставит этот день в фильтр</span></div>
+      <div class="geo-bar-wrap">${days.map(day => {
+        const h = Math.max(4, Math.round(day.total / maxT * 100));
+        const fbsH = day.total ? Math.round(day.fbs / day.total * h) : 0;
+        const fbwH = h - fbsH;
+        const lbl = (day.date || '').slice(5);
+        return `<div class="geo-bar-col" title="${day.date}: ${day.total} шт (FBS ${day.fbs} / FBW ${day.fbw})" onclick="filterGeoDay('${day.date}')">
+          <div class="geo-bar" style="height:${h}px">
+            <div class="geo-bar-fbw" style="height:${fbwH}px"></div>
+            <div class="geo-bar-fbs" style="height:${fbsH}px"></div>
+          </div>
+          <div class="geo-bar-lbl">${lbl}</div>
+        </div>`;
+      }).join('')}</div>`;
+  } else if(chart) chart.style.display = 'none';
+
+  // Warehouses
+  const whEl = document.getElementById('geoWhTable');
+  if(whEl) {
+    const rows = (d.by_warehouse || []).map(w => `
+      <tr style="cursor:pointer" onclick="setGeoWarehouse(decodeURIComponent('${encodeURIComponent(w.warehouse)}'))">
+        <td><b>${geoEsc(w.warehouse)}</b><br><span class="geo-pill ${w.channel==='FBS'?'geo-pill-fbs':'geo-pill-fbw'}">${geoEsc(w.channel||'')}</span></td>
+        <td class="num">${geoFmt(w.orders)}<div style="font-size:10px;color:var(--wb-muted)">${w.share_pct}%</div></td>
+        <td class="num">${geoMoney(w.revenue)}</td>
+        <td style="font-size:11px;color:var(--wb-muted)">${geoEsc((w.top_regions||[]).join(', '))}</td>
+      </tr>`).join('');
+    whEl.innerHTML = `<div class="geo-h">Склады отправки</div>
+      <table class="geo-tbl"><thead><tr><th>Склад</th><th class="num">Заказов</th><th class="num">Выручка</th><th>Топ регионы</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4">Нет данных</td></tr>'}</tbody></table>`;
+  }
+
+  // Regions
+  const regEl = document.getElementById('geoRegTable');
+  if(regEl) {
+    const rows = (d.by_region || []).map(r => `
+      <tr style="cursor:pointer" onclick="setGeoRegion(decodeURIComponent('${encodeURIComponent(r.region)}'))">
+        <td><b>${geoEsc(r.region)}</b><div style="font-size:10px;color:var(--wb-muted)">${geoEsc((r.top_cities||[]).slice(0,3).join(', '))}</div></td>
+        <td class="num">${geoFmt(r.total_orders)}<div style="font-size:10px;color:var(--wb-muted)">${r.share_pct}%</div></td>
+        <td class="num"><span style="color:#15803d">${geoFmt(r.fbs_orders)}</span> / <span style="color:#6d28d9">${geoFmt(r.fbw_orders)}</span></td>
+        <td class="num">${geoMoney(r.revenue)}</td>
+      </tr>`).join('');
+    regEl.innerHTML = `<div class="geo-h">Регионы доставки</div>
+      <table class="geo-tbl"><thead><tr><th>Регион</th><th class="num">Заказов</th><th class="num">FBS / FBW</th><th class="num">Выручка</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4">Нет данных</td></tr>'}</tbody></table>`;
+  }
+
+  // Cities
+  const cityEl = document.getElementById('geoCityTable');
+  if(cityEl) {
+    const rows = (d.by_city || []).slice(0, 40).map(c => `
+      <tr>
+        <td><b>${geoEsc(c.city)}</b><div style="font-size:10px;color:var(--wb-muted)">${geoEsc(c.region||'')}</div></td>
+        <td class="num">${geoFmt(c.total_orders)}</td>
+        <td class="num"><span style="color:#15803d">${geoFmt(c.fbs_orders)}</span> / <span style="color:#6d28d9">${geoFmt(c.fbw_orders)}</span></td>
+        <td class="num">${geoMoney(c.revenue)}</td>
+      </tr>`).join('');
+    cityEl.innerHTML = `<div class="geo-h">Города доставки (топ)</div>
+      <table class="geo-tbl"><thead><tr><th>Город</th><th class="num">Заказов</th><th class="num">FBS / FBW</th><th class="num">Выручка</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4">Нет данных</td></tr>'}</tbody></table>`;
+  }
+
+  // Articles
+  const artEl = document.getElementById('geoArtTable');
+  if(artEl) {
+    const rows = (d.by_article || []).slice(0, 40).map(a => `
+      <tr>
+        <td><b>${geoEsc(a.article)}</b><div style="font-size:10px;color:var(--wb-muted)">${geoEsc(a.name||'').slice(0,48)}</div></td>
+        <td class="num">${geoFmt(a.total_orders)}</td>
+        <td class="num"><span style="color:#15803d">${geoFmt(a.fbs_orders)}</span> / <span style="color:#6d28d9">${geoFmt(a.fbw_orders)}</span></td>
+        <td class="num">${geoMoney(a.revenue)}<div style="font-size:10px;color:var(--wb-muted)">${geoEsc(a.top_city||'')}</div></td>
+      </tr>`).join('');
+    artEl.innerHTML = `<div class="geo-h">Артикулы (топ)</div>
+      <table class="geo-tbl"><thead><tr><th>Артикул</th><th class="num">Заказов</th><th class="num">FBS / FBW</th><th class="num">Выручка / город</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4">Нет данных</td></tr>'}</tbody></table>`;
+  }
+}
+
+function filterGeoDay(day) {
+  const fromEl = document.getElementById('geoDateFrom');
+  const toEl = document.getElementById('geoDateTo');
+  if(fromEl) fromEl.value = day;
+  if(toEl) toEl.value = day;
+  document.getElementById('geoPer7')?.classList.remove('on');
+  document.getElementById('geoPer28')?.classList.remove('on');
+  document.getElementById('geoPerAll')?.classList.remove('on');
+  GEO_PERIOD = 'day';
+  loadOrdersGeo();
+}
+
+function setGeoWarehouse(name) {
+  const el = document.getElementById('geoWh');
+  if(el) el.value = name;
+  loadOrdersGeo();
+}
+function setGeoRegion(name) {
+  const el = document.getElementById('geoReg');
+  if(el) el.value = name;
+  loadOrdersGeo();
+}
+
+async function uploadOrdersGeo(file) {
+  if(!file) return;
+  const info = document.getElementById('geoInfo');
+  if(info) info.textContent = 'Загружаем ленту заказов…';
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch(`${RAILWAY_URL}/api/orders-geo/upload`, { method: 'POST', body: fd });
+    const d = await r.json();
+    if(d.error) {
+      if(info) info.textContent = 'Ошибка: ' + d.error;
+      return;
+    }
+    if(info) info.textContent = `Загружено ${geoFmt(d.total)} (FBS ${geoFmt(d.fbs)} / FBW ${geoFmt(d.fbw)})`;
+    GEO_PERIOD = 28;
+    document.getElementById('geoPer28')?.classList.add('on');
+    document.getElementById('geoPer7')?.classList.remove('on');
+    document.getElementById('geoPerAll')?.classList.remove('on');
+    // проставить даты из файла
+    const fromEl = document.getElementById('geoDateFrom');
+    const toEl = document.getElementById('geoDateTo');
+    if(toEl && d.date_max) toEl.value = d.date_max;
+    if(fromEl && d.date_max) {
+      try {
+        const dt = new Date(d.date_max + 'T12:00:00');
+        dt.setDate(dt.getDate() - 27);
+        fromEl.value = dt.toISOString().slice(0, 10);
+      } catch(e) { if(d.date_min) fromEl.value = d.date_min; }
+    }
+    await loadOrdersGeo();
+  } catch(e) {
+    if(info) info.textContent = 'Ошибка загрузки файла';
+  } finally {
+    const inp = document.getElementById('geoFileInput');
+    if(inp) inp.value = '';
+  }
+}
+
+async function syncOrdersGeo() {
+  const btn = document.getElementById('geoSyncBtn');
+  const info = document.getElementById('geoInfo');
+  if(btn) btn.disabled = true;
+  if(info) info.textContent = 'Тянем заказы с WB…';
+  try {
+    await fetch(`${RAILWAY_URL}/api/orders-geo/sync?days=30`, { method: 'POST' });
+    clearTimeout(geoPoll);
+    let tries = 0;
+    geoPoll = setInterval(async () => {
+      tries++;
+      await loadOrdersGeo();
+      if(tries >= 8 || (GEO_DATA?.filters?.total_cached > 0)) {
+        clearInterval(geoPoll);
+        if(btn) btn.disabled = false;
+      }
+    }, 4000);
+  } catch(e) {
+    if(info) info.textContent = 'Ошибка sync';
+    if(btn) btn.disabled = false;
+  }
 }
 
 async function triggerOwnWarehouseSync() {

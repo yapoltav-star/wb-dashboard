@@ -10219,6 +10219,630 @@ def get_fbs_speed_report(days: int = 14):
         return {"error": str(e)}
 
 
+# ---------- География заказов FBS / FBW (лента заказов + Statistics API) ----------
+
+ORDERS_GEO_CACHE = {
+    "orders": [],
+    "updated_at": None,
+    "source": None,
+    "filename": None,
+    "syncing": False,
+    "error": None,
+}
+_ORDERS_GEO_LOCK = threading.Lock()
+_ORDERS_GEO_FILE = Path(__file__).resolve().parent.parent / "data" / "orders_geo_cache.json"
+
+
+def _orders_geo_ensure_dir():
+    try:
+        _ORDERS_GEO_FILE.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+
+def _orders_geo_save_file():
+    _orders_geo_ensure_dir()
+    try:
+        payload = {
+            "orders": ORDERS_GEO_CACHE.get("orders") or [],
+            "updated_at": ORDERS_GEO_CACHE.get("updated_at"),
+            "source": ORDERS_GEO_CACHE.get("source"),
+            "filename": ORDERS_GEO_CACHE.get("filename"),
+        }
+        with open(_ORDERS_GEO_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"orders_geo save file error: {e}")
+
+
+def _orders_geo_load_file() -> bool:
+    try:
+        if not _ORDERS_GEO_FILE.exists():
+            # локальный seed из tmp после анализа ленты
+            seed = Path(__file__).resolve().parent.parent / "tmp" / "orders_ribbon_preprocessed.json"
+            if seed.exists():
+                with open(seed, "r", encoding="utf-8") as f:
+                    orders = json.load(f)
+                if isinstance(orders, list) and orders:
+                    ORDERS_GEO_CACHE["orders"] = orders
+                    ORDERS_GEO_CACHE["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    ORDERS_GEO_CACHE["source"] = "seed"
+                    ORDERS_GEO_CACHE["filename"] = seed.name
+                    _orders_geo_save_file()
+                    return True
+            return False
+        with open(_ORDERS_GEO_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        orders = payload.get("orders") if isinstance(payload, dict) else payload
+        if not isinstance(orders, list) or not orders:
+            return False
+        ORDERS_GEO_CACHE["orders"] = orders
+        ORDERS_GEO_CACHE["updated_at"] = (payload.get("updated_at") if isinstance(payload, dict) else None)
+        ORDERS_GEO_CACHE["source"] = (payload.get("source") if isinstance(payload, dict) else "file")
+        ORDERS_GEO_CACHE["filename"] = (payload.get("filename") if isinstance(payload, dict) else None)
+        return True
+    except Exception as e:
+        logger.warning(f"orders_geo load file error: {e}")
+        return False
+
+
+def _orders_geo_ensure_loaded() -> list:
+    with _ORDERS_GEO_LOCK:
+        if ORDERS_GEO_CACHE.get("orders"):
+            return ORDERS_GEO_CACHE["orders"]
+        _orders_geo_load_file()
+        return ORDERS_GEO_CACHE.get("orders") or []
+
+
+def _orders_geo_normalize_channel(tipo_sklada: str, warehouse: str = "") -> str:
+    t = (tipo_sklada or "").strip().lower()
+    w = (warehouse or "").strip().lower()
+    if "сво" in t or "продавц" in t or "fbs" in t:
+        return "FBS"
+    if "склад wb" in t or "склады wb" in t or "fbw" in t or "fbo" in t:
+        return "FBW"
+    if "продавц" in w or "склад продавца" in w:
+        return "FBS"
+    return "FBW"
+
+
+def _orders_geo_parse_ribbon_df(df: "pd.DataFrame") -> list:
+    """Парсит лист «Все заказы» / «Активные» из отчёта «Лента заказов» WB."""
+    if df is None or df.empty:
+        return []
+
+    cols = [str(c).strip() if c is not None else "" for c in df.columns]
+    # Иногда регион/город разбиты на две колонки (название + Unnamed)
+    rename = {}
+    for i, c in enumerate(cols):
+        cl = c.lower()
+        if "артикул продавца" in cl:
+            rename[df.columns[i]] = "article"
+        elif c == "Артикул WB" or "артикул wb" in cl:
+            rename[df.columns[i]] = "nm_id"
+        elif c == "Название" or cl == "название":
+            rename[df.columns[i]] = "name"
+        elif "дата оформления" in cl:
+            rename[df.columns[i]] = "order_dt"
+        elif "статус заказа" in cl:
+            rename[df.columns[i]] = "status"
+        elif "регион отправки" in cl:
+            rename[df.columns[i]] = "src_region"
+        elif "регион прибытия" in cl:
+            rename[df.columns[i]] = "dest_region"
+        elif "цена со скидкой" in cl:
+            rename[df.columns[i]] = "price"
+        elif "тип склада" in cl:
+            rename[df.columns[i]] = "warehouse_type"
+        elif "id заказа" in cl:
+            rename[df.columns[i]] = "order_id"
+
+    df = df.rename(columns=rename)
+
+    # Unnamed колонки сразу после региона — склад отправки / город прибытия
+    cols_now = list(df.columns)
+    for i, c in enumerate(cols_now):
+        if c == "src_region" and i + 1 < len(cols_now):
+            nxt = cols_now[i + 1]
+            if str(nxt).startswith("Unnamed") or nxt not in ("article", "nm_id", "name", "order_dt", "status", "dest_region", "price", "warehouse_type", "order_id", "warehouse", "dest_city"):
+                df = df.rename(columns={nxt: "warehouse"})
+        if c == "dest_region" and i + 1 < len(cols_now):
+            nxt = cols_now[i + 1]
+            if str(nxt).startswith("Unnamed") or nxt not in ("article", "nm_id", "name", "order_dt", "status", "src_region", "price", "warehouse_type", "order_id", "warehouse", "dest_city"):
+                df = df.rename(columns={nxt: "dest_city"})
+
+    # если склад/город всё ещё unnamed — эвристика по позиции
+    if "warehouse" not in df.columns:
+        for c in df.columns:
+            if str(c).startswith("Unnamed"):
+                sample = df[c].dropna().astype(str).head(20).str.lower()
+                if sample.str.contains("склад|сц ").any():
+                    df = df.rename(columns={c: "warehouse"})
+                    break
+    if "dest_city" not in df.columns:
+        for c in df.columns:
+            if str(c).startswith("Unnamed"):
+                df = df.rename(columns={c: "dest_city"})
+                break
+
+    records = []
+    for _, r in df.iterrows():
+        try:
+            dt_raw = r.get("order_dt")
+            if pd.isna(dt_raw):
+                continue
+            dt = pd.to_datetime(dt_raw, errors="coerce")
+            if pd.isna(dt):
+                continue
+            date_str = dt.strftime("%Y-%m-%d")
+            wh = str(r.get("warehouse") or "").strip() or "Не указан"
+            wtype = str(r.get("warehouse_type") or "").strip()
+            channel = _orders_geo_normalize_channel(wtype, wh)
+            try:
+                price = float(r.get("price") or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            if price != price:  # NaN
+                price = 0.0
+            try:
+                nm = int(r.get("nm_id") or 0)
+            except (TypeError, ValueError):
+                nm = 0
+            records.append({
+                "order_id": str(r.get("order_id") or ""),
+                "date": date_str,
+                "dt": dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "channel": channel,
+                "warehouse": wh,
+                "dest_region": str(r.get("dest_region") or "").strip() or "Не указан",
+                "dest_city": str(r.get("dest_city") or "").strip() or "Не указан",
+                "article": str(r.get("article") or "").strip(),
+                "nm_id": nm,
+                "name": str(r.get("name") or "").strip(),
+                "price": round(price, 2),
+                "status": str(r.get("status") or "").strip(),
+            })
+        except Exception:
+            continue
+    return records
+
+
+def parse_orders_geo_excel(content: bytes, filename: str = "") -> list:
+    """Читает xlsx ленты заказов WB и возвращает нормализованный список заказов."""
+    bio = io.BytesIO(content)
+    xl = pd.ExcelFile(bio)
+    sheet = None
+    for name in xl.sheet_names:
+        low = str(name).lower()
+        if "все заказ" in low or "активн" in low:
+            sheet = name
+            break
+    if sheet is None:
+        sheet = xl.sheet_names[-1] if xl.sheet_names else 0
+
+    # пробуем header=1 (типичный формат ленты), иначе header=0
+    df = pd.read_excel(xl, sheet_name=sheet, header=1)
+    # если колонки Unnamed и мало смысла — перечитать с header=0
+    named = [c for c in df.columns if not str(c).startswith("Unnamed")]
+    if len(named) < 5:
+        df = pd.read_excel(xl, sheet_name=sheet, header=0)
+
+    # если первая ячейка — «Все заказы», сдвигаем заголовок
+    if df.shape[0] > 0 and str(df.iloc[0, 0]).strip().lower().startswith("артикул"):
+        df.columns = [str(x).strip() for x in df.iloc[0].tolist()]
+        df = df.iloc[1:].reset_index(drop=True)
+
+    records = _orders_geo_parse_ribbon_df(df)
+    if not records:
+        # fallback: raw без заголовка
+        raw = pd.read_excel(xl, sheet_name=sheet, header=None)
+        if raw.shape[0] > 2:
+            header_row = None
+            for i in range(min(5, len(raw))):
+                row_vals = [str(x).lower() for x in raw.iloc[i].tolist()]
+                if any("артикул продавца" in v for v in row_vals):
+                    header_row = i
+                    break
+            if header_row is not None:
+                df2 = raw.iloc[header_row + 1:].copy()
+                df2.columns = [str(x).strip() for x in raw.iloc[header_row].tolist()]
+                records = _orders_geo_parse_ribbon_df(df2)
+    logger.info(f"orders_geo parse {filename or sheet}: {len(records)} orders")
+    return records
+
+
+def aggregate_orders_geo(
+    orders: list,
+    date_from: str = None,
+    date_to: str = None,
+    channel: str = "all",
+    warehouse: str = "all",
+    region: str = "all",
+    city: str = "all",
+    search: str = "",
+) -> dict:
+    filtered = []
+    search = (search or "").strip().lower()
+    ch_filter = (channel or "all").upper()
+    wh_filter = (warehouse or "all")
+    reg_filter = (region or "all")
+    city_filter = (city or "all")
+
+    # опции фильтров — по датам (чтобы селекты не схлопывались при выборе канала)
+    date_scoped = []
+    for o in orders or []:
+        o_date = o.get("date") or ""
+        if date_from and o_date < date_from:
+            continue
+        if date_to and o_date > date_to:
+            continue
+        date_scoped.append(o)
+
+    for o in date_scoped:
+        o_ch = (o.get("channel") or "FBW").upper()
+        if ch_filter not in ("ALL", "") and o_ch != ch_filter:
+            continue
+        o_wh = o.get("warehouse") or ""
+        if wh_filter not in ("all", "", None) and o_wh != wh_filter:
+            continue
+        o_reg = o.get("dest_region") or ""
+        if reg_filter not in ("all", "", None) and o_reg != reg_filter:
+            continue
+        o_city = o.get("dest_city") or ""
+        if city_filter not in ("all", "", None) and o_city != city_filter:
+            continue
+        if search:
+            blob = " ".join([
+                str(o.get("article") or ""),
+                str(o.get("nm_id") or ""),
+                str(o.get("name") or ""),
+                str(o_wh),
+                str(o_city),
+                str(o_reg),
+            ]).lower()
+            if search not in blob:
+                continue
+        filtered.append(o)
+
+    total_orders = len(filtered)
+    total_rev = sum(float(o.get("price") or 0) for o in filtered)
+    fbs_orders = sum(1 for o in filtered if (o.get("channel") or "").upper() == "FBS")
+    fbs_rev = sum(float(o.get("price") or 0) for o in filtered if (o.get("channel") or "").upper() == "FBS")
+    fbw_orders = total_orders - fbs_orders
+    fbw_rev = total_rev - fbs_rev
+
+    by_day_dict = {}
+    by_wh_dict = {}
+    by_reg_dict = {}
+    by_city_dict = {}
+    by_art_dict = {}
+    warehouses_set = {(o.get("warehouse") or "Не указан") for o in date_scoped}
+    regions_set = {(o.get("dest_region") or "Не указан") for o in date_scoped}
+    cities_set = {(o.get("dest_city") or "Не указан") for o in date_scoped}
+
+    for o in filtered:
+        d = o.get("date") or ""
+        ch = (o.get("channel") or "FBW").upper()
+        p = float(o.get("price") or 0)
+        wh = o.get("warehouse") or "Не указан"
+        reg = o.get("dest_region") or "Не указан"
+        city_name = o.get("dest_city") or "Не указан"
+        art = (o.get("article") or "").strip() or str(o.get("nm_id") or "—")
+
+        if d:
+            slot = by_day_dict.setdefault(d, {
+                "date": d, "total": 0, "fbs": 0, "fbw": 0,
+                "revenue": 0.0, "fbs_revenue": 0.0, "fbw_revenue": 0.0,
+            })
+            slot["total"] += 1
+            slot["revenue"] += p
+            if ch == "FBS":
+                slot["fbs"] += 1
+                slot["fbs_revenue"] += p
+            else:
+                slot["fbw"] += 1
+                slot["fbw_revenue"] += p
+
+        wslot = by_wh_dict.setdefault(wh, {
+            "warehouse": wh, "channel": ch, "orders": 0, "revenue": 0.0, "regions": {},
+        })
+        wslot["orders"] += 1
+        wslot["revenue"] += p
+        wslot["regions"][reg] = wslot["regions"].get(reg, 0) + 1
+
+        rslot = by_reg_dict.setdefault(reg, {
+            "region": reg, "fbs_orders": 0, "fbw_orders": 0,
+            "total_orders": 0, "revenue": 0.0, "cities": {},
+        })
+        rslot["total_orders"] += 1
+        rslot["revenue"] += p
+        if ch == "FBS":
+            rslot["fbs_orders"] += 1
+        else:
+            rslot["fbw_orders"] += 1
+        rslot["cities"][city_name] = rslot["cities"].get(city_name, 0) + 1
+
+        cslot = by_city_dict.setdefault(city_name, {
+            "city": city_name, "region": reg, "fbs_orders": 0, "fbw_orders": 0,
+            "total_orders": 0, "revenue": 0.0,
+        })
+        cslot["total_orders"] += 1
+        cslot["revenue"] += p
+        if ch == "FBS":
+            cslot["fbs_orders"] += 1
+        else:
+            cslot["fbw_orders"] += 1
+
+        aslot = by_art_dict.setdefault(art, {
+            "article": art, "nm_id": o.get("nm_id"), "name": o.get("name") or "",
+            "fbs_orders": 0, "fbw_orders": 0, "total_orders": 0, "revenue": 0.0, "cities": {},
+        })
+        aslot["total_orders"] += 1
+        aslot["revenue"] += p
+        if ch == "FBS":
+            aslot["fbs_orders"] += 1
+        else:
+            aslot["fbw_orders"] += 1
+        aslot["cities"][city_name] = aslot["cities"].get(city_name, 0) + 1
+
+    by_day = sorted(by_day_dict.values(), key=lambda x: x["date"])
+    for s in by_day:
+        s["revenue"] = round(s["revenue"], 2)
+        s["fbs_revenue"] = round(s["fbs_revenue"], 2)
+        s["fbw_revenue"] = round(s["fbw_revenue"], 2)
+
+    by_wh = []
+    for item in by_wh_dict.values():
+        top_regs = [r[0] for r in sorted(item["regions"].items(), key=lambda x: -x[1])[:3]]
+        by_wh.append({
+            "warehouse": item["warehouse"],
+            "channel": item["channel"],
+            "orders": item["orders"],
+            "revenue": round(item["revenue"], 2),
+            "share_pct": round(item["orders"] / max(1, total_orders) * 100, 1),
+            "top_regions": top_regs,
+        })
+    by_wh.sort(key=lambda x: -x["orders"])
+
+    by_reg = []
+    for item in by_reg_dict.values():
+        top_cities = [c[0] for c in sorted(item["cities"].items(), key=lambda x: -x[1])[:4]]
+        by_reg.append({
+            "region": item["region"],
+            "fbs_orders": item["fbs_orders"],
+            "fbw_orders": item["fbw_orders"],
+            "total_orders": item["total_orders"],
+            "revenue": round(item["revenue"], 2),
+            "share_pct": round(item["total_orders"] / max(1, total_orders) * 100, 1),
+            "top_cities": top_cities,
+        })
+    by_reg.sort(key=lambda x: -x["total_orders"])
+
+    by_city = []
+    for item in by_city_dict.values():
+        by_city.append({
+            "city": item["city"],
+            "region": item["region"],
+            "fbs_orders": item["fbs_orders"],
+            "fbw_orders": item["fbw_orders"],
+            "total_orders": item["total_orders"],
+            "revenue": round(item["revenue"], 2),
+            "share_pct": round(item["total_orders"] / max(1, total_orders) * 100, 1),
+        })
+    by_city.sort(key=lambda x: -x["total_orders"])
+
+    by_art = []
+    for item in by_art_dict.values():
+        top_city = sorted(item["cities"].items(), key=lambda x: -x[1])[0][0] if item["cities"] else ""
+        by_art.append({
+            "article": item["article"],
+            "nm_id": item["nm_id"],
+            "name": item["name"],
+            "fbs_orders": item["fbs_orders"],
+            "fbw_orders": item["fbw_orders"],
+            "total_orders": item["total_orders"],
+            "revenue": round(item["revenue"], 2),
+            "avg_price": round(item["revenue"] / max(1, item["total_orders"]), 2),
+            "top_city": top_city,
+        })
+    by_art.sort(key=lambda x: -x["total_orders"])
+
+    all_orders = _orders_geo_ensure_loaded()
+    dates = sorted({o.get("date") for o in all_orders if o.get("date")})
+    return {
+        "summary": {
+            "total_orders": total_orders,
+            "total_revenue": round(total_rev, 2),
+            "avg_order_price": round(total_rev / max(1, total_orders), 2),
+            "fbs_orders": fbs_orders,
+            "fbs_revenue": round(fbs_rev, 2),
+            "fbs_share_pct": round(fbs_orders / max(1, total_orders) * 100, 1),
+            "fbw_orders": fbw_orders,
+            "fbw_revenue": round(fbw_rev, 2),
+            "fbw_share_pct": round(fbw_orders / max(1, total_orders) * 100, 1),
+        },
+        "by_day": by_day,
+        "by_warehouse": by_wh[:40],
+        "by_region": by_reg[:30],
+        "by_city": by_city[:80],
+        "by_article": by_art[:80],
+        "filters": {
+            "warehouses": sorted(warehouses_set),
+            "regions": sorted(regions_set),
+            "cities": sorted(cities_set)[:300],
+            "date_min": dates[0] if dates else None,
+            "date_max": dates[-1] if dates else None,
+            "total_cached": len(all_orders),
+        },
+        "meta": {
+            "updated_at": ORDERS_GEO_CACHE.get("updated_at"),
+            "source": ORDERS_GEO_CACHE.get("source"),
+            "filename": ORDERS_GEO_CACHE.get("filename"),
+            "filtered": total_orders,
+        },
+    }
+
+
+def sync_orders_geo_from_statistics(days: int = 30) -> dict:
+    """Подтягивает заказы из Statistics API (склад + регион; города чаще пустые)."""
+    if not WB_TOKEN:
+        return {"error": "WB_TOKEN не задан"}
+    if ORDERS_GEO_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    ORDERS_GEO_CACHE["syncing"] = True
+    ORDERS_GEO_CACHE["error"] = None
+    try:
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=max(1, min(int(days), 90)))
+        date_from = cutoff.strftime("%Y-%m-%dT00:00:00")
+        raw = fetch_supplier_feed("/api/v1/supplier/orders", date_from, max_pages=5)
+        records = []
+        for o in raw or []:
+            d = parse_wb_dt(o.get("date") or "")
+            if d is None or d < cutoff:
+                continue
+            wh = str(o.get("warehouseName") or "").strip() or "Не указан"
+            # Statistics API: warehouseType / склад продавца ≈ FBS
+            wtype = str(o.get("warehouseType") or o.get("orderType") or "")
+            channel = _orders_geo_normalize_channel(wtype, wh)
+            if "seller" in wh.lower() or "продав" in wh.lower():
+                channel = "FBS"
+            price = float(o.get("finishedPrice") or o.get("priceWithDisc") or o.get("totalPrice") or 0)
+            records.append({
+                "order_id": str(o.get("srid") or o.get("gNumber") or ""),
+                "date": d.strftime("%Y-%m-%d"),
+                "dt": d.strftime("%Y-%m-%d %H:%M:%S"),
+                "channel": channel,
+                "warehouse": wh,
+                "dest_region": str(o.get("oblastOkrugName") or o.get("regionName") or "").strip() or "Не указан",
+                "dest_city": str(o.get("regionName") or "").strip() or "Не указан",
+                "article": str(o.get("supplierArticle") or "").strip(),
+                "nm_id": int(o.get("nmId") or 0),
+                "name": str(o.get("subject") or "").strip(),
+                "price": round(price, 2),
+                "status": "Отменён" if o.get("isCancel") else "Заказ",
+            })
+        with _ORDERS_GEO_LOCK:
+            # если уже есть лента с городами — не затираем, а дополняем только новые даты API
+            existing = ORDERS_GEO_CACHE.get("orders") or []
+            if existing and ORDERS_GEO_CACHE.get("source") == "ribbon":
+                exist_ids = {x.get("order_id") for x in existing if x.get("order_id")}
+                exist_keys = {(x.get("date"), x.get("nm_id"), x.get("warehouse"), x.get("article")) for x in existing}
+                added = 0
+                for r in records:
+                    key = (r.get("date"), r.get("nm_id"), r.get("warehouse"), r.get("article"))
+                    if r.get("order_id") and r["order_id"] in exist_ids:
+                        continue
+                    if key in exist_keys:
+                        continue
+                    existing.append(r)
+                    added += 1
+                ORDERS_GEO_CACHE["orders"] = existing
+                ORDERS_GEO_CACHE["updated_at"] = datetime.now(timezone.utc).isoformat()
+                ORDERS_GEO_CACHE["source"] = "ribbon+api"
+                _orders_geo_save_file()
+                return {"status": "ok", "added": added, "total": len(existing), "source": "ribbon+api"}
+            ORDERS_GEO_CACHE["orders"] = records
+            ORDERS_GEO_CACHE["updated_at"] = datetime.now(timezone.utc).isoformat()
+            ORDERS_GEO_CACHE["source"] = "statistics_api"
+            ORDERS_GEO_CACHE["filename"] = None
+            _orders_geo_save_file()
+        return {"status": "ok", "total": len(records), "source": "statistics_api"}
+    except Exception as e:
+        ORDERS_GEO_CACHE["error"] = str(e)
+        logger.error(f"sync_orders_geo_from_statistics: {e}")
+        return {"error": str(e)}
+    finally:
+        ORDERS_GEO_CACHE["syncing"] = False
+
+
+@app.get("/api/orders-geo")
+def get_orders_geo(
+    date_from: str = None,
+    date_to: str = None,
+    channel: str = "all",
+    warehouse: str = "all",
+    region: str = "all",
+    city: str = "all",
+    search: str = "",
+):
+    """Сводка географии заказов FBS/FBW за период (из кэша ленты или Statistics API)."""
+    orders = _orders_geo_ensure_loaded()
+    if not orders:
+        return {
+            "summary": {
+                "total_orders": 0, "total_revenue": 0, "avg_order_price": 0,
+                "fbs_orders": 0, "fbs_revenue": 0, "fbs_share_pct": 0,
+                "fbw_orders": 0, "fbw_revenue": 0, "fbw_share_pct": 0,
+            },
+            "by_day": [], "by_warehouse": [], "by_region": [], "by_city": [], "by_article": [],
+            "filters": {"warehouses": [], "regions": [], "cities": [], "date_min": None, "date_max": None, "total_cached": 0},
+            "meta": {"updated_at": None, "source": None, "filename": None, "filtered": 0, "empty": True},
+            "hint": "Загрузите Excel «Лента заказов» (вкладка Все заказы) или нажмите «Подтянуть с WB».",
+        }
+    # дефолтный период — последние 28 дней от max даты в кэше
+    if not date_from and not date_to:
+        dates = sorted({o.get("date") for o in orders if o.get("date")})
+        if dates:
+            date_to = dates[-1]
+            try:
+                d_to = datetime.strptime(date_to, "%Y-%m-%d").date()
+                date_from = (d_to - timedelta(days=27)).isoformat()
+            except Exception:
+                date_from = dates[0]
+    return aggregate_orders_geo(
+        orders,
+        date_from=date_from,
+        date_to=date_to,
+        channel=channel,
+        warehouse=warehouse,
+        region=region,
+        city=city,
+        search=search,
+    )
+
+
+@app.post("/api/orders-geo/upload")
+async def upload_orders_geo(file: UploadFile = File(...)):
+    """Загрузка Excel «Лента заказов» WB для раздела географии."""
+    try:
+        content = await file.read()
+        if not content:
+            return {"error": "Пустой файл"}
+        records = parse_orders_geo_excel(content, filename=file.filename or "")
+        if not records:
+            return {"error": "Не удалось разобрать файл. Нужна вкладка «Все заказы» из ленты заказов WB."}
+        with _ORDERS_GEO_LOCK:
+            ORDERS_GEO_CACHE["orders"] = records
+            ORDERS_GEO_CACHE["updated_at"] = datetime.now(timezone.utc).isoformat()
+            ORDERS_GEO_CACHE["source"] = "ribbon"
+            ORDERS_GEO_CACHE["filename"] = file.filename
+            ORDERS_GEO_CACHE["error"] = None
+            _orders_geo_save_file()
+        dates = sorted({o.get("date") for o in records if o.get("date")})
+        return {
+            "status": "ok",
+            "total": len(records),
+            "fbs": sum(1 for o in records if o.get("channel") == "FBS"),
+            "fbw": sum(1 for o in records if o.get("channel") == "FBW"),
+            "date_min": dates[0] if dates else None,
+            "date_max": dates[-1] if dates else None,
+            "filename": file.filename,
+        }
+    except Exception as e:
+        logger.error(f"upload_orders_geo: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/orders-geo/sync")
+def sync_orders_geo(days: int = 30):
+    """Подтянуть заказы из Statistics API WB (склад + регион)."""
+    import threading
+    if ORDERS_GEO_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    threading.Thread(target=sync_orders_geo_from_statistics, args=(days,), daemon=True).start()
+    return {"status": "started", "days": days}
+
+
 @app.get("/api/seller-recommendations-agg")
 def get_seller_recommendations_agg(refresh: int = 0):
     """
