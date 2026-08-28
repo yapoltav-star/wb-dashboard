@@ -10178,15 +10178,15 @@ def fetch_fbs_speed_report_data(days: int = 14) -> dict:
             "impact_rub": round(impact_rub, 2),
         })
 
-    # Медиана часов
-    median_hours = round(float(np.median(all_hours)), 1) if all_hours else 0.0
+    import statistics
+    median_hours = round(float(statistics.median(all_hours)), 1) if all_hours else 0.0
     delivered_count = len(all_hours)
 
     # Формируем сводку по складам
     wh_summary = []
     for w in wh_stats.values():
         h_list = w.pop("hours_list")
-        w["median_hours"] = round(float(np.median(h_list)), 1) if h_list else 0.0
+        w["median_hours"] = round(float(statistics.median(h_list)), 1) if h_list else 0.0
         w["bonus_rub"] = round(w["bonus_rub"], 2)
         w["fine_rub"] = round(w["fine_rub"], 2)
         w["net_rub"] = round(w["bonus_rub"] - w["fine_rub"], 2)
