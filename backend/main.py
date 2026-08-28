@@ -9955,6 +9955,270 @@ def fetch_all_own_content_cards() -> list:
     return out
 
 
+def fetch_fbs_speed_report_data(days: int = 14) -> dict:
+    """
+    Выгружает сборочные задания FBS, поставки и склады из WB Marketplace API v3,
+    рассчитывает время сдачи (от создания заказа до скана/закрытия поставки),
+    коэффициент kC (правила с 07.08.2026) и финансовый эффект (скидка/штраф к комиссии).
+    """
+    if not WB_TOKEN:
+        return {"error": "WB_TOKEN не задан"}
+
+    now = datetime.now(timezone.utc)
+    date_from_dt = now - timedelta(days=days)
+    date_from_ts = int(date_from_dt.timestamp())
+
+    headers = wb_headers()
+
+    # 1. Склады FBS
+    wh_map = {}
+    try:
+        r_wh = httpx.get(f"{WB_MARKETPLACE_URL}/api/v3/warehouses", headers=headers, timeout=20)
+        if r_wh.is_success:
+            for w in r_wh.json():
+                wh_map[w.get("id")] = w.get("name")
+    except Exception as e:
+        logger.warning(f"fetch_fbs_speed_report warehouses error: {e}")
+
+    # 2. Поставки FBS (supplies)
+    supplies_map = {}
+    try:
+        next_val = 0
+        while True:
+            r_sup = httpx.get(
+                f"{WB_MARKETPLACE_URL}/api/v3/supplies",
+                headers=headers,
+                params={"limit": 1000, "next": next_val},
+                timeout=30,
+            )
+            if not r_sup.is_success:
+                logger.warning(f"fetch_fbs_speed_report supplies error: {r_sup.status_code} {r_sup.text[:200]}")
+                break
+            data = r_sup.json()
+            items = data.get("supplies") if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            if not items:
+                break
+            for sup in items:
+                sid = sup.get("id")
+                if sid:
+                    supplies_map[sid] = sup
+            next_val = data.get("next", 0) if isinstance(data, dict) else 0
+            if not next_val or len(items) < 1000:
+                break
+    except Exception as e:
+        logger.warning(f"fetch_fbs_speed_report supplies fetch error: {e}")
+
+    # 3. Заказы FBS (сборочные задания)
+    orders = []
+    try:
+        next_val = 0
+        for _ in range(20):  # до 20,000 заказов
+            r_ord = httpx.get(
+                f"{WB_MARKETPLACE_URL}/api/v3/orders",
+                headers=headers,
+                params={"limit": 1000, "next": next_val, "dateFrom": date_from_ts},
+                timeout=35,
+            )
+            if not r_ord.is_success:
+                logger.warning(f"fetch_fbs_speed_report orders error: {r_ord.status_code} {r_ord.text[:200]}")
+                break
+            data = r_ord.json()
+            batch = data.get("orders") if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            if not batch:
+                break
+            orders.extend(batch)
+            next_val = data.get("next", 0) if isinstance(data, dict) else 0
+            if not next_val or len(batch) < 1000:
+                break
+    except Exception as e:
+        logger.warning(f"fetch_fbs_speed_report orders fetch error: {e}")
+
+    # 4. Анализ каждого заказа и расчет kC
+    orders_analyzed = []
+    bracket_counts = {
+        "bonus_13": 0,    # <= 13ч (-5.0%)
+        "norm_42": 0,     # 13-42ч (-3.5%)
+        "base_48": 0,     # 42-48ч (0%)
+        "fine_54": 0,     # 48-54ч (+0.30%/ч)
+        "fine_60": 0,     # 54-60ч (+0.35%/ч)
+        "fine_over": 0,   # > 60ч (+0.45%/ч)
+        "pending": 0,     # еще не сданы
+    }
+    wh_stats = {}  # wh_name -> {total, <=13, 13-42, >48, bonus_rub, fine_rub, hours_list}
+
+    total_bonus_rub = 0.0
+    total_fine_rub = 0.0
+    all_hours = []
+
+    for o in orders:
+        created_str = o.get("createdAt") or ""
+        created_dt = parse_wb_dt(created_str)
+        if not created_dt:
+            continue
+
+        sup_id = o.get("supplyId")
+        sup = supplies_map.get(sup_id, {}) if sup_id else {}
+        
+        # Определяем время сканирования/сдачи
+        scan_str = sup.get("scanDt") or sup.get("closedAt") or o.get("scanDt") or ""
+        scan_dt = parse_wb_dt(scan_str)
+
+        wh_id = o.get("warehouseId")
+        wh_name = wh_map.get(wh_id) or f"Склад #{wh_id}"
+
+        if wh_name not in wh_stats:
+            wh_stats[wh_name] = {
+                "warehouse_id": wh_id,
+                "warehouse_name": wh_name,
+                "total_orders": 0,
+                "bonus_13_count": 0,
+                "norm_42_count": 0,
+                "base_48_count": 0,
+                "fine_48_count": 0,
+                "pending_count": 0,
+                "bonus_rub": 0.0,
+                "fine_rub": 0.0,
+                "hours_list": [],
+            }
+        wstat = wh_stats[wh_name]
+        wstat["total_orders"] += 1
+
+        price_raw = o.get("convertedPrice") or o.get("price") or 0
+        price_rub = (price_raw / 100.0) if price_raw > 100000 else float(price_raw)
+
+        if not scan_dt:
+            bracket_counts["pending"] += 1
+            wstat["pending_count"] += 1
+            orders_analyzed.append({
+                "order_id": o.get("id"),
+                "created_at": created_str,
+                "scan_at": None,
+                "hours": None,
+                "warehouse_name": wh_name,
+                "article": o.get("article"),
+                "nm_id": o.get("nmId"),
+                "price_rub": price_rub,
+                "status": "pending",
+                "kc_pct": 0.0,
+                "impact_rub": 0.0,
+            })
+            continue
+
+        diff_seconds = (scan_dt - created_dt).total_seconds()
+        hours = max(0.0, round(diff_seconds / 3600.0, 2))
+        all_hours.append(hours)
+        wstat["hours_list"].append(hours)
+
+        # Расчет kC
+        kc_pct = 0.0
+        bracket = ""
+        if hours <= 13.0:
+            kc_pct = -5.0
+            bracket = "bonus_13"
+            bracket_counts["bonus_13"] += 1
+            wstat["bonus_13_count"] += 1
+            b_rub = abs(kc_pct) / 100.0 * price_rub
+            total_bonus_rub += b_rub
+            wstat["bonus_rub"] += b_rub
+            impact_rub = b_rub
+        elif hours <= 42.0:
+            kc_pct = -3.5
+            bracket = "norm_42"
+            bracket_counts["norm_42"] += 1
+            wstat["norm_42_count"] += 1
+            b_rub = abs(kc_pct) / 100.0 * price_rub
+            total_bonus_rub += b_rub
+            wstat["bonus_rub"] += b_rub
+            impact_rub = b_rub
+        elif hours <= 48.0:
+            kc_pct = 0.0
+            bracket = "base_48"
+            bracket_counts["base_48"] += 1
+            wstat["base_48_count"] += 1
+            impact_rub = 0.0
+        elif hours <= 54.0:
+            kc_pct = (hours - 48.0) * 0.30
+            bracket = "fine_54"
+            bracket_counts["fine_54"] += 1
+            wstat["fine_48_count"] += 1
+            f_rub = kc_pct / 100.0 * price_rub
+            total_fine_rub += f_rub
+            wstat["fine_rub"] += f_rub
+            impact_rub = -f_rub
+        elif hours <= 60.0:
+            kc_pct = (6.0 * 0.30) + ((hours - 54.0) * 0.35)
+            bracket = "fine_60"
+            bracket_counts["fine_60"] += 1
+            wstat["fine_48_count"] += 1
+            f_rub = kc_pct / 100.0 * price_rub
+            total_fine_rub += f_rub
+            wstat["fine_rub"] += f_rub
+            impact_rub = -f_rub
+        else:
+            kc_pct = (6.0 * 0.30) + (6.0 * 0.35) + ((hours - 60.0) * 0.45)
+            bracket = "fine_over"
+            bracket_counts["fine_over"] += 1
+            wstat["fine_48_count"] += 1
+            f_rub = kc_pct / 100.0 * price_rub
+            total_fine_rub += f_rub
+            wstat["fine_rub"] += f_rub
+            impact_rub = -f_rub
+
+        orders_analyzed.append({
+            "order_id": o.get("id"),
+            "created_at": created_str,
+            "scan_at": scan_str,
+            "hours": hours,
+            "warehouse_name": wh_name,
+            "article": o.get("article"),
+            "nm_id": o.get("nmId"),
+            "price_rub": price_rub,
+            "bracket": bracket,
+            "kc_pct": round(kc_pct, 2),
+            "impact_rub": round(impact_rub, 2),
+        })
+
+    # Медиана часов
+    median_hours = round(float(np.median(all_hours)), 1) if all_hours else 0.0
+    delivered_count = len(all_hours)
+
+    # Формируем сводку по складам
+    wh_summary = []
+    for w in wh_stats.values():
+        h_list = w.pop("hours_list")
+        w["median_hours"] = round(float(np.median(h_list)), 1) if h_list else 0.0
+        w["bonus_rub"] = round(w["bonus_rub"], 2)
+        w["fine_rub"] = round(w["fine_rub"], 2)
+        w["net_rub"] = round(w["bonus_rub"] - w["fine_rub"], 2)
+        wh_summary.append(w)
+    wh_summary.sort(key=lambda x: -x["total_orders"])
+
+    return {
+        "period_days": days,
+        "total_orders": len(orders_analyzed),
+        "delivered_orders": delivered_count,
+        "pending_orders": bracket_counts["pending"],
+        "median_hours": median_hours,
+        "bracket_counts": bracket_counts,
+        "total_bonus_rub": round(total_bonus_rub, 2),
+        "total_fine_rub": round(total_fine_rub, 2),
+        "net_profit_rub": round(total_bonus_rub - total_fine_rub, 2),
+        "warehouses": wh_summary,
+        "orders_sample": orders_analyzed[:500],
+    }
+
+
+@app.get("/api/fbs-speed-report")
+def get_fbs_speed_report(days: int = 14):
+    """Отчет по скорости отгрузки FBS, порогам kC и экономии на комиссии."""
+    try:
+        data = fetch_fbs_speed_report_data(days=days)
+        return data
+    except Exception as e:
+        logger.error(f"get_fbs_speed_report error: {e}")
+        return {"error": str(e)}
+
+
 @app.get("/api/seller-recommendations-agg")
 def get_seller_recommendations_agg(refresh: int = 0):
     """
