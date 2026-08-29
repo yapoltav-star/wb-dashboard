@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+_OPENAI_TOKEN_PARAM = "max_completion_tokens"
 TG_CHUNK = 3800
 HISTORY_TURNS = 8
 TOOL_STEPS_LIMIT = 6
@@ -568,18 +569,37 @@ def _openai_tools() -> list:
     } for t in TOOL_SCHEMAS]
 
 
-def _ask_openai(chat_id: int, working: list) -> tuple:
+def _openai_call(body: dict):
+    """Лимит токенов называется по-разному: у 5.x max_completion_tokens, у 4.x max_tokens.
+    Определяем сам, один раз за процесс."""
+    global _OPENAI_TOKEN_PARAM
     headers = {
         "Authorization": f"Bearer {_openai_key()}",
         "Content-Type": "application/json",
     }
+    r = None
+    for _ in range(2):
+        payload = dict(body)
+        payload[_OPENAI_TOKEN_PARAM] = 1500
+        r = httpx.post(OPENAI_URL, headers=headers, timeout=120, json=payload)
+        if r.status_code == 400 and _OPENAI_TOKEN_PARAM in r.text and "not supported" in r.text.lower():
+            _OPENAI_TOKEN_PARAM = (
+                "max_tokens" if _OPENAI_TOKEN_PARAM == "max_completion_tokens"
+                else "max_completion_tokens"
+            )
+            logger.info(f"openai: переключаюсь на {_OPENAI_TOKEN_PARAM}")
+            continue
+        return r
+    return r
+
+
+def _ask_openai(chat_id: int, working: list) -> tuple:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + working
 
     for _ in range(TOOL_STEPS_LIMIT):
         try:
-            r = httpx.post(OPENAI_URL, headers=headers, timeout=120, json={
+            r = _openai_call({
                 "model": _openai_model(),
-                "max_tokens": 1500,
                 "tools": _openai_tools(),
                 "messages": messages,
             })
@@ -624,7 +644,7 @@ def ask_llm(chat_id: int, question: str) -> str:
 
     if err:
         low = err.lower()
-        if "404" in low or "model" in low:
+        if "404" in low or "does not exist" in low or "model_not_found" in low:
             err += "\n\nПохоже на неверное имя модели. Список доступных — /api/llm-models на сайте."
         return _esc(err)
     if not text:
