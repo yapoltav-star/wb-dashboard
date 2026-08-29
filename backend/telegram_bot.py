@@ -8,9 +8,10 @@
 Переменные окружения:
   TELEGRAM_BOT_TOKEN        токен от @BotFather (без него бот не стартует)
   TELEGRAM_ALLOWED_CHAT_IDS белый список chat_id через запятую
-  OPENAI_API_KEY            опционально: включает ответы на вопросы текстом
+  OPENAI_API_KEY            опционально: вопросы текстом + распознавание голоса (Whisper)
   OPENAI_MODEL              опционально: модель, по умолчанию gpt-4o
-  ANTHROPIC_API_KEY         альтернатива OpenAI, тоже включает вопросы текстом
+  OPENAI_TRANSCRIBE_MODEL   опционально: модель STT, по умолчанию whisper-1
+  ANTHROPIC_API_KEY         альтернатива OpenAI для текста (голос всё равно нужен OpenAI)
   ANTHROPIC_MODEL           опционально: модель, по умолчанию claude-sonnet-4-5
   LLM_PROVIDER              openai или anthropic, если заданы оба ключа
 """
@@ -32,12 +33,14 @@ logger = logging.getLogger(__name__)
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_TRANSCRIBE_URL = "https://api.openai.com/v1/audio/transcriptions"
 _OPENAI_TOKEN_PARAM = "max_completion_tokens"
 # GPT-5.x не даёт использовать функции в chat/completions без reasoning_effort=none.
 _OPENAI_EXTRA = {"reasoning_effort": "none"}
 TG_CHUNK = 3800
 HISTORY_TURNS = 8
 TOOL_STEPS_LIMIT = 6
+VOICE_MAX_BYTES = 24 * 1024 * 1024  # Whisper принимает до 25 МБ
 
 _API: dict = {}
 _HISTORY: dict = {}
@@ -78,6 +81,10 @@ def _openai_key() -> str:
 
 def _openai_model() -> str:
     return (os.getenv("OPENAI_MODEL") or "gpt-5.6-terra").strip()
+
+
+def _transcribe_model() -> str:
+    return (os.getenv("OPENAI_TRANSCRIBE_MODEL") or "whisper-1").strip()
 
 
 def _provider() -> str:
@@ -124,6 +131,70 @@ def _typing(chat_id: int):
         _tg("sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=10)
     except Exception:
         pass
+
+
+def _download_tg_file(file_id: str) -> tuple:
+    """Скачать файл Telegram по file_id → (bytes, filename)."""
+    meta = _tg("getFile", {"file_id": file_id}, timeout=30)
+    info = meta.get("result") or {}
+    path = info.get("file_path") or ""
+    if not path:
+        raise RuntimeError("Telegram не вернул file_path")
+    size = int(info.get("file_size") or 0)
+    if size and size > VOICE_MAX_BYTES:
+        raise RuntimeError(f"Файл слишком большой ({size} байт), лимит Whisper 25 МБ")
+    url = f"https://api.telegram.org/file/bot{_token()}/{path}"
+    r = httpx.get(url, timeout=60)
+    r.raise_for_status()
+    if len(r.content) > VOICE_MAX_BYTES:
+        raise RuntimeError("Файл слишком большой для распознавания")
+    name = path.rsplit("/", 1)[-1] or "voice.ogg"
+    return r.content, name
+
+
+def _transcribe_audio(content: bytes, filename: str) -> str:
+    """OpenAI Whisper: голос → текст. Нужен OPENAI_API_KEY."""
+    key = _openai_key()
+    if not key:
+        raise RuntimeError("Нет OPENAI_API_KEY — голос распознаю только через Whisper")
+    # Голосовые Telegram — ogg/opus; у audio часто mp3/m4a.
+    lower = (filename or "").lower()
+    if lower.endswith((".ogg", ".oga", ".opus")):
+        mime = "audio/ogg"
+    elif lower.endswith(".mp3"):
+        mime = "audio/mpeg"
+    elif lower.endswith((".m4a", ".mp4")):
+        mime = "audio/mp4"
+    elif lower.endswith(".wav"):
+        mime = "audio/wav"
+    else:
+        mime = "application/octet-stream"
+        if "." not in (filename or ""):
+            filename = (filename or "voice") + ".ogg"
+    r = httpx.post(
+        OPENAI_TRANSCRIBE_URL,
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "model": _transcribe_model(),
+            "language": "ru",
+            "response_format": "json",
+        },
+        files={"file": (filename, content, mime)},
+        timeout=120,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Whisper HTTP {r.status_code}: {r.text[:300]}")
+    text = ((r.json() or {}).get("text") or "").strip()
+    return text
+
+
+def _extract_voice_media(msg: dict):
+    """voice (кружок/запись) или audio (файл). video_note не трогаем."""
+    for key in ("voice", "audio"):
+        media = msg.get(key)
+        if isinstance(media, dict) and media.get("file_id"):
+            return media
+    return None
 
 
 # ---------- форматирование ----------
@@ -558,6 +629,7 @@ HELP = (
     "/fbs — скорость отгрузки и экономика kC\n"
     "/sklad — свой склад\n"
     "/reset — забыть контекст разговора\n"
+    "\nМожно писать текстом или <b>голосом</b> — распознаю и отвечу.\n"
 )
 
 HELP_LLM_OFF = (
@@ -916,8 +988,12 @@ def _process_update(upd: dict, allowed: set):
     msg = upd.get("message") or upd.get("edited_message") or {}
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
-    text = msg.get("text")
-    if not chat_id or not text:
+    if not chat_id:
+        return
+
+    text = (msg.get("text") or "").strip()
+    media = _extract_voice_media(msg)
+    if not text and not media:
         return
 
     if not allowed:
@@ -927,6 +1003,25 @@ def _process_update(upd: dict, allowed: set):
     if chat_id not in allowed:
         logger.warning(f"telegram: отклонён chat_id {chat_id}")
         return
+
+    if media and not text:
+        if not _openai_key():
+            _send(chat_id, "Голосовые пока не разбираю: нужен OPENAI_API_KEY (Whisper). "
+                           "Текстом или командами можно и без него.")
+            return
+        _typing(chat_id)
+        try:
+            raw, filename = _download_tg_file(media["file_id"])
+            text = _transcribe_audio(raw, filename)
+        except Exception as e:
+            logger.error(f"telegram voice: {e}")
+            _send(chat_id, f"Не разобрал голос: {_esc(e)}")
+            return
+        if not text:
+            _send(chat_id, "Тишина или не разобрал — повтори голосом или напиши текстом.")
+            return
+        # Показываем, что услышали, чтобы сразу было видно опечатки Whisper.
+        _send(chat_id, f"Услышал: <i>{_esc(text)}</i>")
 
     handle_message(chat_id, text)
 
@@ -1008,6 +1103,8 @@ def bot_status() -> dict:
         "llm_enabled": bool(_provider()),
         "model": {"openai": _openai_model, "anthropic": _anthropic_model}[_provider()]()
                  if _provider() else None,
+        "voice_stt": bool(_openai_key()),
+        "transcribe_model": _transcribe_model() if _openai_key() else None,
         "started": _STARTED,
         "polling": alive,
         "sources": sorted(_API.keys()),
