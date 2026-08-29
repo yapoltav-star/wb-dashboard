@@ -7246,8 +7246,9 @@ def build_wb_products_catalog(sales_by_nm: dict | None = None) -> dict:
     stock_updated_fmt = None
     if stock_updated:
         try:
+            from zoneinfo import ZoneInfo
             dt = datetime.fromisoformat(str(stock_updated).replace("Z", "+00:00"))
-            stock_updated_fmt = dt.astimezone(timezone.utc).strftime("%d.%m.%Y %H:%M")
+            stock_updated_fmt = dt.astimezone(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y %H:%M")
         except Exception:
             stock_updated_fmt = str(stock_updated)[:16]
 
@@ -7255,7 +7256,7 @@ def build_wb_products_catalog(sales_by_nm: dict | None = None) -> dict:
         "products": products,
         "count": len(products),
         "with_stock": sum(1 for x in products if (x.get("stock") or 0) > 0),
-        "updated_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
+        "updated_at": _msk_now().strftime("%d.%m.%Y %H:%M"),
         "stock_updated_at": stock_updated_fmt,
         "prices_updated_at": SPP_CACHE.get("updated_at"),
         "sales_updated_at": WB_PRODUCTS_CACHE.get("sales_updated_at"),
@@ -7288,7 +7289,7 @@ def refresh_wb_products_catalog(sync_sources: bool = False):
             try:
                 sales = _fetch_orders_sales_periods()
                 WB_PRODUCTS_CACHE["sales_by_nm"] = sales
-                WB_PRODUCTS_CACHE["sales_updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+                WB_PRODUCTS_CACHE["sales_updated_at"] = _msk_now().strftime("%d.%m.%Y %H:%M")
             except Exception as e:
                 logger.error(f"wb-products sales: {e}")
         elif not WB_PRODUCTS_CACHE.get("sales_by_nm"):
@@ -7296,7 +7297,7 @@ def refresh_wb_products_catalog(sync_sources: bool = False):
                 sales = _fetch_orders_sales_periods_fast()
                 WB_PRODUCTS_CACHE["sales_by_nm"] = sales
                 if sales:
-                    WB_PRODUCTS_CACHE["sales_updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+                    WB_PRODUCTS_CACHE["sales_updated_at"] = _msk_now().strftime("%d.%m.%Y %H:%M")
             except Exception as e:
                 logger.error(f"wb-products sales soft: {e}")
         data = build_wb_products_catalog(WB_PRODUCTS_CACHE.get("sales_by_nm") or {})
@@ -7320,7 +7321,7 @@ def get_wb_products(refresh: bool = False):
                     sales = _fetch_orders_sales_periods_fast()
                     if sales:
                         WB_PRODUCTS_CACHE["sales_by_nm"] = sales
-                        WB_PRODUCTS_CACHE["sales_updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+                        WB_PRODUCTS_CACHE["sales_updated_at"] = _msk_now().strftime("%d.%m.%Y %H:%M")
                 except Exception:
                     pass
             data = build_wb_products_catalog(WB_PRODUCTS_CACHE.get("sales_by_nm") or {})

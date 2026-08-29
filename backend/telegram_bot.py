@@ -173,6 +173,7 @@ def _slim(d: dict) -> dict:
 # ---------- инструменты (только чтение) ----------
 
 def tool_products(query: str = "", only_low_cover: bool = False, limit: int = 15) -> dict:
+    """Полные календарные периоды и полный остаток по всем складам WB."""
     data = _API["wb_products"]() or {}
     items = data.get("products") or []
     q = (query or "").strip().lower()
@@ -186,42 +187,51 @@ def tool_products(query: str = "", only_low_cover: bool = False, limit: int = 15
         stock = int(p.get("stock") or 0)
         per_day = s7 / 7.0
         cover = round(stock / per_day, 1) if per_day > 0 else None
+        yest = int(p.get("sales_yesterday") or 0)
+        s28 = int(p.get("sales_28d") or 0)
         rows.append({
             "vendor_code": p.get("vendor_code"),
             "nm_id": p.get("nm_id"),
             "name": p.get("name"),
             "client_price": p.get("client_price"),
-            "stock": stock,
+            # Полный остаток FBW+FBS по всем складам (не урезанный «Рост продаж»).
+            "stock_total": stock,
             "warehouse_count": p.get("warehouse_count"),
             "channels": p.get("channels"),
-            "sales_yesterday": int(p.get("sales_yesterday") or 0),
-            "sales_7d": s7,
-            "sales_28d": int(p.get("sales_28d") or 0),
+            # Это заказы (orders), не выкупы. Периоды — полные календарные сутки МСК.
+            "orders_yesterday_full": yest,
+            "orders_7d": s7,
+            "orders_28d": s28,
             "days_cover": cover,
         })
 
     if only_low_cover:
         rows = [r for r in rows if r["days_cover"] is not None and r["days_cover"] < 14]
-        rows.sort(key=lambda r: (r["days_cover"], -r["sales_7d"]))
+        rows.sort(key=lambda r: (r["days_cover"], -r["orders_7d"]))
     else:
-        rows.sort(key=lambda r: -r["sales_7d"])
+        rows.sort(key=lambda r: -r["orders_7d"])
 
     out = {
         "matched": len(rows),
         "items": rows[: max(1, min(int(limit or 15), 40))],
         "stock_updated_at": data.get("stock_updated_at"),
         "prices_updated_at": data.get("prices_updated_at"),
-        "sales_updated_at": data.get("sales_updated_at"),
+        "orders_updated_at": data.get("sales_updated_at"),
+        "period_note": (
+            "orders_yesterday_full — полные вчерашние сутки по Москве; "
+            "orders_7d / orders_28d включают сегодняшний неполный день. "
+            "stock_total — сумма по всем складам."
+        ),
     }
-    # Без продаж days_cover посчитать не из чего, и «ничего не заканчивается»
+    # Без заказов days_cover посчитать не из чего, и «ничего не заканчивается»
     # было бы враньём — пусть модель скажет правду.
     if not any((p.get("sales_7d") or 0) > 0 for p in items):
-        out["warning"] = ("Данные о продажах ещё не загрузились после перезапуска сервера, "
+        out["warning"] = ("Данные о заказах ещё не загрузились после перезапуска сервера, "
                           "поэтому запас в днях посчитать нельзя. Остатки при этом верные. "
                           "Обновление занимает пару минут, можно переспросить позже.")
-        out["sales_available"] = False
+        out["orders_available"] = False
     else:
-        out["sales_available"] = True
+        out["orders_available"] = True
     return out
 
 
@@ -265,18 +275,38 @@ def tool_fbs_speed(days: int = 14) -> dict:
 
 
 def tool_sales_pace(period: str = "day") -> dict:
+    """Срез «к этому часу» vs такой же час прошлого периода — не полные сутки."""
     if period not in ("day", "week", "weeks2", "month"):
         period = "day"
     d = _API["sales_pace"](period=period) or {}
+    articles = []
+    for a in (d.get("articles") or [])[:15]:
+        articles.append({
+            "vendor_code": a.get("vendor_code"),
+            "nm_id": a.get("nm_id"),
+            "name": a.get("name"),
+            "orders_current_window": int(a.get("orders_today") or 0),
+            "orders_previous_same_hours": int(a.get("orders_yesterday") or 0),
+            "orders_delta": a.get("orders_delta"),
+            "cart_cr_current_window": a.get("cart_cr_today"),
+            "cart_cr_previous_same_hours": a.get("cart_cr_yesterday"),
+        })
     return {
         "period": d.get("period"),
         "period_name": d.get("period_name"),
-        "label_cur": d.get("label_cur"),
-        "label_prev": d.get("label_prev"),
+        "label_current_window": d.get("label_cur"),
+        "label_previous_same_hours": d.get("label_prev"),
         "as_of": d.get("as_of"),
+        "time_cutoff": d.get("time_cutoff"),
+        "mode_hint": d.get("mode_hint"),
         "updated_at": d.get("updated_at"),
         "syncing": d.get("syncing"),
-        "articles": [_slim(a) for a in (d.get("articles") or [])[:15]],
+        "window_warning": (
+            "Это НЕ полные сутки. orders_previous_same_hours — заказы вчера "
+            "только до того же часа, что сейчас (см. label_previous_same_hours). "
+            "Для полного вчера, 7/28 дней и полного остатка вызывай products."
+        ),
+        "articles": articles,
     }
 
 
@@ -297,10 +327,10 @@ TOOL_SCHEMAS = [
     {
         "name": "products",
         "description": (
-            "Товары Wildberries: цена для покупателя, остаток, число складов, канал "
-            "FBW/FBS и продажи за вчера, 7 и 28 дней. Плюс days_cover — на сколько дней "
-            "хватит остатка при текущем темпе. Используй для вопросов про остатки, цены, "
-            "продажи конкретных артикулов и про то, что скоро закончится."
+            "Главный источник абсолютных цифр: полный остаток (stock_total по всем складам), "
+            "заказы за полные вчерашние сутки (orders_yesterday_full), за 7 и 28 дней, "
+            "цена, каналы FBW/FBS, days_cover. Используй для «сколько вчера», «за неделю», "
+            "«какой остаток», «что заканчивается», топа артикулов. Это заказы, не выкупы."
         ),
         "input_schema": {
             "type": "object",
@@ -315,7 +345,8 @@ TOOL_SCHEMAS = [
         "name": "geography",
         "description": (
             "География заказов FBS и FBW: сводка, склады отгрузки, регионы и города "
-            "назначения, топ артикулов. Данные из ленты заказов и Statistics API."
+            "назначения, топ артикулов. Данные из ленты заказов и Statistics API. "
+            "С Statistics API в «city» часто лежит область, не населённый пункт."
         ),
         "input_schema": {
             "type": "object",
@@ -340,7 +371,13 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "sales_pace",
-        "description": "Темп продаж: текущий период против предыдущего, по артикулам.",
+        "description": (
+            "Только сравнение темпа: текущее окно часов против такого же окна прошлого "
+            "периода (сегодня до HH:MM vs вчера до HH:MM). НЕ используй для «сколько было "
+            "вчера целиком», полного остатка или топа за 7 дней — для этого products. "
+            "Поля orders_previous_same_hours нельзя называть «продажами за вчера» без "
+            "оговорки про час."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {"period": {"type": "string", "enum": ["day", "week", "weeks2", "month"]}},
@@ -357,8 +394,18 @@ SYSTEM_PROMPT_BASE = (
     "Ты помощник селлера Wildberries и Ozon. Категория — смарт-часы. "
     "Отвечаешь в телеграме, поэтому коротко: несколько предложений или компактный список, "
     "без заголовков и таблиц.\n\n"
-    "Всегда бери цифры из инструментов, никогда не выдумывай. Если инструмент вернул пусто "
-    "или устаревшие данные — скажи об этом прямо.\n\n"
+    "Всегда бери цифры из инструментов, никогда не выдумывай. Перед ответом с цифрами "
+    "вызови нужный инструмент. Если инструмент вернул пусто или устаревшие данные — "
+    "скажи об этом прямо.\n\n"
+    "Как выбирать инструмент:\n"
+    "• products — остаток, полное вчера, 7/28 дней, что заканчивается, топ артикулов.\n"
+    "• sales_pace — только «как идёт сегодня против вчера к этому часу».\n"
+    "• geography / fbs_speed / own_warehouse — по теме вопроса.\n\n"
+    "Важные ловушки:\n"
+    "• Цифры в products — это заказы, не выкупы. Говори «заказов», если не уверена.\n"
+    "• Из sales_pace никогда не говори «вчера N», если не добавила «до HH:MM». "
+    "Полное вчера — только orders_yesterday_full из products.\n"
+    "• Остаток бери только из stock_total (products), не из других отчётов.\n\n"
     "Что важно знать про экономику: комиссия FBS 37%, FBW 32,5%. С 7 августа 2026 действует "
     "коэффициент kC за скорость отгрузки: до 13 часов минус 5 пунктов, от 13 до 42 часов "
     "минус 3,5 пункта, от 42 до 48 базовая ставка, дальше штрафы. Отгрузка считается от "
@@ -399,7 +446,7 @@ HELP = (
     "<b>Команды</b>\n"
     "/stock — что скоро закончится\n"
     "/stock 042 — остаток и продажи по артикулу\n"
-    "/sales — топ продаж за 7 дней\n"
+    "/sales — топ заказов за 7 дней (полные сутки)\n"
     "/geo — география заказов за 28 дней\n"
     "/geo 7 fbs — то же за 7 дней только по FBS\n"
     "/fbs — скорость отгрузки и экономика kC\n"
@@ -430,8 +477,8 @@ def cmd_stock(arg: str) -> str:
         else:
             cover_s = f"хватит на {cover:.0f} дн"
         out.append(f"<code>{_esc(r.get('vendor_code'))}</code>")
-        out.append(f"{cover_s} · остаток {_num(r.get('stock'))} на {_num(r.get('warehouse_count'))} скл "
-                   f"· {_num(r.get('sales_7d'))} шт за 7 дн")
+        out.append(f"{cover_s} · остаток {_num(r.get('stock_total'))} на {_num(r.get('warehouse_count'))} скл "
+                   f"· {_num(r.get('orders_7d'))} зак. за 7 дн")
     out.append(f"\nОстатки обновлены: {_esc(data.get('stock_updated_at') or '—')}")
     return "\n".join(out)
 
@@ -440,14 +487,14 @@ def cmd_sales() -> str:
     data = tool_products(limit=12)
     items = data.get("items") or []
     if not items:
-        return "Продаж не вижу — возможно, данные ещё синхронизируются."
+        return "Заказов не вижу — возможно, данные ещё синхронизируются."
 
-    out = ["<b>Топ продаж за 7 дней</b>", ""]
+    out = ["<b>Топ заказов за 7 дней</b>", ""]
     for i, r in enumerate(items, 1):
         out.append(f"{i}. <code>{_esc(r.get('vendor_code'))}</code>")
-        out.append(f"вчера {_num(r.get('sales_yesterday'))} · 7 дн {_num(r.get('sales_7d'))} "
-                   f"· 28 дн {_num(r.get('sales_28d'))} · остаток {_num(r.get('stock'))}")
-    out.append(f"\nПродажи обновлены: {_esc(data.get('sales_updated_at') or '—')}")
+        out.append(f"вчера {_num(r.get('orders_yesterday_full'))} · 7 дн {_num(r.get('orders_7d'))} "
+                   f"· 28 дн {_num(r.get('orders_28d'))} · остаток {_num(r.get('stock_total'))}")
+    out.append(f"\nЗаказы обновлены: {_esc(data.get('orders_updated_at') or '—')}")
     return "\n".join(out)
 
 
@@ -556,15 +603,19 @@ def _ask_anthropic(chat_id: int, working: list) -> tuple:
         "anthropic-version": ANTHROPIC_VERSION,
         "content-type": "application/json",
     }
+    force_tools = True
     for _ in range(TOOL_STEPS_LIMIT):
+        payload = {
+            "model": _anthropic_model(),
+            "max_tokens": 1500,
+            "system": _system_prompt(),
+            "tools": TOOL_SCHEMAS,
+            "messages": working,
+        }
+        if force_tools:
+            payload["tool_choice"] = {"type": "any"}
         try:
-            r = httpx.post(ANTHROPIC_URL, headers=headers, timeout=120, json={
-                "model": _anthropic_model(),
-                "max_tokens": 1500,
-                "system": _system_prompt(),
-                "tools": TOOL_SCHEMAS,
-                "messages": working,
-            })
+            r = httpx.post(ANTHROPIC_URL, headers=headers, timeout=120, json=payload)
         except Exception as e:
             return None, f"Не достучался до Anthropic: {e}"
         if r.status_code != 200:
@@ -572,6 +623,7 @@ def _ask_anthropic(chat_id: int, working: list) -> tuple:
 
         data = r.json()
         blocks = data.get("content") or []
+        force_tools = False
         if data.get("stop_reason") == "tool_use":
             working.append({"role": "assistant", "content": blocks})
             results = []
@@ -644,14 +696,20 @@ def _openai_call(body: dict):
 
 def _ask_openai(chat_id: int, working: list) -> tuple:
     messages = [{"role": "system", "content": _system_prompt()}] + working
+    force_tools = True
 
     for _ in range(TOOL_STEPS_LIMIT):
+        body = {
+            "model": _openai_model(),
+            "tools": _openai_tools(),
+            "messages": messages,
+        }
+        # Первый ход — обязательно инструмент: иначе модель путает окна «Рост продаж»
+        # с полным вчера из каталога и отвечает цифрами на память.
+        if force_tools:
+            body["tool_choice"] = "required"
         try:
-            r = _openai_call({
-                "model": _openai_model(),
-                "tools": _openai_tools(),
-                "messages": messages,
-            })
+            r = _openai_call(body)
         except Exception as e:
             return None, f"Не достучался до OpenAI: {e}"
         if r.status_code != 200:
@@ -659,6 +717,7 @@ def _ask_openai(chat_id: int, working: list) -> tuple:
 
         msg = ((r.json().get("choices") or [{}])[0]).get("message") or {}
         calls = msg.get("tool_calls") or []
+        force_tools = False
         if calls:
             messages.append(msg)
             for c in calls:
