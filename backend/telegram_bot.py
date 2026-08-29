@@ -19,6 +19,7 @@ import html
 import json
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -170,18 +171,107 @@ def _slim(d: dict) -> dict:
     return {k: v for k, v in d.items() if v is None or isinstance(v, (str, int, float, bool))}
 
 
+# Цвета в артикулах продавца обычно на английском (gold/black), а в чате пишут
+# по-русски («042 Голд»). Синонимы сводим к одному канону.
+_COLOR_CANON = {
+    "gold": "gold", "голд": "gold", "голда": "gold",
+    "золото": "gold", "золотой": "gold", "золотая": "gold",
+    "золотые": "gold", "золотых": "gold", "зол": "gold",
+    "black": "black", "блэк": "black", "блек": "black",
+    "черный": "black", "чёрный": "black", "черные": "black",
+    "чёрные": "black", "черн": "black", "чёрн": "black",
+    "grey": "grey", "gray": "grey", "грей": "grey",
+    "серый": "grey", "серые": "grey", "сер": "grey",
+    "графит": "grey", "graphite": "grey",
+    "pink": "pink", "пинк": "pink", "розовый": "pink",
+    "розовые": "pink", "розов": "pink", "rose": "pink",
+    "silver": "silver", "сильвер": "silver",
+    "серебро": "silver", "серебряный": "silver", "серебряные": "silver",
+    "white": "white", "вайт": "white", "белый": "white", "белые": "white", "бел": "white",
+    "red": "red", "ред": "red", "красный": "red", "красные": "red", "красн": "red",
+    "green": "green", "грин": "green", "зеленый": "green", "зелёный": "green",
+    "зеленые": "green", "зелёные": "green", "зелен": "green",
+    "beige": "beige", "беж": "beige", "бежевый": "beige",
+    "blue": "blue", "блю": "blue", "синий": "blue", "синие": "blue", "син": "blue",
+}
+
+
+def _norm_txt(s: str) -> str:
+    return (s or "").lower().replace("ё", "е").strip()
+
+
+def _split_tokens(s: str) -> list:
+    return [t for t in re.split(r"[\s_\-/,+]+", _norm_txt(s)) if t]
+
+
+def _parse_product_query(query: str) -> list:
+    """Список токенов; каждый токен — список допустимых вариантов (OR)."""
+    out = []
+    for raw in _split_tokens(query):
+        canon = _COLOR_CANON.get(raw)
+        if canon:
+            # Любой синоним цвета из словаря с тем же каноном.
+            alts = sorted({k for k, v in _COLOR_CANON.items() if v == canon} | {canon})
+            out.append(alts)
+        else:
+            out.append([raw])
+    return out
+
+
+def _token_hits_product(tok: str, vc: str, name: str, nm: str, segments: set) -> bool:
+    if not tok:
+        return False
+    if tok == nm or tok in segments:
+        return True
+    if tok in vc or tok in name:
+        return True
+    # Артикул продавца: «042» → 042_S11_middle_gold_O
+    if vc.startswith(tok) or vc.startswith(tok + "_"):
+        return True
+    for seg in segments:
+        if seg == tok or seg.startswith(tok):
+            return True
+    # «42» тоже находит «042_…»
+    if tok.isdigit():
+        for width in (3, 4):
+            padded = tok.zfill(width)
+            if padded != tok and _token_hits_product(padded, vc, name, nm, segments):
+                return True
+    return False
+
+
+def _product_matches_query(product: dict, token_alts: list) -> bool:
+    if not token_alts:
+        return True
+    vc = _norm_txt(str(product.get("vendor_code") or ""))
+    name = _norm_txt(str(product.get("name") or ""))
+    nm = str(product.get("nm_id") or "")
+    segments = set(_split_tokens(vc)) | set(_split_tokens(name))
+    if nm:
+        segments.add(nm)
+    # Цветовой сегмент артикула тоже канонизируем (gold/золотые → gold).
+    expanded = set(segments)
+    for seg in list(segments):
+        canon = _COLOR_CANON.get(seg)
+        if canon:
+            expanded.add(canon)
+    for alts in token_alts:
+        if not any(_token_hits_product(a, vc, name, nm, expanded) for a in alts):
+            return False
+    return True
+
+
 # ---------- инструменты (только чтение) ----------
 
 def tool_products(query: str = "", only_low_cover: bool = False, limit: int = 15) -> dict:
     """Полные календарные периоды и полный остаток по всем складам WB."""
     data = _API["wb_products"]() or {}
     items = data.get("products") or []
-    q = (query or "").strip().lower()
+    token_alts = _parse_product_query(query)
 
     rows = []
     for p in items:
-        blob = f"{p.get('vendor_code') or ''} {p.get('name') or ''} {p.get('nm_id') or ''}".lower()
-        if q and q not in blob:
+        if not _product_matches_query(p, token_alts):
             continue
         s7 = int(p.get("sales_7d") or 0)
         stock = int(p.get("stock") or 0)
@@ -213,6 +303,7 @@ def tool_products(query: str = "", only_low_cover: bool = False, limit: int = 15
 
     out = {
         "matched": len(rows),
+        "query": (query or "").strip() or None,
         "items": rows[: max(1, min(int(limit or 15), 40))],
         "stock_updated_at": data.get("stock_updated_at"),
         "prices_updated_at": data.get("prices_updated_at"),
@@ -221,6 +312,10 @@ def tool_products(query: str = "", only_low_cover: bool = False, limit: int = 15
             "orders_yesterday_full — полные вчерашние сутки по Москве; "
             "orders_7d / orders_28d включают сегодняшний неполный день. "
             "stock_total — сумма по всем складам."
+        ),
+        "query_hint": (
+            "Можно писать коротко: «042 голд», «042 gold», «046 серый». "
+            "Номер артикула и цвет — через пробел; цвет по-русски тоже ок."
         ),
     }
     # Без заказов days_cover посчитать не из чего, и «ничего не заканчивается»
@@ -335,7 +430,14 @@ TOOL_SCHEMAS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Часть артикула, названия или nm_id"},
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Поиск по артикулу продавца, названию или nm_id. "
+                        "Можно коротко: «042 голд», «042 gold», «046 серый», «S11 black». "
+                        "Все слова должны совпасть; цвет по-русски понимается."
+                    ),
+                },
                 "only_low_cover": {"type": "boolean", "description": "Только то, чего хватит меньше чем на 14 дней"},
                 "limit": {"type": "integer", "description": "Сколько строк вернуть, максимум 40"},
             },
@@ -405,7 +507,9 @@ SYSTEM_PROMPT_BASE = (
     "• Цифры в products — это заказы, не выкупы. Говори «заказов», если не уверена.\n"
     "• Из sales_pace никогда не говори «вчера N», если не добавила «до HH:MM». "
     "Полное вчера — только orders_yesterday_full из products.\n"
-    "• Остаток бери только из stock_total (products), не из других отчётов.\n\n"
+    "• Остаток бери только из stock_total (products), не из других отчётов.\n"
+    "• Артикулы продавца можно передавать в query коротко: «042 голд», «046 серый» — "
+    "не обязательно полный код вроде 042_S11_middle_gold_O.\n\n"
     "Что важно знать про экономику: комиссия FBS 37%, FBW 32,5%. С 7 августа 2026 действует "
     "коэффициент kC за скорость отгрузки: до 13 часов минус 5 пунктов, от 13 до 42 часов "
     "минус 3,5 пункта, от 42 до 48 базовая ставка, дальше штрафы. Отгрузка считается от "
@@ -446,6 +550,7 @@ HELP = (
     "<b>Команды</b>\n"
     "/stock — что скоро закончится\n"
     "/stock 042 — остаток и продажи по артикулу\n"
+    "/stock 042 голд — то же по номеру и цвету\n"
     "/sales — топ заказов за 7 дней (полные сутки)\n"
     "/geo — география заказов за 28 дней\n"
     "/geo 7 fbs — то же за 7 дней только по FBS\n"
