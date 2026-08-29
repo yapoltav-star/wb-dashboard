@@ -207,7 +207,13 @@ def _count_posting_products(postings: list, since: datetime, until: datetime) ->
     return out
 
 
-def fetch_fbo_postings(ozon_post: Callable, since: datetime, until: datetime, max_pages: int = 40) -> list:
+def fetch_fbo_postings(
+    ozon_post: Callable,
+    since: datetime,
+    until: datetime,
+    max_pages: int = 40,
+    with_analytics: bool = False,
+) -> list:
     """POST /v3/posting/fbo/list (v2 отключат 1 июня 2026)."""
     items = []
     cursor = ""
@@ -218,7 +224,7 @@ def fetch_fbo_postings(ozon_post: Callable, since: datetime, until: datetime, ma
             "filter": body_filter,
             "limit": limit,
             "sort_dir": "ASC",
-            "with": {"analytics_data": False, "financial_data": False},
+            "with": {"analytics_data": bool(with_analytics), "financial_data": False},
         }
         if cursor:
             body["cursor"] = cursor
@@ -235,7 +241,13 @@ def fetch_fbo_postings(ozon_post: Callable, since: datetime, until: datetime, ma
     return items
 
 
-def fetch_fbs_postings(ozon_post: Callable, since: datetime, until: datetime, max_pages: int = 40) -> list:
+def fetch_fbs_postings(
+    ozon_post: Callable,
+    since: datetime,
+    until: datetime,
+    max_pages: int = 40,
+    with_analytics: bool = False,
+) -> list:
     """POST /v4/posting/fbs/list (v3 отключат 1 июня 2026)."""
     items = []
     cursor = ""
@@ -249,7 +261,7 @@ def fetch_fbs_postings(ozon_post: Callable, since: datetime, until: datetime, ma
             "filter": body_filter,
             "limit": limit,
             "sort_dir": "ASC",
-            "with": {"analytics_data": False, "financial_data": False, "translit": False},
+            "with": {"analytics_data": bool(with_analytics), "financial_data": False, "translit": False},
         }
         if cursor:
             body["cursor"] = cursor

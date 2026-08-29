@@ -25,6 +25,7 @@ import competitors as comp
 import costs as costmod
 import finance as fin
 import orders as ordmod
+import orders_geo as geomod
 import own_warehouse as own_wh
 import reviews as revs
 import sales_pace as pace
@@ -1422,6 +1423,114 @@ def trigger_orders(days: int = 7):
         return {"ok": True, "syncing": True}
     threading.Thread(target=_run_orders_sync, kwargs={"days": days}, daemon=True).start()
     return {"ok": True, "syncing": True}
+
+
+def _run_orders_geo_sync(days: int = 30):
+    try:
+        geomod.sync_orders_geo(ozon_post=ozon_post, days=days)
+    except Exception as e:
+        logger.exception("orders-geo sync thread: %s", e)
+        geomod.GEO_CACHE["error"] = str(e)
+        geomod.GEO_CACHE["syncing"] = False
+
+
+def _geo_default_dates(date_from: str | None, date_to: str | None) -> tuple[str | None, str | None]:
+    """Пустой период — последние 28 дней от самой свежей даты в кэше."""
+    if date_from or date_to:
+        return date_from, date_to
+    dates = sorted({r.get("date") for r in (geomod.GEO_CACHE.get("rows") or []) if r.get("date")})
+    if not dates:
+        return None, None
+    date_to = dates[-1]
+    try:
+        d_to = datetime.strptime(date_to, "%Y-%m-%d").date()
+        date_from = (d_to - timedelta(days=27)).isoformat()
+    except ValueError:
+        date_from = dates[0]
+    return date_from, date_to
+
+
+@app.get("/api/orders-geo")
+def get_orders_geo(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    channel: str = "all",
+    warehouse: str = "all",
+    region: str = "all",
+    city: str = "all",
+    search: str = "",
+    include_cancelled: int = 0,
+    days: int = 30,
+):
+    """География заказов FBO/FBS: склад отгрузки → регион/город доставки."""
+    rows = geomod.GEO_CACHE.get("rows") or []
+    if not rows and not geomod.GEO_CACHE.get("syncing") and not geomod.GEO_CACHE.get("error"):
+        threading.Thread(target=_run_orders_geo_sync, kwargs={"days": days}, daemon=True).start()
+        geomod.GEO_CACHE["syncing"] = True
+    date_from, date_to = _geo_default_dates(date_from, date_to)
+    return geomod.aggregate(
+        date_from=date_from,
+        date_to=date_to,
+        channel=channel,
+        warehouse=warehouse,
+        region=region,
+        city=city,
+        search=search,
+        include_cancelled=bool(include_cancelled),
+    )
+
+
+@app.post("/api/sync-orders-geo")
+def trigger_orders_geo(days: int = 30):
+    if geomod.GEO_CACHE.get("syncing"):
+        return {"ok": True, "syncing": True}
+    threading.Thread(target=_run_orders_geo_sync, kwargs={"days": days}, daemon=True).start()
+    return {"ok": True, "syncing": True}
+
+
+@app.get("/api/orders-geo/export-xlsx")
+def export_orders_geo_xlsx(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    channel: str = "all",
+    warehouse: str = "all",
+    region: str = "all",
+    city: str = "all",
+    search: str = "",
+    include_cancelled: int = 0,
+):
+    """Выгрузка географии заказов в Excel по текущим фильтрам."""
+    if not (geomod.GEO_CACHE.get("rows") or []):
+        raise HTTPException(status_code=409, detail="Нет данных: сначала нажми «Обновить»")
+    date_from, date_to = _geo_default_dates(date_from, date_to)
+    agg = geomod.aggregate(
+        date_from=date_from,
+        date_to=date_to,
+        channel=channel,
+        warehouse=warehouse,
+        region=region,
+        city=city,
+        search=search,
+        include_cancelled=bool(include_cancelled),
+    )
+    try:
+        content = geomod.build_xlsx_bytes(agg)
+    except Exception as e:
+        logger.exception("orders-geo export")
+        raise HTTPException(status_code=502, detail=f"Не удалось собрать Excel: {e}") from e
+
+    # только ASCII в Content-Disposition — иначе uvicorn отдаёт 500
+    safe_ch = "".join(c for c in (channel or "all") if c.isalnum()) or "all"
+    fname = f"ozon_orders_geo_{safe_ch}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "X-Geo-Orders": str((agg.get("summary") or {}).get("orders") or 0),
+            "X-Geo-Regions": str(len(agg.get("by_region") or [])),
+        },
+    )
 
 
 def _run_finance_sync(period_days: int = 7):
