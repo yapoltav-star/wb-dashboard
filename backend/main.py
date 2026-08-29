@@ -2,6 +2,8 @@ import httpx
 import os
 import io
 import json
+import gzip
+import base64
 import time
 import logging
 import re
@@ -10231,6 +10233,8 @@ ORDERS_GEO_CACHE = {
 }
 _ORDERS_GEO_LOCK = threading.Lock()
 _ORDERS_GEO_FILE = Path(__file__).resolve().parent.parent / "data" / "orders_geo_cache.json"
+# Диск контейнера на Railway эфемерный, поэтому долговременно храним в Supabase.
+ORDERS_GEO_SETTING_KEY = "orders_geo_cache"
 
 
 def _orders_geo_ensure_dir():
@@ -10240,49 +10244,123 @@ def _orders_geo_ensure_dir():
         pass
 
 
+def _orders_geo_payload() -> dict:
+    return {
+        "orders": ORDERS_GEO_CACHE.get("orders") or [],
+        "updated_at": ORDERS_GEO_CACHE.get("updated_at"),
+        "source": ORDERS_GEO_CACHE.get("source"),
+        "filename": ORDERS_GEO_CACHE.get("filename"),
+    }
+
+
+def _orders_geo_apply_payload(payload, source_fallback: str) -> bool:
+    orders = payload.get("orders") if isinstance(payload, dict) else payload
+    if not isinstance(orders, list) or not orders:
+        return False
+    ORDERS_GEO_CACHE["orders"] = orders
+    if isinstance(payload, dict):
+        ORDERS_GEO_CACHE["updated_at"] = payload.get("updated_at")
+        ORDERS_GEO_CACHE["source"] = payload.get("source") or source_fallback
+        ORDERS_GEO_CACHE["filename"] = payload.get("filename")
+    else:
+        ORDERS_GEO_CACHE["updated_at"] = None
+        ORDERS_GEO_CACHE["source"] = source_fallback
+        ORDERS_GEO_CACHE["filename"] = None
+    return True
+
+
+def _orders_geo_encode(payload: dict) -> str:
+    """Гзипуем: 12 тысяч заказов это около 3 МБ JSON, в settings столько лить незачем."""
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return base64.b64encode(gzip.compress(raw, 6)).decode("ascii")
+
+
+def _orders_geo_decode(blob):
+    if not blob:
+        return None
+    if isinstance(blob, (dict, list)):
+        return blob
+    s = str(blob).strip()
+    if not s:
+        return None
+    if s.startswith("{") or s.startswith("["):
+        return json.loads(s)
+    return json.loads(gzip.decompress(base64.b64decode(s)).decode("utf-8"))
+
+
+def _orders_geo_save_supabase() -> bool:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False
+    try:
+        blob = _orders_geo_encode(_orders_geo_payload())
+    except Exception as e:
+        logger.error(f"orders_geo encode error: {e}")
+        return False
+    ok = save_setting_value(ORDERS_GEO_SETTING_KEY, blob)
+    if ok:
+        logger.info(f"orders_geo: сохранено в Supabase, {len(blob)} символов")
+    return ok
+
+
+def _orders_geo_load_supabase() -> bool:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False
+    try:
+        raw = get_setting_raw(ORDERS_GEO_SETTING_KEY, None)
+        payload = _orders_geo_decode(raw)
+    except Exception as e:
+        logger.warning(f"orders_geo load supabase error: {e}")
+        return False
+    if not _orders_geo_apply_payload(payload, "supabase"):
+        return False
+    logger.info(f"orders_geo: поднято из Supabase, {len(ORDERS_GEO_CACHE['orders'])} заказов")
+    return True
+
+
 def _orders_geo_save_file():
     _orders_geo_ensure_dir()
     try:
-        payload = {
-            "orders": ORDERS_GEO_CACHE.get("orders") or [],
-            "updated_at": ORDERS_GEO_CACHE.get("updated_at"),
-            "source": ORDERS_GEO_CACHE.get("source"),
-            "filename": ORDERS_GEO_CACHE.get("filename"),
-        }
         with open(_ORDERS_GEO_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
+            json.dump(_orders_geo_payload(), f, ensure_ascii=False)
     except Exception as e:
         logger.warning(f"orders_geo save file error: {e}")
+
+
+def _orders_geo_persist():
+    """Локальный файл — быстрый кэш, Supabase — то, что переживает редеплой."""
+    _orders_geo_save_file()
+    _orders_geo_save_supabase()
 
 
 def _orders_geo_load_file() -> bool:
     try:
         if not _ORDERS_GEO_FILE.exists():
-            # локальный seed из tmp после анализа ленты
-            seed = Path(__file__).resolve().parent.parent / "tmp" / "orders_ribbon_preprocessed.json"
-            if seed.exists():
-                with open(seed, "r", encoding="utf-8") as f:
-                    orders = json.load(f)
-                if isinstance(orders, list) and orders:
-                    ORDERS_GEO_CACHE["orders"] = orders
-                    ORDERS_GEO_CACHE["updated_at"] = datetime.now(timezone.utc).isoformat()
-                    ORDERS_GEO_CACHE["source"] = "seed"
-                    ORDERS_GEO_CACHE["filename"] = seed.name
-                    _orders_geo_save_file()
-                    return True
             return False
         with open(_ORDERS_GEO_FILE, "r", encoding="utf-8") as f:
             payload = json.load(f)
-        orders = payload.get("orders") if isinstance(payload, dict) else payload
+        return _orders_geo_apply_payload(payload, "file")
+    except Exception as e:
+        logger.warning(f"orders_geo load file error: {e}")
+        return False
+
+
+def _orders_geo_load_seed() -> bool:
+    seed = Path(__file__).resolve().parent.parent / "tmp" / "orders_ribbon_preprocessed.json"
+    try:
+        if not seed.exists():
+            return False
+        with open(seed, "r", encoding="utf-8") as f:
+            orders = json.load(f)
         if not isinstance(orders, list) or not orders:
             return False
         ORDERS_GEO_CACHE["orders"] = orders
-        ORDERS_GEO_CACHE["updated_at"] = (payload.get("updated_at") if isinstance(payload, dict) else None)
-        ORDERS_GEO_CACHE["source"] = (payload.get("source") if isinstance(payload, dict) else "file")
-        ORDERS_GEO_CACHE["filename"] = (payload.get("filename") if isinstance(payload, dict) else None)
+        ORDERS_GEO_CACHE["updated_at"] = datetime.now(timezone.utc).isoformat()
+        ORDERS_GEO_CACHE["source"] = "seed"
+        ORDERS_GEO_CACHE["filename"] = seed.name
+        _orders_geo_persist()
         return True
     except Exception as e:
-        logger.warning(f"orders_geo load file error: {e}")
+        logger.warning(f"orders_geo seed error: {e}")
         return False
 
 
@@ -10290,7 +10368,13 @@ def _orders_geo_ensure_loaded() -> list:
     with _ORDERS_GEO_LOCK:
         if ORDERS_GEO_CACHE.get("orders"):
             return ORDERS_GEO_CACHE["orders"]
-        _orders_geo_load_file()
+        # Supabase первым: после редеплоя контейнера локального файла уже нет.
+        if _orders_geo_load_supabase():
+            _orders_geo_persist()
+        elif _orders_geo_load_file():
+            _orders_geo_save_supabase()
+        else:
+            _orders_geo_load_seed()
         return ORDERS_GEO_CACHE.get("orders") or []
 
 
@@ -10799,13 +10883,13 @@ def sync_orders_geo_from_statistics(days: int = 30) -> dict:
                 ORDERS_GEO_CACHE["orders"] = existing
                 ORDERS_GEO_CACHE["updated_at"] = datetime.now(timezone.utc).isoformat()
                 ORDERS_GEO_CACHE["source"] = "ribbon+api"
-                _orders_geo_save_file()
+                _orders_geo_persist()
                 return {"status": "ok", "added": added, "total": len(existing), "source": "ribbon+api"}
             ORDERS_GEO_CACHE["orders"] = records
             ORDERS_GEO_CACHE["updated_at"] = datetime.now(timezone.utc).isoformat()
             ORDERS_GEO_CACHE["source"] = "statistics_api"
             ORDERS_GEO_CACHE["filename"] = None
-            _orders_geo_save_file()
+            _orders_geo_persist()
         return {"status": "ok", "total": len(records), "source": "statistics_api"}
     except Exception as e:
         ORDERS_GEO_CACHE["error"] = str(e)
@@ -10877,7 +10961,7 @@ async def upload_orders_geo(file: UploadFile = File(...)):
             ORDERS_GEO_CACHE["source"] = "ribbon"
             ORDERS_GEO_CACHE["filename"] = file.filename
             ORDERS_GEO_CACHE["error"] = None
-            _orders_geo_save_file()
+            _orders_geo_persist()
         dates = sorted({o.get("date") for o in records if o.get("date")})
         return {
             "status": "ok",
@@ -10949,6 +11033,11 @@ try:
     def telegram_status():
         """Что настроено у бота и жив ли он. Секреты не отдаёт."""
         return telegram_bot.bot_status()
+
+    @app.get("/api/llm-models")
+    def llm_models(contains: str = ""):
+        """Какие модели доступны настроенному ключу — чтобы не гадать с точным id."""
+        return telegram_bot.list_models(contains)
 
 except Exception as e:
     logger.warning(f"telegram bot не поднялся: {e}")

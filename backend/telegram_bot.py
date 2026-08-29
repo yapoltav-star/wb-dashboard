@@ -73,7 +73,7 @@ def _openai_key() -> str:
 
 
 def _openai_model() -> str:
-    return (os.getenv("OPENAI_MODEL") or "gpt-4o").strip()
+    return (os.getenv("OPENAI_MODEL") or "gpt-5.6-terra").strip()
 
 
 def _provider() -> str:
@@ -623,6 +623,9 @@ def ask_llm(chat_id: int, question: str) -> str:
     text, err = runner(chat_id, list(working))
 
     if err:
+        low = err.lower()
+        if "404" in low or "model" in low:
+            err += "\n\nПохоже на неверное имя модели. Список доступных — /api/llm-models на сайте."
         return _esc(err)
     if not text:
         return "Пустой ответ."
@@ -721,6 +724,41 @@ def _poll_loop():
             logger.error(f"telegram poll: {e}")
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)
+
+
+def list_models(contains: str = "") -> dict:
+    """Список моделей, доступных настроенному ключу. Нужен, чтобы не гадать с id."""
+    provider = _provider()
+    if not provider:
+        return {"error": "ключ не задан: ни OPENAI_API_KEY, ни ANTHROPIC_API_KEY"}
+
+    if provider == "openai":
+        url = "https://api.openai.com/v1/models"
+        headers = {"Authorization": f"Bearer {_openai_key()}"}
+        current = _openai_model()
+    else:
+        url = "https://api.anthropic.com/v1/models?limit=100"
+        headers = {"x-api-key": _anthropic_key(), "anthropic-version": ANTHROPIC_VERSION}
+        current = _anthropic_model()
+
+    try:
+        r = httpx.get(url, headers=headers, timeout=30)
+    except Exception as e:
+        return {"provider": provider, "error": str(e)}
+    if r.status_code != 200:
+        return {"provider": provider, "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+
+    ids = sorted({m.get("id") for m in (r.json().get("data") or []) if m.get("id")})
+    needle = (contains or "").strip().lower()
+    if needle:
+        ids = [i for i in ids if needle in i.lower()]
+    return {
+        "provider": provider,
+        "current_model": current,
+        "current_available": current in ids if not needle else None,
+        "count": len(ids),
+        "models": ids,
+    }
 
 
 def bot_status() -> dict:
