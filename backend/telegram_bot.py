@@ -19,6 +19,7 @@ import html
 import json
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -170,58 +171,162 @@ def _slim(d: dict) -> dict:
     return {k: v for k, v in d.items() if v is None or isinstance(v, (str, int, float, bool))}
 
 
+# Цвета в артикулах продавца обычно на английском (gold/black), а в чате пишут
+# по-русски («042 Голд»). Синонимы сводим к одному канону.
+_COLOR_CANON = {
+    "gold": "gold", "голд": "gold", "голда": "gold",
+    "золото": "gold", "золотой": "gold", "золотая": "gold",
+    "золотые": "gold", "золотых": "gold", "зол": "gold",
+    "black": "black", "блэк": "black", "блек": "black",
+    "черный": "black", "чёрный": "black", "черные": "black",
+    "чёрные": "black", "черн": "black", "чёрн": "black",
+    "grey": "grey", "gray": "grey", "грей": "grey",
+    "серый": "grey", "серые": "grey", "сер": "grey",
+    "графит": "grey", "graphite": "grey",
+    "pink": "pink", "пинк": "pink", "розовый": "pink",
+    "розовые": "pink", "розов": "pink", "rose": "pink",
+    "silver": "silver", "сильвер": "silver",
+    "серебро": "silver", "серебряный": "silver", "серебряные": "silver",
+    "white": "white", "вайт": "white", "белый": "white", "белые": "white", "бел": "white",
+    "red": "red", "ред": "red", "красный": "red", "красные": "red", "красн": "red",
+    "green": "green", "грин": "green", "зеленый": "green", "зелёный": "green",
+    "зеленые": "green", "зелёные": "green", "зелен": "green",
+    "beige": "beige", "беж": "beige", "бежевый": "beige",
+    "blue": "blue", "блю": "blue", "синий": "blue", "синие": "blue", "син": "blue",
+}
+
+
+def _norm_txt(s: str) -> str:
+    return (s or "").lower().replace("ё", "е").strip()
+
+
+def _split_tokens(s: str) -> list:
+    return [t for t in re.split(r"[\s_\-/,+]+", _norm_txt(s)) if t]
+
+
+def _parse_product_query(query: str) -> list:
+    """Список токенов; каждый токен — список допустимых вариантов (OR)."""
+    out = []
+    for raw in _split_tokens(query):
+        canon = _COLOR_CANON.get(raw)
+        if canon:
+            # Любой синоним цвета из словаря с тем же каноном.
+            alts = sorted({k for k, v in _COLOR_CANON.items() if v == canon} | {canon})
+            out.append(alts)
+        else:
+            out.append([raw])
+    return out
+
+
+def _token_hits_product(tok: str, vc: str, name: str, nm: str, segments: set) -> bool:
+    if not tok:
+        return False
+    if tok == nm or tok in segments:
+        return True
+    if tok in vc or tok in name:
+        return True
+    # Артикул продавца: «042» → 042_S11_middle_gold_O
+    if vc.startswith(tok) or vc.startswith(tok + "_"):
+        return True
+    for seg in segments:
+        if seg == tok or seg.startswith(tok):
+            return True
+    # «42» тоже находит «042_…»
+    if tok.isdigit():
+        for width in (3, 4):
+            padded = tok.zfill(width)
+            if padded != tok and _token_hits_product(padded, vc, name, nm, segments):
+                return True
+    return False
+
+
+def _product_matches_query(product: dict, token_alts: list) -> bool:
+    if not token_alts:
+        return True
+    vc = _norm_txt(str(product.get("vendor_code") or ""))
+    name = _norm_txt(str(product.get("name") or ""))
+    nm = str(product.get("nm_id") or "")
+    segments = set(_split_tokens(vc)) | set(_split_tokens(name))
+    if nm:
+        segments.add(nm)
+    # Цветовой сегмент артикула тоже канонизируем (gold/золотые → gold).
+    expanded = set(segments)
+    for seg in list(segments):
+        canon = _COLOR_CANON.get(seg)
+        if canon:
+            expanded.add(canon)
+    for alts in token_alts:
+        if not any(_token_hits_product(a, vc, name, nm, expanded) for a in alts):
+            return False
+    return True
+
+
 # ---------- инструменты (только чтение) ----------
 
 def tool_products(query: str = "", only_low_cover: bool = False, limit: int = 15) -> dict:
+    """Полные календарные периоды и полный остаток по всем складам WB."""
     data = _API["wb_products"]() or {}
     items = data.get("products") or []
-    q = (query or "").strip().lower()
+    token_alts = _parse_product_query(query)
 
     rows = []
     for p in items:
-        blob = f"{p.get('vendor_code') or ''} {p.get('name') or ''} {p.get('nm_id') or ''}".lower()
-        if q and q not in blob:
+        if not _product_matches_query(p, token_alts):
             continue
         s7 = int(p.get("sales_7d") or 0)
         stock = int(p.get("stock") or 0)
         per_day = s7 / 7.0
         cover = round(stock / per_day, 1) if per_day > 0 else None
+        yest = int(p.get("sales_yesterday") or 0)
+        s28 = int(p.get("sales_28d") or 0)
         rows.append({
             "vendor_code": p.get("vendor_code"),
             "nm_id": p.get("nm_id"),
             "name": p.get("name"),
             "client_price": p.get("client_price"),
-            "stock": stock,
+            # Полный остаток FBW+FBS по всем складам (не урезанный «Рост продаж»).
+            "stock_total": stock,
             "warehouse_count": p.get("warehouse_count"),
             "channels": p.get("channels"),
-            "sales_yesterday": int(p.get("sales_yesterday") or 0),
-            "sales_7d": s7,
-            "sales_28d": int(p.get("sales_28d") or 0),
+            # Это заказы (orders), не выкупы. Периоды — полные календарные сутки МСК.
+            "orders_yesterday_full": yest,
+            "orders_7d": s7,
+            "orders_28d": s28,
             "days_cover": cover,
         })
 
     if only_low_cover:
         rows = [r for r in rows if r["days_cover"] is not None and r["days_cover"] < 14]
-        rows.sort(key=lambda r: (r["days_cover"], -r["sales_7d"]))
+        rows.sort(key=lambda r: (r["days_cover"], -r["orders_7d"]))
     else:
-        rows.sort(key=lambda r: -r["sales_7d"])
+        rows.sort(key=lambda r: -r["orders_7d"])
 
     out = {
         "matched": len(rows),
+        "query": (query or "").strip() or None,
         "items": rows[: max(1, min(int(limit or 15), 40))],
         "stock_updated_at": data.get("stock_updated_at"),
         "prices_updated_at": data.get("prices_updated_at"),
-        "sales_updated_at": data.get("sales_updated_at"),
+        "orders_updated_at": data.get("sales_updated_at"),
+        "period_note": (
+            "orders_yesterday_full — полные вчерашние сутки по Москве; "
+            "orders_7d / orders_28d включают сегодняшний неполный день. "
+            "stock_total — сумма по всем складам."
+        ),
+        "query_hint": (
+            "Два идентификатора одной карточки: артикул продавца (vendor_code) и артикул WB "
+            "(nm_id). В query — любой из них, либо коротко «042 голд» / «042 gold»."
+        ),
     }
-    # Без продаж days_cover посчитать не из чего, и «ничего не заканчивается»
+    # Без заказов days_cover посчитать не из чего, и «ничего не заканчивается»
     # было бы враньём — пусть модель скажет правду.
     if not any((p.get("sales_7d") or 0) > 0 for p in items):
-        out["warning"] = ("Данные о продажах ещё не загрузились после перезапуска сервера, "
+        out["warning"] = ("Данные о заказах ещё не загрузились после перезапуска сервера, "
                           "поэтому запас в днях посчитать нельзя. Остатки при этом верные. "
                           "Обновление занимает пару минут, можно переспросить позже.")
-        out["sales_available"] = False
+        out["orders_available"] = False
     else:
-        out["sales_available"] = True
+        out["orders_available"] = True
     return out
 
 
@@ -265,18 +370,38 @@ def tool_fbs_speed(days: int = 14) -> dict:
 
 
 def tool_sales_pace(period: str = "day") -> dict:
+    """Срез «к этому часу» vs такой же час прошлого периода — не полные сутки."""
     if period not in ("day", "week", "weeks2", "month"):
         period = "day"
     d = _API["sales_pace"](period=period) or {}
+    articles = []
+    for a in (d.get("articles") or [])[:15]:
+        articles.append({
+            "vendor_code": a.get("vendor_code"),
+            "nm_id": a.get("nm_id"),
+            "name": a.get("name"),
+            "orders_current_window": int(a.get("orders_today") or 0),
+            "orders_previous_same_hours": int(a.get("orders_yesterday") or 0),
+            "orders_delta": a.get("orders_delta"),
+            "cart_cr_current_window": a.get("cart_cr_today"),
+            "cart_cr_previous_same_hours": a.get("cart_cr_yesterday"),
+        })
     return {
         "period": d.get("period"),
         "period_name": d.get("period_name"),
-        "label_cur": d.get("label_cur"),
-        "label_prev": d.get("label_prev"),
+        "label_current_window": d.get("label_cur"),
+        "label_previous_same_hours": d.get("label_prev"),
         "as_of": d.get("as_of"),
+        "time_cutoff": d.get("time_cutoff"),
+        "mode_hint": d.get("mode_hint"),
         "updated_at": d.get("updated_at"),
         "syncing": d.get("syncing"),
-        "articles": [_slim(a) for a in (d.get("articles") or [])[:15]],
+        "window_warning": (
+            "Это НЕ полные сутки. orders_previous_same_hours — заказы вчера "
+            "только до того же часа, что сейчас (см. label_previous_same_hours). "
+            "Для полного вчера, 7/28 дней и полного остатка вызывай products."
+        ),
+        "articles": articles,
     }
 
 
@@ -297,15 +422,22 @@ TOOL_SCHEMAS = [
     {
         "name": "products",
         "description": (
-            "Товары Wildberries: цена для покупателя, остаток, число складов, канал "
-            "FBW/FBS и продажи за вчера, 7 и 28 дней. Плюс days_cover — на сколько дней "
-            "хватит остатка при текущем темпе. Используй для вопросов про остатки, цены, "
-            "продажи конкретных артикулов и про то, что скоро закончится."
+            "Главный источник абсолютных цифр: полный остаток (stock_total по всем складам), "
+            "заказы за полные вчерашние сутки (orders_yesterday_full), за 7 и 28 дней, "
+            "цена, каналы FBW/FBS, days_cover. Используй для «сколько вчера», «за неделю», "
+            "«какой остаток», «что заканчивается», топа артикулов. Это заказы, не выкупы."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Часть артикула, названия или nm_id"},
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Поиск по артикулу продавца (042_S11_middle_gold_O), артикулу WB/nm_id "
+                        "(941630654), названию. Можно коротко: «042 голд», «042 gold», «046 серый». "
+                        "Все слова должны совпасть; цвет по-русски понимается."
+                    ),
+                },
                 "only_low_cover": {"type": "boolean", "description": "Только то, чего хватит меньше чем на 14 дней"},
                 "limit": {"type": "integer", "description": "Сколько строк вернуть, максимум 40"},
             },
@@ -315,7 +447,8 @@ TOOL_SCHEMAS = [
         "name": "geography",
         "description": (
             "География заказов FBS и FBW: сводка, склады отгрузки, регионы и города "
-            "назначения, топ артикулов. Данные из ленты заказов и Statistics API."
+            "назначения, топ артикулов. Данные из ленты заказов и Statistics API. "
+            "С Statistics API в «city» часто лежит область, не населённый пункт."
         ),
         "input_schema": {
             "type": "object",
@@ -340,7 +473,13 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "sales_pace",
-        "description": "Темп продаж: текущий период против предыдущего, по артикулам.",
+        "description": (
+            "Только сравнение темпа: текущее окно часов против такого же окна прошлого "
+            "периода (сегодня до HH:MM vs вчера до HH:MM). НЕ используй для «сколько было "
+            "вчера целиком», полного остатка или топа за 7 дней — для этого products. "
+            "Поля orders_previous_same_hours нельзя называть «продажами за вчера» без "
+            "оговорки про час."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {"period": {"type": "string", "enum": ["day", "week", "weeks2", "month"]}},
@@ -357,8 +496,21 @@ SYSTEM_PROMPT_BASE = (
     "Ты помощник селлера Wildberries и Ozon. Категория — смарт-часы. "
     "Отвечаешь в телеграме, поэтому коротко: несколько предложений или компактный список, "
     "без заголовков и таблиц.\n\n"
-    "Всегда бери цифры из инструментов, никогда не выдумывай. Если инструмент вернул пусто "
-    "или устаревшие данные — скажи об этом прямо.\n\n"
+    "Всегда бери цифры из инструментов, никогда не выдумывай. Перед ответом с цифрами "
+    "вызови нужный инструмент. Если инструмент вернул пусто или устаревшие данные — "
+    "скажи об этом прямо.\n\n"
+    "Как выбирать инструмент:\n"
+    "• products — остаток, полное вчера, 7/28 дней, что заканчивается, топ артикулов.\n"
+    "• sales_pace — только «как идёт сегодня против вчера к этому часу».\n"
+    "• geography / fbs_speed / own_warehouse — по теме вопроса.\n\n"
+    "Важные ловушки:\n"
+    "• Цифры в products — это заказы, не выкупы. Говори «заказов», если не уверена.\n"
+    "• Из sales_pace никогда не говори «вчера N», если не добавила «до HH:MM». "
+    "Полное вчера — только orders_yesterday_full из products.\n"
+    "• Остаток бери только из stock_total (products), не из других отчётов.\n"
+    "• Артикул продавца (vendor_code, например 042_S11_middle_gold_O) и артикул WB "
+    "(nm_id, например 941630654) — разные поля одной карточки; в ответе при возможности "
+    "называй оба. В query можно передать любой из них или коротко «042 голд».\n\n"
     "Что важно знать про экономику: комиссия FBS 37%, FBW 32,5%. С 7 августа 2026 действует "
     "коэффициент kC за скорость отгрузки: до 13 часов минус 5 пунктов, от 13 до 42 часов "
     "минус 3,5 пункта, от 42 до 48 базовая ставка, дальше штрафы. Отгрузка считается от "
@@ -399,7 +551,8 @@ HELP = (
     "<b>Команды</b>\n"
     "/stock — что скоро закончится\n"
     "/stock 042 — остаток и продажи по артикулу\n"
-    "/sales — топ продаж за 7 дней\n"
+    "/stock 042 голд — то же по номеру и цвету\n"
+    "/sales — топ заказов за 7 дней (полные сутки)\n"
     "/geo — география заказов за 28 дней\n"
     "/geo 7 fbs — то же за 7 дней только по FBS\n"
     "/fbs — скорость отгрузки и экономика kC\n"
@@ -429,9 +582,9 @@ def cmd_stock(arg: str) -> str:
             cover_s = "кончилось"
         else:
             cover_s = f"хватит на {cover:.0f} дн"
-        out.append(f"<code>{_esc(r.get('vendor_code'))}</code>")
-        out.append(f"{cover_s} · остаток {_num(r.get('stock'))} на {_num(r.get('warehouse_count'))} скл "
-                   f"· {_num(r.get('sales_7d'))} шт за 7 дн")
+        out.append(f"<code>{_esc(r.get('vendor_code'))}</code> · nm {_esc(r.get('nm_id'))}")
+        out.append(f"{cover_s} · остаток {_num(r.get('stock_total'))} на {_num(r.get('warehouse_count'))} скл "
+                   f"· {_num(r.get('orders_7d'))} зак. за 7 дн")
     out.append(f"\nОстатки обновлены: {_esc(data.get('stock_updated_at') or '—')}")
     return "\n".join(out)
 
@@ -440,14 +593,14 @@ def cmd_sales() -> str:
     data = tool_products(limit=12)
     items = data.get("items") or []
     if not items:
-        return "Продаж не вижу — возможно, данные ещё синхронизируются."
+        return "Заказов не вижу — возможно, данные ещё синхронизируются."
 
-    out = ["<b>Топ продаж за 7 дней</b>", ""]
+    out = ["<b>Топ заказов за 7 дней</b>", ""]
     for i, r in enumerate(items, 1):
-        out.append(f"{i}. <code>{_esc(r.get('vendor_code'))}</code>")
-        out.append(f"вчера {_num(r.get('sales_yesterday'))} · 7 дн {_num(r.get('sales_7d'))} "
-                   f"· 28 дн {_num(r.get('sales_28d'))} · остаток {_num(r.get('stock'))}")
-    out.append(f"\nПродажи обновлены: {_esc(data.get('sales_updated_at') or '—')}")
+        out.append(f"{i}. <code>{_esc(r.get('vendor_code'))}</code> · nm {_esc(r.get('nm_id'))}")
+        out.append(f"вчера {_num(r.get('orders_yesterday_full'))} · 7 дн {_num(r.get('orders_7d'))} "
+                   f"· 28 дн {_num(r.get('orders_28d'))} · остаток {_num(r.get('stock_total'))}")
+    out.append(f"\nЗаказы обновлены: {_esc(data.get('orders_updated_at') or '—')}")
     return "\n".join(out)
 
 
@@ -556,15 +709,19 @@ def _ask_anthropic(chat_id: int, working: list) -> tuple:
         "anthropic-version": ANTHROPIC_VERSION,
         "content-type": "application/json",
     }
+    force_tools = True
     for _ in range(TOOL_STEPS_LIMIT):
+        payload = {
+            "model": _anthropic_model(),
+            "max_tokens": 1500,
+            "system": _system_prompt(),
+            "tools": TOOL_SCHEMAS,
+            "messages": working,
+        }
+        if force_tools:
+            payload["tool_choice"] = {"type": "any"}
         try:
-            r = httpx.post(ANTHROPIC_URL, headers=headers, timeout=120, json={
-                "model": _anthropic_model(),
-                "max_tokens": 1500,
-                "system": _system_prompt(),
-                "tools": TOOL_SCHEMAS,
-                "messages": working,
-            })
+            r = httpx.post(ANTHROPIC_URL, headers=headers, timeout=120, json=payload)
         except Exception as e:
             return None, f"Не достучался до Anthropic: {e}"
         if r.status_code != 200:
@@ -572,6 +729,7 @@ def _ask_anthropic(chat_id: int, working: list) -> tuple:
 
         data = r.json()
         blocks = data.get("content") or []
+        force_tools = False
         if data.get("stop_reason") == "tool_use":
             working.append({"role": "assistant", "content": blocks})
             results = []
@@ -644,14 +802,20 @@ def _openai_call(body: dict):
 
 def _ask_openai(chat_id: int, working: list) -> tuple:
     messages = [{"role": "system", "content": _system_prompt()}] + working
+    force_tools = True
 
     for _ in range(TOOL_STEPS_LIMIT):
+        body = {
+            "model": _openai_model(),
+            "tools": _openai_tools(),
+            "messages": messages,
+        }
+        # Первый ход — обязательно инструмент: иначе модель путает окна «Рост продаж»
+        # с полным вчера из каталога и отвечает цифрами на память.
+        if force_tools:
+            body["tool_choice"] = "required"
         try:
-            r = _openai_call({
-                "model": _openai_model(),
-                "tools": _openai_tools(),
-                "messages": messages,
-            })
+            r = _openai_call(body)
         except Exception as e:
             return None, f"Не достучался до OpenAI: {e}"
         if r.status_code != 200:
@@ -659,6 +823,7 @@ def _ask_openai(chat_id: int, working: list) -> tuple:
 
         msg = ((r.json().get("choices") or [{}])[0]).get("message") or {}
         calls = msg.get("tool_calls") or []
+        force_tools = False
         if calls:
             messages.append(msg)
             for c in calls:
