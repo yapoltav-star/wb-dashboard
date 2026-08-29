@@ -32,6 +32,8 @@ ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 _OPENAI_TOKEN_PARAM = "max_completion_tokens"
+# GPT-5.x не даёт использовать функции в chat/completions без reasoning_effort=none.
+_OPENAI_EXTRA = {"reasoning_effort": "none"}
 TG_CHUNK = 3800
 HISTORY_TURNS = 8
 TOOL_STEPS_LIMIT = 6
@@ -570,24 +572,39 @@ def _openai_tools() -> list:
 
 
 def _openai_call(body: dict):
-    """Лимит токенов называется по-разному: у 5.x max_completion_tokens, у 4.x max_tokens.
-    Определяем сам, один раз за процесс."""
-    global _OPENAI_TOKEN_PARAM
+    """Поколения моделей ждут разные параметры: у 5.x это max_completion_tokens и
+    reasoning_effort=none для функций, у 4.x — max_tokens и никакого reasoning.
+    Подбираем по ответу самого API и запоминаем на процесс."""
+    global _OPENAI_TOKEN_PARAM, _OPENAI_EXTRA
     headers = {
         "Authorization": f"Bearer {_openai_key()}",
         "Content-Type": "application/json",
     }
     r = None
-    for _ in range(2):
+    for _ in range(3):
         payload = dict(body)
         payload[_OPENAI_TOKEN_PARAM] = 1500
+        payload.update(_OPENAI_EXTRA)
         r = httpx.post(OPENAI_URL, headers=headers, timeout=120, json=payload)
-        if r.status_code == 400 and _OPENAI_TOKEN_PARAM in r.text and "not supported" in r.text.lower():
+        if r.status_code != 400:
+            return r
+
+        try:
+            err = (r.json() or {}).get("error") or {}
+        except Exception:
+            return r
+        param = err.get("param") or ""
+
+        if param in ("max_tokens", "max_completion_tokens"):
             _OPENAI_TOKEN_PARAM = (
                 "max_tokens" if _OPENAI_TOKEN_PARAM == "max_completion_tokens"
                 else "max_completion_tokens"
             )
             logger.info(f"openai: переключаюсь на {_OPENAI_TOKEN_PARAM}")
+            continue
+        if param in _OPENAI_EXTRA:
+            _OPENAI_EXTRA = {k: v for k, v in _OPENAI_EXTRA.items() if k != param}
+            logger.info(f"openai: модель не принимает {param}, убираю")
             continue
         return r
     return r
