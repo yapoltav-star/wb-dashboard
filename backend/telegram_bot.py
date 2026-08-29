@@ -314,8 +314,8 @@ def tool_products(query: str = "", only_low_cover: bool = False, limit: int = 15
             "stock_total — сумма по всем складам."
         ),
         "query_hint": (
-            "Можно писать коротко: «042 голд», «042 gold», «046 серый». "
-            "Номер артикула и цвет — через пробел; цвет по-русски тоже ок."
+            "Два идентификатора одной карточки: артикул продавца (vendor_code) и артикул WB "
+            "(nm_id). В query — любой из них, либо коротко «042 голд» / «042 gold»."
         ),
     }
     # Без заказов days_cover посчитать не из чего, и «ничего не заканчивается»
@@ -433,8 +433,8 @@ TOOL_SCHEMAS = [
                 "query": {
                     "type": "string",
                     "description": (
-                        "Поиск по артикулу продавца, названию или nm_id. "
-                        "Можно коротко: «042 голд», «042 gold», «046 серый», «S11 black». "
+                        "Поиск по артикулу продавца (042_S11_middle_gold_O), артикулу WB/nm_id "
+                        "(941630654), названию. Можно коротко: «042 голд», «042 gold», «046 серый». "
                         "Все слова должны совпасть; цвет по-русски понимается."
                     ),
                 },
@@ -508,8 +508,9 @@ SYSTEM_PROMPT_BASE = (
     "• Из sales_pace никогда не говори «вчера N», если не добавила «до HH:MM». "
     "Полное вчера — только orders_yesterday_full из products.\n"
     "• Остаток бери только из stock_total (products), не из других отчётов.\n"
-    "• Артикулы продавца можно передавать в query коротко: «042 голд», «046 серый» — "
-    "не обязательно полный код вроде 042_S11_middle_gold_O.\n\n"
+    "• Артикул продавца (vendor_code, например 042_S11_middle_gold_O) и артикул WB "
+    "(nm_id, например 941630654) — разные поля одной карточки; в ответе при возможности "
+    "называй оба. В query можно передать любой из них или коротко «042 голд».\n\n"
     "Что важно знать про экономику: комиссия FBS 37%, FBW 32,5%. С 7 августа 2026 действует "
     "коэффициент kC за скорость отгрузки: до 13 часов минус 5 пунктов, от 13 до 42 часов "
     "минус 3,5 пункта, от 42 до 48 базовая ставка, дальше штрафы. Отгрузка считается от "
@@ -581,7 +582,7 @@ def cmd_stock(arg: str) -> str:
             cover_s = "кончилось"
         else:
             cover_s = f"хватит на {cover:.0f} дн"
-        out.append(f"<code>{_esc(r.get('vendor_code'))}</code>")
+        out.append(f"<code>{_esc(r.get('vendor_code'))}</code> · nm {_esc(r.get('nm_id'))}")
         out.append(f"{cover_s} · остаток {_num(r.get('stock_total'))} на {_num(r.get('warehouse_count'))} скл "
                    f"· {_num(r.get('orders_7d'))} зак. за 7 дн")
     out.append(f"\nОстатки обновлены: {_esc(data.get('stock_updated_at') or '—')}")
@@ -596,7 +597,7 @@ def cmd_sales() -> str:
 
     out = ["<b>Топ заказов за 7 дней</b>", ""]
     for i, r in enumerate(items, 1):
-        out.append(f"{i}. <code>{_esc(r.get('vendor_code'))}</code>")
+        out.append(f"{i}. <code>{_esc(r.get('vendor_code'))}</code> · nm {_esc(r.get('nm_id'))}")
         out.append(f"вчера {_num(r.get('orders_yesterday_full'))} · 7 дн {_num(r.get('orders_7d'))} "
                    f"· 28 дн {_num(r.get('orders_28d'))} · остаток {_num(r.get('stock_total'))}")
     out.append(f"\nЗаказы обновлены: {_esc(data.get('orders_updated_at') or '—')}")
