@@ -8,8 +8,11 @@
 Переменные окружения:
   TELEGRAM_BOT_TOKEN        токен от @BotFather (без него бот не стартует)
   TELEGRAM_ALLOWED_CHAT_IDS белый список chat_id через запятую
-  ANTHROPIC_API_KEY         опционально: включает ответы на вопросы текстом
+  OPENAI_API_KEY            опционально: включает ответы на вопросы текстом
+  OPENAI_MODEL              опционально: модель, по умолчанию gpt-4o
+  ANTHROPIC_API_KEY         альтернатива OpenAI, тоже включает вопросы текстом
   ANTHROPIC_MODEL           опционально: модель, по умолчанию claude-sonnet-4-5
+  LLM_PROVIDER              openai или anthropic, если заданы оба ключа
 """
 
 import html
@@ -27,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 TG_CHUNK = 3800
 HISTORY_TURNS = 8
 TOOL_STEPS_LIMIT = 6
@@ -62,6 +66,28 @@ def _anthropic_key() -> str:
 
 def _anthropic_model() -> str:
     return (os.getenv("ANTHROPIC_MODEL") or "claude-sonnet-4-5").strip()
+
+
+def _openai_key() -> str:
+    return (os.getenv("OPENAI_API_KEY") or "").strip()
+
+
+def _openai_model() -> str:
+    return (os.getenv("OPENAI_MODEL") or "gpt-4o").strip()
+
+
+def _provider() -> str:
+    """Какой моделью отвечать. Пусто — вопросы текстом выключены."""
+    forced = (os.getenv("LLM_PROVIDER") or "").strip().lower()
+    if forced == "openai" and _openai_key():
+        return "openai"
+    if forced == "anthropic" and _anthropic_key():
+        return "anthropic"
+    if _openai_key():
+        return "openai"
+    if _anthropic_key():
+        return "anthropic"
+    return ""
 
 
 # ---------- транспорт ----------
@@ -347,8 +373,8 @@ HELP = (
 )
 
 HELP_LLM_OFF = (
-    "\nВопросы обычным текстом пока выключены: не задан ANTHROPIC_API_KEY. "
-    "Команды выше работают без него."
+    "\nВопросы обычным текстом пока выключены: нужен OPENAI_API_KEY или ANTHROPIC_API_KEY. "
+    "Команды выше работают без ключа."
 )
 
 
@@ -489,18 +515,12 @@ def _remember(chat_id: int, messages: list):
         _HISTORY[chat_id] = messages[-HISTORY_TURNS * 2:]
 
 
-def ask_llm(chat_id: int, question: str) -> str:
-    key = _anthropic_key()
-    if not key:
-        return "Вопросы текстом выключены: не задан ANTHROPIC_API_KEY. Работают команды из /help."
-
-    messages = _history(chat_id) + [{"role": "user", "content": question}]
+def _ask_anthropic(chat_id: int, working: list) -> tuple:
     headers = {
-        "x-api-key": key,
+        "x-api-key": _anthropic_key(),
         "anthropic-version": ANTHROPIC_VERSION,
         "content-type": "application/json",
     }
-
     for _ in range(TOOL_STEPS_LIMIT):
         try:
             r = httpx.post(ANTHROPIC_URL, headers=headers, timeout=120, json={
@@ -508,20 +528,17 @@ def ask_llm(chat_id: int, question: str) -> str:
                 "max_tokens": 1500,
                 "system": SYSTEM_PROMPT,
                 "tools": TOOL_SCHEMAS,
-                "messages": messages,
+                "messages": working,
             })
         except Exception as e:
-            return f"Не достучался до Anthropic: {_esc(e)}"
-
+            return None, f"Не достучался до Anthropic: {e}"
         if r.status_code != 200:
-            detail = r.text[:300]
-            return f"Anthropic вернул {r.status_code}. {_esc(detail)}"
+            return None, f"Anthropic вернул {r.status_code}. {r.text[:300]}"
 
         data = r.json()
         blocks = data.get("content") or []
-
         if data.get("stop_reason") == "tool_use":
-            messages.append({"role": "assistant", "content": blocks})
+            working.append({"role": "assistant", "content": blocks})
             results = []
             for b in blocks:
                 if b.get("type") == "tool_use":
@@ -532,15 +549,91 @@ def ask_llm(chat_id: int, question: str) -> str:
                         "tool_use_id": b.get("id"),
                         "content": json.dumps(out, ensure_ascii=False)[:20000],
                     })
-            messages.append({"role": "user", "content": results})
+            working.append({"role": "user", "content": results})
             continue
 
         text = "".join(b.get("text") or "" for b in blocks if b.get("type") == "text").strip()
-        messages.append({"role": "assistant", "content": text or "…"})
-        _remember(chat_id, messages)
-        return _esc(text) or "Пустой ответ."
+        return text, None
+    return None, "Слишком много шагов, переспроси конкретнее."
 
-    return "Запутался в данных, переспроси конкретнее."
+
+def _openai_tools() -> list:
+    return [{
+        "type": "function",
+        "function": {
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["input_schema"],
+        },
+    } for t in TOOL_SCHEMAS]
+
+
+def _ask_openai(chat_id: int, working: list) -> tuple:
+    headers = {
+        "Authorization": f"Bearer {_openai_key()}",
+        "Content-Type": "application/json",
+    }
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + working
+
+    for _ in range(TOOL_STEPS_LIMIT):
+        try:
+            r = httpx.post(OPENAI_URL, headers=headers, timeout=120, json={
+                "model": _openai_model(),
+                "max_tokens": 1500,
+                "tools": _openai_tools(),
+                "messages": messages,
+            })
+        except Exception as e:
+            return None, f"Не достучался до OpenAI: {e}"
+        if r.status_code != 200:
+            return None, f"OpenAI вернул {r.status_code}. {r.text[:300]}"
+
+        msg = ((r.json().get("choices") or [{}])[0]).get("message") or {}
+        calls = msg.get("tool_calls") or []
+        if calls:
+            messages.append(msg)
+            for c in calls:
+                _typing(chat_id)
+                fn = c.get("function") or {}
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except Exception:
+                    args = {}
+                out = _run_tool(fn.get("name"), args)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": c.get("id"),
+                    "content": json.dumps(out, ensure_ascii=False)[:20000],
+                })
+            continue
+
+        return (msg.get("content") or "").strip(), None
+    return None, "Слишком много шагов, переспроси конкретнее."
+
+
+def ask_llm(chat_id: int, question: str) -> str:
+    provider = _provider()
+    if not provider:
+        return ("Вопросы текстом выключены: не задан ни OPENAI_API_KEY, ни ANTHROPIC_API_KEY. "
+                "Команды из /help работают без ключа.")
+
+    history = _history(chat_id)
+    working = history + [{"role": "user", "content": question}]
+    runner = _ask_openai if provider == "openai" else _ask_anthropic
+    text, err = runner(chat_id, list(working))
+
+    if err:
+        return _esc(err)
+    if not text:
+        return "Пустой ответ."
+
+    # В историю кладём только чистые текстовые реплики: формат tool-вызовов
+    # у провайдеров разный, и смешивать их между переключениями нельзя.
+    _remember(chat_id, history + [
+        {"role": "user", "content": question},
+        {"role": "assistant", "content": text},
+    ])
+    return _esc(text)
 
 
 # ---------- маршрутизация ----------
@@ -556,7 +649,7 @@ def handle_message(chat_id: int, text: str):
 
     try:
         if cmd in ("/start", "/help"):
-            reply = HELP + ("" if _anthropic_key() else HELP_LLM_OFF)
+            reply = HELP + ("" if _provider() else HELP_LLM_OFF)
         elif cmd == "/stock":
             reply = cmd_stock(arg)
         elif cmd == "/sales":
@@ -639,8 +732,10 @@ def bot_status() -> dict:
         "token_tail": token[-4:] if token else None,
         "allowed_chat_ids": sorted(_allowed_ids()),
         "whitelist_configured": bool(_allowed_ids()),
-        "llm_enabled": bool(_anthropic_key()),
-        "model": _anthropic_model() if _anthropic_key() else None,
+        "llm_provider": _provider() or None,
+        "llm_enabled": bool(_provider()),
+        "model": {"openai": _openai_model, "anthropic": _anthropic_model}[_provider()]()
+                 if _provider() else None,
         "started": _STARTED,
         "polling": alive,
         "sources": sorted(_API.keys()),
