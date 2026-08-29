@@ -630,6 +630,23 @@ def _poll_loop():
             backoff = min(backoff * 2, 60)
 
 
+def bot_status() -> dict:
+    """Диагностика без утечки секретов: что настроено и жив ли поток опроса."""
+    alive = any(t.name == "telegram-bot" and t.is_alive() for t in threading.enumerate())
+    token = _token()
+    return {
+        "token_set": bool(token),
+        "token_tail": token[-4:] if token else None,
+        "allowed_chat_ids": sorted(_allowed_ids()),
+        "whitelist_configured": bool(_allowed_ids()),
+        "llm_enabled": bool(_anthropic_key()),
+        "model": _anthropic_model() if _anthropic_key() else None,
+        "started": _STARTED,
+        "polling": alive,
+        "sources": sorted(_API.keys()),
+    }
+
+
 def start_bot(api: dict):
     """Запускает бота фоновым потоком. api — словарь функций чтения из main."""
     global _STARTED

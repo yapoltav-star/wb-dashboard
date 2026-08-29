@@ -10945,6 +10945,11 @@ try:
         "sales_pace": lambda period="day": get_sales_pace(period=period),
         "own_warehouse": lambda: get_own_warehouse_stock(),
     })
+    @app.get("/api/telegram-status")
+    def telegram_status():
+        """Что настроено у бота и жив ли он. Секреты не отдаёт."""
+        return telegram_bot.bot_status()
+
 except Exception as e:
     logger.warning(f"telegram bot не поднялся: {e}")
 
