@@ -11039,6 +11039,19 @@ try:
         """Какие модели доступны настроенному ключу — чтобы не гадать с точным id."""
         return telegram_bot.list_models(contains)
 
+    @app.get("/api/llm-ping")
+    def llm_ping(q: str = "Ответь одним словом: работает"):
+        """Прогоняет ту же цепочку, что и бот, — чтобы проверять её без телеграма."""
+        started = time.time()
+        answer = telegram_bot.ask_llm(0, q)
+        return {
+            "question": q,
+            "answer": answer,
+            "provider": telegram_bot.bot_status().get("llm_provider"),
+            "model": telegram_bot.bot_status().get("model"),
+            "seconds": round(time.time() - started, 1),
+        }
+
 except Exception as e:
     logger.warning(f"telegram bot не поднялся: {e}")
 
