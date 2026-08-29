@@ -10933,6 +10933,22 @@ def get_seller_recommendations_agg(refresh: int = 0):
     return out
 
 
+# ---------- Телеграм-бот (только чтение) ----------
+# Живёт в этом же процессе. Отдельный сервер не нужен: Railway уже за рубежом.
+try:
+    import telegram_bot
+
+    telegram_bot.start_bot({
+        "wb_products": lambda: get_wb_products(),
+        "orders_geo": lambda **kw: aggregate_orders_geo(_orders_geo_ensure_loaded(), **kw),
+        "fbs_speed": lambda days=14: fetch_fbs_speed_report_data(days=days),
+        "sales_pace": lambda period="day": get_sales_pace(period=period),
+        "own_warehouse": lambda: get_own_warehouse_stock(),
+    })
+except Exception as e:
+    logger.warning(f"telegram bot не поднялся: {e}")
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8080))
