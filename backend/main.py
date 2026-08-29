@@ -6846,6 +6846,12 @@ scheduler.add_job(lambda: sync_article_daily_stats(30), "interval", hours=6, id=
 scheduler.add_job(sync_promotions, "interval", hours=6, id="sync_promotions")
 scheduler.add_job(lambda: sync_sales_pace("day"), "interval", hours=1, id="sync_sales_pace")
 scheduler.add_job(sync_spp_prices, "interval", hours=3, id="sync_spp_prices")
+# Каталог товаров держим тёплым: он живёт только в памяти и обнуляется при редеплое,
+# а без него «что заканчивается» отвечает пустотой.
+scheduler.add_job(
+    lambda: refresh_wb_products_catalog(sync_sources=True),
+    "interval", hours=3, id="sync_wb_products",
+)
 scheduler.add_job(sync_wb_chat_autoreply, "interval", minutes=1, id="wb_chat_autoreply")
 scheduler.start()
 # Разово чистим ошибочные api-рейтинги после деплоя (item-rating ломал склейки).
@@ -11015,6 +11021,23 @@ def get_seller_recommendations_agg(refresh: int = 0):
     SELLER_RECS_AGG_CACHE["ts"] = now
     SELLER_RECS_AGG_CACHE["data"] = out
     return out
+
+
+def _warm_caches_after_start():
+    """Через пару минут после старта прогреваем то, что не переживает редеплой."""
+    time.sleep(120)
+    try:
+        _orders_geo_ensure_loaded()
+    except Exception as e:
+        logger.warning(f"warmup orders_geo: {e}")
+    try:
+        if not WB_PRODUCTS_CACHE.get("sales_by_nm"):
+            refresh_wb_products_catalog(sync_sources=True)
+    except Exception as e:
+        logger.warning(f"warmup wb_products: {e}")
+
+
+threading.Thread(target=_warm_caches_after_start, daemon=True, name="warmup").start()
 
 
 # ---------- Телеграм-бот (только чтение) ----------

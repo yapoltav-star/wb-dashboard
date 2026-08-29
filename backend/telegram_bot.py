@@ -22,7 +22,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
+from datetime import datetime, timedelta
 
 import httpx
 
@@ -206,19 +206,38 @@ def tool_products(query: str = "", only_low_cover: bool = False, limit: int = 15
     else:
         rows.sort(key=lambda r: -r["sales_7d"])
 
-    return {
+    out = {
         "matched": len(rows),
         "items": rows[: max(1, min(int(limit or 15), 40))],
         "stock_updated_at": data.get("stock_updated_at"),
         "prices_updated_at": data.get("prices_updated_at"),
         "sales_updated_at": data.get("sales_updated_at"),
     }
+    # Без продаж days_cover посчитать не из чего, и «ничего не заканчивается»
+    # было бы враньём — пусть модель скажет правду.
+    if not any((p.get("sales_7d") or 0) > 0 for p in items):
+        out["warning"] = ("Данные о продажах ещё не загрузились после перезапуска сервера, "
+                          "поэтому запас в днях посчитать нельзя. Остатки при этом верные. "
+                          "Обновление занимает пару минут, можно переспросить позже.")
+        out["sales_available"] = False
+    else:
+        out["sales_available"] = True
+    return out
+
+
+def _msk_now():
+    """Сервер живёт в UTC, а бизнес — в Москве. После 21:00 MSK это разные даты."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Moscow")).replace(tzinfo=None)
+    except Exception:
+        return datetime.utcnow() + timedelta(hours=3)
 
 
 def tool_geography(days: int = 28, channel: str = "all",
                    date_from: str = None, date_to: str = None) -> dict:
     if not date_from and not date_to:
-        today = date.today()
+        today = _msk_now().date()
         date_to = today.isoformat()
         date_from = (today - timedelta(days=max(1, int(days or 28)) - 1)).isoformat()
     agg = _API["orders_geo"](date_from=date_from, date_to=date_to, channel=channel or "all") or {}
@@ -334,7 +353,7 @@ TOOL_SCHEMAS = [
     },
 ]
 
-SYSTEM_PROMPT = (
+SYSTEM_PROMPT_BASE = (
     "Ты помощник селлера Wildberries и Ozon. Категория — смарт-часы. "
     "Отвечаешь в телеграме, поэтому коротко: несколько предложений или компактный список, "
     "без заголовков и таблиц.\n\n"
@@ -347,6 +366,19 @@ SYSTEM_PROMPT = (
     "У тебя только чтение. Если просят что-то изменить — цену, остаток, карточку — объясни, "
     "что это делается на сайте дашборда, и не пытайся."
 )
+
+WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
+
+
+def _system_prompt() -> str:
+    now = _msk_now()
+    return (
+        f"{SYSTEM_PROMPT_BASE}\n\n"
+        f"Сейчас {now.strftime('%d.%m.%Y %H:%M')} по Москве, {WEEKDAYS[now.weekday()]}. "
+        f"«Сегодня» это {now.strftime('%d.%m.%Y')}, «вчера» — "
+        f"{(now - timedelta(days=1)).strftime('%d.%m.%Y')}. Не путай их местами: "
+        f"данные за сегодняшний день всегда неполные, день ещё идёт."
+    )
 
 
 def _run_tool(name: str, args: dict) -> dict:
@@ -529,7 +561,7 @@ def _ask_anthropic(chat_id: int, working: list) -> tuple:
             r = httpx.post(ANTHROPIC_URL, headers=headers, timeout=120, json={
                 "model": _anthropic_model(),
                 "max_tokens": 1500,
-                "system": SYSTEM_PROMPT,
+                "system": _system_prompt(),
                 "tools": TOOL_SCHEMAS,
                 "messages": working,
             })
@@ -611,7 +643,7 @@ def _openai_call(body: dict):
 
 
 def _ask_openai(chat_id: int, working: list) -> tuple:
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + working
+    messages = [{"role": "system", "content": _system_prompt()}] + working
 
     for _ in range(TOOL_STEPS_LIMIT):
         try:
