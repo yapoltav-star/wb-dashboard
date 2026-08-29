@@ -361,6 +361,30 @@ a.rev-link:hover .prod-art{color:var(--oz-blue);text-decoration:underline}
 select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;color:var(--oz-text);background:var(--oz-surface);cursor:pointer}
 #page-ratings tr.total-row td{background:#EEF4FF;font-weight:600;border-top:2px solid #C7D9FF}
 #page-ratings .total-sub{font-size:11px;color:var(--oz-muted);font-weight:500;margin-top:2px}
+.geo-split{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--oz-border)}
+.geo-split > div{padding:12px 16px;overflow:auto;max-height:440px}
+.geo-split > div:first-child{border-right:1px solid var(--oz-border)}
+@media(max-width:1000px){
+  .geo-split{grid-template-columns:1fr}
+  .geo-split > div:first-child{border-right:none;border-bottom:1px solid var(--oz-border)}
+}
+.geo-h{font-size:13px;font-weight:600;margin-bottom:8px;letter-spacing:-.01em}
+.geo-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.geo-tbl th{text-align:left;font-size:11px;color:var(--oz-muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--oz-border);position:sticky;top:0;background:var(--oz-surface);z-index:1}
+.geo-tbl td{padding:6px 8px;border-bottom:1px solid #F1F5F9;vertical-align:top}
+.geo-tbl tr:hover td{background:#F8FAFF}
+.geo-tbl .num{text-align:right;font-variant-numeric:tabular-nums}
+.geo-sub{font-size:10px;color:var(--oz-muted)}
+.geo-pill{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600}
+.geo-pill-fbo{background:#DBEAFE;color:#1D4ED8}
+.geo-pill-fbs{background:#DCFCE7;color:#15803D}
+.geo-bar-wrap{display:flex;align-items:flex-end;gap:3px;height:130px;overflow-x:auto;padding:8px 0 4px}
+.geo-bar-col{display:flex;flex-direction:column;align-items:center;min-width:26px;flex:1;max-width:52px;cursor:pointer}
+.geo-bar-col:hover .geo-bar{opacity:.85}
+.geo-bar{width:100%;border-radius:4px 4px 0 0;display:flex;flex-direction:column;justify-content:flex-end;min-height:2px;overflow:hidden}
+.geo-bar-fbo{background:#2563EB}
+.geo-bar-fbs{background:#16A34A}
+.geo-bar-lbl{font-size:9px;color:var(--oz-muted);margin-top:4px;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -405,6 +429,7 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
   <div class="sn-item on" data-stocks="matrix" onclick="showStocksPage('matrix',this)">Матрица</div>
   <div class="sn-item" data-stocks="own" onclick="showStocksPage('own',this)">Наш склад</div>
   <div class="sn-item" data-stocks="supplies" onclick="showStocksPage('supplies',this)">Поставки</div>
+  <div class="sn-item" data-stocks="geo" onclick="showStocksPage('geo',this)">География FBO/FBS</div>
 </div>
 
 <!-- GROWTH / SALES PACE -->
@@ -569,6 +594,50 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
   </div>
   <div class="cards" id="supCards"></div>
   <div id="supRoot"><div class="empty"><b>Поставки FBO</b>Заявки, которые вы отгрузили / в пути / на точке. Нажми «Обновить поставки».</div></div>
+</div>
+
+<!-- ГЕОГРАФИЯ ЗАКАЗОВ FBO / FBS (внутри Остатки) -->
+<div class="page" id="page-orders-geo">
+  <div class="banner" id="geoBanner" style="display:none"></div>
+  <div class="toolbar">
+    <div class="search">
+      <input id="geoSearch" placeholder="Артикул, город, склад, отправление…" oninput="debounceGeoLoad()">
+    </div>
+    <span style="font-size:12px;color:var(--oz-muted)">Период:</span>
+    <button class="filter-btn" id="geoPer7" onclick="setGeoPeriod(7)">7 дн</button>
+    <button class="filter-btn on" id="geoPer28" onclick="setGeoPeriod(28)">28 дн</button>
+    <button class="filter-btn" id="geoPerAll" onclick="setGeoPeriod('all')">Всё</button>
+    <input type="date" id="geoDateFrom" class="num-inp" style="width:auto" onchange="loadOrdersGeo()">
+    <span style="font-size:12px;color:var(--oz-muted)">—</span>
+    <input type="date" id="geoDateTo" class="num-inp" style="width:auto" onchange="loadOrdersGeo()">
+    <span style="width:1px;height:20px;background:var(--oz-border);margin:0 4px"></span>
+    <button class="filter-btn on" id="geoChAll" onclick="setGeoChannel('all')">Все</button>
+    <button class="filter-btn" id="geoChFbo" onclick="setGeoChannel('FBO')">FBO</button>
+    <button class="filter-btn" id="geoChFbs" onclick="setGeoChannel('FBS')">FBS</button>
+    <select class="neg-sel" id="geoWh" style="max-width:210px" onchange="loadOrdersGeo()">
+      <option value="all">Все склады</option>
+    </select>
+    <select class="neg-sel" id="geoReg" style="max-width:190px" onchange="loadOrdersGeo()">
+      <option value="all">Все регионы</option>
+    </select>
+    <button class="filter-btn" id="geoCancelled" onclick="toggleGeoCancelled()" title="Учитывать отменённые отправления">С отменами</button>
+    <span id="geoInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="action-btn" id="geoExportBtn" onclick="exportOrdersGeoXlsx()">↓ Excel</button>
+      <button class="action-btn primary" id="geoSyncBtn" onclick="triggerOrdersGeoSync()">↻ Обновить</button>
+    </div>
+  </div>
+  <div class="cards" id="geoCards"></div>
+  <div id="geoDayChart" style="display:none;padding:12px 16px 4px;background:var(--oz-surface);border-bottom:1px solid var(--oz-border)"></div>
+  <div class="geo-split">
+    <div id="geoWhTable"></div>
+    <div id="geoRegTable"></div>
+  </div>
+  <div class="geo-split">
+    <div id="geoCityTable"></div>
+    <div id="geoArtTable"></div>
+  </div>
+  <div id="geoRoot"><div class="empty"><b>География заказов</b>Откуда отгружаем (склады FBO/FBS) и куда едут заказы (регионы и города). Нажми «Обновить» — подтянем отправления Ozon за 30 дней.</div></div>
 </div>
 
 <!-- ORDERS -->
@@ -959,6 +1028,7 @@ function topSync() {
   if (CURRENT === 'stocks') {
     if (STOCKS_PAGE === 'supplies') triggerSuppliesSync();
     else if (STOCKS_PAGE === 'own') triggerOwnWarehouseSync();
+    else if (STOCKS_PAGE === 'geo') triggerOrdersGeoSync();
     else syncStocks();
   }
   else if (CURRENT === 'growth') triggerSalesPaceSync();
@@ -1432,6 +1502,11 @@ function showStocksPage(id, el) {
     if (page) page.classList.add('on');
     if (btn) btn.textContent = 'Обновить наш склад';
     renderOwnWarehouse(true);
+  } else if (STOCKS_PAGE === 'geo') {
+    const page = document.getElementById('page-orders-geo');
+    if (page) page.classList.add('on');
+    if (btn) btn.textContent = 'Обновить географию';
+    renderOrdersGeo(true);
   } else {
     const page = document.getElementById('page-stocks');
     if (page) page.classList.add('on');
@@ -2902,6 +2977,318 @@ async function saveCoinSitePrice(offerId, inputEl) {
     console.warn(e);
   } finally {
     inputEl.disabled = false;
+  }
+}
+
+/* ── География заказов FBO/FBS (внутри Остатки) ── */
+let GEO_DATA = null;
+let GEO_CHANNEL = 'all';
+let GEO_PERIOD = 28;
+let GEO_CANCELLED = false;
+let GEO_LOADED = false;
+let geoDebounce = null;
+let geoPoll = null;
+
+function renderOrdersGeo(force) {
+  if (force || !GEO_LOADED) {
+    const root = document.getElementById('geoRoot');
+    if (root && !GEO_LOADED) root.innerHTML = '<div class="loading"><div class="spinner"></div>Считаем географию заказов…</div>';
+    loadOrdersGeo();
+  } else drawOrdersGeo();
+}
+
+function setGeoChannel(ch) {
+  GEO_CHANNEL = ch;
+  [['All','all'],['Fbo','FBO'],['Fbs','FBS']].forEach(([id, v]) => {
+    const el = document.getElementById('geoCh' + id);
+    if (el) el.classList.toggle('on', v === ch);
+  });
+  loadOrdersGeo();
+}
+
+function setGeoPeriod(p) {
+  GEO_PERIOD = p;
+  document.getElementById('geoPer7')?.classList.toggle('on', p === 7);
+  document.getElementById('geoPer28')?.classList.toggle('on', p === 28);
+  document.getElementById('geoPerAll')?.classList.toggle('on', p === 'all');
+  applyGeoPeriodDates();
+  loadOrdersGeo();
+}
+
+function toggleGeoCancelled() {
+  GEO_CANCELLED = !GEO_CANCELLED;
+  document.getElementById('geoCancelled')?.classList.toggle('on', GEO_CANCELLED);
+  loadOrdersGeo();
+}
+
+function applyGeoPeriodDates() {
+  const fromEl = document.getElementById('geoDateFrom');
+  const toEl = document.getElementById('geoDateTo');
+  if (!fromEl || !toEl) return;
+  const f = (GEO_DATA && GEO_DATA.filters) || {};
+  const maxD = f.date_max || new Date().toISOString().slice(0, 10);
+  toEl.value = maxD;
+  if (GEO_PERIOD === 'all') {
+    fromEl.value = f.date_min || '';
+    return;
+  }
+  const days = Number(GEO_PERIOD) || 28;
+  const d = new Date(maxD + 'T12:00:00');
+  if (Number.isNaN(d.getTime())) { fromEl.value = f.date_min || ''; return; }
+  d.setDate(d.getDate() - (days - 1));
+  fromEl.value = d.toISOString().slice(0, 10);
+}
+
+function debounceGeoLoad() {
+  clearTimeout(geoDebounce);
+  geoDebounce = setTimeout(loadOrdersGeo, 280);
+}
+
+function geoParams() {
+  const p = new URLSearchParams();
+  const from = document.getElementById('geoDateFrom')?.value;
+  const to = document.getElementById('geoDateTo')?.value;
+  if (from) p.set('date_from', from);
+  if (to) p.set('date_to', to);
+  p.set('channel', GEO_CHANNEL || 'all');
+  const wh = document.getElementById('geoWh')?.value;
+  if (wh && wh !== 'all') p.set('warehouse', wh);
+  const reg = document.getElementById('geoReg')?.value;
+  if (reg && reg !== 'all') p.set('region', reg);
+  const q = (document.getElementById('geoSearch')?.value || '').trim();
+  if (q) p.set('search', q);
+  if (GEO_CANCELLED) p.set('include_cancelled', '1');
+  return p;
+}
+
+function fillGeoSelect(id, values, allLabel) {
+  const sel = document.getElementById(id);
+  if (!sel || !values) return;
+  const cur = sel.value || 'all';
+  sel.innerHTML = `<option value="all">${allLabel}</option>` +
+    values.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  sel.value = values.includes(cur) ? cur : 'all';
+}
+
+async function loadOrdersGeo() {
+  const info = document.getElementById('geoInfo');
+  try {
+    const r = await fetch('/api/orders-geo?' + geoParams().toString());
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    GEO_DATA = d;
+    GEO_LOADED = true;
+    fillGeoSelect('geoWh', d.filters?.warehouses, 'Все склады');
+    fillGeoSelect('geoReg', d.filters?.regions, 'Все регионы');
+    const fromEl = document.getElementById('geoDateFrom');
+    if (fromEl && !fromEl.value) applyGeoPeriodDates();
+    if (info) {
+      const m = d.meta || {};
+      info.textContent = m.syncing
+        ? 'Тянем отправления Ozon…'
+        : `${fmt(d.summary?.orders || 0)} заказов · ${fmt(d.summary?.qty || 0)} шт` +
+          (m.updated_at ? ` · синк ${fmtDt(m.updated_at)}` : '');
+    }
+    drawOrdersGeo();
+  } catch (e) {
+    if (info) info.textContent = 'Ошибка: ' + (e.message || e);
+  }
+}
+
+function geoBarChart(days) {
+  const chart = document.getElementById('geoDayChart');
+  if (!chart) return;
+  if (!days.length) { chart.style.display = 'none'; return; }
+  const max = Math.max(...days.map(x => x.qty || 0), 1);
+  chart.style.display = 'block';
+  chart.innerHTML = `<div class="geo-h">Заказы по дням
+      <span class="geo-sub" style="margin-left:8px"><span class="geo-pill geo-pill-fbo">FBO</span> <span class="geo-pill geo-pill-fbs">FBS</span> — клик по столбцу оставит только этот день</span></div>
+    <div class="geo-bar-wrap">${days.map(day => {
+      const h = Math.max(4, Math.round((day.qty || 0) / max * 105));
+      const fbsH = day.qty ? Math.round(day.fbs_qty / day.qty * h) : 0;
+      return `<div class="geo-bar-col" title="${esc(day.date)}: ${fmt(day.qty)} шт (FBO ${fmt(day.fbo_qty)} / FBS ${fmt(day.fbs_qty)}), заказов ${fmt(day.orders)}" onclick="filterGeoDay('${esc(day.date)}')">
+        <div class="geo-bar" style="height:${h}px">
+          <div class="geo-bar-fbo" style="height:${h - fbsH}px"></div>
+          <div class="geo-bar-fbs" style="height:${fbsH}px"></div>
+        </div>
+        <div class="geo-bar-lbl">${esc(String(day.date || '').slice(5))}</div>
+      </div>`;
+    }).join('')}</div>`;
+}
+
+function geoSplit(fbo, fbs) {
+  return `<span style="color:#1D4ED8">${fmt(fbo)}</span> / <span style="color:#15803D">${fmt(fbs)}</span>`;
+}
+
+function drawOrdersGeo() {
+  const d = GEO_DATA;
+  if (!d) return;
+  const root = document.getElementById('geoRoot');
+  const cards = document.getElementById('geoCards');
+  const banner = document.getElementById('geoBanner');
+  const s = d.summary || {};
+  const m = d.meta || {};
+
+  if (banner) {
+    if (m.error) {
+      banner.style.display = 'block';
+      banner.className = 'banner warn';
+      banner.innerHTML = `<b>Ошибка синка:</b> ${esc(m.error)}`;
+    } else if (m.syncing) {
+      banner.style.display = 'block';
+      banner.className = 'banner';
+      banner.innerHTML = 'Тянем отправления FBO/FBS с analytics_data — регион, город и склад отгрузки. Это занимает до минуты.';
+    } else banner.style.display = 'none';
+  }
+
+  if (!d.filters?.total_cached) {
+    if (cards) cards.innerHTML = '';
+    geoBarChart([]);
+    ['geoWhTable','geoRegTable','geoCityTable','geoArtTable'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = '';
+    });
+    if (root) root.innerHTML = m.syncing
+      ? '<div class="loading"><div class="spinner"></div>Тянем отправления Ozon…</div>'
+      : '<div class="empty"><b>Нет данных</b>Нажми «Обновить» — подтянем отправления FBO/FBS за 30 дней.</div>';
+    return;
+  }
+  if (root) root.innerHTML = '';
+
+  if (cards) cards.innerHTML = [
+    ['Заказов', fmt(s.orders), '', `${fmt(s.qty)} шт · ср. чек ${money(s.avg_order_price)}`],
+    ['Сумма', money(s.revenue), '', `FBO ${money(s.fbo_revenue)} · FBS ${money(s.fbs_revenue)}`],
+    ['FBO', fmt(s.fbo_qty) + ' шт', 'color:#1D4ED8', `${s.fbo_share_pct || 0}% · заказов ${fmt(s.fbo_orders)}`],
+    ['FBS', fmt(s.fbs_qty) + ' шт', 'color:#15803D', `${s.fbs_share_pct || 0}% · заказов ${fmt(s.fbs_orders)}`],
+    ['Куда едет', `${fmt(s.regions)} рег.`, '', `${fmt(s.cities)} городов · складов ${fmt(s.warehouses)}`],
+  ].map(([l, v, st, sub]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${st}">${v}</div><div class="card-sub">${sub}</div></div>`).join('');
+
+  geoBarChart(d.by_day || []);
+
+  const whEl = document.getElementById('geoWhTable');
+  if (whEl) {
+    const rows = (d.by_warehouse || []).map(w => `
+      <tr style="cursor:pointer" onclick="setGeoWarehouse(${esc(JSON.stringify(w.warehouse))})">
+        <td><b>${esc(w.warehouse)}</b> <span class="geo-pill ${String(w.channel).includes('FBS') ? 'geo-pill-fbs' : 'geo-pill-fbo'}">${esc(w.channel)}</span>
+          <div class="geo-sub">${esc((w.top_regions || []).join(', '))}</div></td>
+        <td class="num">${fmt(w.orders)}</td>
+        <td class="num">${fmt(w.qty)}<div class="geo-sub">${w.share_pct}%</div></td>
+        <td class="num">${money(w.revenue)}</td>
+      </tr>`).join('');
+    whEl.innerHTML = `<div class="geo-h">Откуда отгружаем</div>
+      <table class="geo-tbl"><thead><tr><th>Склад</th><th class="num">Заказов</th><th class="num">Штук</th><th class="num">Сумма</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4">Нет данных</td></tr>'}</tbody></table>`;
+  }
+
+  const regEl = document.getElementById('geoRegTable');
+  if (regEl) {
+    const rows = (d.by_region || []).map(r => `
+      <tr style="cursor:pointer" onclick="setGeoRegion(${esc(JSON.stringify(r.region))})">
+        <td><b>${esc(r.region)}</b><div class="geo-sub">${esc((r.top_cities || []).join(', '))}</div></td>
+        <td class="num">${fmt(r.qty)}<div class="geo-sub">${r.share_pct}%</div></td>
+        <td class="num">${geoSplit(r.fbo_qty, r.fbs_qty)}</td>
+        <td class="num">${money(r.revenue)}</td>
+      </tr>`).join('');
+    regEl.innerHTML = `<div class="geo-h">Куда едет — регионы</div>
+      <table class="geo-tbl"><thead><tr><th>Регион</th><th class="num">Штук</th><th class="num">FBO / FBS</th><th class="num">Сумма</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4">Нет данных</td></tr>'}</tbody></table>`;
+  }
+
+  const cityEl = document.getElementById('geoCityTable');
+  if (cityEl) {
+    const rows = (d.by_city || []).slice(0, 60).map(c => `
+      <tr>
+        <td><b>${esc(c.city)}</b><div class="geo-sub">${esc(c.region || '')}</div></td>
+        <td class="num">${fmt(c.qty)}<div class="geo-sub">${c.share_pct}%</div></td>
+        <td class="num">${geoSplit(c.fbo_qty, c.fbs_qty)}</td>
+        <td class="num">${money(c.revenue)}</td>
+      </tr>`).join('');
+    cityEl.innerHTML = `<div class="geo-h">Города доставки (топ 60)</div>
+      <table class="geo-tbl"><thead><tr><th>Город</th><th class="num">Штук</th><th class="num">FBO / FBS</th><th class="num">Сумма</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4">Нет данных</td></tr>'}</tbody></table>`;
+  }
+
+  const artEl = document.getElementById('geoArtTable');
+  if (artEl) {
+    const rows = (d.by_article || []).slice(0, 60).map(a => `
+      <tr>
+        <td><b>${esc(a.offer_id)}</b><div class="geo-sub">${esc(String(a.name || '').slice(0, 52))}</div></td>
+        <td class="num">${fmt(a.qty)}<div class="geo-sub">${geoSplit(a.fbo_qty, a.fbs_qty)}</div></td>
+        <td class="num">${money(a.revenue)}<div class="geo-sub">ср. ${money(a.avg_price)}</div></td>
+        <td>${esc(a.top_city || '')}<div class="geo-sub">городов: ${fmt(a.cities_count)}</div></td>
+      </tr>`).join('');
+    artEl.innerHTML = `<div class="geo-h">Артикулы (топ 60)</div>
+      <table class="geo-tbl"><thead><tr><th>Артикул</th><th class="num">Штук</th><th class="num">Сумма</th><th>Топ город</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4">Нет данных</td></tr>'}</tbody></table>`;
+  }
+}
+
+function filterGeoDay(day) {
+  const fromEl = document.getElementById('geoDateFrom');
+  const toEl = document.getElementById('geoDateTo');
+  if (fromEl) fromEl.value = day;
+  if (toEl) toEl.value = day;
+  ['geoPer7','geoPer28','geoPerAll'].forEach(id => document.getElementById(id)?.classList.remove('on'));
+  GEO_PERIOD = 'day';
+  loadOrdersGeo();
+}
+
+function setGeoWarehouse(name) {
+  const el = document.getElementById('geoWh');
+  if (el) el.value = name;
+  loadOrdersGeo();
+}
+
+function setGeoRegion(name) {
+  const el = document.getElementById('geoReg');
+  if (el) el.value = name;
+  loadOrdersGeo();
+}
+
+async function triggerOrdersGeoSync() {
+  const btn = document.getElementById('geoSyncBtn');
+  const info = document.getElementById('geoInfo');
+  if (btn) btn.disabled = true;
+  if (info) info.textContent = 'Тянем отправления Ozon…';
+  try {
+    await fetch('/api/sync-orders-geo?days=30', { method: 'POST' });
+  } catch (e) {
+    if (info) info.textContent = 'Ошибка синка: ' + (e.message || e);
+    if (btn) btn.disabled = false;
+    return;
+  }
+  clearInterval(geoPoll);
+  let tries = 0;
+  geoPoll = setInterval(async () => {
+    tries++;
+    await loadOrdersGeo();
+    if (tries >= 30 || !(GEO_DATA?.meta?.syncing)) {
+      clearInterval(geoPoll);
+      if (btn) btn.disabled = false;
+    }
+  }, 4000);
+}
+
+async function exportOrdersGeoXlsx() {
+  const btn = document.getElementById('geoExportBtn');
+  const info = document.getElementById('geoInfo');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Excel…'; }
+  try {
+    const r = await fetch('/api/orders-geo/export-xlsx?' + geoParams().toString());
+    if (!r.ok) throw new Error(await readErr(r));
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ozon_geo_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch (e) {
+    if (info) info.textContent = 'Excel: ' + (e.message || e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↓ Excel'; }
   }
 }
 
