@@ -10994,6 +10994,114 @@ def sync_orders_geo(days: int = 30):
     return {"status": "started", "days": days}
 
 
+DELIVERY_TIME_CACHE = {"data": None, "ts": 0, "days": 0}
+
+
+def compute_delivery_times(days: int = 30, region: str = "") -> dict:
+    """
+    Сколько идёт заказ до покупателя. Считаем от оформления до выкупа, сопоставляя
+    supplier/orders и supplier/sales по srid.
+
+    Важно: это не чистая логистика. В срок входит время, пока покупатель забирает
+    посылку из пункта выдачи, а невыкупленные заказы сюда вообще не попадают.
+    Поэтому число всегда чуть больше реального срока доставки, но сравнивать
+    склады и регионы между собой оно позволяет.
+    """
+    import statistics
+
+    date_from = (_msk_now() - timedelta(days=max(1, int(days or 30)))).strftime("%Y-%m-%dT00:00:00")
+    orders = fetch_supplier_feed("/api/v1/supplier/orders", date_from, max_pages=5)
+    sales = fetch_supplier_feed("/api/v1/supplier/sales", date_from, max_pages=5)
+
+    ord_by_srid = {}
+    for o in orders:
+        srid = str(o.get("srid") or "")
+        if srid:
+            ord_by_srid[srid] = o
+
+    reg_filter = (region or "").strip().lower()
+    pairs = []
+    for s in sales:
+        if not str(s.get("saleID") or "").startswith("S"):
+            continue  # возвраты и корректировки пропускаем
+        o = ord_by_srid.get(str(s.get("srid") or ""))
+        if not o:
+            continue
+        od, sd = parse_wb_dt(o.get("date")), parse_wb_dt(s.get("date"))
+        if not od or not sd:
+            continue
+        hours = (sd - od).total_seconds() / 3600.0
+        if hours <= 0 or hours > 24 * 60:
+            continue
+        reg = str(o.get("regionName") or "").strip() or "Не указан"
+        if reg_filter and reg_filter not in reg.lower():
+            continue
+        wh = str(o.get("warehouseName") or "").strip() or "Не указан"
+        pairs.append({
+            "days": hours / 24.0,
+            "region": reg,
+            "district": str(o.get("oblastOkrugName") or "").strip(),
+            "warehouse": wh,
+            "channel": _orders_geo_normalize_channel("", wh),
+        })
+
+    def summarize(items):
+        d = sorted(x["days"] for x in items)
+        return {
+            "orders": len(d),
+            "median_days": round(statistics.median(d), 1) if d else None,
+            "avg_days": round(sum(d) / len(d), 1) if d else None,
+            "p90_days": round(d[int(len(d) * 0.9)], 1) if len(d) >= 10 else None,
+            "fastest_days": round(d[0], 1) if d else None,
+        }
+
+    by_wh, by_reg = {}, {}
+    for p in pairs:
+        by_wh.setdefault(p["warehouse"], []).append(p)
+        by_reg.setdefault(p["region"], []).append(p)
+
+    wh_rows = [{"warehouse": k, "channel": v[0]["channel"], **summarize(v)} for k, v in by_wh.items()]
+    wh_rows.sort(key=lambda x: -x["orders"])
+    reg_rows = [{"region": k, **summarize(v)} for k, v in by_reg.items()]
+    reg_rows.sort(key=lambda x: -x["orders"])
+
+    return {
+        "period_days": days,
+        "region_filter": region or None,
+        "matched_pairs": len(pairs),
+        "orders_seen": len(orders),
+        "sales_seen": len(sales),
+        "overall": summarize(pairs),
+        "by_warehouse": wh_rows[:30],
+        "by_region": reg_rows[:40],
+        "note": ("Срок считается от оформления заказа до выкупа, поэтому включает время, "
+                 "пока покупатель забирает посылку. Невыкупленные заказы не учитываются."),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/delivery-time")
+def get_delivery_time(days: int = 30, region: str = "", refresh: int = 0):
+    """Сроки доставки до покупателя по складам отгрузки и регионам."""
+    key_days = int(days or 30)
+    fresh = (
+        DELIVERY_TIME_CACHE.get("data")
+        and DELIVERY_TIME_CACHE.get("days") == key_days
+        and not region
+        and time.time() - float(DELIVERY_TIME_CACHE.get("ts") or 0) < 3600
+    )
+    if fresh and not refresh:
+        return DELIVERY_TIME_CACHE["data"]
+    try:
+        data = compute_delivery_times(days=key_days, region=region)
+    except Exception as e:
+        logger.error(f"delivery-time: {e}")
+        return {"error": str(e)}
+    if not region:
+        DELIVERY_TIME_CACHE.update({"data": data, "ts": time.time(), "days": key_days})
+    return data
+
+
 @app.get("/api/seller-recommendations-agg")
 def get_seller_recommendations_agg(refresh: int = 0):
     """
