@@ -521,34 +521,35 @@ td.tc{text-align:center}
 .pcal-nav button:hover{border-color:var(--wb-purple);color:var(--wb-purple)}
 .pcal-today-lbl{font-size:13px;color:var(--wb-text);font-weight:500}
 .pcal-wrap{overflow-x:auto;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:12px}
-.pcal-axis{display:flex;border-bottom:1px solid var(--wb-border);position:sticky;top:0;z-index:3;background:#FAFAF8}
-.pcal-month{position:relative;height:22px;font-size:12px;font-weight:600;color:var(--wb-text);padding:4px 0 0 8px}
-.pcal-days{display:flex;position:relative}
-.pcal-day{flex:0 0 var(--pcal-dw,44px);width:var(--pcal-dw,44px);text-align:center;padding:6px 0 8px;border-left:1px solid #F0EDE8}
-.pcal-day .n{display:block;font-size:13px;font-weight:500;color:var(--wb-text);font-variant-numeric:tabular-nums}
-.pcal-day .w{display:block;font-size:10px;color:var(--wb-faint);text-transform:uppercase;margin-top:1px}
+.pcal-axis{display:flex;flex-direction:column;border-bottom:1px solid var(--wb-border);position:sticky;top:0;z-index:3;background:#FAFAF8}
+.pcal-months{display:flex}
+.pcal-month{flex:0 0 auto;height:24px;font-size:12px;font-weight:600;color:var(--wb-text);padding:6px 0 0 8px;box-sizing:border-box}
+.pcal-days{display:flex}
+.pcal-day{flex:0 0 var(--pcal-dw,44px);width:var(--pcal-dw,44px);box-sizing:border-box;text-align:center;padding:4px 0 6px;border-left:1px solid #F0EDE8}
+.pcal-day .n{display:block;font-size:13px;font-weight:500;color:var(--wb-text);font-variant-numeric:tabular-nums;line-height:1.2}
+.pcal-day .w{display:block;font-size:10px;color:var(--wb-faint);text-transform:uppercase;margin-top:1px;line-height:1.2}
 .pcal-day.wknd .n,.pcal-day.wknd .w{color:#C2410C}
 .pcal-day.is-today{background:#FFF0E8}
 .pcal-day.is-today .n{color:var(--wb-purple);font-weight:700}
 .pcal-lanes{position:relative;min-height:120px}
 .pcal-grid{position:absolute;inset:0;display:flex;pointer-events:none;z-index:0}
-.pcal-grid i{flex:0 0 var(--pcal-dw,44px);width:var(--pcal-dw,44px);border-left:1px solid #F5F1EC}
-.pcal-grid i.today{background:rgba(212,98,42,.06);border-left:2px solid var(--wb-purple)}
-.pcal-lane{position:relative;height:104px;z-index:1}
-.pcal-card{position:absolute;top:8px;bottom:8px;background:#FFF6ED;border:1px solid #F0C7A0;border-radius:10px;padding:8px 10px;overflow:hidden;cursor:default;display:flex;flex-direction:column;gap:3px;min-width:140px;box-shadow:0 1px 0 rgba(180,96,14,.06)}
+.pcal-grid i{flex:0 0 var(--pcal-dw,44px);width:var(--pcal-dw,44px);box-sizing:border-box;border-left:1px solid #F5F1EC}
+.pcal-grid i.today{background:rgba(212,98,42,.06);box-shadow:inset 2px 0 0 var(--wb-purple)}
+.pcal-lane{position:relative;height:118px;z-index:1}
+.pcal-card{position:absolute;top:8px;height:102px;box-sizing:border-box;background:#FFF6ED;border:1px solid #F0C7A0;border-radius:10px;padding:8px 10px;overflow:hidden;cursor:default;display:flex;flex-direction:column;gap:5px}
 .pcal-card:hover{z-index:2;box-shadow:0 6px 18px rgba(74,69,64,.12);border-color:#E8A66A}
 .pcal-card.in,.pcal-card.will{background:#F3FAF6;border-color:#B6E2C8}
 .pcal-card.ended{background:#F7F6F4;border-color:#E2DDD8;opacity:.78}
-.pcal-type{font-size:11px;color:#C2410C;font-weight:500;white-space:nowrap}
+.pcal-type{font-size:11px;color:#C2410C;font-weight:500;line-height:1.2;flex-shrink:0}
 .pcal-card.in .pcal-type,.pcal-card.will .pcal-type{color:#B45309}
-.pcal-name{font-size:12px;font-weight:600;color:var(--wb-text);line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.pcal-badge{display:inline-flex;align-items:center;gap:4px;align-self:flex-start;font-size:10px;font-weight:600;padding:2px 8px;border-radius:999px;background:#166534;color:#fff;white-space:nowrap}
+.pcal-name{font-size:13px;font-weight:600;color:var(--wb-text);line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0}
+.pcal-badge{display:inline-flex;align-items:center;align-self:flex-start;font-size:10px;font-weight:600;line-height:1;padding:4px 8px;border-radius:999px;background:#166534;color:#fff;white-space:nowrap;flex-shrink:0}
 .pcal-badge.will{background:#3F6212}
 .pcal-badge.soon{background:#C2410C}
 .pcal-badge.live{background:#9A3412}
 .pcal-badge.ended{background:#6B6560}
-.pcal-meta{font-size:10px;color:var(--wb-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pcal-dates{font-size:10px;color:var(--wb-faint);margin-top:auto}
+.pcal-meta,.pcal-dates{font-size:11px;color:var(--wb-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2;flex-shrink:0}
+.pcal-dates{color:var(--wb-faint);margin-top:auto}
 .pcal-soon{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
 .pcal-soon-card{background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:10px;padding:10px 14px;min-width:200px;flex:1}
 .pcal-soon-card .when{font-size:11px;color:var(--wb-purple);font-weight:600;text-transform:uppercase;letter-spacing:.3px}
@@ -6583,7 +6584,7 @@ function drawPromoCalendar() {
   const width = days * PCAL_DW;
 
   const monthHtml = monthChunks.map(m =>
-    `<div class="pcal-month" style="flex:0 0 ${m.count * PCAL_DW}px">${pcalEsc(m.label)}</div>`
+    `<div class="pcal-month" style="width:${m.count * PCAL_DW}px">${pcalEsc(m.label)}</div>`
   ).join('');
   const daysHtml = dayList.map(ymd => {
     const dt = pcalParseYmd(ymd);
@@ -6597,26 +6598,28 @@ function drawPromoCalendar() {
     `<i class="${ymd === today ? 'today' : ''}"></i>`
   ).join('');
 
+  const shortBadge = {in: 'Участвую', will: 'Буду участвовать', soon: 'Скоро', live: 'Идёт', ended: 'Прошла'};
   const lanesHtml = lanes.map(lane => {
     const cards = lane.map(p => {
       const s = p.start_date < from ? from : p.start_date;
       const e = p.end_date > to ? to : p.end_date;
-      const left = pcalOffset(s, from) * PCAL_DW + 4;
+      const gap = 3;
+      const left = pcalOffset(s, from) * PCAL_DW + gap;
       const span = pcalOffset(e, s) + 1;
-      const w = Math.max(span * PCAL_DW - 8, 140);
+      const w = Math.max(span * PCAL_DW - gap * 2, PCAL_DW - gap * 2);
       const kind = p.type === 'auto' ? 'Автоакция' : 'Акция';
-      const badgeMap = {in: 'in', will: 'will', soon: 'soon', live: 'live', ended: 'ended'};
-      const badgeCls = badgeMap[p.status] || '';
+      const badgeCls = p.status || '';
       const goods = (p.in_total || 0) + (p.not_in_total || 0);
       const metaBits = [];
       if (p.plan_discount) metaBits.push(`до ${p.plan_discount}%`);
       if (p.boost) metaBits.push(`буст +${p.boost}`);
-      if (goods) metaBits.push(`${p.in_total || 0} из ${goods} товаров`);
+      if (goods) metaBits.push(`${p.in_total || 0} из ${goods} тов.`);
+      const shortName = String(p.name || '').replace(/\s*\(автоматические скидки\)\s*/gi, '').trim();
       const title = `${p.name}\n${p.status_label || ''}\n${pcalFmtRange(p.start_date, p.end_date)}`;
       return `<div class="pcal-card ${pcalEsc(p.status)}" style="left:${left}px;width:${w}px" title="${pcalEsc(title)}">
         <div class="pcal-type">${kind}</div>
-        <div class="pcal-name">${pcalEsc(p.name)}</div>
-        <span class="pcal-badge ${badgeCls}">${pcalEsc(p.status_label || '')}</span>
+        <div class="pcal-name">${pcalEsc(shortName)}</div>
+        <span class="pcal-badge ${pcalEsc(badgeCls)}">${pcalEsc(shortBadge[p.status] || p.status_label || '')}</span>
         ${metaBits.length ? `<div class="pcal-meta">${pcalEsc(metaBits.join(' · '))}</div>` : ''}
         <div class="pcal-dates">${pcalEsc(pcalFmtRange(p.start_date, p.end_date))}</div>
       </div>`;
@@ -6626,7 +6629,7 @@ function drawPromoCalendar() {
 
   root.innerHTML = `<div class="pcal-wrap" style="--pcal-dw:${PCAL_DW}px">
     <div class="pcal-axis" style="width:${width}px">
-      <div style="display:flex">${monthHtml}</div>
+      <div class="pcal-months">${monthHtml}</div>
       <div class="pcal-days">${daysHtml}</div>
     </div>
     <div class="pcal-lanes" style="width:${width}px">
