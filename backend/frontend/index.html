@@ -535,8 +535,9 @@ td.tc{text-align:center}
 .pcal-grid{position:absolute;inset:0;display:flex;pointer-events:none;z-index:0}
 .pcal-grid i{flex:0 0 var(--pcal-dw,44px);width:var(--pcal-dw,44px);box-sizing:border-box;border-left:1px solid #F5F1EC}
 .pcal-grid i.today{background:rgba(212,98,42,.06);box-shadow:inset 2px 0 0 var(--wb-purple)}
-.pcal-lane{position:relative;height:118px;z-index:1}
-.pcal-card{position:absolute;top:8px;height:102px;box-sizing:border-box;background:#FFF6ED;border:1px solid #F0C7A0;border-radius:10px;padding:8px 10px;overflow:hidden;cursor:default;display:flex;flex-direction:column;gap:5px}
+.pcal-lane{position:relative;height:126px;z-index:1}
+.pcal-card{position:absolute;top:8px;height:110px;box-sizing:border-box;background:#FFF6ED;border:1px solid #F0C7A0;border-radius:10px;padding:8px 10px;overflow:hidden;cursor:default;display:flex;flex-direction:column;gap:4px}
+.pcal-card.compact .pcal-meta,.pcal-card.compact .pcal-dates{display:none}
 .pcal-card:hover{z-index:2;box-shadow:0 6px 18px rgba(74,69,64,.12);border-color:#E8A66A}
 .pcal-card.in,.pcal-card.will{background:#F3FAF6;border-color:#B6E2C8}
 .pcal-card.ended{background:#F7F6F4;border-color:#E2DDD8;opacity:.78}
@@ -6607,6 +6608,7 @@ function drawPromoCalendar() {
       const left = pcalOffset(s, from) * PCAL_DW + gap;
       const span = pcalOffset(e, s) + 1;
       const w = Math.max(span * PCAL_DW - gap * 2, PCAL_DW - gap * 2);
+      const compact = span < 5 ? ' compact' : '';
       const kind = p.type === 'auto' ? 'Автоакция' : 'Акция';
       const badgeCls = p.status || '';
       const goods = (p.in_total || 0) + (p.not_in_total || 0);
@@ -6616,7 +6618,7 @@ function drawPromoCalendar() {
       if (goods) metaBits.push(`${p.in_total || 0} из ${goods} тов.`);
       const shortName = String(p.name || '').replace(/\s*\(автоматические скидки\)\s*/gi, '').trim();
       const title = `${p.name}\n${p.status_label || ''}\n${pcalFmtRange(p.start_date, p.end_date)}`;
-      return `<div class="pcal-card ${pcalEsc(p.status)}" style="left:${left}px;width:${w}px" title="${pcalEsc(title)}">
+      return `<div class="pcal-card ${pcalEsc(p.status)}${compact}" style="left:${left}px;width:${w}px" title="${pcalEsc(title)}">
         <div class="pcal-type">${kind}</div>
         <div class="pcal-name">${pcalEsc(shortName)}</div>
         <span class="pcal-badge ${pcalEsc(badgeCls)}">${pcalEsc(shortBadge[p.status] || p.status_label || '')}</span>
