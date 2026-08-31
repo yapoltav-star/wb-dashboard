@@ -3437,8 +3437,8 @@ def get_ads(refresh: bool = False):
 PROMO_CACHE = {"promotions": [], "articles": [], "updated_at": None, "syncing": False, "error": None}
 PROMO_RATE_DELAY = 0.7  # пауза между запросами к Календарю акций (лимит WB: интервал 600 мс)
 
-def fetch_calendar_promotions(start_dt: str, end_dt: str) -> list:
-    """Список акций, доступных для участия, за период [start_dt, end_dt]."""
+def fetch_calendar_promotions(start_dt: str, end_dt: str, all_promo: bool = False) -> list:
+    """Список акций за период [start_dt, end_dt]. all_promo=False — доступные для участия."""
     promotions, offset, limit = [], 0, 1000
     while True:
         try:
@@ -3446,7 +3446,8 @@ def fetch_calendar_promotions(start_dt: str, end_dt: str) -> list:
                 f"{WB_CALENDAR_URL}/api/v1/calendar/promotions",
                 headers=wb_headers(),
                 params={"startDateTime": start_dt, "endDateTime": end_dt,
-                        "allPromo": "false", "limit": limit, "offset": offset},
+                        "allPromo": "true" if all_promo else "false",
+                        "limit": limit, "offset": offset},
                 timeout=30,
             )
         except Exception as e:
@@ -3655,6 +3656,171 @@ def get_promotions():
 def trigger_promotions_sync():
     import threading
     threading.Thread(target=sync_promotions, daemon=True).start()
+    return {"status": "started"}
+
+
+# ---------- Календарь акций (лента как в кабинете WB) ----------
+
+PROMO_CAL_CACHE = {
+    "promotions": [],
+    "updated_at": None,
+    "syncing": False,
+    "error": None,
+    "from": None,
+    "to": None,
+}
+
+
+def _promo_msk_date(iso):
+    """Дата акции по Москве: WB отдаёт UTC, 21:00Z это уже следующий день."""
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        try:
+            from zoneinfo import ZoneInfo
+            dt = dt.astimezone(ZoneInfo("Europe/Moscow"))
+        except Exception:
+            dt = dt.astimezone(timezone(timedelta(hours=3)))
+        return dt.date()
+    except Exception:
+        return None
+
+
+def _promo_cal_status(start_d, end_d, in_total, today):
+    """Участвую / буду участвовать / идёт без нас / доступна / прошла."""
+    in_total = int(in_total or 0)
+    if not start_d or not end_d:
+        return "unknown", "Дата неизвестна"
+    if end_d < today:
+        return ("ended", "Прошла") if in_total <= 0 else ("ended", "Участвовали")
+    if start_d > today:
+        if in_total > 0:
+            days = (start_d - today).days
+            when = "завтра" if days == 1 else f"через {days} дн."
+            return "will", f"Буду участвовать · старт {when}"
+        days = (start_d - today).days
+        when = "завтра" if days == 1 else f"через {days} дн."
+        return "soon", f"Старт {when}"
+    # идёт сейчас
+    left = (end_d - today).days
+    left_s = "последний день" if left <= 0 else f"ещё {left} дн."
+    if in_total > 0:
+        return "in", f"Участвую · {left_s}"
+    return "live", f"Идёт · {left_s}"
+
+
+def build_promo_calendar_items(promos: list, details: dict, today=None) -> list:
+    today = today or _msk_now().date()
+    out = []
+    for p in promos or []:
+        pid = p.get("id")
+        if pid is None:
+            continue
+        d = details.get(pid) or {}
+        start_iso = d.get("startDateTime") or p.get("startDateTime") or ""
+        end_iso = d.get("endDateTime") or p.get("endDateTime") or ""
+        start_d = _promo_msk_date(start_iso)
+        end_d = _promo_msk_date(end_iso)
+        in_total = d.get("inPromoActionTotal")
+        if in_total is None:
+            in_total = p.get("inPromoActionTotal") or 0
+        not_in = d.get("notInPromoActionTotal")
+        if not_in is None:
+            not_in = p.get("notInPromoActionTotal") or 0
+        ranging = d.get("ranging") or []
+        max_boost = max((r.get("boost", 0) or 0 for r in ranging), default=0)
+        max_rate = max((r.get("participationRate", 0) or 0 for r in ranging), default=0)
+        status, status_label = _promo_cal_status(start_d, end_d, in_total, today)
+        days_to_start = (start_d - today).days if start_d else None
+        ptype = d.get("type") or p.get("type") or "regular"
+        out.append({
+            "id": pid,
+            "name": d.get("name") or p.get("name") or f"#{pid}",
+            "type": ptype,
+            "start": start_iso,
+            "end": end_iso,
+            "start_date": start_d.isoformat() if start_d else None,
+            "end_date": end_d.isoformat() if end_d else None,
+            "days_to_start": days_to_start,
+            "status": status,
+            "status_label": status_label,
+            "in_total": int(in_total or 0),
+            "not_in_total": int(not_in or 0),
+            "in_leftovers": d.get("inPromoActionLeftovers"),
+            "participation": d.get("participationPercentage"),
+            "boost": max_boost,
+            "plan_discount": max_rate or None,
+            "advantages": d.get("advantages") or [],
+        })
+    out.sort(key=lambda x: (x.get("start_date") or "9999", x.get("name") or ""))
+    return out
+
+
+def sync_promo_calendar():
+    """Только список акций и детали — без номенклатуры, чтобы календарь открывался быстро."""
+    if not WB_TOKEN:
+        PROMO_CAL_CACHE["error"] = "WB_TOKEN не задан"
+        return
+    if PROMO_CAL_CACHE.get("syncing"):
+        return
+    PROMO_CAL_CACHE["syncing"] = True
+    PROMO_CAL_CACHE["error"] = None
+    try:
+        today = _msk_now().date()
+        start = (today - timedelta(days=14)).strftime("%Y-%m-%dT00:00:00Z")
+        end = (today + timedelta(days=90)).strftime("%Y-%m-%dT23:59:59Z")
+        logger.info(f"promo calendar sync {start} … {end}")
+        promos = fetch_calendar_promotions(start, end, all_promo=False)
+        promo_ids = [p.get("id") for p in promos if p.get("id") is not None]
+        details = fetch_promotions_details(promo_ids) if promo_ids else {}
+        items = build_promo_calendar_items(promos, details, today)
+        PROMO_CAL_CACHE["promotions"] = items
+        PROMO_CAL_CACHE["updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+        PROMO_CAL_CACHE["from"] = (today - timedelta(days=14)).isoformat()
+        PROMO_CAL_CACHE["to"] = (today + timedelta(days=90)).isoformat()
+        logger.info(f"promo calendar: {len(items)} акций")
+    except Exception as e:
+        logger.error(f"sync_promo_calendar: {e}")
+        PROMO_CAL_CACHE["error"] = str(e)
+    finally:
+        PROMO_CAL_CACHE["syncing"] = False
+
+
+def _promo_cal_payload():
+    items = PROMO_CAL_CACHE.get("promotions") or []
+    return {
+        "promotions": items,
+        "updated_at": PROMO_CAL_CACHE.get("updated_at"),
+        "syncing": PROMO_CAL_CACHE.get("syncing", False),
+        "error": PROMO_CAL_CACHE.get("error"),
+        "from": PROMO_CAL_CACHE.get("from"),
+        "to": PROMO_CAL_CACHE.get("to"),
+        "counts": {
+            "all": len(items),
+            "in": sum(1 for x in items if x.get("status") in ("in", "will")),
+            "available": sum(1 for x in items if x.get("status") in ("soon", "live")),
+            "soon": sum(1 for x in items if x.get("status") in ("soon", "will")),
+        },
+    }
+
+
+@app.get("/api/promo-calendar")
+def get_promo_calendar(refresh: int = 0):
+    if refresh and not PROMO_CAL_CACHE.get("syncing"):
+        threading.Thread(target=sync_promo_calendar, daemon=True).start()
+    elif not PROMO_CAL_CACHE.get("updated_at") and not PROMO_CAL_CACHE.get("syncing"):
+        threading.Thread(target=sync_promo_calendar, daemon=True).start()
+    return _promo_cal_payload()
+
+
+@app.post("/api/sync-promo-calendar")
+def trigger_promo_calendar_sync():
+    if PROMO_CAL_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    threading.Thread(target=sync_promo_calendar, daemon=True).start()
     return {"status": "started"}
 
 def _parse_promo_excel_name(filename: str) -> str:
@@ -6844,6 +7010,7 @@ scheduler.add_job(sync_supply, "interval", hours=4, id="sync_supply")
 scheduler.add_job(sync_ads, "interval", hours=4, id="sync_ads")
 scheduler.add_job(lambda: sync_article_daily_stats(30), "interval", hours=6, id="sync_daily")
 scheduler.add_job(sync_promotions, "interval", hours=6, id="sync_promotions")
+scheduler.add_job(sync_promo_calendar, "interval", hours=6, id="sync_promo_calendar")
 scheduler.add_job(lambda: sync_sales_pace("day"), "interval", hours=1, id="sync_sales_pace")
 scheduler.add_job(sync_spp_prices, "interval", hours=3, id="sync_spp_prices")
 # Каталог товаров держим тёплым: он живёт только в памяти и обнуляется при редеплое,
@@ -11147,6 +11314,7 @@ def _warm_caches_after_start():
 
 
 threading.Thread(target=_warm_caches_after_start, daemon=True, name="warmup").start()
+threading.Thread(target=sync_promo_calendar, daemon=True, name="promo-cal-boot").start()
 
 
 # ---------- Телеграм-бот (только чтение) ----------
