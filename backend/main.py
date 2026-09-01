@@ -1946,6 +1946,151 @@ def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
     return best
 
 
+def _own_wh_join_offer_id(parts: list) -> str:
+    """Склеивает артикул Ozon, который в PDF рвётся на строки (046_LK11_Promax_g + rey_O)."""
+    return "".join(str(p or "").strip() for p in parts if str(p or "").strip())
+
+
+def _parse_ozon_picking_words(pages_words: list) -> dict:
+    """Лист подбора Ozon FBS из слов с координатами.
+    pages_words: [ [(x0, y0, x1, y1, text), ...], ... ]
+    Колонки: № | Товар | Артикул | Кол-во. Артикул часто в 1–2 строки."""
+    items_agg = {}
+    meta = {"date": None, "warehouse": None, "shipments": None, "pages": 0}
+    date_re = re.compile(r"(\d{1,2}[./]\d{1,2}[./]\d{2,4})")
+
+    for words in pages_words or []:
+        if not words:
+            continue
+        meta["pages"] += 1
+        texts = [(float(w[0]), float(w[1]), str(w[4] or "").strip()) for w in words if len(w) >= 5]
+        texts = [t for t in texts if t[2]]
+        if not texts:
+            continue
+
+        flat = " ".join(t[2] for t in texts)
+        if meta["date"] is None:
+            m = date_re.search(flat)
+            if m:
+                meta["date"] = m.group(1)
+        if meta["warehouse"] is None:
+            wm = re.search(r"Склад:\s*(.+?)(?:\s+Служба|\s+№|$)", flat)
+            if wm:
+                meta["warehouse"] = wm.group(1).strip()
+        if meta["shipments"] is None:
+            sm = re.search(r"отправлений:\s*(\d+)", flat, re.I)
+            if sm:
+                meta["shipments"] = int(sm.group(1))
+
+        art_h = next((t for t in texts if t[2].lower() in ("артикул", "артикул продавца", "offer_id")), None)
+        if not art_h:
+            continue
+        qty_cands = [
+            t for t in texts
+            if t[2].lower() in ("кол-во", "количество", "qty") and abs(t[1] - art_h[1]) < 10
+        ]
+        qty_h = next((t for t in qty_cands if t[2].lower() == "кол-во"), None) or (qty_cands[0] if qty_cands else None)
+        if not qty_h:
+            continue
+        article_x = art_h[0]
+        qty_x = qty_h[0]
+        header_y = min(art_h[1], qty_h[1])
+        left_max = min(70.0, article_x * 0.22)
+
+        below = [t for t in texts if t[1] > header_y + 4]
+        anchors = sorted(
+            ((t[1], int(t[2])) for t in below if t[0] < left_max and t[2].isdigit() and 1 <= int(t[2]) <= 9999),
+            key=lambda x: x[0],
+        )
+        if not anchors:
+            continue
+
+        for i, (ay, _n) in enumerate(anchors):
+            y0 = (anchors[i - 1][0] + ay) / 2 if i else header_y
+            y1 = (ay + anchors[i + 1][0]) / 2 if i + 1 < len(anchors) else 1e9
+            row = [t for t in below if y0 < t[1] <= y1]
+            art_parts = [t[2] for t in sorted(row, key=lambda t: (t[1], t[0])) if article_x - 12 <= t[0] < qty_x - 12]
+            qty_parts = [t[2] for t in row if t[0] >= qty_x - 12]
+            vc = _own_wh_join_offer_id(art_parts)
+            qty = None
+            for p in qty_parts:
+                q = _parse_int_cell(p)
+                if q is not None and q > 0:
+                    qty = q
+                    break
+            if not vc or not qty:
+                continue
+            if vc.lower() in ("артикул", "товар", "кол-во", "количество"):
+                continue
+            items_agg[vc] = items_agg.get(vc, 0) + qty
+
+    items = [{"vendor_code": vc, "qty": q} for vc, q in sorted(items_agg.items(), key=lambda x: -x[1])]
+    return {
+        "kind": "ozon_picking",
+        "channel": "ozon_fbs",
+        "items": items,
+        "total_qty": sum(i["qty"] for i in items),
+        "articles": len(items),
+        "date": meta["date"],
+        "warehouse": meta["warehouse"],
+        "shipments_count": meta["shipments"],
+        "pages": meta["pages"],
+    }
+
+
+def parse_own_wh_ozon_picking_pdf(content: bytes, filename: str = "") -> dict:
+    """PDF «Лист подбора» Ozon FBS (FPDF): № / Товар / Артикул / Кол-во."""
+    if not content:
+        return {"error": "Пустой PDF"}
+    try:
+        import fitz
+    except ImportError:
+        return {"error": "Сервер не умеет читать PDF (нужен pymupdf). Попроси обновить деплой."}
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+    except Exception as e:
+        return {"error": f"Не удалось открыть PDF: {e}"}
+    pages = []
+    head_text = ""
+    try:
+        for page in doc:
+            words = page.get_text("words") or []
+            pages.append([(w[0], w[1], w[2], w[3], w[4]) for w in words])
+            if not head_text:
+                head_text = page.get_text("text") or ""
+    finally:
+        doc.close()
+
+    parsed = _parse_ozon_picking_words(pages)
+    parsed["filename"] = filename or ""
+    low = (head_text + " " + (filename or "")).lower()
+    looks_ozon = (
+        "ozon" in low
+        or "озон" in low
+        or "лист подбора" in low
+        or "отправлений" in low
+        or parsed.get("items")
+    )
+    if not parsed.get("items"):
+        return {
+            "error": (
+                "Не нашёл таблицу «Артикул / Кол-во» в PDF. "
+                "Ожидаю лист подбора Ozon (FBS): колонки №, Товар, Артикул, Кол-во."
+            )
+        }
+    if not looks_ozon:
+        parsed["kind"] = "ozon_picking"
+    return parsed
+
+
+def parse_own_wh_shipment_file(content: bytes, filename: str = "") -> dict:
+    """Excel отгрузки WB/Ozon или PDF листа подбора Ozon."""
+    name = (filename or "").lower()
+    if name.endswith(".pdf") or (content[:5] == b"%PDF-"):
+        return parse_own_wh_ozon_picking_pdf(content, filename)
+    return parse_own_wh_shipment_excel(content, filename)
+
+
 def _own_wh_looks_like_vendor_code(vc: str) -> bool:
     """Грубая проверка: артикул продавца, не число/дата/заголовок."""
     s = str(vc or "").strip()
@@ -2044,6 +2189,8 @@ def _own_wh_shipment_channel(sh: dict) -> str:
     # shk-excel и лист подбора WB-GI — это поставки на склады WB
     if kind in ("shk", "picking"):
         return "fbw"
+    if kind == "ozon_picking":
+        return "ozon_fbs"
     return "fbw"
 
 
@@ -2164,7 +2311,7 @@ async def own_warehouse_upload_shipment(
         except Exception as e:
             errors.append({"filename": f.filename, "error": str(e)})
             continue
-        parsed = parse_own_wh_shipment_excel(content, f.filename or "")
+        parsed = parse_own_wh_shipment_file(content, f.filename or "")
         if parsed.get("error"):
             errors.append({"filename": f.filename, "error": parsed["error"]})
             continue
@@ -2175,6 +2322,10 @@ async def own_warehouse_upload_shipment(
         total_qty = sum(int(it["qty"]) for it in items)
         if ch_req in OWN_WH_CHANNELS:
             ch = ch_req
+        elif parsed.get("channel") in OWN_WH_CHANNELS:
+            ch = parsed["channel"]
+        elif parsed.get("kind") == "ozon_picking":
+            ch = "ozon_fbs"
         else:
             ch = "fbw" if parsed.get("kind") in ("shk", "picking") else "fbw"
         sid = f"sh_{int(time.time())}_{len(shipments)}_{len(applied)}"
@@ -2190,6 +2341,8 @@ async def own_warehouse_upload_shipment(
             "total_qty": total_qty,
             "articles": len(items),
             "unmapped_barcodes": parsed.get("unmapped_barcodes") or [],
+            "doc_date": parsed.get("date"),
+            "warehouse": parsed.get("warehouse"),
         }
         shipments.insert(0, entry)
         applied.append(entry)

@@ -1030,6 +1030,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
       ⚠️ <b>Один физический склад для WB и Ozon.</b>
       Артикулы считаются одинаково (плюс семьи). Google Sheets — стартовая база.
       Грузи отгрузки/поставки WB и Ozon — остаток общий.
+      FBS Ozon: PDF «Лист подбора» (как из кабинета) или Excel.
       <b>В пятницу:</b> сотрудник правит реальные остатки в таблице → жмёт «Инвентаризация» — оверлеи уходят в архив по дате, активные сбрасываются.
     </span>
   </div>
@@ -1050,9 +1051,9 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
       <button class="action-btn" onclick="openOwnWhReceiptManual()" title="Ввести артикулы вручную">✏️ Список</button>
       <button class="action-btn" onclick="startOwnWhUpload('fbw')" title="shk-excel, шаблон WB (Баркод+Количество) или лист подбора WB-GI">📦 Поставка WB</button>
       <button class="action-btn" onclick="startOwnWhUpload('fbs')" title="Отгрузка FBS WB">📦 FBS WB</button>
-      <button class="action-btn" onclick="startOwnWhUpload('ozon_fbo')" title="Поставка / FBO Ozon">📦 Поставка Ozon</button>
-      <button class="action-btn" onclick="startOwnWhUpload('ozon_fbs')" title="Отгрузка FBS Ozon">📦 FBS Ozon</button>
-      <input type="file" id="ownWhShipInput" accept=".xlsx,.xls" multiple style="display:none" onchange="uploadOwnWhShipments(this.files)">
+      <button class="action-btn" onclick="startOwnWhUpload('ozon_fbo')" title="Поставка / FBO Ozon (Excel)">📦 Поставка Ozon</button>
+      <button class="action-btn" onclick="startOwnWhUpload('ozon_fbs')" title="Лист подбора Ozon PDF или Excel">📦 FBS Ozon</button>
+      <input type="file" id="ownWhShipInput" accept=".xlsx,.xls,.pdf" multiple style="display:none" onchange="uploadOwnWhShipments(this.files)">
       <input type="file" id="ownWhReceiptInput" accept=".xlsx,.xls" multiple style="display:none" onchange="uploadOwnWhReceipts(this.files)">
       <button class="action-btn" style="background:#ECFDF5;border-color:#059669;color:#047857" onclick="runOwnWhFridayReset()" title="После пересчёта в Sheets: архив оверлеев + сброс">🗓 Инвентаризация</button>
       <button class="action-btn" id="ownWhSyncBtn" onclick="triggerOwnWarehouseSync()">↻ Обновить</button>
