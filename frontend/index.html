@@ -6317,6 +6317,7 @@ function drawSalesPace() {
     <b>Сейчас:</b> ${escapeHtml(tLabel)} &nbsp;→&nbsp; <b>База:</b> ${escapeHtml(yLabel)}
     · часовой пояс <b>МСК</b>
     · Δ = сейчас − база.
+    <b>Заказы</b> — как в кабинете WB, колонка «Заказали товаров, шт» (воронка).
     ${PACE_DATA.mode_hint ? (' <span style="color:var(--wb-text)">' + escapeHtml(PACE_DATA.mode_hint) + '</span>.') : ''}
     <b>Остаток</b> — шт. на WB + дни + живые склады.
     <b>Цена покупателя</b> — цена на сайте (после СПП) сейчас vs день базы; Δ ₽↑ / СПП↓ при падении заказов = подозрение на цену.

@@ -5126,8 +5126,8 @@ def trigger_daily_sync(days: int = 30):
     return {"status": "started", "days": days}
 
 # ---------- Рост продаж: темп к прошлому периоду (день/неделя/2 недели/месяц) ----------
-# Заказы — точно по времени из Statistics API.
-# Воронка: для «день» — почасовые снимки; для недели/месяца — selectedPeriod vs pastPeriod.
+# Заказы = orderCount воронки WB («Заказали товаров, шт» в кабинете).
+# Вчера «до часа» — из почасового снимка той же воронки. Statistics API — запасной источник.
 SALES_PACE_CACHE = {
     "by_period": {},  # period -> payload
     "syncing": False,
@@ -5347,6 +5347,26 @@ def _funnel_products_range(start_str: str, end_str: str, nm_ids: list = None) ->
 def _funnel_products_day(day_str: str, nm_ids: list = None) -> dict:
     return _funnel_products_range(day_str, day_str, nm_ids)
 
+
+def _pace_funnel_orders(funnel_map: dict, nm, fallback: int) -> int:
+    """orderCount воронки, если артикул в ответе; иначе запасной счётчик Statistics."""
+    row = (funnel_map or {}).get(nm)
+    if isinstance(row, dict) and "orders" in row:
+        return int(row.get("orders") or 0)
+    return int(fallback or 0)
+
+
+def _pace_cache_stale(cached: dict, max_age_sec: int = 600) -> bool:
+    """True, если кэш темпа старше max_age_sec (updated_at в UTC)."""
+    raw = (cached or {}).get("updated_at")
+    if not raw:
+        return True
+    try:
+        dt = datetime.strptime(str(raw), "%d.%m.%Y %H:%M").replace(tzinfo=timezone.utc)
+    except Exception:
+        return True
+    return (datetime.now(timezone.utc) - dt).total_seconds() > max_age_sec
+
 def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = None):
     """Считает темп продаж за выбранный период.
     Для day можно передать date_cur / date_prev (YYYY-MM-DD) — сравнение двух дней."""
@@ -5385,10 +5405,13 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 continue
             if o.get("supplierArticle"):
                 vc_from_orders[nm] = o["supplierArticle"]
+            qty = int(o.get("quantity") or 1)
+            if qty <= 0:
+                qty = 1
             if cur_start <= d <= cur_end:
-                cur_ord[nm] = cur_ord.get(nm, 0) + 1
+                cur_ord[nm] = cur_ord.get(nm, 0) + qty
             elif prev_start <= d <= prev_end:
-                prev_ord[nm] = prev_ord.get(nm, 0) + 1
+                prev_ord[nm] = prev_ord.get(nm, 0) + qty
 
         funnel_cur, funnel_prev = {}, {}
         compare_as_of = None
@@ -5526,14 +5549,15 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 return None
             return round(100.0 * float(num) / float(den), 1)
 
-        # только артикулы с заказами в текущем или прошлом окне
-        all_nms = set(cur_ord) | set(prev_ord)
+        # артикулы с заказами в воронке или (запасной) Statistics
+        all_nms = set(cur_ord) | set(prev_ord) | set(funnel_cur) | set(funnel_prev)
         articles = []
         for nm in all_nms:
             ft = funnel_cur.get(nm) or {}
             fy = funnel_prev.get(nm) or {}
-            o_t = cur_ord.get(nm, 0)
-            o_y = prev_ord.get(nm, 0)
+            # как в кабинете WB: «Заказали товаров, шт» = orderCount воронки
+            o_t = _pace_funnel_orders(funnel_cur, nm, cur_ord.get(nm, 0))
+            o_y = _pace_funnel_orders(funnel_prev, nm, prev_ord.get(nm, 0)) if funnel_ready else prev_ord.get(nm, 0)
             if o_t <= 0 and o_y <= 0:
                 continue
             opens_t = int(ft.get("opens") or 0)
@@ -5971,7 +5995,7 @@ def get_sales_pace(period: str = "day", refresh: bool = False, date_cur: str = N
     cache_key = _pace_cache_key(period, date_cur, date_prev)
     by = SALES_PACE_CACHE.get("by_period") or {}
     cached = by.get(cache_key)
-    if refresh or not cached:
+    if refresh or not cached or _pace_cache_stale(cached):
         if not SALES_PACE_CACHE.get("syncing"):
             import threading
             threading.Thread(
@@ -7011,7 +7035,7 @@ scheduler.add_job(sync_ads, "interval", hours=4, id="sync_ads")
 scheduler.add_job(lambda: sync_article_daily_stats(30), "interval", hours=6, id="sync_daily")
 scheduler.add_job(sync_promotions, "interval", hours=6, id="sync_promotions")
 scheduler.add_job(sync_promo_calendar, "interval", hours=6, id="sync_promo_calendar")
-scheduler.add_job(lambda: sync_sales_pace("day"), "interval", hours=1, id="sync_sales_pace")
+scheduler.add_job(lambda: sync_sales_pace("day"), "interval", minutes=15, id="sync_sales_pace")
 scheduler.add_job(sync_spp_prices, "interval", hours=3, id="sync_spp_prices")
 # Каталог товаров держим тёплым: он живёт только в памяти и обнуляется при редеплое,
 # а без него «что заканчивается» отвечает пустотой.
