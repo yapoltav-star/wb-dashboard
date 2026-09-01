@@ -8109,7 +8109,7 @@ function compMetricVal(m, fields) {
   return 0;
 }
 
-function getTopCompetitors(compMetrics, fields, limit = 8) {
+function getTopCompetitors(compMetrics, fields, limit = 15) {
   return [...(compMetrics || [])]
     .filter(m => m && m.nm_id && !m.is_own)
     .map(m => ({...m, _score: compMetricVal(m, fields)}))
@@ -8178,7 +8178,7 @@ function buildCompTopAnalysis(compMetrics) {
     {kind: 'orders', title: 'Топ по заказам', fields: ['orders'], color: '#EA580C'},
   ];
   const cols = blocks.map(b => {
-    const top = getTopCompetitors(compMetrics, b.fields, 8);
+    const top = getTopCompetitors(compMetrics, b.fields, 15);
     if(!top.length) {
       return `<div style="flex:1;min-width:240px;border:1px solid var(--wb-border);border-radius:8px;padding:12px;background:var(--wb-surface)">
         <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:${b.color}">${b.title}</div>
