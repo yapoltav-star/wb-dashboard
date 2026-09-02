@@ -722,6 +722,8 @@ a.comp-thumb-link:focus-visible{outline:2px solid var(--wb-purple);outline-offse
 .prod-pin{cursor:pointer;font-size:15px;opacity:.35;transition:opacity .15s}
 .prod-pin:hover{opacity:1}
 .prod-pin.on{opacity:1}
+.pace-hide-btn{display:inline-flex;align-items:center;justify-content:center;border:none;background:transparent;padding:2px;margin:0 4px 0 0;color:var(--wb-faint);cursor:pointer;vertical-align:middle;border-radius:4px;line-height:0}
+.pace-hide-btn:hover{color:#B42318;background:#FEE4E2}
 .prod-art{font-weight:500;flex:0 0 220px}
 .prod-nmid{font-size:11px;color:var(--wb-faint)}
 .prod-rating{flex:0 0 90px;text-align:center;font-weight:700;font-size:16px}
@@ -877,6 +879,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
     <button class="filter-btn" id="paceFltStock" onclick="setPaceFilter('stock')">Падение + сток</button>
     <button class="filter-btn" id="paceFltUp" onclick="setPaceFilter('up')">Растут</button>
     <button class="filter-btn" id="paceFltFlat" onclick="setPaceFilter('flat')">Без изменений</button>
+    <button class="filter-btn" id="paceFltHidden" onclick="togglePaceHiddenList()" title="Показать скрытые артикулы">Скрытые</button>
     <span id="paceInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
     <div class="ml-auto">
       <button class="action-btn" id="paceSyncBtn" onclick="triggerSalesPaceSync()">↻ Обновить</button>
@@ -6186,6 +6189,64 @@ let PACE_LOADED = false;
 let pacePoll = null;
 let PACE_SORT = {key: 'orders_delta', dir: 1};
 let PACE_PINNED = JSON.parse(localStorage.getItem('wb_pace_pinned') || '[]');
+let PACE_HIDDEN = [];
+let PACE_SHOW_HIDDEN = false;
+let paceHidSaveT = null;
+
+function paceEyeOffSvg() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88"/>
+  </svg>`;
+}
+
+function applyPaceHidden(list) {
+  PACE_HIDDEN = [...new Set((list || []).map(x => String(x || '').trim()).filter(Boolean))];
+}
+
+function togglePaceHiddenList() {
+  PACE_SHOW_HIDDEN = !PACE_SHOW_HIDDEN;
+  const el = document.getElementById('paceFltHidden');
+  if(el) el.classList.toggle('on', PACE_SHOW_HIDDEN);
+  drawSalesPace();
+}
+
+function togglePaceHide(vcEnc, e) {
+  if(e) e.stopPropagation();
+  const vc = decodeURIComponent(vcEnc);
+  if(!vc) return;
+  const i = PACE_HIDDEN.indexOf(vc);
+  if(i >= 0) PACE_HIDDEN.splice(i, 1);
+  else PACE_HIDDEN.push(vc);
+  drawSalesPace();
+  savePaceHiddenSoon();
+}
+
+function paceUnhide(vcEnc) {
+  const vc = decodeURIComponent(vcEnc);
+  PACE_HIDDEN = PACE_HIDDEN.filter(x => x !== vc);
+  drawSalesPace();
+  savePaceHiddenSoon();
+}
+
+function savePaceHiddenSoon() {
+  clearTimeout(paceHidSaveT);
+  paceHidSaveT = setTimeout(savePaceHidden, 350);
+}
+
+async function savePaceHidden() {
+  paceHidSaveT = null;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/sales-pace-hidden`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({hidden: PACE_HIDDEN}),
+    });
+    const d = await r.json();
+    if(Array.isArray(d.hidden)) applyPaceHidden(d.hidden);
+  } catch(e) {
+    alert('Не удалось сохранить скрытые артикулы: ' + e.message);
+  }
+}
 
 function paceDatesQuery() {
   if(PACE_PERIOD !== 'day' || !PACE_DATE_CUR) return '';
@@ -6236,6 +6297,7 @@ async function loadSalesPace() {
   try {
     const r = await fetch(`${RAILWAY_URL}/api/sales-pace?period=${encodeURIComponent(PACE_PERIOD)}${paceDatesQuery()}`);
     PACE_DATA = await r.json();
+    if(Array.isArray(PACE_DATA.hidden) && !paceHidSaveT) applyPaceHidden(PACE_DATA.hidden);
   } catch(e) {
     PACE_DATA = {articles:[], error: e.message, syncing:false};
   }
@@ -6883,9 +6945,18 @@ function drawSalesPace() {
     if(btn) btn.disabled = false;
   }
 
+  const hiddenSet = new Set(PACE_HIDDEN);
+  const hidBtn = document.getElementById('paceFltHidden');
+  if(hidBtn) {
+    hidBtn.classList.toggle('on', PACE_SHOW_HIDDEN);
+    hidBtn.innerHTML = (hiddenSet.size ? ('Скрытые (' + hiddenSet.size + ')') : 'Скрытые');
+  }
+
   let arts = [...(PACE_DATA.articles || [])].filter(a => (a.orders_today||0) > 0 || (a.orders_yesterday||0) > 0);
   const q = ((document.getElementById('paceSearch') || {}).value || '').toLowerCase().trim();
   if(q) arts = arts.filter(a => String(a.vendor_code||'').toLowerCase().includes(q) || String(a.nm_id||'').includes(q) || String(a.name||'').toLowerCase().includes(q));
+  const hiddenArts = arts.filter(a => hiddenSet.has(a.vendor_code));
+  arts = arts.filter(a => !hiddenSet.has(a.vendor_code));
   if(PACE_FILTER === 'down') arts = arts.filter(a => (a.orders_delta||0) < 0);
   else if(PACE_FILTER === 'stock') arts = arts.filter(a => a.stock_linked);
   else if(PACE_FILTER === 'up') arts = arts.filter(a => (a.orders_delta||0) > 0);
@@ -6925,7 +6996,7 @@ function drawSalesPace() {
   });
   arts = [...pinned, ...unpinned];
 
-  const all = (PACE_DATA.articles || []).filter(a => (a.orders_today||0) > 0 || (a.orders_yesterday||0) > 0);
+  const all = (PACE_DATA.articles || []).filter(a => ((a.orders_today||0) > 0 || (a.orders_yesterday||0) > 0) && !hiddenSet.has(a.vendor_code));
   const downN = all.filter(a => (a.orders_delta||0) < 0).length;
   const upN = all.filter(a => (a.orders_delta||0) > 0).length;
   const stockLinkN = all.filter(a => a.stock_linked).length;
@@ -6950,11 +7021,11 @@ function drawSalesPace() {
   renderPaceCompareBar();
   renderPaceInsights(all);
 
-  if(PACE_DATA.syncing && !all.length) {
+  if(PACE_DATA.syncing && !all.length && !hiddenArts.length) {
     root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Тянем заказы, воронку и рекламу с WB (до ~2–3 мин)…</span></div>';
     return;
   }
-  if(!arts.length) {
+  if(!arts.length && !hiddenArts.length) {
     root.innerHTML = PACE_DATA.syncing
       ? '<div class="loading"><div class="spinner"></div><span>Считаем…</span></div>'
       : '<div class="empty">Нет данных. Нажми «Обновить».</div>';
@@ -7043,6 +7114,7 @@ function drawSalesPace() {
     return `<tr class="${rowCls}${i%2 && !a.isPinned?' wh-even':''}">
       <td class="mcol-art pg-meta">
         <span class="prod-pin${a.isPinned?' on':''}" onclick="togglePacePin('${safeVc}', event)" title="${a.isPinned?'Открепить':'Закрепить'}">📌</span>
+        <button type="button" class="pace-hide-btn" onclick="togglePaceHide('${safeVc}', event)" title="Скрыть артикул">${paceEyeOffSvg()}</button>
         <div class="art" style="display:inline">${escapeHtml(String(a.vendor_code||''))}${paceStockBadge(a)}${pacePriceBadge(a)}</div>
         <div class="nmid">${a.nm_id||''}</div>
       </td>
@@ -7085,7 +7157,7 @@ function drawSalesPace() {
     <b>Показы / CPM</b>${showViewsFull
       ? ': срез «до часа» vs вчера до того же часа; колонка «Вчера 0–24ч» — полный день (API).'
       : ': текущее окно vs прошлое.'}
-    CR = корзина ÷ переходы. 📌 — закрепить.
+    CR = корзина ÷ переходы. 📌 — закрепить. Зачёркнутый глаз — скрыть у всех.
   </div>
     <div class="matrix-wrap"><table class="matrix promo-xls pace-tbl">
       <thead><tr>
@@ -7124,8 +7196,18 @@ function drawSalesPace() {
         ${paceTh(colCur, 'cart_cr_today', null, 'pg-cr pg-start')}
         ${paceTh('Δ', 'cart_cr_delta', null, 'pg-cr')}
       </tr></thead>
-      <tbody>${totalRow}${body}</tbody>
-    </table></div>`;
+      <tbody>${totalRow}${body || `<tr><td colspan="30" style="padding:20px;color:var(--wb-muted)">Все артикулы скрыты. Открой «Скрытые».</td></tr>`}</tbody>
+    </table></div>
+    ${PACE_SHOW_HIDDEN ? `<div class="ns-hidden-box">
+      <div style="font-size:12px;font-weight:600;margin-bottom:6px">Скрытые артикулы · видно всем · можно вернуть</div>
+      ${hiddenArts.map(a => {
+        const enc = encodeURIComponent(a.vendor_code || '');
+        return `<div class="ns-hid-row">
+          <span style="flex:1"><b>${escapeHtml(String(a.vendor_code||''))}</b> <span style="color:var(--wb-faint)">${a.nm_id||''}</span></span>
+          <button type="button" class="ns-ico" onclick="paceUnhide('${enc}')">Вернуть</button>
+        </div>`;
+      }).join('') || '<div style="font-size:12px;color:var(--wb-muted)">Пусто</div>'}
+    </div>` : ''}`;
 }
 
 async function triggerSalesPaceSync() {

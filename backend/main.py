@@ -5841,7 +5841,13 @@ SALES_PACE_CACHE = {
     "error": None,
 }
 SALES_PACE_SNAPS_KEY = "sales_pace_funnel_snaps"
+SALES_PACE_HIDDEN_KEY = "sales_pace_hidden"
 SALES_PACE_PERIODS = ("day", "week", "weeks2", "month")
+
+
+def _sales_pace_hidden() -> list:
+    raw = get_setting_json(SALES_PACE_HIDDEN_KEY, [])
+    return _uniq_str_list(raw if isinstance(raw, list) else [])
 
 def _msk_now():
     try:
@@ -6740,7 +6746,16 @@ def get_sales_pace(period: str = "day", refresh: bool = False, date_cur: str = N
         "ads_ready": cached.get("ads_ready"),
         "syncing": SALES_PACE_CACHE.get("syncing", False) and SALES_PACE_CACHE.get("syncing_period") == cache_key,
         "error": SALES_PACE_CACHE.get("error") or cached.get("error"),
+        "hidden": _sales_pace_hidden(),
     }
+
+
+@app.post("/api/sales-pace-hidden")
+async def save_sales_pace_hidden(request: dict):
+    hidden = _uniq_str_list((request or {}).get("hidden"))
+    if not save_setting_value(SALES_PACE_HIDDEN_KEY, hidden):
+        raise HTTPException(status_code=500, detail="Не удалось сохранить скрытые артикулы")
+    return {"status": "ok", "hidden": hidden}
 
 @app.post("/api/sync-sales-pace")
 async def trigger_sales_pace_sync(period: str = "day", date_cur: str = None, date_prev: str = None):
