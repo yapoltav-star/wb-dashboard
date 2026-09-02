@@ -3073,6 +3073,8 @@ def _new_stock_default_layout() -> dict:
         "city_order": [],
         "group_order": [],
         "city_group": {},
+        "hidden_cities": [],
+        "hidden_fbs": [],
     }
 
 
@@ -3123,6 +3125,8 @@ def _normalize_new_stock_layout(raw) -> dict:
         "city_order": _uniq_str_list(src.get("city_order")),
         "group_order": _uniq_str_list(src.get("group_order")),
         "city_group": city_group,
+        "hidden_cities": _uniq_str_list(src.get("hidden_cities")),
+        "hidden_fbs": _uniq_str_list(src.get("hidden_fbs")),
     }
 
 
