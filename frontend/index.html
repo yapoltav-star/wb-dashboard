@@ -478,6 +478,18 @@ td.tc{text-align:center}
 .ns-oos{background:#F8FAFC;color:var(--wb-faint)}
 .ns-cell b{display:block;font-size:13px}
 .ns-cell span{font-size:10px;opacity:.85}
+.ns-art-row{display:flex;align-items:center;gap:6px}
+.ns-handle{cursor:grab;color:var(--wb-faint);font-size:12px;user-select:none}
+.ns-ico{border:1px solid var(--wb-border);background:#fff;border-radius:5px;padding:1px 5px;font-size:11px;cursor:pointer;line-height:1.4}
+.ns-ico.on{background:#FEF3C7;border-color:#F0C7A0}
+.ns-ico.hide{color:#B42318}
+.ns-gselect{max-width:110px;font-size:10px;border:1px solid var(--wb-border);border-radius:5px;padding:2px 4px;background:#fff}
+.ns-group-h td{text-align:left;background:#F4F2EF;font-weight:600;padding:8px 10px}
+.ns-group-h .ns-ico{font-weight:400}
+.ns-hidden-box{margin:12px 16px 20px;border:1px dashed var(--wb-border);border-radius:8px;background:#FAFAFA;padding:10px 12px}
+.ns-hidden-box .ns-hid-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--wb-border);font-size:12px}
+.ns-drag{opacity:.45}
+.ns-tbl tbody tr.ns-pin-row td.ns-art{background:#FFFBEB}
 .pace-insights{margin:0 0 12px;padding:14px 16px;border:1px solid var(--wb-border);border-radius:var(--r);background:linear-gradient(180deg,#FCFAF7 0%,#fff 100%)}
 .pace-insights-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}
 .pace-insights-h h3{margin:0;font-size:14px;font-weight:700;color:var(--wb-text)}
@@ -1022,6 +1034,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
     <button class="filter-btn on" id="nsFltAll" onclick="setNewStockFilter('all')">Все</button>
     <button class="filter-btn" id="nsFltWarn" onclick="setNewStockFilter('warn')">Жёлтые &gt;40ч</button>
     <button class="filter-btn" id="nsFltBad" onclick="setNewStockFilter('bad')">Красные &gt;60ч</button>
+    <button class="filter-btn" id="nsFltHidden" onclick="toggleNewStockHidden()">Скрытые</button>
     <span id="nsInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
     <div class="ml-auto">
       <button class="action-btn" id="nsSyncBtn" onclick="triggerNewStockSync()">↻ Обновить</button>
@@ -2301,10 +2314,28 @@ async function triggerSupplySync() {
 }
 
 // ── Новые остатки: срок как у клиента по городам ──
-let NEW_STOCK = {articles:[], cities:[], groups:[], syncing:false};
+let NEW_STOCK = {articles:[], cities:[], groups:[], layout:null, syncing:false};
 let NEW_STOCK_LOADED = false;
 let NEW_STOCK_FILTER = 'all';
+let NS_LAYOUT = {hidden:[], pinned:[], order:[], groups:[]};
+let NS_SHOW_HIDDEN = false;
+let NS_DRAG = null;
 let nsPoll = null;
+let nsSaveT = null;
+
+function nsEmptyLayout() {
+  return {hidden:[], pinned:[], order:[], groups:[]};
+}
+
+function applyNsLayout(raw) {
+  const l = raw || {};
+  NS_LAYOUT = {
+    hidden: [...(l.hidden || [])],
+    pinned: [...(l.pinned || [])],
+    order: [...(l.order || [])],
+    groups: (l.groups || []).map(g => ({id: g.id, name: g.name, articles: [...(g.articles || [])]})),
+  };
+}
 
 function setNewStockFilter(f) {
   NEW_STOCK_FILTER = f;
@@ -2312,6 +2343,13 @@ function setNewStockFilter(f) {
     const el = document.getElementById('nsFlt' + k);
     if(el) el.classList.toggle('on', ({All:'all', Warn:'warn', Bad:'bad'})[k] === f);
   });
+  drawNewStock();
+}
+
+function toggleNewStockHidden() {
+  NS_SHOW_HIDDEN = !NS_SHOW_HIDDEN;
+  const el = document.getElementById('nsFltHidden');
+  if(el) el.classList.toggle('on', NS_SHOW_HIDDEN);
   drawNewStock();
 }
 
@@ -2325,6 +2363,7 @@ async function loadNewStock() {
     const r = await fetch(`${RAILWAY_URL}/api/new-stock`);
     NEW_STOCK = await r.json();
     NEW_STOCK_LOADED = true;
+    if(NEW_STOCK.layout) applyNsLayout(NEW_STOCK.layout);
   } catch(e) {
     NEW_STOCK = {articles:[], error: e.message, syncing:false};
   }
@@ -2344,6 +2383,162 @@ async function triggerNewStockSync() {
   setTimeout(loadNewStock, 800);
 }
 
+function saveNewStockLayoutSoon() {
+  clearTimeout(nsSaveT);
+  nsSaveT = setTimeout(saveNewStockLayout, 350);
+}
+
+async function saveNewStockLayout() {
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/new-stock-layout`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(NS_LAYOUT),
+    });
+    const d = await r.json();
+    if(d.layout) applyNsLayout(d.layout);
+    NEW_STOCK.layout = NS_LAYOUT;
+  } catch(e) {
+    alert('Не удалось сохранить раскладку: ' + e.message);
+  }
+}
+
+function nsVc(a) { return String((a && a.vendor_code) || ''); }
+
+function nsRemoveFromGroups(vc) {
+  (NS_LAYOUT.groups || []).forEach(g => {
+    g.articles = (g.articles || []).filter(x => x !== vc);
+  });
+}
+
+function nsGroupOf(vc) {
+  return (NS_LAYOUT.groups || []).find(g => (g.articles || []).includes(vc));
+}
+
+function nsTogglePin(vc) {
+  vc = String(vc);
+  const i = NS_LAYOUT.pinned.indexOf(vc);
+  if(i >= 0) NS_LAYOUT.pinned.splice(i, 1);
+  else {
+    NS_LAYOUT.hidden = NS_LAYOUT.hidden.filter(x => x !== vc);
+    NS_LAYOUT.pinned.unshift(vc);
+  }
+  drawNewStock();
+  saveNewStockLayoutSoon();
+}
+
+function nsHide(vc) {
+  vc = String(vc);
+  if(!NS_LAYOUT.hidden.includes(vc)) NS_LAYOUT.hidden.push(vc);
+  NS_LAYOUT.pinned = NS_LAYOUT.pinned.filter(x => x !== vc);
+  drawNewStock();
+  saveNewStockLayoutSoon();
+}
+
+function nsUnhide(vc) {
+  vc = String(vc);
+  NS_LAYOUT.hidden = NS_LAYOUT.hidden.filter(x => x !== vc);
+  drawNewStock();
+  saveNewStockLayoutSoon();
+}
+
+function nsSetGroup(vc, value) {
+  vc = String(vc);
+  if(value === '__new') {
+    const name = prompt('Название группы (для всех на сайте):');
+    if(!name || !name.trim()) { drawNewStock(); return; }
+    const id = 'g_' + Date.now();
+    nsRemoveFromGroups(vc);
+    NS_LAYOUT.groups.push({id, name: name.trim(), articles: [vc]});
+  } else if(!value) {
+    nsRemoveFromGroups(vc);
+  } else {
+    nsRemoveFromGroups(vc);
+    let g = NS_LAYOUT.groups.find(x => x.id === value);
+    if(!g) g = NS_LAYOUT.groups.find(x => x.name === value);
+    if(g && !g.articles.includes(vc)) g.articles.push(vc);
+  }
+  drawNewStock();
+  saveNewStockLayoutSoon();
+}
+
+function nsRenameGroup(gid) {
+  const g = NS_LAYOUT.groups.find(x => x.id === gid);
+  if(!g) return;
+  const name = prompt('Новое название группы:', g.name);
+  if(!name || !name.trim() || name.trim() === g.name) return;
+  g.name = name.trim();
+  drawNewStock();
+  saveNewStockLayoutSoon();
+}
+
+function nsDissolveGroup(gid) {
+  const g = NS_LAYOUT.groups.find(x => x.id === gid);
+  if(!g || !confirm('Распустить группу «' + g.name + '»? Артикулы останутся в таблице.')) return;
+  NS_LAYOUT.groups = NS_LAYOUT.groups.filter(x => x.id !== gid);
+  drawNewStock();
+  saveNewStockLayoutSoon();
+}
+
+function nsMoveInList(list, fromVc, toVc) {
+  const f = list.indexOf(fromVc);
+  const t = list.indexOf(toVc);
+  if(f < 0 || t < 0 || f === t) return list;
+  const next = list.filter(x => x !== fromVc);
+  const ti = next.indexOf(toVc);
+  next.splice(ti, 0, fromVc);
+  return next;
+}
+
+function nsDragStart(ev, vc, zone) {
+  NS_DRAG = {vc: String(vc), zone: String(zone || '')};
+  ev.dataTransfer.effectAllowed = 'move';
+  ev.dataTransfer.setData('text/plain', String(vc));
+  const tr = ev.currentTarget.closest ? ev.currentTarget.closest('tr') : ev.currentTarget;
+  if(tr) tr.classList.add('ns-drag');
+}
+
+function nsDragEnd() {
+  NS_DRAG = null;
+  document.querySelectorAll('.ns-drag').forEach(el => el.classList.remove('ns-drag'));
+}
+
+function nsDragOver(ev) {
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'move';
+}
+
+function nsDrop(ev, targetVc, zone) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const drag = NS_DRAG;
+  NS_DRAG = null;
+  document.querySelectorAll('.ns-drag').forEach(el => el.classList.remove('ns-drag'));
+  if(!drag || !drag.vc || drag.vc === targetVc) return;
+  const from = drag.vc;
+  const toZone = String(zone || '');
+  if(toZone === 'pinned') {
+    if(!NS_LAYOUT.pinned.includes(from)) NS_LAYOUT.pinned.unshift(from);
+    NS_LAYOUT.hidden = NS_LAYOUT.hidden.filter(x => x !== from);
+    if(targetVc) NS_LAYOUT.pinned = nsMoveInList(NS_LAYOUT.pinned, from, String(targetVc));
+  } else if(toZone.startsWith('group:')) {
+    const gid = toZone.slice(6);
+    const g = NS_LAYOUT.groups.find(x => x.id === gid);
+    if(!g) return;
+    nsRemoveFromGroups(from);
+    if(!g.articles.includes(from)) g.articles.push(from);
+    if(targetVc) g.articles = nsMoveInList(g.articles, from, String(targetVc));
+    NS_LAYOUT.pinned = NS_LAYOUT.pinned.filter(x => x !== from);
+  } else {
+    nsRemoveFromGroups(from);
+    NS_LAYOUT.pinned = NS_LAYOUT.pinned.filter(x => x !== from);
+    if(!NS_LAYOUT.order.includes(from)) NS_LAYOUT.order.push(from);
+    if(targetVc) NS_LAYOUT.order = nsMoveInList(NS_LAYOUT.order, from, String(targetVc));
+  }
+  drawNewStock();
+  saveNewStockLayoutSoon();
+}
+
 function nsCellTone(cell) {
   if(!cell || !(cell.qty > 0)) return 'oos';
   const h = cell.hours;
@@ -2361,12 +2556,89 @@ function nsRowMaxHours(a) {
   return mx;
 }
 
+function nsSortByLayout(list, keyOrder) {
+  const idx = new Map((keyOrder || []).map((vc, i) => [vc, i]));
+  return [...list].sort((a, b) => {
+    const ia = idx.has(nsVc(a)) ? idx.get(nsVc(a)) : 9999;
+    const ib = idx.has(nsVc(b)) ? idx.get(nsVc(b)) : 9999;
+    if(ia !== ib) return ia - ib;
+    return nsRowMaxHours(b) - nsRowMaxHours(a);
+  });
+}
+
+function nsPassFilter(a) {
+  const q = ((document.getElementById('nsSearch') || {}).value || '').toLowerCase().trim();
+  if(q && !String(a.vendor_code||'').toLowerCase().includes(q) && !String(a.nm_id||'').includes(q)) return false;
+  if(NEW_STOCK_FILTER === 'warn') return nsRowMaxHours(a) > 40;
+  if(NEW_STOCK_FILTER === 'bad') return nsRowMaxHours(a) > 60;
+  return true;
+}
+
+function nsCityCells(a, cities) {
+  return cities.map(c => {
+    const cell = (a.cities || {})[c.id] || {};
+    const tone = cell.tone || nsCellTone(cell);
+    const qty = cell.qty || 0;
+    const h = cell.hours;
+    const tip = [
+      escapeHtml(a.vendor_code) + ' → ' + escapeHtml(c.name),
+      qty ? (qty + ' шт на складе, с которого WB везёт') : 'нет предложения витрины',
+      h != null ? ('срок витрины ' + h + ' ч') : '',
+      'это не ближайший склад MKeeper',
+      cell.wh ? ('витринный склад #' + cell.wh) : '',
+    ].filter(Boolean).join('. ');
+    const main = qty ? (fmt(qty) + ' шт') : 'нет';
+    const sub = h != null ? (h + ' ч') : '—';
+    return `<td class="ns-cell ns-${tone}" title="${tip.replace(/"/g,'&quot;')}"><b>${main}</b><span>${sub}</span></td>`;
+  }).join('');
+}
+
+function nsGroupSelect(vc) {
+  const cur = nsGroupOf(vc);
+  const opts = [`<option value="">без группы</option>`]
+    .concat((NS_LAYOUT.groups || []).map(g =>
+      `<option value="${escapeHtml(g.id)}" ${cur && cur.id===g.id ? 'selected' : ''}>${escapeHtml(g.name)}</option>`
+    ))
+    .concat(['<option value="__new">+ новая группа…</option>']);
+  return `<select class="ns-gselect" onchange="nsSetGroup('${String(vc).replace(/'/g,"\\'")}', this.value)">${opts.join('')}</select>`;
+}
+
+function nsArtRow(a, cities, zone, pinned) {
+  const vc = nsVc(a);
+  const safe = String(vc).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+  return `<tr class="${pinned ? 'ns-pin-row' : ''}"
+      ondragover="nsDragOver(event)"
+      ondrop="nsDrop(event,'${safe}','${zone}')">
+    <td class="ns-art">
+      <div class="ns-art-row">
+        <span class="ns-handle" draggable="true" title="Перетащить"
+          ondragstart="nsDragStart(event,'${safe}','${zone}')"
+          ondragend="nsDragEnd()">⋮⋮</span>
+        <button type="button" class="ns-ico ${pinned?'on':''}" title="Закрепить у всех" onclick="nsTogglePin('${safe}')">📌</button>
+        <button type="button" class="ns-ico hide" title="Скрыть у всех" onclick="nsHide('${safe}')">скрыть</button>
+        ${nsGroupSelect(vc)}
+        <div>
+          <a href="${wbCatalogUrl(a.nm_id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;font-weight:600">${escapeHtml(vc || a.nm_id)}</a>
+          <div style="font-size:10px;color:var(--wb-faint)">${a.nm_id || ''}</div>
+        </div>
+      </div>
+    </td>
+    ${nsCityCells(a, cities)}
+  </tr>`;
+}
+
 function drawNewStock() {
   const root = document.getElementById('nsRoot');
   const info = document.getElementById('nsInfo');
   const btn = document.getElementById('nsSyncBtn');
   if(btn) btn.disabled = !!NEW_STOCK.syncing;
   if(!root) return;
+  const hidBtn = document.getElementById('nsFltHidden');
+  const hidN = (NS_LAYOUT.hidden || []).length;
+  if(hidBtn) {
+    hidBtn.classList.toggle('on', NS_SHOW_HIDDEN);
+    hidBtn.textContent = hidN ? ('Скрытые (' + hidN + ')') : 'Скрытые';
+  }
 
   if(NEW_STOCK.error) {
     if(info) info.textContent = NEW_STOCK.error;
@@ -2377,67 +2649,100 @@ function drawNewStock() {
     if(NEW_STOCK.as_of) bits.push('на ' + NEW_STOCK.as_of);
     bits.push((NEW_STOCK.articles || []).length + ' арт.');
     bits.push((NEW_STOCK.cities || []).length + ' городов');
+    if(hidN) bits.push('скрыто ' + hidN);
+    bits.push('раскладка общая');
     if(info) info.textContent = bits.join(' · ');
   }
 
   const cities = NEW_STOCK.cities || [];
-  const groups = NEW_STOCK.groups || [];
-  let arts = [...(NEW_STOCK.articles || [])];
-  const q = ((document.getElementById('nsSearch') || {}).value || '').toLowerCase().trim();
-  if(q) arts = arts.filter(a => String(a.vendor_code||'').toLowerCase().includes(q) || String(a.nm_id||'').includes(q));
-  if(NEW_STOCK_FILTER === 'warn') arts = arts.filter(a => nsRowMaxHours(a) > 40);
-  if(NEW_STOCK_FILTER === 'bad') arts = arts.filter(a => nsRowMaxHours(a) > 60);
+  const cityGroups = NEW_STOCK.groups || [];
+  const byVc = {};
+  (NEW_STOCK.articles || []).forEach(a => { if(nsVc(a)) byVc[nsVc(a)] = a; });
+  const hiddenSet = new Set(NS_LAYOUT.hidden || []);
+  const pinnedSet = new Set(NS_LAYOUT.pinned || []);
+  const groupedSet = new Set();
+  (NS_LAYOUT.groups || []).forEach(g => (g.articles || []).forEach(vc => groupedSet.add(vc)));
 
-  if(NEW_STOCK.syncing && !arts.length) {
+  const match = (NEW_STOCK.articles || []).filter(nsPassFilter);
+  const matchSet = new Set(match.map(nsVc));
+
+  if(NEW_STOCK.syncing && !match.length) {
     root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Тянем витрину WB (до минуты)…</span></div>';
     return;
   }
-  if(!arts.length) {
+  if(!match.length && !hidN) {
     root.innerHTML = `<div class="empty" style="padding:40px 20px">${escapeHtml(NEW_STOCK.error || NEW_STOCK.note || 'Нет артикулов. Обнови «Товары» или нажми «Обновить».')}</div>`;
     return;
   }
 
   const gClass = {sib:'ns-g-sib', south:'ns-g-south', center:'ns-g-center', nw:'ns-g-nw', ural:'ns-g-ural', volga:'ns-g-volga'};
-  const groupRow = groups.map(g => {
+  const groupRow = cityGroups.map(g => {
     const n = (g.city_ids || []).length || 3;
     return `<th class="ns-g ${gClass[g.id]||''}" colspan="${n}">${escapeHtml(g.name)}</th>`;
   }).join('');
   const cityRow = cities.map(c => `<th title="${escapeHtml(c.group || '')}">${escapeHtml(c.name)}</th>`).join('');
+  const colCount = 1 + cities.length;
 
-  const body = arts.map(a => {
-    const tds = cities.map(c => {
-      const cell = (a.cities || {})[c.id] || {};
-      const tone = cell.tone || nsCellTone(cell);
-      const qty = cell.qty || 0;
-      const h = cell.hours;
-      const tip = [
-        escapeHtml(a.vendor_code) + ' → ' + escapeHtml(c.name),
-        qty ? (qty + ' шт на складе, с которого WB везёт') : 'нет предложения витрины',
-        h != null ? ('срок витрины ' + h + ' ч') : '',
-        'это не ближайший склад MKeeper',
-        cell.wh ? ('витринный склад #' + cell.wh) : '',
-      ].filter(Boolean).join('. ');
-      const main = qty ? (fmt(qty) + ' шт') : 'нет';
-      const sub = h != null ? (h + ' ч') : '—';
-      return `<td class="ns-cell ns-${tone}" title="${tip.replace(/"/g,'&quot;')}"><b>${main}</b><span>${sub}</span></td>`;
-    }).join('');
-    return `<tr>
-      <td class="ns-art">
-        <a href="${wbCatalogUrl(a.nm_id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;font-weight:600">${escapeHtml(a.vendor_code || a.nm_id)}</a>
-        <div style="font-size:10px;color:var(--wb-faint)">${a.nm_id || ''}</div>
+  const pinnedArts = (NS_LAYOUT.pinned || []).map(vc => byVc[vc]).filter(a => a && matchSet.has(nsVc(a)) && !hiddenSet.has(nsVc(a)));
+  let body = '';
+  if(pinnedArts.length) {
+    body += `<tr class="ns-group-h" ondragover="nsDragOver(event)" ondrop="nsDrop(event,'','pinned')"><td colspan="${colCount}">📌 Закреплённые <span style="font-weight:400;color:var(--wb-muted)">· видно всем · перетащи сюда</span></td></tr>`;
+    body += pinnedArts.map(a => nsArtRow(a, cities, 'pinned', true)).join('');
+  }
+
+  (NS_LAYOUT.groups || []).forEach(g => {
+    const arts = (g.articles || []).map(vc => byVc[vc]).filter(a => a && matchSet.has(nsVc(a)) && !hiddenSet.has(nsVc(a)) && !pinnedSet.has(nsVc(a)));
+    if(!arts.length && !NS_SHOW_HIDDEN) return;
+    const safeId = String(g.id).replace(/'/g,"\\'");
+    body += `<tr class="ns-group-h" ondragover="nsDragOver(event)" ondrop="nsDrop(event,'','group:${safeId}')">
+      <td colspan="${colCount}">
+        ${escapeHtml(g.name)}
+        <span style="font-weight:400;color:var(--wb-muted)"> · ${arts.length} шт</span>
+        <button type="button" class="ns-ico" onclick="nsRenameGroup('${safeId}')">✎</button>
+        <button type="button" class="ns-ico" onclick="nsDissolveGroup('${safeId}')">распустить</button>
       </td>
-      ${tds}
     </tr>`;
-  }).join('');
+    body += arts.map(a => nsArtRow(a, cities, 'group:' + g.id, false)).join('');
+  });
+
+  const loose = match.filter(a => !hiddenSet.has(nsVc(a)) && !pinnedSet.has(nsVc(a)) && !groupedSet.has(nsVc(a)));
+  const looseSorted = nsSortByLayout(loose, NS_LAYOUT.order);
+  if(looseSorted.length) {
+    if(pinnedArts.length || (NS_LAYOUT.groups || []).length) {
+      body += `<tr class="ns-group-h"><td colspan="${colCount}">Без группы</td></tr>`;
+    }
+    body += looseSorted.map(a => nsArtRow(a, cities, 'loose', false)).join('');
+  }
+
+  const hiddenArts = (NS_LAYOUT.hidden || []).map(vc => byVc[vc] || {vendor_code: vc}).filter(a => {
+    if(!nsVc(a)) return false;
+    if(!byVc[nsVc(a)]) return true;
+    return nsPassFilter(byVc[nsVc(a)]);
+  });
+  let hiddenHtml = '';
+  if(NS_SHOW_HIDDEN) {
+    const rows = hiddenArts.map(a => {
+      const safe = String(nsVc(a)).replace(/'/g,"\\'");
+      return `<div class="ns-hid-row">
+        <span style="flex:1"><b>${escapeHtml(nsVc(a))}</b> <span style="color:var(--wb-faint)">${a.nm_id || ''}</span></span>
+        <button type="button" class="ns-ico" onclick="nsUnhide('${safe}')">Вернуть</button>
+      </div>`;
+    }).join('') || '<div style="font-size:12px;color:var(--wb-muted)">Пусто</div>';
+    hiddenHtml = `<div class="ns-hidden-box">
+      <div style="font-size:12px;font-weight:600;margin-bottom:6px">Скрытые артикулы · видно всем · можно вернуть</div>
+      ${rows}
+    </div>`;
+  }
 
   root.innerHTML = `<div class="matrix-wrap"><table class="matrix promo-xls ns-tbl">
     <thead>
       <tr><th class="ns-art" rowspan="2">Артикул</th>${groupRow}</tr>
       <tr>${cityRow}</tr>
     </thead>
-    <tbody>${body}</tbody>
+    <tbody>${body || `<tr><td colspan="${colCount}" style="padding:24px;color:var(--wb-muted)">Все артикулы скрыты. Открой «Скрытые».</td></tr>`}</tbody>
   </table></div>
-  <div class="pace-hint" style="padding:10px 16px">${escapeHtml(NEW_STOCK.note || '')}</div>`;
+  ${hiddenHtml}
+  <div class="pace-hint" style="padding:10px 16px">${escapeHtml(NEW_STOCK.note || '')} Закреп, порядок, группы и скрытые — общие для всех, не только у тебя.</div>`;
 }
 
 // ── Наш склад (Google Sheets) ──

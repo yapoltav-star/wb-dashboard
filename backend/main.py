@@ -2723,6 +2723,7 @@ async def own_warehouse_sku_aliases(request: dict):
 # >40ч жёлтый, >60ч красный. Это не отчёт warehouse_remains и не MKeeper.
 NEW_STOCK_WARN_H = 40
 NEW_STOCK_BAD_H = 60
+NEW_STOCK_LAYOUT_KEY = "new_stock_layout"
 NEW_STOCK_CACHE = {"payload": None, "syncing": False, "error": None, "updated_at": None}
 NEW_STOCK_CITIES = [
     {"id": "nsk", "name": "Новосибирск", "group": "Сибирь и ДВ", "dest": -364763, "lat": 55.0302, "lon": 82.9204},
@@ -3055,6 +3056,60 @@ def _new_stock_stale(max_age_sec: int = 1800) -> bool:
     return (datetime.now(timezone.utc) - dt).total_seconds() > max_age_sec
 
 
+@app.post("/api/sync-new-stock")
+def trigger_new_stock_sync():
+    if NEW_STOCK_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    threading.Thread(target=sync_new_stock, daemon=True, name="new-stock").start()
+    return {"status": "started"}
+
+
+def _new_stock_default_layout() -> dict:
+    return {"hidden": [], "pinned": [], "order": [], "groups": []}
+
+
+def _normalize_new_stock_layout(raw) -> dict:
+    """Общая раскладка для всех: скрытые, закреп, порядок, группы."""
+    src = raw if isinstance(raw, dict) else {}
+    hidden, pinned, order = [], [], []
+    seen_h, seen_p, seen_o = set(), set(), set()
+    for vc in src.get("hidden") or []:
+        s = str(vc or "").strip()
+        if s and s not in seen_h:
+            hidden.append(s)
+            seen_h.add(s)
+    for vc in src.get("pinned") or []:
+        s = str(vc or "").strip()
+        if s and s not in seen_p and s not in seen_h:
+            pinned.append(s)
+            seen_p.add(s)
+    for vc in src.get("order") or []:
+        s = str(vc or "").strip()
+        if s and s not in seen_o:
+            order.append(s)
+            seen_o.add(s)
+    groups = []
+    used = set()
+    for g in src.get("groups") or []:
+        if not isinstance(g, dict):
+            continue
+        name = str(g.get("name") or "").strip()
+        gid = str(g.get("id") or "").strip() or f"g_{len(groups)+1}"
+        arts = []
+        for vc in g.get("articles") or []:
+            s = str(vc or "").strip()
+            if s and s not in used:
+                arts.append(s)
+                used.add(s)
+        if name:
+            groups.append({"id": gid, "name": name, "articles": arts})
+    return {"hidden": hidden, "pinned": pinned, "order": order, "groups": groups}
+
+
+def _new_stock_layout() -> dict:
+    return _normalize_new_stock_layout(get_setting_json(NEW_STOCK_LAYOUT_KEY, {}))
+
+
 @app.get("/api/new-stock")
 def get_new_stock(refresh: bool = False):
     if refresh or _new_stock_stale():
@@ -3063,6 +3118,7 @@ def get_new_stock(refresh: bool = False):
     payload = NEW_STOCK_CACHE.get("payload") or {}
     return {
         **payload,
+        "layout": _new_stock_layout(),
         "syncing": NEW_STOCK_CACHE.get("syncing", False),
         "error": NEW_STOCK_CACHE.get("error") or payload.get("error"),
         "updated_at": NEW_STOCK_CACHE.get("updated_at"),
@@ -3070,12 +3126,13 @@ def get_new_stock(refresh: bool = False):
     }
 
 
-@app.post("/api/sync-new-stock")
-def trigger_new_stock_sync():
-    if NEW_STOCK_CACHE.get("syncing"):
-        return {"status": "already_running"}
-    threading.Thread(target=sync_new_stock, daemon=True, name="new-stock").start()
-    return {"status": "started"}
+@app.post("/api/new-stock-layout")
+async def save_new_stock_layout(request: dict):
+    """Общая раскладка «Новые остатки»: скрытые / закреп / порядок / группы — на всех одинаково."""
+    layout = _normalize_new_stock_layout(request or {})
+    if not save_setting_value(NEW_STOCK_LAYOUT_KEY, layout):
+        raise HTTPException(status_code=500, detail="Не удалось сохранить раскладку")
+    return {"status": "ok", "layout": layout}
 
 
 # ---------- Рекомендации по поставкам: заказы + продажи по складам (WB Statistics API) ----------
