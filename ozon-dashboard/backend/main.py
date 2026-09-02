@@ -23,6 +23,7 @@ import ads
 import coinvest as coin
 import competitors as comp
 import costs as costmod
+import discounted as discmod
 import finance as fin
 import orders as ordmod
 import orders_geo as geomod
@@ -1423,6 +1424,68 @@ def trigger_orders(days: int = 7):
         return {"ok": True, "syncing": True}
     threading.Thread(target=_run_orders_sync, kwargs={"days": days}, daemon=True).start()
     return {"ok": True, "syncing": True}
+
+
+def _run_discounted_sync():
+    try:
+        discmod.sync_discounted(ozon_post=ozon_post)
+    except Exception as e:
+        logger.exception("discounted sync thread: %s", e)
+        discmod.DISC_CACHE["error"] = str(e)
+        discmod.DISC_CACHE["syncing"] = False
+
+
+@app.get("/api/discounted")
+def get_discounted():
+    """Уценённые товары: наши уценки (FBS) и то, что уценил Ozon на FBO."""
+    cached = discmod.get_cached()
+    if not cached["rows"] and not cached["syncing"] and not cached["error"]:
+        threading.Thread(target=_run_discounted_sync, daemon=True).start()
+        discmod.DISC_CACHE["syncing"] = True
+        cached["syncing"] = True
+    return cached
+
+
+@app.post("/api/sync-discounted")
+def trigger_discounted():
+    if discmod.DISC_CACHE.get("syncing"):
+        return {"ok": True, "syncing": True}
+    threading.Thread(target=_run_discounted_sync, daemon=True).start()
+    return {"ok": True, "syncing": True}
+
+
+@app.post("/api/discounted/set-discount")
+def set_discounted_discount(body: dict = Body(...)):
+    """Скидка на уценённый товар FBS: /v1/product/update/discount (3–99%)."""
+    try:
+        return discmod.set_discount(
+            ozon_post,
+            product_id=body.get("product_id"),
+            discount=body.get("discount"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.get("/api/discounted/export-xlsx")
+def export_discounted_xlsx():
+    cached = discmod.get_cached()
+    if not cached["rows"]:
+        raise HTTPException(status_code=409, detail="Нет данных: сначала нажми «Обновить»")
+    try:
+        content = discmod.build_xlsx_bytes(cached["rows"], cached.get("summary"))
+    except Exception as e:
+        logger.exception("discounted export")
+        raise HTTPException(status_code=502, detail=f"Не удалось собрать Excel: {e}") from e
+    fname = f"ozon_discounted_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "X-Discounted-Rows": str(len(cached["rows"])),
+        },
+    )
 
 
 def _run_orders_geo_sync(days: int = 30):

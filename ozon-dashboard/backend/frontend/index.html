@@ -414,6 +414,10 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
 <div class="subnav" id="subnav-growth">
   <div class="sn-item on">Темп к вчера</div>
 </div>
+<div class="subnav" id="subnav-prices">
+  <div class="sn-item on" data-prices="coinvest" onclick="showPricesPage('coinvest',this)">Цены и соинвест</div>
+  <div class="sn-item" data-prices="discounted" onclick="showPricesPage('discounted',this)">Уценка</div>
+</div>
 <div class="subnav" id="subnav-reviews">
   <div class="sn-item on" data-rev="reviews" onclick="showRevPage('reviews',this)">Последние отзывы</div>
   <div class="sn-item" data-rev="ratings" onclick="showRevPage('ratings',this)">Оценки</div>
@@ -480,6 +484,27 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
   <div class="cards" id="coinCards"></div>
   <div id="coinActions" class="actions-list"></div>
   <div id="coinRoot"><div class="empty"><b>Цены и соинвест</b>Нажми «Обновить» — подтянем цены кабинета, индекс и акции Ozon.</div></div>
+</div>
+
+<!-- УЦЕНЁННЫЕ ТОВАРЫ (внутри Цены) -->
+<div class="page" id="page-discounted">
+  <div class="banner" id="discBanner" style="display:none"></div>
+  <div class="toolbar">
+    <div class="search">
+      <input id="discSearch" placeholder="Артикул, название, SKU…" oninput="drawDiscounted()">
+    </div>
+    <button class="filter-btn on" id="discFltAll" onclick="setDiscFilter('all')">Все</button>
+    <button class="filter-btn" id="discFltOwn" onclick="setDiscFilter('own')" title="Карточки, которые уценили мы (FBS)">Уценили сами</button>
+    <button class="filter-btn" id="discFltOzon" onclick="setDiscFilter('ozon')" title="Остатки, которые уценил Ozon на своём складе">Уценил Ozon</button>
+    <button class="filter-btn" id="discFltStock" onclick="setDiscFilter('stock')">С остатком</button>
+    <span id="discInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="action-btn" id="discExportBtn" onclick="exportDiscountedXlsx()">↓ Excel</button>
+      <button class="action-btn primary" id="discSyncBtn" onclick="triggerDiscountedSync()">↻ Обновить</button>
+    </div>
+  </div>
+  <div class="cards" id="discCards"></div>
+  <div id="discRoot"><div class="empty"><b>Уценённые товары</b>Нажми «Обновить» — найдём уценённые карточки в кабинете: наши уценки по FBS и остатки, которые уценил Ozon на FBO.</div></div>
 </div>
 
 <!-- PRODUCTS -->
@@ -890,6 +915,7 @@ let ARCHIVED = 'active';
 let PROD_DAYS = 7;
 let CURRENT = 'products';
 let STOCKS_PAGE = 'matrix';
+let PRICES_PAGE = 'coinvest';
 let TARGET_DAYS = 30;
 let STOCK_TOTALS = [];
 let STOCK_WH = [];
@@ -970,6 +996,8 @@ function showSection(sec, el) {
   if (subC) subC.classList.toggle('on', sec === 'competitors');
   const subS = document.getElementById('subnav-stocks');
   if (subS) subS.classList.toggle('on', sec === 'stocks');
+  const subP = document.getElementById('subnav-prices');
+  if (subP) subP.classList.toggle('on', sec === 'prices');
   const btn = document.getElementById('btnTopSync');
   if (sec === 'reviews') {
     btn.textContent = 'Обновить отзывы';
@@ -985,14 +1013,15 @@ function showSection(sec, el) {
     showStocksPage(STOCKS_PAGE || 'matrix');
     return;
   }
+  if (sec === 'prices') {
+    showPricesPage(PRICES_PAGE || 'coinvest');
+    return;
+  }
   const page = document.getElementById('page-' + sec);
   if (page) page.classList.add('on');
   if (sec === 'growth') {
     btn.textContent = 'Обновить темп';
     renderSalesPace(true);
-  } else if (sec === 'prices') {
-    btn.textContent = 'Обновить цены';
-    renderCoinvest(true);
   } else if (sec === 'orders') {
     btn.textContent = 'Обновить заказы';
     renderOrders(true);
@@ -1004,6 +1033,30 @@ function showSection(sec, el) {
     renderFinance(true);
   } else {
     btn.textContent = 'Обновить товары';
+  }
+}
+
+function showPricesPage(id, el) {
+  PRICES_PAGE = id || 'coinvest';
+  document.querySelectorAll('#subnav-prices .sn-item').forEach(n => {
+    n.classList.toggle('on', n.getAttribute('data-prices') === PRICES_PAGE);
+  });
+  if (el) {
+    document.querySelectorAll('#subnav-prices .sn-item').forEach(n => n.classList.remove('on'));
+    el.classList.add('on');
+  }
+  const subP = document.getElementById('subnav-prices');
+  if (subP) subP.classList.add('on');
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
+  const btn = document.getElementById('btnTopSync');
+  if (PRICES_PAGE === 'discounted') {
+    document.getElementById('page-discounted')?.classList.add('on');
+    if (btn) btn.textContent = 'Обновить уценку';
+    renderDiscounted(true);
+  } else {
+    document.getElementById('page-prices')?.classList.add('on');
+    if (btn) btn.textContent = 'Обновить цены';
+    renderCoinvest(true);
   }
 }
 
@@ -1032,7 +1085,10 @@ function topSync() {
     else syncStocks();
   }
   else if (CURRENT === 'growth') triggerSalesPaceSync();
-  else if (CURRENT === 'prices') triggerCoinvestSync();
+  else if (CURRENT === 'prices') {
+    if (PRICES_PAGE === 'discounted') triggerDiscountedSync();
+    else triggerCoinvestSync();
+  }
   else if (CURRENT === 'orders') triggerOrdersSync();
   else if (CURRENT === 'reviews') triggerReviewsSync();
   else if (CURRENT === 'competitors') document.getElementById('compFileInput')?.click();
@@ -2977,6 +3033,219 @@ async function saveCoinSitePrice(offerId, inputEl) {
     console.warn(e);
   } finally {
     inputEl.disabled = false;
+  }
+}
+
+/* ── Уценённые товары (внутри Цены) ── */
+let DISC_DATA = { rows: [], summary: {}, syncing: false };
+let DISC_FILTER = 'all';
+let DISC_LOADED = false;
+let discPoll = null;
+
+function renderDiscounted(force) {
+  if (force || !DISC_LOADED) {
+    const root = document.getElementById('discRoot');
+    if (root && !DISC_LOADED) root.innerHTML = '<div class="loading"><div class="spinner"></div>Ищем уценённые товары…</div>';
+    loadDiscounted();
+  } else drawDiscounted();
+}
+
+function setDiscFilter(f) {
+  DISC_FILTER = f;
+  [['All','all'],['Own','own'],['Ozon','ozon'],['Stock','stock']].forEach(([id, v]) => {
+    const el = document.getElementById('discFlt' + id);
+    if (el) el.classList.toggle('on', v === f);
+  });
+  drawDiscounted();
+}
+
+async function loadDiscounted() {
+  const info = document.getElementById('discInfo');
+  try {
+    const r = await fetch('/api/discounted');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    DISC_DATA = d;
+    DISC_LOADED = true;
+    if (info) {
+      info.textContent = d.syncing
+        ? 'Сканируем каталог…'
+        : `${fmt((d.rows || []).length)} карточек` + (d.updated_at ? ` · синк ${fmtDt(d.updated_at)}` : '');
+    }
+    drawDiscounted();
+  } catch (e) {
+    if (info) info.textContent = 'Ошибка: ' + (e.message || e);
+  }
+}
+
+function discRows() {
+  const q = (document.getElementById('discSearch')?.value || '').toLowerCase().trim();
+  let rows = DISC_DATA.rows || [];
+  if (DISC_FILTER === 'own') rows = rows.filter(r => r.kind === 'own');
+  else if (DISC_FILTER === 'ozon') rows = rows.filter(r => r.kind === 'ozon');
+  else if (DISC_FILTER === 'stock') rows = rows.filter(r => (r.stock_total || 0) > 0);
+  if (q) {
+    rows = rows.filter(r => [r.offer_id, r.name, r.sku, r.main_offer_id, r.main_sku]
+      .some(v => String(v ?? '').toLowerCase().includes(q)));
+  }
+  return rows;
+}
+
+function drawDiscounted() {
+  const d = DISC_DATA;
+  const root = document.getElementById('discRoot');
+  const cards = document.getElementById('discCards');
+  const banner = document.getElementById('discBanner');
+  const s = d.summary || {};
+
+  if (banner) {
+    if (d.error) {
+      banner.style.display = 'block';
+      banner.className = 'banner warn';
+      banner.innerHTML = `<b>Ошибка:</b> ${esc(d.error)}`;
+    } else {
+      banner.style.display = 'block';
+      banner.className = 'banner';
+      banner.innerHTML = 'Скидку на уценённый товар FBS ставим прямо здесь (Seller API, 3–99%). '
+        + 'Саму уценённую карточку API создавать не умеет — товар уценяется в кабинете Ozon, '
+        + 'а на FBO Ozon уценяет остатки сам.';
+    }
+  }
+
+  if (!(d.rows || []).length) {
+    if (cards) cards.innerHTML = '';
+    if (root) root.innerHTML = d.syncing
+      ? '<div class="loading"><div class="spinner"></div>Сканируем каталог…</div>'
+      : '<div class="empty"><b>Уценённых товаров нет</b>В кабинете не нашлось ни уценённых карточек, ни уценённых остатков на FBO.</div>';
+    return;
+  }
+
+  if (cards) cards.innerHTML = [
+    ['Уценённых карточек', fmt(s.total), '', `с остатком: ${fmt(s.with_stock)}`],
+    ['Уценили сами (FBS)', fmt(s.own), 'color:var(--oz-blue)', 'скидку можно менять здесь'],
+    ['Уценил Ozon (FBO)', fmt(s.ozon), '', `${fmt(s.ozon_fbo_qty)} шт на складах Ozon`],
+    ['Средняя скидка', s.avg_discount != null ? s.avg_discount + '%' : '—', '', 'от цены без скидки'],
+    ['Стоимость остатка', money(s.stock_value), '', `${fmt(s.stock_qty)} шт`],
+  ].map(([l, v, st, sub]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${st}">${v}</div><div class="card-sub">${sub}</div></div>`).join('');
+
+  const rows = discRows();
+  if (!rows.length) {
+    if (root) root.innerHTML = '<div class="empty"><b>Ничего не найдено</b>Смени фильтр или поисковый запрос.</div>';
+    return;
+  }
+
+  const body = rows.map(r => {
+    const href = ozonProductUrl(r.sku);
+    const name = href
+      ? `<a class="prod-link" href="${esc(href)}" target="_blank" rel="noopener">${esc(r.name || '—')}</a>`
+      : esc(r.name || '—');
+    const kind = r.kind === 'own'
+      ? '<span class="tag" style="background:#DBEAFE;color:#1D4ED8">уценили сами</span>'
+      : '<span class="tag">уценил Ozon</span>';
+    const main = r.main_offer_id || r.main_sku
+      ? `${esc(r.main_offer_id || '')}${r.main_sku ? `<div class="geo-sub">SKU ${esc(r.main_sku)}</div>` : ''}`
+      : '<span style="color:var(--oz-muted)">—</span>';
+    const discCell = r.can_set_discount
+      ? `<div style="display:flex;gap:4px;align-items:center">
+          <input class="num-inp" type="number" min="3" max="99" id="discInp_${r.product_id}" value="${r.discount_pct != null ? Math.round(r.discount_pct) : ''}" placeholder="%">
+          <button class="action-btn" style="padding:4px 8px;font-size:11px" onclick="saveDiscount(${r.product_id})">OK</button>
+        </div>
+        <div class="geo-sub" id="discMsg_${r.product_id}"></div>`
+      : `${r.discount_pct != null ? r.discount_pct + '%' : '—'}<div class="geo-sub">ставит Ozon</div>`;
+    return `<tr>
+      <td>
+        <div style="font-weight:600">${esc(r.offer_id || '—')}</div>
+        <div class="geo-sub">${name}</div>
+        <div style="margin-top:4px">${kind}${r.archived ? ' <span class="tag">архив</span>' : ''}</div>
+      </td>
+      <td>${r.sku ? skuLinkHtml(r.sku) : '—'}</td>
+      <td>${esc(r.condition || '—')}${r.warranty ? `<div class="geo-sub">гарантия: ${esc(r.warranty)}</div>` : ''}</td>
+      <td style="max-width:320px;white-space:normal">${esc(r.defects || '—')}</td>
+      <td class="num">${money(r.price)}${r.old_price ? `<div class="geo-sub">без скидки ${money(r.old_price)}</div>` : ''}</td>
+      <td class="num">${discCell}</td>
+      <td class="num">${fmt(r.stock_fbs)} / ${fmt(r.stock_fbo)}${r.discounted_fbo_stocks ? `<div class="geo-sub">уценено Ozon: ${fmt(r.discounted_fbo_stocks)}</div>` : ''}</td>
+      <td>${main}</td>
+    </tr>`;
+  }).join('');
+
+  if (root) root.innerHTML = `<div class="tbl-wrap"><table>
+    <thead><tr>
+      <th>Товар</th><th>SKU уценки</th><th>Состояние</th><th>Дефекты</th>
+      <th class="num">Цена</th><th class="num">Скидка</th><th class="num">FBS / FBO</th><th>Основной товар</th>
+    </tr></thead>
+    <tbody>${body}</tbody></table></div>
+    <div class="hint">Скидка меняется методом <code>/v1/product/update/discount</code> — только для уценённых карточек FBS, значение 3–99%.</div>`;
+}
+
+async function saveDiscount(productId) {
+  const inp = document.getElementById('discInp_' + productId);
+  const msg = document.getElementById('discMsg_' + productId);
+  const val = Math.round(Number(inp?.value || 0));
+  if (!(val >= 3 && val <= 99)) {
+    if (msg) msg.textContent = 'нужно 3–99%';
+    return;
+  }
+  if (msg) msg.textContent = 'сохраняем…';
+  try {
+    const r = await fetch('/api/discounted/set-discount', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ product_id: productId, discount: val }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    if (msg) msg.textContent = 'скидка ' + val + '% сохранена';
+    const row = (DISC_DATA.rows || []).find(x => x.product_id === productId);
+    if (row) row.discount_pct = val;
+  } catch (e) {
+    if (msg) msg.textContent = 'ошибка: ' + (e.message || e);
+  }
+}
+
+async function triggerDiscountedSync() {
+  const btn = document.getElementById('discSyncBtn');
+  const info = document.getElementById('discInfo');
+  if (btn) btn.disabled = true;
+  if (info) info.textContent = 'Сканируем каталог…';
+  try {
+    await fetch('/api/sync-discounted', { method: 'POST' });
+  } catch (e) {
+    if (info) info.textContent = 'Ошибка синка: ' + (e.message || e);
+    if (btn) btn.disabled = false;
+    return;
+  }
+  clearInterval(discPoll);
+  let tries = 0;
+  discPoll = setInterval(async () => {
+    tries++;
+    await loadDiscounted();
+    if (tries >= 30 || !DISC_DATA.syncing) {
+      clearInterval(discPoll);
+      if (btn) btn.disabled = false;
+    }
+  }, 4000);
+}
+
+async function exportDiscountedXlsx() {
+  const btn = document.getElementById('discExportBtn');
+  const info = document.getElementById('discInfo');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Excel…'; }
+  try {
+    const r = await fetch('/api/discounted/export-xlsx');
+    if (!r.ok) throw new Error(await readErr(r));
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ozon_uczenka_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch (e) {
+    if (info) info.textContent = 'Excel: ' + (e.message || e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↓ Excel'; }
   }
 }
 
