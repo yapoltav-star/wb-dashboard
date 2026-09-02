@@ -462,6 +462,22 @@ td.tc{text-align:center}
 .matrix.pace-tbl tbody tr.total-row td.pg-price{background:#CCFBF1!important}
 .matrix.pace-tbl tbody tr.total-row td.pg-meta,
 .matrix.pace-tbl tbody tr.total-row td.mcol-art.pg-meta{background:#E8E4DE!important}
+.ns-tbl{font-size:12px}
+.ns-tbl th,.ns-tbl td{text-align:center;white-space:nowrap}
+.ns-tbl th.ns-art,.ns-tbl td.ns-art{text-align:left;position:sticky;left:0;z-index:2;background:var(--wb-surface);min-width:168px}
+.ns-tbl thead th.ns-g{font-size:10px;letter-spacing:.2px;border-bottom:2px solid #C9C3BA}
+.ns-g-sib{background:#DBEAFE;color:#1E3A8A}
+.ns-g-south{background:#FEF3C7;color:#92400E}
+.ns-g-center{background:#EDE9FE;color:#5B21B6}
+.ns-g-nw{background:#CCFBF1;color:#115E59}
+.ns-g-ural{background:#FFE4E6;color:#9F1239}
+.ns-g-volga{background:#D1FAE5;color:#065F46}
+.ns-ok{background:#F0FDF4}
+.ns-warn{background:#FEF3C7;color:#92400E}
+.ns-bad{background:#FEE4E2;color:#B42318;font-weight:600}
+.ns-oos{background:#F8FAFC;color:var(--wb-faint)}
+.ns-cell b{display:block;font-size:13px}
+.ns-cell span{font-size:10px;opacity:.85}
 .pace-insights{margin:0 0 12px;padding:14px 16px;border:1px solid var(--wb-border);border-radius:var(--r);background:linear-gradient(180deg,#FCFAF7 0%,#fff 100%)}
 .pace-insights-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}
 .pace-insights-h h3{margin:0;font-size:14px;font-weight:700;color:var(--wb-text)}
@@ -782,7 +798,8 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
   <div class="sn-item" onclick="showPage('prices',this)">Цены и СПП</div>
 </div>
 <div class="subnav" id="subnav-supplies" style="display:none">
-  <div class="sn-item on" onclick="showPage('supply-recs',this)">Рекомендации поставок</div>
+  <div class="sn-item on" onclick="showPage('new-stock',this)">Новые остатки</div>
+  <div class="sn-item" onclick="showPage('supply-recs',this)">Рекомендации поставок</div>
   <div class="sn-item" onclick="showPage('own-warehouse',this)">Наш склад</div>
   <div class="sn-item" onclick="showPage('orders-geo',this)">География FBS/FBW</div>
 </div>
@@ -987,6 +1004,30 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
   </div>
   <div class="cards" id="wbProdCards"></div>
   <div id="wbProdRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить товары» — подтянем цены, остатки и продажи</div></div>
+</div>
+
+<div class="page" id="page-new-stock">
+  <div class="upload-banner hint">
+    <span>
+      Срок в ячейке — <b>как на карточке WB у покупателя в этом городе</b> (часы витрины), не отчёт складов продавца и не MKeeper.
+      Жёлтый &gt; 40 ч, красный &gt; 60 ч. Остаток — на складе, с которого WB везёт в этот город.
+      Города из ленты заказов за месяц. Cookie с сайта WB не нужен.
+    </span>
+  </div>
+  <div class="toolbar">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="nsSearch" placeholder="Артикул..." oninput="drawNewStock()">
+    </div>
+    <button class="filter-btn on" id="nsFltAll" onclick="setNewStockFilter('all')">Все</button>
+    <button class="filter-btn" id="nsFltWarn" onclick="setNewStockFilter('warn')">Жёлтые &gt;40ч</button>
+    <button class="filter-btn" id="nsFltBad" onclick="setNewStockFilter('bad')">Красные &gt;60ч</button>
+    <span id="nsInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
+    <div class="ml-auto">
+      <button class="action-btn" id="nsSyncBtn" onclick="triggerNewStockSync()">↻ Обновить</button>
+    </div>
+  </div>
+  <div id="nsRoot"><div class="empty" style="padding:40px 20px">Открой вкладку — подтянем сроки с витрины WB</div></div>
 </div>
 
 <div class="page" id="page-supply-recs">
@@ -1685,7 +1726,7 @@ function showSection(sec, btn) {
   else if(sec === 'products') showPage('products', document.querySelector('#subnav-products .sn-item'));
   else if(sec === 'growth') showPage('sales-pace', document.querySelector('#subnav-growth .sn-item'));
   else if(sec === 'promotions') showPage('promo-cal', document.querySelector('#subnav-promotions .sn-item'));
-  else if(sec === 'supplies') showPage('supply-recs', document.querySelector('#subnav-supplies .sn-item'));
+  else if(sec === 'supplies') showPage('new-stock', document.querySelector('#subnav-supplies .sn-item'));
   else if(sec === 'ads') showPage('ads', null);
   else if(sec === 'analytics') showPage('competitors', document.querySelector('#subnav-analytics .sn-item'));
   else if(sec === 'positions') showPage('positions', document.querySelector('#subnav-positions .sn-item'));
@@ -1920,6 +1961,7 @@ function showPage(id, btn) {
   if(id === 'wb-products') renderWbProducts(true);
   if(id === 'groups') renderGroupManager();
   if(id === 'products') renderProducts();
+  if(id === 'new-stock') renderNewStock(true);
   if(id === 'supply-recs') {
     loadWhDisabledFromServer({migrateLocal: false}).then(() => renderSupplyRecs());
     renderSupplyRecs();
@@ -2256,6 +2298,146 @@ async function triggerSupplySync() {
     if(info) info.textContent = 'Ошибка запроса';
     if(btn) btn.disabled = false;
   }
+}
+
+// ── Новые остатки: срок как у клиента по городам ──
+let NEW_STOCK = {articles:[], cities:[], groups:[], syncing:false};
+let NEW_STOCK_LOADED = false;
+let NEW_STOCK_FILTER = 'all';
+let nsPoll = null;
+
+function setNewStockFilter(f) {
+  NEW_STOCK_FILTER = f;
+  ['All','Warn','Bad'].forEach(k => {
+    const el = document.getElementById('nsFlt' + k);
+    if(el) el.classList.toggle('on', ({All:'all', Warn:'warn', Bad:'bad'})[k] === f);
+  });
+  drawNewStock();
+}
+
+function renderNewStock(forceLoad) {
+  if(forceLoad || !NEW_STOCK_LOADED) loadNewStock();
+  else drawNewStock();
+}
+
+async function loadNewStock() {
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/new-stock`);
+    NEW_STOCK = await r.json();
+    NEW_STOCK_LOADED = true;
+  } catch(e) {
+    NEW_STOCK = {articles:[], error: e.message, syncing:false};
+  }
+  drawNewStock();
+  clearTimeout(nsPoll);
+  if(NEW_STOCK.syncing) nsPoll = setTimeout(loadNewStock, 4000);
+}
+
+async function triggerNewStockSync() {
+  const btn = document.getElementById('nsSyncBtn');
+  if(btn) btn.disabled = true;
+  const info = document.getElementById('nsInfo');
+  if(info) info.textContent = 'Тянем витрину WB по городам…';
+  try {
+    await fetch(`${RAILWAY_URL}/api/sync-new-stock`, { method: 'POST' });
+  } catch(e) {}
+  setTimeout(loadNewStock, 800);
+}
+
+function nsCellTone(cell) {
+  if(!cell || !(cell.qty > 0)) return 'oos';
+  const h = cell.hours;
+  if(h == null) return 'ok';
+  if(h > 60) return 'bad';
+  if(h > 40) return 'warn';
+  return 'ok';
+}
+
+function nsRowMaxHours(a) {
+  let mx = 0;
+  Object.values(a.cities || {}).forEach(c => {
+    if(c && c.qty > 0 && c.hours != null && c.hours > mx) mx = c.hours;
+  });
+  return mx;
+}
+
+function drawNewStock() {
+  const root = document.getElementById('nsRoot');
+  const info = document.getElementById('nsInfo');
+  const btn = document.getElementById('nsSyncBtn');
+  if(btn) btn.disabled = !!NEW_STOCK.syncing;
+  if(!root) return;
+
+  if(NEW_STOCK.error) {
+    if(info) info.textContent = NEW_STOCK.error;
+  } else if(NEW_STOCK.syncing) {
+    if(info) info.textContent = 'Считаем сроки по городам…';
+  } else {
+    const bits = [];
+    if(NEW_STOCK.as_of) bits.push('на ' + NEW_STOCK.as_of);
+    bits.push((NEW_STOCK.articles || []).length + ' арт.');
+    bits.push((NEW_STOCK.cities || []).length + ' городов');
+    if(info) info.textContent = bits.join(' · ');
+  }
+
+  const cities = NEW_STOCK.cities || [];
+  const groups = NEW_STOCK.groups || [];
+  let arts = [...(NEW_STOCK.articles || [])];
+  const q = ((document.getElementById('nsSearch') || {}).value || '').toLowerCase().trim();
+  if(q) arts = arts.filter(a => String(a.vendor_code||'').toLowerCase().includes(q) || String(a.nm_id||'').includes(q));
+  if(NEW_STOCK_FILTER === 'warn') arts = arts.filter(a => nsRowMaxHours(a) > 40);
+  if(NEW_STOCK_FILTER === 'bad') arts = arts.filter(a => nsRowMaxHours(a) > 60);
+
+  if(NEW_STOCK.syncing && !arts.length) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Тянем витрину WB (до минуты)…</span></div>';
+    return;
+  }
+  if(!arts.length) {
+    root.innerHTML = `<div class="empty" style="padding:40px 20px">${escapeHtml(NEW_STOCK.error || NEW_STOCK.note || 'Нет артикулов. Обнови «Товары» или нажми «Обновить».')}</div>`;
+    return;
+  }
+
+  const gClass = {sib:'ns-g-sib', south:'ns-g-south', center:'ns-g-center', nw:'ns-g-nw', ural:'ns-g-ural', volga:'ns-g-volga'};
+  const groupRow = groups.map(g => {
+    const n = (g.city_ids || []).length || 3;
+    return `<th class="ns-g ${gClass[g.id]||''}" colspan="${n}">${escapeHtml(g.name)}</th>`;
+  }).join('');
+  const cityRow = cities.map(c => `<th title="${escapeHtml(c.group || '')}">${escapeHtml(c.name)}</th>`).join('');
+
+  const body = arts.map(a => {
+    const tds = cities.map(c => {
+      const cell = (a.cities || {})[c.id] || {};
+      const tone = cell.tone || nsCellTone(cell);
+      const qty = cell.qty || 0;
+      const h = cell.hours;
+      const tip = [
+        escapeHtml(a.vendor_code) + ' → ' + escapeHtml(c.name),
+        qty ? (qty + ' шт на складе, с которого WB везёт') : 'нет предложения витрины',
+        h != null ? ('срок витрины ' + h + ' ч') : '',
+        'это не ближайший склад MKeeper',
+        cell.wh ? ('витринный склад #' + cell.wh) : '',
+      ].filter(Boolean).join('. ');
+      const main = qty ? (fmt(qty) + ' шт') : 'нет';
+      const sub = h != null ? (h + ' ч') : '—';
+      return `<td class="ns-cell ns-${tone}" title="${tip.replace(/"/g,'&quot;')}"><b>${main}</b><span>${sub}</span></td>`;
+    }).join('');
+    return `<tr>
+      <td class="ns-art">
+        <a href="${wbCatalogUrl(a.nm_id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;font-weight:600">${escapeHtml(a.vendor_code || a.nm_id)}</a>
+        <div style="font-size:10px;color:var(--wb-faint)">${a.nm_id || ''}</div>
+      </td>
+      ${tds}
+    </tr>`;
+  }).join('');
+
+  root.innerHTML = `<div class="matrix-wrap"><table class="matrix promo-xls ns-tbl">
+    <thead>
+      <tr><th class="ns-art" rowspan="2">Артикул</th>${groupRow}</tr>
+      <tr>${cityRow}</tr>
+    </thead>
+    <tbody>${body}</tbody>
+  </table></div>
+  <div class="pace-hint" style="padding:10px 16px">${escapeHtml(NEW_STOCK.note || '')}</div>`;
 }
 
 // ── Наш склад (Google Sheets) ──

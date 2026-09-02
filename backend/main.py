@@ -2718,6 +2718,366 @@ async def own_warehouse_sku_aliases(request: dict):
     return {"status": "ok", "sku_aliases": aliases, **_own_wh_response_payload()}
 
 
+# ---------- Новые остатки: срок доставки как на витрине WB (по городам) ----------
+# Ячейка = остаток на складе, с которого WB везёт в город, + часы витрины (time1+time2).
+# >40ч жёлтый, >60ч красный. Это не отчёт warehouse_remains и не MKeeper.
+NEW_STOCK_WARN_H = 40
+NEW_STOCK_BAD_H = 60
+NEW_STOCK_CACHE = {"payload": None, "syncing": False, "error": None, "updated_at": None}
+NEW_STOCK_CITIES = [
+    {"id": "nsk", "name": "Новосибирск", "group": "Сибирь и ДВ", "dest": -364763, "lat": 55.0302, "lon": 82.9204},
+    {"id": "krs", "name": "Красноярск", "group": "Сибирь и ДВ", "dest": 12356481, "lat": 56.0106, "lon": 92.8526},
+    {"id": "irk", "name": "Иркутск", "group": "Сибирь и ДВ", "dest": -5827722, "lat": 52.2864, "lon": 104.2807},
+    {"id": "krd", "name": "Краснодар", "group": "Юг и СК", "dest": 12358062, "lat": 45.0355, "lon": 38.9753},
+    {"id": "rnd", "name": "Ростов-на-Дону", "group": "Юг и СК", "dest": -2228364, "lat": 47.2221, "lon": 39.7203},
+    {"id": "vlg", "name": "Волгоград", "group": "Юг и СК", "dest": -4039473, "lat": 48.7080, "lon": 44.5133},
+    {"id": "msk", "name": "Москва", "group": "Центр", "dest": -1257786, "lat": 55.7558, "lon": 37.6173},
+    {"id": "vrn", "name": "Воронеж", "group": "Центр", "dest": 12358283, "lat": 51.6720, "lon": 39.1843},
+    {"id": "ryz", "name": "Рязань", "group": "Центр", "dest": -5817683, "lat": 54.6269, "lon": 39.6916},
+    {"id": "spb", "name": "Санкт-Петербург", "group": "Северо-Запад", "dest": -1198055, "lat": 59.9343, "lon": 30.3351},
+    {"id": "vld", "name": "Вологда", "group": "Северо-Запад", "dest": 123586880, "lat": 59.2205, "lon": 39.8915},
+    {"id": "arh", "name": "Архангельск", "group": "Северо-Запад", "dest": 123589924, "lat": 64.5393, "lon": 40.5187},
+    {"id": "ekb", "name": "Екатеринбург", "group": "Урал", "dest": -5818883, "lat": 56.8389, "lon": 60.6057},
+    {"id": "chel", "name": "Челябинск", "group": "Урал", "dest": -1581743, "lat": 55.1644, "lon": 61.4368},
+    {"id": "tmn", "name": "Тюмень", "group": "Урал", "dest": 12358475, "lat": 57.1522, "lon": 65.5272},
+    {"id": "kzn", "name": "Казань", "group": "Волга", "dest": -2133462, "lat": 55.7963, "lon": 49.1088},
+    {"id": "nnv", "name": "Нижний Новгород", "group": "Волга", "dest": 12358579, "lat": 56.2965, "lon": 43.9361},
+    {"id": "prm", "name": "Пермь", "group": "Волга", "dest": 12358361, "lat": 58.0105, "lon": 56.2502},
+]
+
+
+def _new_stock_hours(product: dict):
+    """Клиентский срок витрины, часы: time1 + time2."""
+    if not isinstance(product, dict):
+        return None
+    t1, t2 = product.get("time1"), product.get("time2")
+    if t1 is None and t2 is None:
+        sizes = product.get("sizes") or []
+        if sizes and isinstance(sizes[0], dict):
+            t1 = sizes[0].get("time1")
+            t2 = sizes[0].get("time2")
+    if t1 is None and t2 is None:
+        return None
+    try:
+        return int(t1 or 0) + int(t2 or 0)
+    except Exception:
+        return None
+
+
+def _new_stock_qty(product: dict) -> int:
+    """Остаток на складах, с которых WB предлагает доставку в этот dest."""
+    if not isinstance(product, dict):
+        return 0
+    qty = 0
+    for sz in product.get("sizes") or []:
+        if not isinstance(sz, dict):
+            continue
+        stocks = sz.get("stocks")
+        if stocks:
+            for st in stocks:
+                try:
+                    qty += int((st or {}).get("qty") or 0)
+                except Exception:
+                    pass
+        else:
+            try:
+                qty += int(sz.get("qty") or 0)
+            except Exception:
+                pass
+    if qty > 0:
+        return qty
+    try:
+        return int(product.get("totalQuantity") or product.get("total_quantity") or 0)
+    except Exception:
+        return 0
+
+
+def _new_stock_wh(product: dict):
+    if not isinstance(product, dict):
+        return None
+    wh = product.get("wh")
+    if wh:
+        return wh
+    for sz in product.get("sizes") or []:
+        if not isinstance(sz, dict):
+            continue
+        if sz.get("wh"):
+            return sz.get("wh")
+        for st in sz.get("stocks") or []:
+            if st and st.get("wh"):
+                return st.get("wh")
+    return None
+
+
+def _new_stock_tone(hours, qty: int) -> str:
+    if not qty:
+        return "oos"
+    if hours is None:
+        return "ok"
+    if hours > NEW_STOCK_BAD_H:
+        return "bad"
+    if hours > NEW_STOCK_WARN_H:
+        return "warn"
+    return "ok"
+
+
+def _wb_site_headers() -> dict:
+    h = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Origin": "https://www.wildberries.ru",
+        "Referer": "https://www.wildberries.ru/",
+    }
+    cookie = (os.getenv("WB_SITE_COOKIE") or "").strip()
+    if cookie:
+        h["Cookie"] = cookie
+    return h
+
+
+def _new_stock_has_cookie() -> bool:
+    return bool((os.getenv("WB_SITE_COOKIE") or "").strip())
+
+
+def _resolve_wb_dest(city: dict) -> int:
+    """Актуальный dest по координатам; при сбое — запасной из NEW_STOCK_CITIES."""
+    fallback = int(city.get("dest") or 0)
+    lat, lon, name = city.get("lat"), city.get("lon"), city.get("name") or ""
+    if lat is None or lon is None:
+        return fallback
+    try:
+        resp = httpx.get(
+            "https://user-geo-data.wildberries.ru/get-geo-info",
+            params={"latitude": lat, "longitude": lon, "address": name},
+            headers={"User-Agent": _wb_site_headers()["User-Agent"]},
+            timeout=12,
+        )
+        if not resp.is_success:
+            return fallback
+        data = resp.json() or {}
+        xinfo = str(data.get("xinfo") or data.get("xInfo") or "")
+        m = re.search(r"dest=([^&]+)", xinfo)
+        if m:
+            return int(m.group(1))
+        if data.get("dest") is not None:
+            return int(data["dest"])
+    except Exception as e:
+        logger.warning(f"new-stock geo {name}: {e}")
+    return fallback
+
+
+def _new_stock_articles() -> list:
+    raw = (os.getenv("NEW_STOCK_ARTICLES_JSON") or "").strip()
+    if raw:
+        try:
+            arr = json.loads(raw)
+        except Exception:
+            arr = []
+        out = []
+        for it in arr if isinstance(arr, list) else []:
+            try:
+                nm = int((it or {}).get("nm_id") or (it or {}).get("nmId"))
+            except Exception:
+                continue
+            vc = str((it or {}).get("vendor_code") or (it or {}).get("vendorCode") or nm)
+            out.append({"nm_id": nm, "vendor_code": vc, "stock_seller": None, "sales_7d": 0})
+        if out:
+            return out[:80]
+    products = WB_PRODUCTS_CACHE.get("products") or []
+    if not products:
+        try:
+            get_wb_products(refresh=False)
+            products = WB_PRODUCTS_CACHE.get("products") or []
+        except Exception:
+            products = []
+    out = []
+    for p in products or []:
+        try:
+            nm = int(p.get("nm_id"))
+        except Exception:
+            continue
+        stock = int(p.get("stock") or 0)
+        s7 = int(p.get("sales_7d") or 0)
+        if stock <= 0 and s7 <= 0:
+            continue
+        out.append({
+            "nm_id": nm,
+            "vendor_code": str(p.get("vendor_code") or nm),
+            "name": p.get("name") or "",
+            "stock_seller": stock,
+            "sales_7d": s7,
+        })
+    out.sort(key=lambda x: (-int(x.get("sales_7d") or 0), -int(x.get("stock_seller") or 0), str(x.get("vendor_code"))))
+    return out[:80]
+
+
+def _fetch_card_detail(nm_ids: list, dest: int) -> dict:
+    """card.wb.ru v4. При 403 — ещё раз с cookie, если она задана."""
+    if not nm_ids:
+        return {"products": [], "status": 0, "error": None}
+    ids = ";".join(str(int(n)) for n in nm_ids)
+    url = "https://card.wb.ru/cards/v4/detail"
+    params = {"appType": 1, "curr": "rub", "dest": dest, "spp": 30, "nm": ids}
+    last_status = 0
+    last_err = None
+    for attempt in range(2):
+        try:
+            resp = httpx.get(url, params=params, headers=_wb_site_headers(), timeout=25)
+        except Exception as e:
+            last_err = str(e)
+            break
+        last_status = resp.status_code
+        if resp.status_code == 403 and attempt == 0 and _new_stock_has_cookie():
+            time.sleep(0.4)
+            continue
+        if not resp.is_success:
+            last_err = f"HTTP {resp.status_code}"
+            break
+        try:
+            data = resp.json() or {}
+        except Exception as e:
+            last_err = str(e)
+            break
+        products = (data.get("data") or {}).get("products") or data.get("products") or []
+        return {"products": products if isinstance(products, list) else [], "status": last_status, "error": None}
+    return {"products": [], "status": last_status, "error": last_err}
+
+
+def sync_new_stock():
+    if NEW_STOCK_CACHE.get("syncing"):
+        return
+    NEW_STOCK_CACHE["syncing"] = True
+    NEW_STOCK_CACHE["error"] = None
+    try:
+        articles = _new_stock_articles()
+        if not articles:
+            NEW_STOCK_CACHE["payload"] = {
+                "articles": [],
+                "cities": [{"id": c["id"], "name": c["name"], "group": c["group"]} for c in NEW_STOCK_CITIES],
+                "as_of": _msk_now().strftime("%d.%m.%Y %H:%M"),
+                "cookie_set": _new_stock_has_cookie(),
+                "note": "Нет артикулов: обнови «Товары» или задай NEW_STOCK_ARTICLES_JSON.",
+            }
+            NEW_STOCK_CACHE["updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+            return
+        nm_ids = [a["nm_id"] for a in articles]
+        by_nm = {a["nm_id"]: {"nm_id": a["nm_id"], "vendor_code": a["vendor_code"], "name": a.get("name") or "", "sales_7d": a.get("sales_7d") or 0, "stock_seller": a.get("stock_seller"), "cities": {}} for a in articles}
+        cities_out = []
+        blocked = 0
+        dest_fail = 0
+        for city in NEW_STOCK_CITIES:
+            dest = _resolve_wb_dest(city)
+            cities_out.append({"id": city["id"], "name": city["name"], "group": city["group"], "dest": dest})
+            chunk = []
+            products = []
+            for i in range(0, len(nm_ids), 25):
+                got = _fetch_card_detail(nm_ids[i:i + 25], dest)
+                if got.get("status") == 403:
+                    blocked += 1
+                if got.get("error") and not got.get("products"):
+                    dest_fail += 1
+                products.extend(got.get("products") or [])
+                time.sleep(0.35)
+            found = set()
+            for p in products:
+                try:
+                    nm = int(p.get("id") or p.get("nmId") or p.get("nm_id"))
+                except Exception:
+                    continue
+                if nm not in by_nm:
+                    continue
+                hours = _new_stock_hours(p)
+                qty = _new_stock_qty(p)
+                by_nm[nm]["cities"][city["id"]] = {
+                    "qty": qty,
+                    "hours": hours,
+                    "tone": _new_stock_tone(hours, qty),
+                    "wh": _new_stock_wh(p),
+                }
+                found.add(nm)
+            for nm, row in by_nm.items():
+                if city["id"] not in row["cities"]:
+                    row["cities"][city["id"]] = {"qty": 0, "hours": None, "tone": "oos", "wh": None}
+            logger.info(f"new-stock {city['name']} dest={dest} found={len(found)}/{len(nm_ids)}")
+
+        rows = list(by_nm.values())
+        rows.sort(key=lambda r: (
+            -max((int(c.get("hours") or 0) for c in (r.get("cities") or {}).values()), default=0),
+            -int(r.get("sales_7d") or 0),
+            str(r.get("vendor_code")),
+        ))
+        err = None
+        has_data = any(
+            (c.get("hours") is not None or int(c.get("qty") or 0) > 0)
+            for r in rows
+            for c in (r.get("cities") or {}).values()
+        )
+        if blocked and not has_data:
+            err = "WB витрина временно закрыла доступ (403). Подожди и нажми «Обновить» — cookie с сайта не используем."
+        elif dest_fail >= len(NEW_STOCK_CITIES) and not has_data:
+            err = "Не удалось прочитать витрину WB. Подожди и нажми «Обновить»."
+        payload = {
+            "articles": rows,
+            "cities": cities_out,
+            "groups": [
+                {"id": "sib", "name": "Сибирь и ДВ", "city_ids": ["nsk", "krs", "irk"]},
+                {"id": "south", "name": "Юг и СК", "city_ids": ["krd", "rnd", "vlg"]},
+                {"id": "center", "name": "Центр", "city_ids": ["msk", "vrn", "ryz"]},
+                {"id": "nw", "name": "Северо-Запад", "city_ids": ["spb", "vld", "arh"]},
+                {"id": "ural", "name": "Урал", "city_ids": ["ekb", "chel", "tmn"]},
+                {"id": "volga", "name": "Волга", "city_ids": ["kzn", "nnv", "prm"]},
+            ],
+            "warn_h": NEW_STOCK_WARN_H,
+            "bad_h": NEW_STOCK_BAD_H,
+            "as_of": _msk_now().strftime("%d.%m.%Y %H:%M"),
+            "cookie_set": _new_stock_has_cookie(),
+            "articles_source": "env" if (os.getenv("NEW_STOCK_ARTICLES_JSON") or "").strip() else "catalog",
+            "note": "Срок — как на карточке WB для покупателя в этом городе (time1+time2). Остаток — на складе, с которого везут. Это не MKeeper и не отчёт складов продавца.",
+        }
+        NEW_STOCK_CACHE["payload"] = payload
+        NEW_STOCK_CACHE["error"] = err
+        NEW_STOCK_CACHE["updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+        logger.info(f"new-stock: {len(rows)} arts × {len(cities_out)} cities")
+    except Exception as e:
+        logger.error(f"sync_new_stock: {e}")
+        NEW_STOCK_CACHE["error"] = str(e)
+    finally:
+        NEW_STOCK_CACHE["syncing"] = False
+
+
+def _new_stock_stale(max_age_sec: int = 1800) -> bool:
+    raw = NEW_STOCK_CACHE.get("updated_at")
+    if not raw or not NEW_STOCK_CACHE.get("payload"):
+        return True
+    try:
+        dt = datetime.strptime(str(raw), "%d.%m.%Y %H:%M").replace(tzinfo=timezone.utc)
+    except Exception:
+        return True
+    return (datetime.now(timezone.utc) - dt).total_seconds() > max_age_sec
+
+
+@app.get("/api/new-stock")
+def get_new_stock(refresh: bool = False):
+    if refresh or _new_stock_stale():
+        if not NEW_STOCK_CACHE.get("syncing"):
+            threading.Thread(target=sync_new_stock, daemon=True, name="new-stock").start()
+    payload = NEW_STOCK_CACHE.get("payload") or {}
+    return {
+        **payload,
+        "syncing": NEW_STOCK_CACHE.get("syncing", False),
+        "error": NEW_STOCK_CACHE.get("error") or payload.get("error"),
+        "updated_at": NEW_STOCK_CACHE.get("updated_at"),
+        "cookie_set": _new_stock_has_cookie(),
+    }
+
+
+@app.post("/api/sync-new-stock")
+def trigger_new_stock_sync():
+    if NEW_STOCK_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    threading.Thread(target=sync_new_stock, daemon=True, name="new-stock").start()
+    return {"status": "started"}
+
+
 # ---------- Рекомендации по поставкам: заказы + продажи по складам (WB Statistics API) ----------
 # Заказано — /api/v1/supplier/orders, Выкупили — /api/v1/supplier/sales (только saleID, начинающиеся
 # на "S" — это продажи; "R" — возврат, "D" — доплата, их не считаем). Текущий остаток берём из уже
@@ -7189,6 +7549,7 @@ scheduler.add_job(lambda: sync_article_daily_stats(30), "interval", hours=6, id=
 scheduler.add_job(sync_promotions, "interval", hours=6, id="sync_promotions")
 scheduler.add_job(sync_promo_calendar, "interval", hours=6, id="sync_promo_calendar")
 scheduler.add_job(lambda: sync_sales_pace("day"), "interval", minutes=15, id="sync_sales_pace")
+scheduler.add_job(sync_new_stock, "interval", hours=2, id="sync_new_stock")
 scheduler.add_job(sync_spp_prices, "interval", hours=3, id="sync_spp_prices")
 # Каталог товаров держим тёплым: он живёт только в памяти и обнуляется при редеплое,
 # а без него «что заканчивается» отвечает пустотой.
@@ -11488,6 +11849,10 @@ def _warm_caches_after_start():
             refresh_wb_products_catalog(sync_sources=True)
     except Exception as e:
         logger.warning(f"warmup wb_products: {e}")
+    try:
+        sync_new_stock()
+    except Exception as e:
+        logger.warning(f"warmup new_stock: {e}")
 
 
 threading.Thread(target=_warm_caches_after_start, daemon=True, name="warmup").start()
