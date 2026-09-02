@@ -3237,7 +3237,7 @@ async function exportDiscountedXlsx() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `ozon_uczenka_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = `ozon_discounted_${new Date().toISOString().slice(0, 10)}.xlsx`;
     document.body.appendChild(a);
     a.click();
     a.remove();
