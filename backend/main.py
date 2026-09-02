@@ -3065,29 +3065,34 @@ def trigger_new_stock_sync():
 
 
 def _new_stock_default_layout() -> dict:
-    return {"hidden": [], "pinned": [], "order": [], "groups": []}
+    return {
+        "hidden": [],
+        "pinned": [],
+        "order": [],
+        "groups": [],
+        "city_order": [],
+        "group_order": [],
+        "city_group": {},
+    }
+
+
+def _uniq_str_list(raw) -> list:
+    out, seen = [], set()
+    for item in raw or []:
+        s = str(item or "").strip()
+        if s and s not in seen:
+            out.append(s)
+            seen.add(s)
+    return out
 
 
 def _normalize_new_stock_layout(raw) -> dict:
-    """Общая раскладка для всех: скрытые, закреп, порядок, группы."""
+    """Общая раскладка для всех: скрытые, закреп, порядок, группы, колонки городов."""
     src = raw if isinstance(raw, dict) else {}
-    hidden, pinned, order = [], [], []
-    seen_h, seen_p, seen_o = set(), set(), set()
-    for vc in src.get("hidden") or []:
-        s = str(vc or "").strip()
-        if s and s not in seen_h:
-            hidden.append(s)
-            seen_h.add(s)
-    for vc in src.get("pinned") or []:
-        s = str(vc or "").strip()
-        if s and s not in seen_p and s not in seen_h:
-            pinned.append(s)
-            seen_p.add(s)
-    for vc in src.get("order") or []:
-        s = str(vc or "").strip()
-        if s and s not in seen_o:
-            order.append(s)
-            seen_o.add(s)
+    hidden = _uniq_str_list(src.get("hidden"))
+    hidden_set = set(hidden)
+    pinned = [s for s in _uniq_str_list(src.get("pinned")) if s not in hidden_set]
+    order = _uniq_str_list(src.get("order"))
     groups = []
     used = set()
     for g in src.get("groups") or []:
@@ -3103,7 +3108,134 @@ def _normalize_new_stock_layout(raw) -> dict:
                 used.add(s)
         if name:
             groups.append({"id": gid, "name": name, "articles": arts})
-    return {"hidden": hidden, "pinned": pinned, "order": order, "groups": groups}
+    city_group = {}
+    raw_cg = src.get("city_group") or {}
+    if isinstance(raw_cg, dict):
+        for k, v in raw_cg.items():
+            ks, vs = str(k or "").strip(), str(v or "").strip()
+            if ks and vs:
+                city_group[ks] = vs
+    return {
+        "hidden": hidden,
+        "pinned": pinned,
+        "order": order,
+        "groups": groups,
+        "city_order": _uniq_str_list(src.get("city_order")),
+        "group_order": _uniq_str_list(src.get("group_order")),
+        "city_group": city_group,
+    }
+
+
+def _fbs_wh_short(name: str) -> str:
+    raw = (name or "").strip()
+    s = re.sub(r"(?i)^маркетплейс\s*\(fbs\)\s*[·•\-\u2013\u2014:]\s*", "", raw)
+    s = re.sub(r"(?i)\s*\(fbs\)\s*$", "", s).strip()
+    short = s or raw
+    low = short.lower()
+    if any(x in low for x in ("dbs", "edbs", "курьер", "мгт")):
+        return "Прочие"
+    return short
+
+
+def _new_stock_collect_fbs(rows) -> dict:
+    """nm_id -> {short_name: qty} из списка складов {name/warehouse_name, qty/quantity}."""
+    by_nm = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        raw_name = (row.get("name") or row.get("warehouse_name") or "").strip()
+        if not raw_name:
+            continue
+        n = raw_name.lower()
+        if "fbs" not in n and "маркетплейс" not in n:
+            continue
+        try:
+            nm = int(row.get("nm_id"))
+            qty = int(row.get("qty") if row.get("qty") is not None else row.get("quantity") or 0)
+        except Exception:
+            continue
+        if qty <= 0:
+            continue
+        short = _fbs_wh_short(raw_name)
+        bucket = by_nm.setdefault(nm, {})
+        bucket[short] = bucket.get(short, 0) + qty
+    return by_nm
+
+
+def _new_stock_fbs_from_products() -> dict:
+    rows = []
+    for p in WB_PRODUCTS_CACHE.get("products") or []:
+        try:
+            nm = int(p.get("nm_id"))
+        except Exception:
+            continue
+        for w in p.get("warehouses") or []:
+            if not isinstance(w, dict):
+                continue
+            rows.append({
+                "nm_id": nm,
+                "name": w.get("name"),
+                "qty": w.get("qty"),
+            })
+    return _new_stock_collect_fbs(rows)
+
+
+def _new_stock_fbs_from_supabase() -> dict:
+    if not SUPABASE_URL:
+        return {}
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_warehouses"
+            "?select=nm_id,warehouse_name,quantity&quantity=gt.0&limit=20000",
+            headers=sb_headers(),
+            timeout=20,
+        )
+        rows = resp.json() if resp.is_success else []
+        if not isinstance(rows, list):
+            rows = []
+    except Exception as e:
+        logger.warning(f"new-stock FBS warehouses: {e}")
+        return {}
+    return _new_stock_collect_fbs(rows)
+
+
+def _new_stock_fbs_bundle() -> tuple:
+    """(map nm-> {total, warehouses}, list of {id,name} колонок)."""
+    by_nm = _new_stock_fbs_from_products()
+    if not by_nm:
+        by_nm = _new_stock_fbs_from_supabase()
+    totals = {}
+    for whs in by_nm.values():
+        for name, qty in whs.items():
+            totals[name] = totals.get(name, 0) + qty
+    fbs_whs = [{"id": n, "name": n} for n, _ in sorted(totals.items(), key=lambda x: (-x[1], x[0].lower()))]
+    fbs_map = {}
+    for nm, whs in by_nm.items():
+        warehouses = [{"name": n, "qty": q} for n, q in sorted(whs.items(), key=lambda x: (-x[1], x[0].lower()))]
+        fbs_map[int(nm)] = {"total": sum(whs.values()), "warehouses": warehouses}
+    return fbs_map, fbs_whs
+
+
+def _attach_new_stock_fbs(payload: dict) -> dict:
+    src = payload if isinstance(payload, dict) else {}
+    fbs_map, fbs_whs = _new_stock_fbs_bundle()
+    articles = []
+    for a in src.get("articles") or []:
+        if not isinstance(a, dict):
+            continue
+        row = dict(a)
+        try:
+            nm = int(row.get("nm_id"))
+        except Exception:
+            nm = None
+        row["fbs"] = fbs_map.get(nm) if nm is not None else None
+        if not row["fbs"]:
+            row["fbs"] = {"total": 0, "warehouses": []}
+        articles.append(row)
+    out = dict(src)
+    out["articles"] = articles
+    out["fbs_warehouses"] = fbs_whs
+    return out
 
 
 def _new_stock_layout() -> dict:
@@ -3115,7 +3247,7 @@ def get_new_stock(refresh: bool = False):
     if refresh or _new_stock_stale():
         if not NEW_STOCK_CACHE.get("syncing"):
             threading.Thread(target=sync_new_stock, daemon=True, name="new-stock").start()
-    payload = NEW_STOCK_CACHE.get("payload") or {}
+    payload = _attach_new_stock_fbs(NEW_STOCK_CACHE.get("payload") or {})
     return {
         **payload,
         "layout": _new_stock_layout(),

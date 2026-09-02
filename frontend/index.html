@@ -490,6 +490,12 @@ td.tc{text-align:center}
 .ns-hidden-box .ns-hid-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--wb-border);font-size:12px}
 .ns-drag{opacity:.45}
 .ns-tbl tbody tr.ns-pin-row td.ns-art{background:#FFFBEB}
+.ns-g-fbs{background:#ECFDF5;color:#047857}
+.ns-tbl th.ns-fbs,.ns-tbl td.ns-fbs{background:#F0FDF4;min-width:78px}
+.ns-fbs b{display:block;font-size:13px}
+.ns-fbs span{font-size:10px;opacity:.85}
+.ns-col-h{cursor:grab;user-select:none}
+.ns-col-h .ns-handle{margin-right:3px}
 .pace-insights{margin:0 0 12px;padding:14px 16px;border:1px solid var(--wb-border);border-radius:var(--r);background:linear-gradient(180deg,#FCFAF7 0%,#fff 100%)}
 .pace-insights-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}
 .pace-insights-h h3{margin:0;font-size:14px;font-weight:700;color:var(--wb-text)}
@@ -1023,7 +1029,8 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
     <span>
       Срок в ячейке — <b>как на карточке WB у покупателя в этом городе</b> (часы витрины), не отчёт складов продавца и не MKeeper.
       Жёлтый &gt; 40 ч, красный &gt; 60 ч. Остаток — на складе, с которого WB везёт в этот город.
-      Города из ленты заказов за месяц. Cookie с сайта WB не нужен.
+      Города из ленты заказов за месяц. Регионы и города можно перетаскивать — порядок общий.
+      Колонки FBS — остаток на складе продавца (Маркетплейс), не витрина. Cookie с сайта WB не нужен.
     </span>
   </div>
   <div class="toolbar">
@@ -2317,14 +2324,14 @@ async function triggerSupplySync() {
 let NEW_STOCK = {articles:[], cities:[], groups:[], layout:null, syncing:false};
 let NEW_STOCK_LOADED = false;
 let NEW_STOCK_FILTER = 'all';
-let NS_LAYOUT = {hidden:[], pinned:[], order:[], groups:[]};
+let NS_LAYOUT = {hidden:[], pinned:[], order:[], groups:[], city_order:[], group_order:[], city_group:{}};
 let NS_SHOW_HIDDEN = false;
 let NS_DRAG = null;
 let nsPoll = null;
 let nsSaveT = null;
 
 function nsEmptyLayout() {
-  return {hidden:[], pinned:[], order:[], groups:[]};
+  return {hidden:[], pinned:[], order:[], groups:[], city_order:[], group_order:[], city_group:{}};
 }
 
 function applyNsLayout(raw) {
@@ -2334,6 +2341,9 @@ function applyNsLayout(raw) {
     pinned: [...(l.pinned || [])],
     order: [...(l.order || [])],
     groups: (l.groups || []).map(g => ({id: g.id, name: g.name, articles: [...(g.articles || [])]})),
+    city_order: [...(l.city_order || [])],
+    group_order: [...(l.group_order || [])],
+    city_group: {...(l.city_group || {})},
   };
 }
 
@@ -2491,7 +2501,7 @@ function nsMoveInList(list, fromVc, toVc) {
 }
 
 function nsDragStart(ev, vc, zone) {
-  NS_DRAG = {vc: String(vc), zone: String(zone || '')};
+  NS_DRAG = {kind: 'row', vc: String(vc), zone: String(zone || '')};
   ev.dataTransfer.effectAllowed = 'move';
   ev.dataTransfer.setData('text/plain', String(vc));
   const tr = ev.currentTarget.closest ? ev.currentTarget.closest('tr') : ev.currentTarget;
@@ -2501,6 +2511,103 @@ function nsDragStart(ev, vc, zone) {
 function nsDragEnd() {
   NS_DRAG = null;
   document.querySelectorAll('.ns-drag').forEach(el => el.classList.remove('ns-drag'));
+}
+
+function nsColDragStart(ev, kind, id) {
+  NS_DRAG = {kind: String(kind || ''), id: String(id || '')};
+  ev.dataTransfer.effectAllowed = 'move';
+  ev.dataTransfer.setData('text/plain', String(id));
+  ev.stopPropagation();
+  if(ev.currentTarget) ev.currentTarget.classList.add('ns-drag');
+}
+
+function nsEnsureCityOrder() {
+  const ids = (NEW_STOCK.cities || []).map(c => c.id);
+  let order = (NS_LAYOUT.city_order || []).filter(id => ids.includes(id));
+  ids.forEach(id => { if(!order.includes(id)) order.push(id); });
+  NS_LAYOUT.city_order = order;
+  return order;
+}
+
+function nsEnsureGroupOrder() {
+  const ids = (NEW_STOCK.groups || []).map(g => g.id);
+  let order = (NS_LAYOUT.group_order || []).filter(id => ids.includes(id));
+  ids.forEach(id => { if(!order.includes(id)) order.push(id); });
+  NS_LAYOUT.group_order = order;
+  return order;
+}
+
+function nsCityGroupId(cityId) {
+  if(NS_LAYOUT.city_group && NS_LAYOUT.city_group[cityId]) return NS_LAYOUT.city_group[cityId];
+  const g = (NEW_STOCK.groups || []).find(x => (x.city_ids || []).includes(cityId));
+  return g ? g.id : '';
+}
+
+function nsGeoLayout() {
+  const cities = NEW_STOCK.cities || [];
+  const groups = NEW_STOCK.groups || [];
+  const cityById = {};
+  cities.forEach(c => { cityById[c.id] = c; });
+  const cityOrder = nsEnsureCityOrder();
+  const groupOrder = nsEnsureGroupOrder();
+  const byGroup = {};
+  groups.forEach(g => { byGroup[g.id] = []; });
+  cityOrder.forEach(id => {
+    if(!cityById[id]) return;
+    const gid = nsCityGroupId(id) || (groups[0] && groups[0].id);
+    if(!gid) return;
+    if(!byGroup[gid]) byGroup[gid] = [];
+    byGroup[gid].push(cityById[id]);
+  });
+  const gIdx = new Map(groupOrder.map((id, i) => [id, i]));
+  const orderedGroups = [...groups]
+    .filter(g => (byGroup[g.id] || []).length)
+    .sort((a, b) => {
+      const ia = gIdx.has(a.id) ? gIdx.get(a.id) : 999;
+      const ib = gIdx.has(b.id) ? gIdx.get(b.id) : 999;
+      return ia - ib;
+    })
+    .map(g => ({...g, city_ids: (byGroup[g.id] || []).map(c => c.id)}));
+  return {
+    groups: orderedGroups,
+    cities: orderedGroups.flatMap(g => (byGroup[g.id] || [])),
+  };
+}
+
+function nsFbsCols() {
+  const whs = NEW_STOCK.fbs_warehouses || [];
+  return whs.length ? whs : [{id: '_empty', name: 'нет склада'}];
+}
+
+function nsColDrop(ev, kind, id) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const drag = NS_DRAG;
+  NS_DRAG = null;
+  document.querySelectorAll('.ns-drag').forEach(el => el.classList.remove('ns-drag'));
+  if(!drag || !drag.kind || drag.kind === 'row') return;
+  const from = String(drag.id || '');
+  const to = String(id || '');
+  if(!from || from === to) return;
+  if(drag.kind === 'region' && kind === 'region') {
+    nsEnsureGroupOrder();
+    NS_LAYOUT.group_order = nsMoveInList(NS_LAYOUT.group_order, from, to);
+  } else if(drag.kind === 'city' && kind === 'city') {
+    nsEnsureCityOrder();
+    NS_LAYOUT.city_order = nsMoveInList(NS_LAYOUT.city_order, from, to);
+    const gid = nsCityGroupId(to);
+    if(gid) {
+      NS_LAYOUT.city_group = NS_LAYOUT.city_group || {};
+      NS_LAYOUT.city_group[from] = gid;
+    }
+  } else if(drag.kind === 'city' && kind === 'region') {
+    NS_LAYOUT.city_group = NS_LAYOUT.city_group || {};
+    NS_LAYOUT.city_group[from] = to;
+  } else {
+    return;
+  }
+  drawNewStock();
+  saveNewStockLayoutSoon();
 }
 
 function nsDragOver(ev) {
@@ -2514,7 +2621,7 @@ function nsDrop(ev, targetVc, zone) {
   const drag = NS_DRAG;
   NS_DRAG = null;
   document.querySelectorAll('.ns-drag').forEach(el => el.classList.remove('ns-drag'));
-  if(!drag || !drag.vc || drag.vc === targetVc) return;
+  if(!drag || drag.kind !== 'row' || !drag.vc || drag.vc === targetVc) return;
   const from = drag.vc;
   const toZone = String(zone || '');
   if(toZone === 'pinned') {
@@ -2574,6 +2681,21 @@ function nsPassFilter(a) {
   return true;
 }
 
+function nsFbsCells(a) {
+  const cols = nsFbsCols();
+  const byName = {};
+  ((a.fbs && a.fbs.warehouses) || []).forEach(w => { byName[w.name] = w.qty; });
+  return cols.map(w => {
+    if(w.id === '_empty') {
+      return `<td class="ns-cell ns-fbs ns-oos" title="Нет остатков FBS в отчёте складов. Обнови «Товары»."><b>—</b><span>FBS</span></td>`;
+    }
+    const qty = byName[w.id] || byName[w.name] || 0;
+    const tone = qty > 0 ? 'ok' : 'oos';
+    const tip = 'FBS · ' + escapeHtml(w.name) + ': ' + (qty ? (qty + ' шт на складе продавца') : 'пусто');
+    return `<td class="ns-cell ns-fbs ns-${tone}" title="${tip.replace(/"/g,'&quot;')}"><b>${qty ? fmt(qty) : '—'}</b><span>шт</span></td>`;
+  }).join('');
+}
+
 function nsCityCells(a, cities) {
   return cities.map(c => {
     const cell = (a.cities || {})[c.id] || {};
@@ -2623,6 +2745,7 @@ function nsArtRow(a, cities, zone, pinned) {
         </div>
       </div>
     </td>
+    ${nsFbsCells(a)}
     ${nsCityCells(a, cities)}
   </tr>`;
 }
@@ -2650,12 +2773,15 @@ function drawNewStock() {
     bits.push((NEW_STOCK.articles || []).length + ' арт.');
     bits.push((NEW_STOCK.cities || []).length + ' городов');
     if(hidN) bits.push('скрыто ' + hidN);
+    if((NEW_STOCK.fbs_warehouses || []).length) bits.push('FBS ' + NEW_STOCK.fbs_warehouses.length + ' скл.');
     bits.push('раскладка общая');
     if(info) info.textContent = bits.join(' · ');
   }
 
-  const cities = NEW_STOCK.cities || [];
-  const cityGroups = NEW_STOCK.groups || [];
+  const geo = nsGeoLayout();
+  const cities = geo.cities;
+  const cityGroups = geo.groups;
+  const fbsCols = nsFbsCols();
   const byVc = {};
   (NEW_STOCK.articles || []).forEach(a => { if(nsVc(a)) byVc[nsVc(a)] = a; });
   const hiddenSet = new Set(NS_LAYOUT.hidden || []);
@@ -2676,12 +2802,28 @@ function drawNewStock() {
   }
 
   const gClass = {sib:'ns-g-sib', south:'ns-g-south', center:'ns-g-center', nw:'ns-g-nw', ural:'ns-g-ural', volga:'ns-g-volga'};
+  const fbsHead = `<th class="ns-g ns-g-fbs" colspan="${fbsCols.length}">FBS · склад продавца</th>`;
   const groupRow = cityGroups.map(g => {
-    const n = (g.city_ids || []).length || 3;
-    return `<th class="ns-g ${gClass[g.id]||''}" colspan="${n}">${escapeHtml(g.name)}</th>`;
+    const n = (g.city_ids || []).length || 1;
+    const safe = String(g.id).replace(/'/g, "\\'");
+    return `<th class="ns-g ${gClass[g.id]||''} ns-col-h" colspan="${n}"
+      draggable="true" title="Перетащи регион — порядок общий"
+      ondragstart="nsColDragStart(event,'region','${safe}')"
+      ondragover="nsDragOver(event)"
+      ondrop="nsColDrop(event,'region','${safe}')"
+      ondragend="nsDragEnd()">⋮⋮ ${escapeHtml(g.name)}</th>`;
   }).join('');
-  const cityRow = cities.map(c => `<th title="${escapeHtml(c.group || '')}">${escapeHtml(c.name)}</th>`).join('');
-  const colCount = 1 + cities.length;
+  const fbsCityRow = fbsCols.map(w => `<th class="ns-fbs" title="Остаток FBS на складе продавца">${escapeHtml(w.name)}</th>`).join('');
+  const cityRow = cities.map(c => {
+    const safe = String(c.id).replace(/'/g, "\\'");
+    return `<th class="ns-col-h" title="Перетащи город — порядок общий"
+      draggable="true"
+      ondragstart="nsColDragStart(event,'city','${safe}')"
+      ondragover="nsDragOver(event)"
+      ondrop="nsColDrop(event,'city','${safe}')"
+      ondragend="nsDragEnd()">⋮⋮ ${escapeHtml(c.name)}</th>`;
+  }).join('');
+  const colCount = 1 + fbsCols.length + cities.length;
 
   const pinnedArts = (NS_LAYOUT.pinned || []).map(vc => byVc[vc]).filter(a => a && matchSet.has(nsVc(a)) && !hiddenSet.has(nsVc(a)));
   let body = '';
@@ -2736,13 +2878,13 @@ function drawNewStock() {
 
   root.innerHTML = `<div class="matrix-wrap"><table class="matrix promo-xls ns-tbl">
     <thead>
-      <tr><th class="ns-art" rowspan="2">Артикул</th>${groupRow}</tr>
-      <tr>${cityRow}</tr>
+      <tr><th class="ns-art" rowspan="2">Артикул</th>${fbsHead}${groupRow}</tr>
+      <tr>${fbsCityRow}${cityRow}</tr>
     </thead>
     <tbody>${body || `<tr><td colspan="${colCount}" style="padding:24px;color:var(--wb-muted)">Все артикулы скрыты. Открой «Скрытые».</td></tr>`}</tbody>
   </table></div>
   ${hiddenHtml}
-  <div class="pace-hint" style="padding:10px 16px">${escapeHtml(NEW_STOCK.note || '')} Закреп, порядок, группы и скрытые — общие для всех, не только у тебя.</div>`;
+  <div class="pace-hint" style="padding:10px 16px">${escapeHtml(NEW_STOCK.note || '')} Закреп, группы, скрытые, порядок регионов и городов — общие для всех. FBS — остаток на складе продавца из отчёта Маркетплейс.</div>`;
 }
 
 // ── Наш склад (Google Sheets) ──
