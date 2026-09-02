@@ -856,10 +856,6 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
 
 <!-- РОСТ ПРОДАЖ -->
 <div class="page" id="page-sales-pace">
-  <div class="upload-banner hint" id="paceWhAlarm">
-    <span>⚠️ <b>Перед работой:</b> зайди в <b>Остатки и поставки</b>, отключи сгоревшие склады (галка в шапке колонки) и нажми <b>↻ Обновить</b> там. Иначе темп и выводы будут с «мёртвыми» складами.</span>
-    <button type="button" class="action-btn" style="flex-shrink:0" onclick="goToSupplyRecsForWh()">→ Остатки и поставки</button>
-  </div>
   <div class="toolbar">
     <div class="search">
       <span style="color:var(--wb-faint);font-size:14px">🔍</span>
@@ -1759,30 +1755,6 @@ function showSection(sec, btn) {
   else if(sec === 'analytics') showPage('competitors', document.querySelector('#subnav-analytics .sn-item'));
   else if(sec === 'positions') showPage('positions', document.querySelector('#subnav-positions .sn-item'));
   else if(sec === 'finance') showPage('finance', null);
-}
-
-function goToSupplyRecsForWh() {
-  const btn = Array.from(document.querySelectorAll('.tb-nav-item')).find(el =>
-    (el.textContent || '').includes('Остатки')
-  );
-  if(btn) {
-    document.querySelectorAll('.tb-nav-item').forEach(t => t.classList.remove('on'));
-    btn.classList.add('on');
-    document.getElementById('subnav-products').style.display = 'none';
-    document.getElementById('subnav-supplies').style.display = 'flex';
-    const sg = document.getElementById('subnav-growth');
-    if(sg) sg.style.display = 'none';
-    const sp = document.getElementById('subnav-promotions');
-    if(sp) sp.style.display = 'none';
-    const spos = document.getElementById('subnav-positions');
-    if(spos) spos.style.display = 'none';
-    const sa = document.getElementById('subnav-analytics');
-    if(sa) sa.style.display = 'none';
-  }
-  const sn = Array.from(document.querySelectorAll('#subnav-supplies .sn-item')).find(el =>
-    (el.textContent || '').includes('Рекомендации')
-  );
-  showPage('supply-recs', sn || document.querySelector('#subnav-supplies .sn-item'));
 }
 
 // ── Товары WB (цена / остаток / канал) ──
