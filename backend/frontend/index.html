@@ -466,7 +466,7 @@ td.tc{text-align:center}
 .ns-tbl th,.ns-tbl td{text-align:center;white-space:nowrap}
 /* Не sticky-top на ячейках шапки: в Chrome/Safari colspan + overflow-x уезжает влево. */
 .ns-tbl.matrix thead th{position:static;top:auto;z-index:1}
-.ns-tbl th.ns-art,.ns-tbl td.ns-art{text-align:left;position:sticky;left:0;z-index:3;background:var(--wb-surface);min-width:168px;box-shadow:2px 0 4px rgba(0,0,0,.05)}
+.ns-tbl th.ns-art,.ns-tbl td.ns-art{text-align:left;position:sticky;left:0;z-index:3;background:var(--wb-surface);min-width:140px;box-shadow:2px 0 4px rgba(0,0,0,.05)}
 .ns-tbl.matrix thead th.ns-art{position:sticky;left:0;z-index:5;background:#FAFAFA}
 .ns-tbl thead th.ns-g{font-size:10px;letter-spacing:.2px;border-bottom:2px solid #C9C3BA}
 .ns-g-sib{background:#DBEAFE;color:#1E3A8A}
@@ -2848,8 +2848,7 @@ function nsArtRow(a, cities, zone, pinned) {
           ondragstart="nsDragStart(event,'${safe}','${zone}')"
           ondragend="nsDragEnd()">⋮⋮</span>
         <button type="button" class="ns-ico ${pinned?'on':''}" title="Закрепить у всех" onclick="nsTogglePin('${safe}')">📌</button>
-        <button type="button" class="ns-ico hide" title="Скрыть у всех" onclick="nsHide('${safe}')">скрыть</button>
-        ${nsGroupSelect(vc)}
+        <button type="button" class="pace-hide-btn" title="Скрыть у всех" onclick="nsHide('${safe}')">${paceEyeOffSvg()}</button>
         <div>
           <a href="${wbCatalogUrl(a.nm_id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;font-weight:600">${escapeHtml(vc || a.nm_id)}</a>
           <div style="font-size:10px;color:var(--wb-faint)">${a.nm_id || ''}</div>
