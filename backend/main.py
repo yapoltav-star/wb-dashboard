@@ -3501,20 +3501,31 @@ def _attach_new_stock_fbs(payload: dict) -> dict:
             c = dict(cell)
             hid = _fbs_pick_hub(row["fbs"], cid, city_hubs)
             hub = NEW_STOCK_FBS_HUBS.get(hid) if hid else None
+            primary = (city_hubs.get(str(cid)) or ["msk"])[0]
             if hid and hub:
-                qty = _fbs_hub_qty(row["fbs"], hid)
                 label = hub["label"]
-                if c.get("fbs_hub") == hid and not c.get("pickup"):
+                peer = _new_stock_hub_hours(city_fbs_h, hid, cid)
+                if peer is None and hid != "msk":
+                    peer = _new_stock_hub_hours(city_fbs_h, "msk", cid)
+                if c.get("pickup"):
+                    # Не размножаем остаток Москвы на всю страну — только часы,
+                    # штуки FBS только в «домашнем» регионе этого склада.
+                    if hid == primary:
+                        c["qty"] = _fbs_hub_qty(row["fbs"], hid)
+                    else:
+                        c["qty"] = 0
+                    if peer is not None:
+                        c["hours"] = peer
+                    c["source"] = "fbs_hub_peer"
+                    c["fbs_hub"] = hid
+                    c["wh_label"] = label
+                elif c.get("fbs_hub") == hid:
                     c["source"] = "fbs_hub"
                     c["wh_label"] = label
                 else:
-                    peer = _new_stock_hub_hours(city_fbs_h, hid, cid)
-                    if peer is None and hid != "msk":
-                        peer = _new_stock_hub_hours(city_fbs_h, "msk", cid)
                     if peer is not None:
                         c["hours"] = peer
                         c["source"] = "fbs_hub_peer"
-                    c["qty"] = qty
                     c["fbs_hub"] = hid
                     c["wh_label"] = label
                 c["tone"] = _new_stock_tone(c.get("hours"), int(c.get("qty") or 0))
