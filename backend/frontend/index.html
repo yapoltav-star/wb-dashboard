@@ -479,7 +479,7 @@ td.tc{text-align:center}
 .ns-warn{background:#FEF3C7;color:#92400E}
 .ns-bad{background:#FEE4E2;color:#B42318;font-weight:600}
 .ns-oos{background:#F8FAFC;color:var(--wb-faint)}
-.ns-cell b{display:block;font-size:13px}
+.ns-cell b{display:block;font-size:12px}
 .ns-cell span{font-size:10px;opacity:.85}
 .ns-art-row{display:flex;align-items:center;gap:6px}
 .ns-handle{cursor:grab;color:var(--wb-faint);font-size:12px;user-select:none}
@@ -494,8 +494,22 @@ td.tc{text-align:center}
 .ns-drag{opacity:.45}
 .ns-tbl tbody tr.ns-pin-row td.ns-art{background:#FFFBEB}
 .ns-g-fbs{background:#ECFDF5;color:#047857}
-.ns-tbl th.ns-fbs,.ns-tbl td.ns-fbs{background:#F0FDF4;min-width:78px}
-.ns-fbs b{display:block;font-size:13px}
+.ns-tbl{--ns-col-w:56px}
+.ns-tbl thead th.ns-col-h,
+.ns-tbl thead th.ns-fbs,
+.ns-tbl tbody td.ns-cell,
+.ns-tbl tbody td.ns-fbs{
+  width:var(--ns-col-w);min-width:var(--ns-col-w);max-width:var(--ns-col-w);
+  padding:4px 2px;box-sizing:border-box;overflow:hidden
+}
+.ns-tbl thead th.ns-col-h,
+.ns-tbl thead th.ns-fbs{
+  white-space:normal;line-height:1.15;font-size:9px;vertical-align:bottom;word-break:break-word
+}
+.ns-th-top{display:flex;align-items:center;justify-content:center;gap:2px;margin-bottom:2px}
+.ns-th-name{display:block;font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.1px}
+.ns-tbl th.ns-fbs,.ns-tbl td.ns-fbs{background:#F0FDF4}
+.ns-fbs b{display:block;font-size:12px}
 .ns-fbs span{font-size:10px;opacity:.85}
 .ns-col-h{cursor:grab;user-select:none}
 .ns-col-h .ns-handle{margin-right:3px}
@@ -1049,6 +1063,10 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
       <button type="button" class="action-btn" id="nsColPickerBtn" onclick="toggleNsColPicker(event)" title="Показать или скрыть города и FBS">Колонки</button>
       <div id="nsColPicker" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;min-width:300px;max-height:400px;overflow:auto;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--rs);box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:80;padding:8px"></div>
     </div>
+    <span style="font-size:12px;color:var(--wb-muted);margin-left:6px">Столбцы:</span>
+    <button type="button" class="filter-btn" id="nsColW56" onclick="nsSetColW(56)">Уже</button>
+    <button type="button" class="filter-btn" id="nsColW72" onclick="nsSetColW(72)">Средние</button>
+    <button type="button" class="filter-btn" id="nsColW90" onclick="nsSetColW(90)">Шире</button>
     <span id="nsInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
     <div class="ml-auto">
       <button class="action-btn" id="nsSyncBtn" onclick="triggerNewStockSync()">↻ Обновить</button>
@@ -2307,14 +2325,14 @@ async function triggerSupplySync() {
 let NEW_STOCK = {articles:[], cities:[], groups:[], layout:null, syncing:false};
 let NEW_STOCK_LOADED = false;
 let NEW_STOCK_FILTER = 'all';
-let NS_LAYOUT = {hidden:[], pinned:[], order:[], groups:[], city_order:[], group_order:[], city_group:{}, hidden_cities:[], hidden_fbs:[]};
+let NS_LAYOUT = {hidden:[], pinned:[], order:[], groups:[], city_order:[], group_order:[], city_group:{}, hidden_cities:[], hidden_fbs:[], col_w:56};
 let NS_SHOW_HIDDEN = false;
 let NS_DRAG = null;
 let nsPoll = null;
 let nsSaveT = null;
 
 function nsEmptyLayout() {
-  return {hidden:[], pinned:[], order:[], groups:[], city_order:[], group_order:[], city_group:{}, hidden_cities:[], hidden_fbs:[]};
+  return {hidden:[], pinned:[], order:[], groups:[], city_order:[], group_order:[], city_group:{}, hidden_cities:[], hidden_fbs:[], col_w:56};
 }
 
 function applyNsLayout(raw) {
@@ -2329,7 +2347,40 @@ function applyNsLayout(raw) {
     city_group: {...(l.city_group || {})},
     hidden_cities: [...(l.hidden_cities || [])],
     hidden_fbs: [...(l.hidden_fbs || [])],
+    col_w: (Number(l.col_w) >= 48 && Number(l.col_w) <= 110) ? Number(l.col_w) : 56,
   };
+}
+
+function nsColW() {
+  const n = Number(NS_LAYOUT.col_w);
+  return (n >= 48 && n <= 110) ? Math.round(n) : 56;
+}
+
+function nsSetColW(px) {
+  NS_LAYOUT.col_w = Math.max(48, Math.min(110, Number(px) || 56));
+  drawNewStock();
+  saveNewStockLayoutSoon();
+}
+
+function nsSyncColWButtons() {
+  const w = nsColW();
+  [56, 72, 90].forEach(px => {
+    const el = document.getElementById('nsColW' + px);
+    if(el) el.classList.toggle('on', w === px);
+  });
+}
+
+function nsCityLabel(name) {
+  const map = {
+    'Санкт-Петербург': 'СПб',
+    'Ростов-на-Дону': 'Ростов',
+    'Нижний Новгород': 'Н.Новг.',
+    'Екатеринбург': 'Екб',
+    'Новосибирск': 'Нск',
+    'Красноярск': 'Крск',
+    'Архангельск': 'Арх.',
+  };
+  return map[name] || name;
 }
 
 function setNewStockFilter(f) {
@@ -2873,6 +2924,7 @@ function drawNewStock() {
     hidBtn.textContent = hidN ? ('Скрытые (' + hidN + ')') : 'Скрытые';
   }
   updateNsColPickerBtn();
+  nsSyncColWButtons();
 
   if(NEW_STOCK.error) {
     if(info) info.textContent = NEW_STOCK.error;
@@ -2936,20 +2988,26 @@ function drawNewStock() {
   const fbsCityRow = fbsCols.map(w => {
     const enc = encodeURIComponent(w.id);
     if(w.id === '_empty') return `<th class="ns-fbs">${escapeHtml(w.name)}</th>`;
-    return `<th class="ns-fbs" title="Остаток FBS. Сними галку — скрыть у всех">
-      <input type="checkbox" class="wh-en-cb" checked onclick="event.stopPropagation()" onchange="nsToggleFbsCol('${enc}',event)" title="Скрыть склад FBS">
-      ${escapeHtml(w.name)}</th>`;
+    return `<th class="ns-fbs" title="${escapeHtml(w.name)} · остаток FBS. Сними галку — скрыть у всех">
+      <div class="ns-th-top">
+        <input type="checkbox" class="wh-en-cb" checked onclick="event.stopPropagation()" onchange="nsToggleFbsCol('${enc}',event)" title="Скрыть склад FBS">
+      </div>
+      <span class="ns-th-name">${escapeHtml(w.name)}</span></th>`;
   }).join('');
   const cityRow = cities.map(c => {
     const safe = String(c.id).replace(/'/g, "\\'");
-    return `<th class="ns-col-h" title="Перетащи город. Сними галку — скрыть у всех"
+    const label = nsCityLabel(c.name);
+    return `<th class="ns-col-h" title="${escapeHtml(c.name)} · перетащи или сними галку"
       draggable="true"
       ondragstart="nsColDragStart(event,'city','${safe}')"
       ondragover="nsDragOver(event)"
       ondrop="nsColDrop(event,'city','${safe}')"
       ondragend="nsDragEnd()">
-      <input type="checkbox" class="wh-en-cb" checked onclick="event.stopPropagation()" onchange="nsToggleCityCol('${safe}',event)" title="Скрыть город">
-      ⋮⋮ ${escapeHtml(c.name)}</th>`;
+      <div class="ns-th-top">
+        <input type="checkbox" class="wh-en-cb" checked onclick="event.stopPropagation()" onchange="nsToggleCityCol('${safe}',event)" title="Скрыть город">
+        <span class="ns-handle">⋮⋮</span>
+      </div>
+      <span class="ns-th-name">${escapeHtml(label)}</span></th>`;
   }).join('');
   const colCount = 1 + fbsCols.length + cities.length;
 
@@ -3004,7 +3062,7 @@ function drawNewStock() {
     </div>`;
   }
 
-  root.innerHTML = `<div class="matrix-wrap"><table class="matrix promo-xls ns-tbl">
+  root.innerHTML = `<div class="matrix-wrap"><table class="matrix promo-xls ns-tbl" style="--ns-col-w:${nsColW()}px">
     <thead>
       <tr><th class="ns-art" rowspan="2">Артикул</th>${fbsHead}${groupRow}</tr>
       <tr>${fbsCityRow}${cityRow}</tr>

@@ -2729,6 +2729,7 @@ NEW_STOCK_CITIES = [
     {"id": "nsk", "name": "Новосибирск", "group": "Сибирь и ДВ", "dest": -364763, "lat": 55.0302, "lon": 82.9204},
     {"id": "krs", "name": "Красноярск", "group": "Сибирь и ДВ", "dest": 12356481, "lat": 56.0106, "lon": 92.8526},
     {"id": "irk", "name": "Иркутск", "group": "Сибирь и ДВ", "dest": -5827722, "lat": 52.2864, "lon": 104.2807},
+    {"id": "omsk", "name": "Омск", "group": "Сибирь и ДВ", "dest": -3902444, "lat": 54.9885, "lon": 73.3242},
     {"id": "krd", "name": "Краснодар", "group": "Юг и СК", "dest": 12358062, "lat": 45.0355, "lon": 38.9753},
     {"id": "rnd", "name": "Ростов-на-Дону", "group": "Юг и СК", "dest": -2228364, "lat": 47.2221, "lon": 39.7203},
     {"id": "vlg", "name": "Волгоград", "group": "Юг и СК", "dest": -4039473, "lat": 48.7080, "lon": 44.5133},
@@ -2743,7 +2744,16 @@ NEW_STOCK_CITIES = [
     {"id": "tmn", "name": "Тюмень", "group": "Урал", "dest": 12358475, "lat": 57.1522, "lon": 65.5272},
     {"id": "kzn", "name": "Казань", "group": "Волга", "dest": -2133462, "lat": 55.7963, "lon": 49.1088},
     {"id": "nnv", "name": "Нижний Новгород", "group": "Волга", "dest": 12358579, "lat": 56.2965, "lon": 43.9361},
+    {"id": "smr", "name": "Самара", "group": "Волга", "dest": -283781, "lat": 53.1959, "lon": 50.1002},
     {"id": "prm", "name": "Пермь", "group": "Волга", "dest": 12358361, "lat": 58.0105, "lon": 56.2502},
+]
+NEW_STOCK_GROUPS = [
+    {"id": "sib", "name": "Сибирь и ДВ", "city_ids": ["nsk", "krs", "irk", "omsk"]},
+    {"id": "south", "name": "Юг и СК", "city_ids": ["krd", "rnd", "vlg"]},
+    {"id": "center", "name": "Центр", "city_ids": ["msk", "vrn", "ryz"]},
+    {"id": "nw", "name": "Северо-Запад", "city_ids": ["spb", "vld", "arh"]},
+    {"id": "ural", "name": "Урал", "city_ids": ["ekb", "chel", "tmn"]},
+    {"id": "volga", "name": "Волга", "city_ids": ["kzn", "nnv", "smr", "prm"]},
 ]
 
 
@@ -2954,6 +2964,7 @@ def sync_new_stock():
             NEW_STOCK_CACHE["payload"] = {
                 "articles": [],
                 "cities": [{"id": c["id"], "name": c["name"], "group": c["group"]} for c in NEW_STOCK_CITIES],
+                "groups": NEW_STOCK_GROUPS,
                 "as_of": _msk_now().strftime("%d.%m.%Y %H:%M"),
                 "cookie_set": _new_stock_has_cookie(),
                 "note": "Нет артикулов: обнови «Товары» или задай NEW_STOCK_ARTICLES_JSON.",
@@ -3019,14 +3030,7 @@ def sync_new_stock():
         payload = {
             "articles": rows,
             "cities": cities_out,
-            "groups": [
-                {"id": "sib", "name": "Сибирь и ДВ", "city_ids": ["nsk", "krs", "irk"]},
-                {"id": "south", "name": "Юг и СК", "city_ids": ["krd", "rnd", "vlg"]},
-                {"id": "center", "name": "Центр", "city_ids": ["msk", "vrn", "ryz"]},
-                {"id": "nw", "name": "Северо-Запад", "city_ids": ["spb", "vld", "arh"]},
-                {"id": "ural", "name": "Урал", "city_ids": ["ekb", "chel", "tmn"]},
-                {"id": "volga", "name": "Волга", "city_ids": ["kzn", "nnv", "prm"]},
-            ],
+            "groups": NEW_STOCK_GROUPS,
             "warn_h": NEW_STOCK_WARN_H,
             "bad_h": NEW_STOCK_BAD_H,
             "as_of": _msk_now().strftime("%d.%m.%Y %H:%M"),
@@ -3075,6 +3079,7 @@ def _new_stock_default_layout() -> dict:
         "city_group": {},
         "hidden_cities": [],
         "hidden_fbs": [],
+        "col_w": 56,
     }
 
 
@@ -3127,7 +3132,16 @@ def _normalize_new_stock_layout(raw) -> dict:
         "city_group": city_group,
         "hidden_cities": _uniq_str_list(src.get("hidden_cities")),
         "hidden_fbs": _uniq_str_list(src.get("hidden_fbs")),
+        "col_w": _new_stock_col_w(src.get("col_w")),
     }
+
+
+def _new_stock_col_w(raw) -> int:
+    try:
+        n = int(raw)
+    except Exception:
+        n = 56
+    return max(48, min(110, n))
 
 
 def _fbs_wh_short(name: str) -> str:
