@@ -2755,6 +2755,42 @@ NEW_STOCK_GROUPS = [
     {"id": "ural", "name": "Урал", "city_ids": ["ekb", "chel", "tmn"]},
     {"id": "volga", "name": "Волга", "city_ids": ["kzn", "nnv", "smr", "prm"]},
 ]
+# type=128 в stores-data — самовывоз (CC Ковшовой 2с1 и т.п.). Не считаем сроком доставки.
+NEW_STOCK_PICKUP_TYPES = {128}
+NEW_STOCK_PICKUP_RE = re.compile(r"самовывоз|ковшов", re.I)
+NEW_STOCK_STORES_URL = "https://static-basket-01.wbbasket.ru/vol0/data/stores-data.json"
+NEW_STOCK_STORES_CACHE = {"by_id": {}, "loaded_at": 0.0}
+# Ближайший наш FBS: Центр/СЗ → Москва, Волга → Казань, Юг → Краснодар, Урал/Сибирь → Тюмень.
+NEW_STOCK_FBS_HUBS = {
+    "msk": {
+        "label": "FBS Москва / СЦ Внуково",
+        "store_re": re.compile(r"внуков|москв", re.I),
+        "stock_re": re.compile(r"внуков|москв", re.I),
+    },
+    "kzn": {
+        "label": "FBS Казань / СЦ Столбище",
+        "store_re": re.compile(r"казан", re.I),
+        "stock_re": re.compile(r"казан", re.I),
+    },
+    "krd": {
+        "label": "FBS Краснодар / СЦ Тахтамукай",
+        "store_re": re.compile(r"краснодар|тахтамукай", re.I),
+        "stock_re": re.compile(r"краснодар|тахтамукай|ффиточка", re.I),
+    },
+    "tmn": {
+        "label": "FBS Тюмень / СЦ Харьковская",
+        "store_re": re.compile(r"тюмен", re.I),
+        "stock_re": re.compile(r"тюмен", re.I),
+    },
+}
+NEW_STOCK_GROUP_HUBS = {
+    "center": ["msk"],
+    "nw": ["msk"],
+    "volga": ["kzn", "msk"],
+    "south": ["krd", "msk"],
+    "ural": ["tmn", "msk"],
+    "sib": ["tmn", "msk"],
+}
 
 
 def _new_stock_hours(product: dict):
@@ -2818,6 +2854,214 @@ def _new_stock_wh(product: dict):
             if st and st.get("wh"):
                 return st.get("wh")
     return None
+
+
+def _fbs_wh_is_ignored(name: str) -> bool:
+    """Самовывоз / CC Ковшовой — не склад отгрузки."""
+    return bool(NEW_STOCK_PICKUP_RE.search(name or ""))
+
+
+def _new_stock_city_hubs() -> dict:
+    """city_id → список хабов по приоритету (свой региональный, потом Москва)."""
+    out = {}
+    for g in NEW_STOCK_GROUPS:
+        hubs = list(NEW_STOCK_GROUP_HUBS.get(g.get("id"), ["msk"]))
+        for cid in g.get("city_ids") or []:
+            out[str(cid)] = hubs
+    return out
+
+
+def _new_stock_hub_for_store(name: str, meta: dict):
+    """Какой наш FBS-хаб у витринного склада. Самовывоз и склады WB — None."""
+    if not isinstance(meta, dict):
+        return None
+    if meta.get("type") in NEW_STOCK_PICKUP_TYPES:
+        return None
+    if meta.get("is_wb"):
+        return None
+    if meta.get("type") not in (None, 2):
+        return None
+    n = name or meta.get("name") or ""
+    if _fbs_wh_is_ignored(n):
+        return None
+    for hid, hub in NEW_STOCK_FBS_HUBS.items():
+        if hub["store_re"].search(n):
+            return hid
+    return None
+
+
+def _fbs_hub_qty(fbs_obj, hub_id: str) -> int:
+    hub = NEW_STOCK_FBS_HUBS.get(hub_id) or {}
+    stock_re = hub.get("stock_re")
+    if not isinstance(fbs_obj, dict) or not stock_re:
+        return 0
+    total = 0
+    for w in fbs_obj.get("warehouses") or []:
+        if not isinstance(w, dict):
+            continue
+        name = str(w.get("name") or "")
+        if _fbs_wh_is_ignored(name) or not stock_re.search(name):
+            continue
+        try:
+            total += int(w.get("qty") or 0)
+        except Exception:
+            pass
+    return total
+
+
+def _fbs_pick_hub(fbs_obj, city_id: str, city_hubs: dict):
+    for hid in city_hubs.get(str(city_id) or "") or ["msk"]:
+        if _fbs_hub_qty(fbs_obj, hid) > 0:
+            return hid
+    return None
+
+
+def _new_stock_load_stores() -> dict:
+    """id склада витрины → {name, type, is_wb}. Падаем мягко, если CDN недоступен."""
+    now = time.time()
+    cached = NEW_STOCK_STORES_CACHE.get("by_id") or {}
+    ts = float(NEW_STOCK_STORES_CACHE.get("loaded_at") or 0)
+    if cached and now - ts < 12 * 3600:
+        return cached
+    try:
+        resp = httpx.get(NEW_STOCK_STORES_URL, timeout=25)
+        if not resp.is_success:
+            return cached
+        arr = resp.json() or []
+        by_id = {}
+        for s in arr if isinstance(arr, list) else []:
+            if not isinstance(s, dict) or s.get("id") is None:
+                continue
+            try:
+                sid = int(s["id"])
+            except Exception:
+                continue
+            by_id[sid] = {
+                "name": str(s.get("name") or ""),
+                "type": s.get("type"),
+                "is_wb": bool(s.get("isWb")),
+            }
+        NEW_STOCK_STORES_CACHE["by_id"] = by_id
+        NEW_STOCK_STORES_CACHE["loaded_at"] = now
+        return by_id
+    except Exception as e:
+        logger.warning(f"new-stock stores-data: {e}")
+        return cached
+
+
+def _new_stock_wh_int(wh):
+    if wh is None or wh == "":
+        return None
+    try:
+        return int(wh)
+    except Exception:
+        return None
+
+
+def _new_stock_parse_cell(product: dict, stores: dict) -> dict:
+    """Ячейка витрины: самовывоз отбрасываем, наш FBS-хаб помечаем."""
+    hours = _new_stock_hours(product)
+    qty = _new_stock_qty(product)
+    wh = _new_stock_wh(product)
+    wh_i = _new_stock_wh_int(wh)
+    meta = stores.get(wh_i) if (stores and wh_i is not None) else None
+    meta = meta if isinstance(meta, dict) else {}
+    name = str(meta.get("name") or "")
+    pickup = meta.get("type") in NEW_STOCK_PICKUP_TYPES or bool(NEW_STOCK_PICKUP_RE.search(name))
+    hub = None if pickup else _new_stock_hub_for_store(name, meta)
+    if pickup:
+        return {
+            "qty": 0,
+            "hours": None,
+            "tone": "oos",
+            "wh": wh,
+            "wh_name": name or None,
+            "pickup": True,
+            "fbs_hub": None,
+            "source": "pickup",
+        }
+    return {
+        "qty": qty,
+        "hours": hours,
+        "tone": _new_stock_tone(hours, qty),
+        "wh": wh,
+        "wh_name": name or None,
+        "pickup": False,
+        "fbs_hub": hub,
+        "source": "fbs_hub" if hub else "storefront",
+    }
+
+
+def _new_stock_median_hours(vals) -> int | None:
+    nums = [int(v) for v in (vals or []) if v is not None]
+    if not nums:
+        return None
+    nums.sort()
+    n = len(nums)
+    if n % 2:
+        return nums[n // 2]
+    return int(round((nums[n // 2 - 1] + nums[n // 2]) / 2))
+
+
+def _new_stock_city_fbs_hours(by_nm: dict) -> dict:
+    """хаб → город → медиана часов, где витрина уже выбрала этот наш FBS."""
+    buckets = {}
+    for row in (by_nm or {}).values():
+        for cid, cell in ((row or {}).get("cities") or {}).items():
+            if not isinstance(cell, dict) or cell.get("pickup"):
+                continue
+            hub = cell.get("fbs_hub")
+            if not hub or cell.get("hours") is None:
+                continue
+            buckets.setdefault(hub, {}).setdefault(cid, []).append(int(cell["hours"]))
+    out = {}
+    for hub, cities in buckets.items():
+        got = {cid: h for cid, vals in cities.items() if (h := _new_stock_median_hours(vals)) is not None}
+        if got:
+            out[hub] = got
+    return out
+
+
+def _new_stock_hub_hours(city_fbs_h: dict, hub_id: str, city_id: str):
+    if not isinstance(city_fbs_h, dict):
+        return None
+    inner = city_fbs_h.get(hub_id)
+    if not isinstance(inner, dict):
+        # старый плоский кэш {city: hours} = только Москва
+        if hub_id == "msk" and city_id in city_fbs_h and not isinstance(city_fbs_h.get(city_id), dict):
+            try:
+                return int(city_fbs_h[city_id])
+            except Exception:
+                return None
+        return None
+    if city_id not in inner:
+        return None
+    try:
+        return int(inner[city_id])
+    except Exception:
+        return None
+
+
+def _new_stock_apply_fbs_peers(by_nm: dict, city_fbs_h: dict) -> None:
+    """Самовывоз: подставляем срок ближайшего известного хаба (обычно Москва)."""
+    city_hubs = _new_stock_city_hubs()
+    for row in (by_nm or {}).values():
+        for cid, cell in ((row or {}).get("cities") or {}).items():
+            if not isinstance(cell, dict) or not cell.get("pickup"):
+                continue
+            peer = None
+            hid = None
+            for cand in city_hubs.get(str(cid), ["msk"]):
+                peer = _new_stock_hub_hours(city_fbs_h, cand, cid)
+                if peer is not None:
+                    hid = cand
+                    break
+            if peer is None:
+                continue
+            cell["hours"] = peer
+            cell["fbs_hub"] = hid
+            cell["source"] = "fbs_hub_peer"
+            cell["tone"] = _new_stock_tone(peer, int(cell.get("qty") or 0))
 
 
 def _new_stock_tone(hours, qty: int) -> str:
@@ -2976,10 +3220,10 @@ def sync_new_stock():
         cities_out = []
         blocked = 0
         dest_fail = 0
+        stores = _new_stock_load_stores()
         for city in NEW_STOCK_CITIES:
             dest = _resolve_wb_dest(city)
             cities_out.append({"id": city["id"], "name": city["name"], "group": city["group"], "dest": dest})
-            chunk = []
             products = []
             for i in range(0, len(nm_ids), 25):
                 got = _fetch_card_detail(nm_ids[i:i + 25], dest)
@@ -2997,19 +3241,15 @@ def sync_new_stock():
                     continue
                 if nm not in by_nm:
                     continue
-                hours = _new_stock_hours(p)
-                qty = _new_stock_qty(p)
-                by_nm[nm]["cities"][city["id"]] = {
-                    "qty": qty,
-                    "hours": hours,
-                    "tone": _new_stock_tone(hours, qty),
-                    "wh": _new_stock_wh(p),
-                }
+                by_nm[nm]["cities"][city["id"]] = _new_stock_parse_cell(p, stores)
                 found.add(nm)
+            empty = {"qty": 0, "hours": None, "tone": "oos", "wh": None, "wh_name": None, "pickup": False, "fbs_hub": None, "source": "storefront"}
             for nm, row in by_nm.items():
                 if city["id"] not in row["cities"]:
-                    row["cities"][city["id"]] = {"qty": 0, "hours": None, "tone": "oos", "wh": None}
+                    row["cities"][city["id"]] = dict(empty)
             logger.info(f"new-stock {city['name']} dest={dest} found={len(found)}/{len(nm_ids)}")
+        city_fbs_h = _new_stock_city_fbs_hours(by_nm)
+        _new_stock_apply_fbs_peers(by_nm, city_fbs_h)
 
         rows = list(by_nm.values())
         rows.sort(key=lambda r: (
@@ -3036,7 +3276,8 @@ def sync_new_stock():
             "as_of": _msk_now().strftime("%d.%m.%Y %H:%M"),
             "cookie_set": _new_stock_has_cookie(),
             "articles_source": "env" if (os.getenv("NEW_STOCK_ARTICLES_JSON") or "").strip() else "catalog",
-            "note": "Срок — как на карточке WB для покупателя в этом городе (time1+time2). Остаток — на складе, с которого везут. Это не MKeeper и не отчёт складов продавца.",
+            "city_fbs_hours": city_fbs_h,
+            "note": "Срок — как на карточке WB. Самовывоз CC Ковшовой не считаем. Город берёт ближайший наш FBS: Центр/СЗ — Москва, Волга — Казань, Юг — Краснодар, Урал/Сибирь — Тюмень; иначе Москва. Это не MKeeper.",
         }
         NEW_STOCK_CACHE["payload"] = payload
         NEW_STOCK_CACHE["error"] = err
@@ -3175,6 +3416,8 @@ def _new_stock_collect_fbs(rows) -> dict:
         if qty <= 0:
             continue
         short = _fbs_wh_short(raw_name)
+        if _fbs_wh_is_ignored(raw_name) or _fbs_wh_is_ignored(short):
+            continue
         bucket = by_nm.setdefault(nm, {})
         bucket[short] = bucket.get(short, 0) + qty
     return by_nm
@@ -3237,6 +3480,8 @@ def _new_stock_fbs_bundle() -> tuple:
 def _attach_new_stock_fbs(payload: dict) -> dict:
     src = payload if isinstance(payload, dict) else {}
     fbs_map, fbs_whs = _new_stock_fbs_bundle()
+    city_fbs_h = src.get("city_fbs_hours") if isinstance(src.get("city_fbs_hours"), dict) else {}
+    city_hubs = _new_stock_city_hubs()
     articles = []
     for a in src.get("articles") or []:
         if not isinstance(a, dict):
@@ -3249,6 +3494,41 @@ def _attach_new_stock_fbs(payload: dict) -> dict:
         row["fbs"] = fbs_map.get(nm) if nm is not None else None
         if not row["fbs"]:
             row["fbs"] = {"total": 0, "warehouses": []}
+        cities = {}
+        for cid, cell in (row.get("cities") or {}).items():
+            if not isinstance(cell, dict):
+                continue
+            c = dict(cell)
+            hid = _fbs_pick_hub(row["fbs"], cid, city_hubs)
+            hub = NEW_STOCK_FBS_HUBS.get(hid) if hid else None
+            if hid and hub:
+                qty = _fbs_hub_qty(row["fbs"], hid)
+                label = hub["label"]
+                if c.get("fbs_hub") == hid and not c.get("pickup"):
+                    c["source"] = "fbs_hub"
+                    c["wh_label"] = label
+                else:
+                    peer = _new_stock_hub_hours(city_fbs_h, hid, cid)
+                    if peer is None and hid != "msk":
+                        peer = _new_stock_hub_hours(city_fbs_h, "msk", cid)
+                    if peer is not None:
+                        c["hours"] = peer
+                        c["source"] = "fbs_hub_peer"
+                    c["qty"] = qty
+                    c["fbs_hub"] = hid
+                    c["wh_label"] = label
+                c["tone"] = _new_stock_tone(c.get("hours"), int(c.get("qty") or 0))
+            elif c.get("pickup"):
+                c["qty"] = 0
+                if c.get("hours") is None:
+                    peer = _new_stock_hub_hours(city_fbs_h, "msk", cid)
+                    if peer is not None:
+                        c["hours"] = peer
+                        c["source"] = "fbs_hub_peer"
+                        c["wh_label"] = NEW_STOCK_FBS_HUBS["msk"]["label"]
+                c["tone"] = _new_stock_tone(c.get("hours"), int(c.get("qty") or 0))
+            cities[cid] = c
+        row["cities"] = cities
         articles.append(row)
     out = dict(src)
     out["articles"] = articles

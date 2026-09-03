@@ -463,11 +463,12 @@ td.tc{text-align:center}
 .matrix.pace-tbl tbody tr.total-row td.pg-meta,
 .matrix.pace-tbl tbody tr.total-row td.mcol-art.pg-meta{background:#E8E4DE!important}
 .ns-tbl{font-size:12px}
+.ns-tbl.matrix{min-width:0;width:max-content}
 .ns-tbl th,.ns-tbl td{text-align:center;white-space:nowrap}
 /* Не sticky-top на ячейках шапки: в Chrome/Safari colspan + overflow-x уезжает влево. */
 .ns-tbl.matrix thead th{position:static;top:auto;z-index:1}
-.ns-tbl th.ns-art,.ns-tbl td.ns-art{text-align:left;position:sticky;left:0;z-index:3;background:var(--wb-surface);min-width:140px;box-shadow:2px 0 4px rgba(0,0,0,.05)}
-.ns-tbl.matrix thead th.ns-art{position:sticky;left:0;z-index:5;background:#FAFAFA}
+.ns-tbl th.ns-art,.ns-tbl td.ns-art{text-align:left;position:sticky;left:0;z-index:3;background:var(--wb-surface);width:1%;min-width:0;max-width:none;padding:6px 8px;box-shadow:2px 0 4px rgba(0,0,0,.05)}
+.ns-tbl.matrix thead th.ns-art{position:sticky;left:0;z-index:5;background:#FAFAFA;width:1%}
 .ns-tbl thead th.ns-g{font-size:10px;letter-spacing:.2px;border-bottom:2px solid #C9C3BA}
 .ns-g-sib{background:#DBEAFE;color:#1E3A8A}
 .ns-g-south{background:#FEF3C7;color:#92400E}
@@ -481,7 +482,7 @@ td.tc{text-align:center}
 .ns-oos{background:#F8FAFC;color:var(--wb-faint)}
 .ns-cell b{display:block;font-size:12px}
 .ns-cell span{font-size:10px;opacity:.85}
-.ns-art-row{display:flex;align-items:center;gap:6px}
+.ns-art-row{display:flex;align-items:center;gap:6px;width:max-content}
 .ns-handle{cursor:grab;color:var(--wb-faint);font-size:12px;user-select:none}
 .ns-ico{border:1px solid var(--wb-border);background:#fff;border-radius:5px;padding:1px 5px;font-size:11px;cursor:pointer;line-height:1.4}
 .ns-ico.on{background:#FEF3C7;border-color:#F0C7A0}
@@ -1043,11 +1044,9 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
 <div class="page" id="page-new-stock">
   <div class="upload-banner hint">
     <span>
-      Срок в ячейке — <b>как на карточке WB у покупателя в этом городе</b> (часы витрины), не отчёт складов продавца и не MKeeper.
-      Жёлтый &gt; 40 ч, красный &gt; 60 ч. Остаток — на складе, с которого WB везёт в этот город.
-      Города из ленты заказов за месяц. Регионы и города можно перетаскивать — порядок общий.
-      Колонки FBS — остаток на складе продавца (Маркетплейс), не витрина.
-      Сними галку у города или FBS — колонка скроется у всех; вернуть можно в «Колонки». Cookie с сайта WB не нужен.
+      Срок в ячейке — <b>как на карточке WB</b>. Самовывоз <b>CC Ковшовой 2с1</b> не считаем.
+      Город берёт ближайший наш FBS: Центр и СЗ — Москва / Внуково, Волга — Казань, Юг — Краснодар, Урал и Сибирь — Тюмень; нет остатка — Москва.
+      Жёлтый &gt; 40 ч, красный &gt; 60 ч. Колонки FBS — остаток на складе продавца.
     </span>
   </div>
   <div class="toolbar">
@@ -2864,12 +2863,18 @@ function nsCityCells(a, cities) {
     const tone = cell.tone || nsCellTone(cell);
     const qty = cell.qty || 0;
     const h = cell.hours;
+    const src = cell.source || '';
     const tip = [
       escapeHtml(a.vendor_code) + ' → ' + escapeHtml(c.name),
-      qty ? (qty + ' шт на складе, с которого WB везёт') : 'нет предложения витрины',
-      h != null ? ('срок витрины ' + h + ' ч') : '',
-      'это не ближайший склад MKeeper',
-      cell.wh ? ('витринный склад #' + cell.wh) : '',
+      cell.wh_label || cell.wh_name || '',
+      qty ? (qty + ' шт') : 'нет остатка',
+      h != null ? (h + ' ч') : '',
+      src === 'fbs_hub' ? ('срок с ' + (cell.wh_label || 'нашего FBS')) : '',
+      src === 'fbs_hub_peer' || src === 'fbs_msk_peer' ? ('срок с ' + (cell.wh_label || 'нашего FBS') + ' (как у соседних артикулов в этот город)') : '',
+      src === 'fbs_msk' ? 'срок с FBS Москва / СЦ Внуково' : '',
+      src === 'pickup' ? 'самовывоз CC Ковшовой не считаем' : '',
+      cell.pickup ? 'самовывоз отброшен' : '',
+      cell.wh ? ('склад #' + cell.wh) : '',
     ].filter(Boolean).join('. ');
     const main = qty ? (fmt(qty) + ' шт') : 'нет';
     const sub = h != null ? (h + ' ч') : '—';
