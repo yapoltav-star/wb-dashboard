@@ -9908,21 +9908,62 @@ def _report_key(r: dict) -> str:
 
 
 def _pick_report_amount(money: dict, fallback=None):
+    """Сумма «Итого к оплате» из отчёта реализации.
+
+    В кабинете ВБ это bankPaymentSum (не retailAmountSum = продажа
+    и не forPaySum = к перечислению до удержаний).
+    """
     if not isinstance(money, dict):
         return fallback
-    # приоритет полей «к оплате / перечислению»
     preferred = (
-        "totalToPay", "total_to_pay", "toPay", "forPay", "ppvz_for_pay",
-        "Итого к оплате", "итог_к_оплате", "paid_sum", "transferAmount",
+        "bankPaymentSum", "bank_payment_sum",
+        "totalToPay", "total_to_pay", "Итого к оплате", "итог_к_оплате",
+        "forPaySum", "for_pay_sum", "toPay", "forPay", "ppvz_for_pay",
+        "paid_sum", "transferAmount",
     )
     for k in preferred:
         if k in money and money[k] is not None:
-            return float(money[k])
-    # иначе самая крупная денежная сумма в money
-    vals = [float(v) for v in money.values() if isinstance(v, (int, float))]
-    if vals:
-        return max(vals, key=abs)
+            try:
+                return float(money[k])
+            except (TypeError, ValueError):
+                continue
     return fallback
+
+
+def _report_type_label(typ) -> str:
+    if typ is None or typ == "":
+        return "Отчёт"
+    # finance-api: 1 = основной, 2 = по выкупам
+    try:
+        n = int(typ)
+        if n == 1:
+            return "Основной"
+        if n == 2:
+            return "По выкупам"
+    except (TypeError, ValueError):
+        pass
+    s = str(typ).strip()
+    return s or "Отчёт"
+
+
+def _normalize_report_row(row: dict) -> dict:
+    """Пересчитывает amount из money (bankPaymentSum) и подписи типа."""
+    if not isinstance(row, dict):
+        return row
+    row = dict(row)
+    money = row.get("money") if isinstance(row.get("money"), dict) else {}
+    sale = _wb_money(money.get("retailAmountSum"))
+    for_pay = _wb_money(money.get("forPaySum"))
+    to_pay = _pick_report_amount(money, row.get("amount"))
+    if sale is not None:
+        row["sale_amount"] = float(sale)
+    if for_pay is not None:
+        row["for_pay_amount"] = float(for_pay)
+    if to_pay is not None:
+        row["amount"] = float(to_pay)
+    row["type"] = _report_type_label(row.get("type"))
+    row["key"] = row.get("key") or _report_key(row)
+    return row
 
 
 def _match_payment_status(report: dict, payments: list, marks: dict) -> dict:
@@ -10054,9 +10095,8 @@ def fetch_wb_sales_reports(date_from: str, date_to: str) -> dict:
                 money_fields[str(k)] = mv
         date_from_v = it.get("dateFrom") or it.get("date_from") or it.get("begin")
         date_to_v = it.get("dateTo") or it.get("date_to") or it.get("end")
-        typ = it.get("type") or it.get("reportType") or it.get("category") or "Отчёт"
+        typ = it.get("reportType") or it.get("type") or it.get("category") or "Отчёт"
         rid = it.get("reportId") or it.get("report_id") or it.get("id")
-        amount = _pick_report_amount(money_fields)
         row = {
             "report_id": rid,
             "date_from": str(date_from_v)[:10] if date_from_v else None,
@@ -10064,11 +10104,12 @@ def fetch_wb_sales_reports(date_from: str, date_to: str) -> dict:
             "created": it.get("createDate") or it.get("createdAt") or it.get("created"),
             "type": typ,
             "api_status": it.get("status") or it.get("paymentStatus") or it.get("state"),
-            "amount": amount,
             "money": money_fields,
             "source": "wb_api",
         }
+        # key до смены type→лейбл, чтобы стабильно матчить кэш
         row["key"] = _report_key(row)
+        row = _normalize_report_row(row)
         reports.append(row)
     return {"reports": reports, "count": len(reports)}
 
@@ -10157,13 +10198,28 @@ def _merge_reports(existing: list, incoming: list) -> list:
         r = {**r, "key": key}
         prev = by.get(key) or {}
         # excel amount предпочтительнее, если api без суммы
+        money = r.get("money") if isinstance(r.get("money"), dict) else None
+        if not money and isinstance(prev.get("money"), dict):
+            money = prev.get("money")
         amount = r.get("amount")
+        if money:
+            picked = _pick_report_amount(money)
+            if picked is not None:
+                amount = picked
         if amount is None:
             amount = prev.get("amount")
         elif prev.get("source") == "excel" and r.get("source") == "wb_api" and prev.get("amount") is not None:
-            amount = prev.get("amount")
-            r = {**r, "source": "excel+api"}
-        by[key] = {**prev, **r, "amount": amount, "key": key}
+            # Excel «Итого к оплате» важнее, если API ещё без bankPaymentSum
+            if not money or _pick_report_amount(money) is None:
+                amount = prev.get("amount")
+                r = {**r, "source": "excel+api"}
+            else:
+                # оба есть — API bankPaymentSum точнее для сверки с платежами
+                r = {**r, "source": "excel+api"}
+        merged = {**prev, **r, "amount": amount, "key": key}
+        if money:
+            merged["money"] = money
+        by[key] = _normalize_report_row(merged)
     rows = list(by.values())
     rows.sort(key=lambda x: (str(x.get("date_from") or ""), str(x.get("type") or "")), reverse=True)
     return rows
@@ -10179,8 +10235,7 @@ def _enrich_reports_with_payments(store: dict) -> dict:
     for r in store.get("reports") or []:
         if not isinstance(r, dict):
             continue
-        row = dict(r)
-        row["key"] = row.get("key") or _report_key(row)
+        row = _normalize_report_row(r)
         manual = marks.get(row["key"])
         if manual in ("paid", "unpaid", "processing", "partial"):
             row.update({
