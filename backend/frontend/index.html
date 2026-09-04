@@ -180,6 +180,21 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .fin-tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
 .fin-mode{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap}
 .fin-missing{color:var(--amber);font-size:12px}
+.money-badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
+.money-badge.paid{background:rgba(18,183,106,.15);color:var(--green)}
+.money-badge.processing{background:rgba(247,144,9,.18);color:var(--amber)}
+.money-badge.partial{background:rgba(46,144,250,.15);color:#2E90FA}
+.money-badge.unpaid{background:rgba(240,68,56,.15);color:var(--red)}
+.money-badge.unknown{background:rgba(107,107,138,.12);color:var(--wb-muted)}
+.money-table{width:100%;border-collapse:collapse;font-size:12px;min-width:780px}
+.money-table th{text-align:left;font-weight:500;color:var(--wb-muted);padding:8px 8px;border-bottom:1px solid var(--wb-border);white-space:nowrap}
+.money-table td{padding:8px;border-bottom:1px solid var(--wb-border);vertical-align:middle;font-variant-numeric:tabular-nums}
+.money-table tr:hover td{background:rgba(0,0,0,.02)}
+.money-mark{padding:4px 6px;border:1px solid var(--wb-border);border-radius:6px;font-size:11px;background:#FAFAF8;font-family:inherit;color:var(--wb-text)}
+.money-pay-form{display:grid;grid-template-columns:90px 140px 140px 140px 1fr auto;gap:8px;align-items:end;margin-bottom:12px}
+@media(max-width:900px){.money-pay-form{grid-template-columns:1fr 1fr}}
+.money-pay-form label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--wb-muted)}
+.money-note{font-size:12px;color:var(--wb-muted);line-height:1.45;margin:8px 0 14px}
 .fin-cost-inp{
   width:96px;border:1px solid var(--wb-border);border-radius:6px;padding:5px 8px;
   font-size:13px;font-family:inherit;text-align:right;background:#FAFAF8;color:var(--wb-text);
@@ -1654,7 +1669,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
     <div class="fin-head">
       <div>
         <h2>Финансы</h2>
-        <p id="finMeta">Себестоимость остатков · баланс и кредиты</p>
+        <p id="finMeta">Себестоимость остатков · баланс и кредиты · отчёты ВБ</p>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="action-btn" id="finRefreshBtn" onclick="refreshFinancePanel()">↻ Обновить</button>
@@ -1664,6 +1679,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
     <div class="fin-mode">
       <button class="filter-btn on" id="finModeStock" onclick="setFinMode('stock')">Остатки</button>
       <button class="filter-btn" id="finModeCfo" onclick="setFinMode('cfo')">Баланс / кредиты</button>
+      <button class="filter-btn" id="finModeMoney" onclick="setFinMode('money')">Отчёты ВБ</button>
     </div>
 
     <div id="finStockPanel">
@@ -1700,6 +1716,41 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
       <div class="cards" id="cfoCards"></div>
       <div id="cfoRoot"></div>
       <div class="cfo-hint">Ситуация сверху считается автоматически. В ЧП — только проценты по кредитам, не весь платёж. Реализацию и целевую маржу правь вручную — от них красные линии.</div>
+    </div>
+
+    <div id="finMoneyPanel" style="display:none">
+      <div class="cfo-actions">
+        <button class="action-btn primary" onclick="syncWbMoney()">↻ Синк с ВБ</button>
+        <button class="action-btn" onclick="document.getElementById('moneyExcelInput').click()">⬆ Excel отчётов</button>
+        <input type="file" id="moneyExcelInput" accept=".xlsx,.xls" style="display:none" onchange="uploadWbMoneyExcel(this.files[0])">
+        <span class="cfo-status" id="moneyStatus"></span>
+      </div>
+      <div class="money-note" id="moneyNote">Загрузи еженедельный Excel с колонкой «Итого к оплате» и добавь заявки из «Истории платежей» — увидишь, какие отчёты уже переведены.</div>
+      <div class="cards" id="moneyCards"></div>
+      <div class="cfo-box">
+        <h3>Добавить платёж / заявку</h3>
+        <div class="money-pay-form">
+          <label>№ заявки<input class="cfo-inp" id="moneyPayId" placeholder="183"></label>
+          <label>Сумма ₽<input class="cfo-inp" id="moneyPayAmount" type="number" step="0.01" placeholder="4642081"></label>
+          <label>Создана<input class="cfo-inp" id="moneyPayCreated" placeholder="31.08.2026"></label>
+          <label>Оплачена<input class="cfo-inp" id="moneyPayPaid" placeholder="—"></label>
+          <label>Статус
+            <select class="money-mark" id="moneyPayStatus">
+              <option value="processing">Обрабатывается</option>
+              <option value="queue">В очереди</option>
+              <option value="paid">Оплачено</option>
+            </select>
+          </label>
+          <button class="action-btn primary" onclick="addWbMoneyPayment()">+ Добавить</button>
+        </div>
+        <div id="moneyPaymentsList"></div>
+      </div>
+      <div class="cfo-box">
+        <h3>Отчёты реализации</h3>
+        <div class="cfo-scroll" id="moneyReportsRoot">
+          <div class="loading"><div class="spinner"></div><span>Загрузка отчётов…</span></div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -11409,7 +11460,8 @@ const FINANCE_PIN = '1997';
 let FINANCE_OK = sessionStorage.getItem('wb_finance_ok') === '1';
 let FINANCE_DATA = null;
 let FIN_TAB = 'wb';
-let FIN_MODE = 'stock'; // stock | cfo
+let FIN_MODE = 'stock'; // stock | cfo | money
+let MONEY_DATA = null;
 let CFO_DATA = null;
 let _finPinBound = false;
 
@@ -11422,6 +11474,7 @@ function renderFinance() {
     body.style.display = 'block';
     applyFinMode();
     if(FIN_MODE === 'cfo') loadCfo(false);
+    else if(FIN_MODE === 'money') loadWbMoney(false);
     else loadFinance(false);
     return;
   }
@@ -11431,25 +11484,33 @@ function renderFinance() {
 }
 
 function setFinMode(mode) {
-  FIN_MODE = mode === 'cfo' ? 'cfo' : 'stock';
+  if(mode === 'cfo') FIN_MODE = 'cfo';
+  else if(mode === 'money') FIN_MODE = 'money';
+  else FIN_MODE = 'stock';
   applyFinMode();
   if(FIN_MODE === 'cfo') loadCfo(false);
+  else if(FIN_MODE === 'money') loadWbMoney(false);
   else loadFinance(false);
 }
 
 function applyFinMode() {
   const stock = document.getElementById('finStockPanel');
   const cfo = document.getElementById('finCfoPanel');
+  const money = document.getElementById('finMoneyPanel');
   const btnS = document.getElementById('finModeStock');
   const btnC = document.getElementById('finModeCfo');
+  const btnM = document.getElementById('finModeMoney');
   if(stock) stock.style.display = FIN_MODE === 'stock' ? 'block' : 'none';
   if(cfo) cfo.style.display = FIN_MODE === 'cfo' ? 'block' : 'none';
+  if(money) money.style.display = FIN_MODE === 'money' ? 'block' : 'none';
   if(btnS) btnS.classList.toggle('on', FIN_MODE === 'stock');
   if(btnC) btnC.classList.toggle('on', FIN_MODE === 'cfo');
+  if(btnM) btnM.classList.toggle('on', FIN_MODE === 'money');
 }
 
 function refreshFinancePanel() {
   if(FIN_MODE === 'cfo') loadCfo(true);
+  else if(FIN_MODE === 'money') loadWbMoney(true);
   else loadFinance(true);
 }
 
@@ -11539,6 +11600,7 @@ function lockFinance() {
   sessionStorage.removeItem('wb_finance_ok');
   FINANCE_DATA = null;
   CFO_DATA = null;
+  MONEY_DATA = null;
   FIN_MODE = 'stock';
   renderFinance();
 }
@@ -11867,6 +11929,225 @@ function recomputeCfoLocal() {
     current_ratio: cr != null ? Math.round(cr * 1000) / 1000 : null,
     health,
   };
+}
+
+function moneyStatusLabel(st) {
+  return ({
+    paid: 'Переведено',
+    processing: 'В обработке',
+    partial: 'Частично',
+    unpaid: 'Не переведено',
+    unknown: 'Неизвестно',
+  })[st] || st || '—';
+}
+
+function moneyFmtDate(s) {
+  if(!s) return '—';
+  const t = String(s).slice(0, 10);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(t)) {
+    const [y,m,d] = t.split('-');
+    return `${d}.${m}.${y}`;
+  }
+  return String(s).slice(0, 16);
+}
+
+function setMoneyStatus(msg, ok) {
+  const el = document.getElementById('moneyStatus');
+  if(!el) return;
+  el.textContent = msg || '';
+  el.className = 'cfo-status' + (ok === true ? ' ok' : ok === false ? ' err' : '');
+}
+
+async function loadWbMoney(force) {
+  const root = document.getElementById('moneyReportsRoot');
+  if(root && (!MONEY_DATA || force)) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Загрузка отчётов ВБ…</span></div>';
+  }
+  try {
+    const q = force ? '?refresh=true' : '';
+    const r = await fetch(`${RAILWAY_URL}/api/wb-money${q}`);
+    MONEY_DATA = await r.json();
+  } catch(e) {
+    MONEY_DATA = {error: e.message, reports: [], summary: {}};
+  }
+  drawWbMoney();
+}
+
+async function syncWbMoney() {
+  setMoneyStatus('Синхронизация…');
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/wb-money/sync`, {method: 'POST'});
+    MONEY_DATA = await r.json();
+    setMoneyStatus('Обновлено', true);
+    drawWbMoney();
+  } catch(e) {
+    setMoneyStatus('Ошибка: ' + e.message, false);
+  }
+}
+
+async function uploadWbMoneyExcel(file) {
+  if(!file) return;
+  setMoneyStatus('Загрузка Excel…');
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch(`${RAILWAY_URL}/api/wb-money/upload-reports`, {method: 'POST', body: fd});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
+    setMoneyStatus('Импорт: ' + (j.imported || 0) + ' строк', true);
+    await loadWbMoney(false);
+  } catch(e) {
+    setMoneyStatus('Ошибка: ' + e.message, false);
+  } finally {
+    const inp = document.getElementById('moneyExcelInput');
+    if(inp) inp.value = '';
+  }
+}
+
+async function addWbMoneyPayment() {
+  const id = (document.getElementById('moneyPayId') || {}).value || '';
+  const amount = (document.getElementById('moneyPayAmount') || {}).value || '';
+  const created = (document.getElementById('moneyPayCreated') || {}).value || '';
+  const paid_at = (document.getElementById('moneyPayPaid') || {}).value || '';
+  const status = (document.getElementById('moneyPayStatus') || {}).value || 'processing';
+  if(!amount) {
+    setMoneyStatus('Укажи сумму', false);
+    return;
+  }
+  const existing = (MONEY_DATA && MONEY_DATA.payments) ? MONEY_DATA.payments.slice() : [];
+  existing.push({id: String(id).trim(), amount: Number(amount), created, paid_at: paid_at || null, status});
+  setMoneyStatus('Сохраняем платёж…');
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/wb-money/payments`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({payments: existing, replace: true}),
+    });
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || ('HTTP ' + r.status));
+    setMoneyStatus('Платёж добавлен', true);
+    ['moneyPayId','moneyPayAmount','moneyPayCreated','moneyPayPaid'].forEach(id => {
+      const el = document.getElementById(id); if(el) el.value = '';
+    });
+    await loadWbMoney(false);
+  } catch(e) {
+    setMoneyStatus('Ошибка: ' + e.message, false);
+  }
+}
+
+async function removeWbMoneyPayment(idx) {
+  const existing = (MONEY_DATA && MONEY_DATA.payments) ? MONEY_DATA.payments.slice() : [];
+  existing.splice(idx, 1);
+  try {
+    await fetch(`${RAILWAY_URL}/api/wb-money/payments`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({payments: existing, replace: true}),
+    });
+    await loadWbMoney(false);
+  } catch(e) {
+    setMoneyStatus('Ошибка: ' + e.message, false);
+  }
+}
+
+async function markWbMoneyReport(key, status) {
+  try {
+    const payload = {key, status: status === 'auto' ? 'clear' : status};
+    const r = await fetch(`${RAILWAY_URL}/api/wb-money/mark`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || ('HTTP ' + r.status));
+    await loadWbMoney(false);
+  } catch(e) {
+    setMoneyStatus('Ошибка: ' + e.message, false);
+  }
+}
+
+function drawWbMoney() {
+  const d = MONEY_DATA || {};
+  const cards = document.getElementById('moneyCards');
+  const root = document.getElementById('moneyReportsRoot');
+  const pays = document.getElementById('moneyPaymentsList');
+  const note = document.getElementById('moneyNote');
+  const meta = document.getElementById('finMeta');
+  if(d.error && !(d.reports || []).length) {
+    if(root) root.innerHTML = `<div class="empty">${escapeHtml(d.error)}</div>`;
+    return;
+  }
+  const s = d.summary || {};
+  const bal = d.balance || {};
+  if(meta) {
+    meta.textContent = 'Отчёты ВБ · ' + (d.as_of || '—') +
+      (d.api_error ? ' · API: ' + d.api_error : '');
+  }
+  if(note) {
+    note.textContent = d.payment_history_note || note.textContent;
+  }
+  if(cards) {
+    const balCur = bal.current != null ? bal.current : null;
+    const balWd = bal.for_withdraw != null ? bal.for_withdraw : null;
+    cards.innerHTML = [
+      ['К оплате всего', fmtMoney(s.total_amount), ''],
+      ['Переведено', fmtMoney(s.paid), 'color:var(--green)'],
+      ['В обработке', fmtMoney(s.processing), 'color:var(--amber)'],
+      ['Не переведено', fmtMoney(s.unpaid), 'color:var(--red)'],
+      ['Баланс ВБ', balCur != null ? fmtMoney(balCur) : (bal.error || '—'), ''],
+      ['К выводу', balWd != null ? fmtMoney(balWd) : '—', ''],
+    ].map(([l,v,st]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${st}">${v}</div></div>`).join('');
+  }
+  if(pays) {
+    const list = d.payments || [];
+    if(!list.length) {
+      pays.innerHTML = '<div class="cfo-hint">Пока нет заявок — добавь из «Истории платежей» (номер, сумма, статус).</div>';
+    } else {
+      pays.innerHTML = `<table class="money-table" style="min-width:0"><thead><tr>
+        <th>№</th><th>Сумма</th><th>Создана</th><th>Оплачена</th><th>Статус</th><th></th>
+      </tr></thead><tbody>` + list.map((p, i) => `<tr>
+        <td>${escapeHtml(p.id || '—')}</td>
+        <td>${fmtMoney(p.amount)}</td>
+        <td>${escapeHtml(p.created || '—')}</td>
+        <td>${escapeHtml(p.paid_at || '—')}</td>
+        <td><span class="money-badge ${p.status === 'paid' ? 'paid' : (p.status === 'queue' ? 'processing' : 'processing')}">${escapeHtml(p.status || '')}</span></td>
+        <td><button class="cfo-del" title="Удалить" onclick="removeWbMoneyPayment(${i})">✕</button></td>
+      </tr>`).join('') + '</tbody></table>';
+    }
+  }
+  const reports = d.reports || [];
+  if(root) {
+    if(!reports.length) {
+      root.innerHTML = '<div class="empty">Нет отчётов. Нажми «Синк с ВБ» или загрузи Excel еженедельного отчёта.</div>';
+    } else {
+      root.innerHTML = `<table class="money-table"><thead><tr>
+        <th>Период</th><th>Тип</th><th>№ отчёта</th><th>Итого к оплате</th><th>Статус</th><th>Платёж</th><th>Отметка</th>
+      </tr></thead><tbody>` + reports.map(r => {
+        const st = r.payment_status || 'unknown';
+        const mp = r.matched_payment;
+        const mpTxt = mp
+          ? ('#' + (mp.id || '—') + (mp.near_match_diff != null ? ' (~' + fmt(mp.near_match_diff) + ')' : ''))
+          : (r.payment_source === 'manual' ? 'вручную' : '—');
+        const keyEnc = encodeURIComponent(r.key || '');
+        const cur = r.payment_source === 'manual' ? st : 'auto';
+        return `<tr>
+          <td>${moneyFmtDate(r.date_from)} – ${moneyFmtDate(r.date_to)}</td>
+          <td>${escapeHtml(r.type || '—')}</td>
+          <td>${escapeHtml(r.report_id != null ? String(r.report_id) : '—')}</td>
+          <td style="font-weight:600">${r.amount != null ? fmtMoney(r.amount) : '—'}</td>
+          <td><span class="money-badge ${st}">${moneyStatusLabel(st)}</span></td>
+          <td>${escapeHtml(mpTxt)}</td>
+          <td><select class="money-mark" onchange="markWbMoneyReport(decodeURIComponent('${keyEnc}'), this.value)">
+            <option value="auto"${cur==='auto'?' selected':''}>Авто</option>
+            <option value="paid"${cur==='paid'?' selected':''}>Переведено</option>
+            <option value="processing"${cur==='processing'?' selected':''}>В обработке</option>
+            <option value="partial"${cur==='partial'?' selected':''}>Частично</option>
+            <option value="unpaid"${cur==='unpaid'?' selected':''}>Не переведено</option>
+          </select></td>
+        </tr>`;
+      }).join('') + '</tbody></table>';
+    }
+  }
 }
 
 async function loadCfo(force) {
