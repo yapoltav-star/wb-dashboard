@@ -1044,9 +1044,9 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
 <div class="page" id="page-new-stock">
   <div class="upload-banner hint">
     <span>
-      Срок в ячейке — <b>как на карточке WB</b>. Самовывоз <b>CC Ковшовой 2с1</b> не считаем.
-      Город берёт ближайший наш FBS: Центр и СЗ — Москва / Внуково, Волга — Казань, Юг — Краснодар, Урал и Сибирь — Тюмень; нет остатка — Москва.
-      Жёлтый &gt; 40 ч, красный &gt; 60 ч. Колонки FBS — остаток на складе продавца.
+      Срок и штуки — <b>как на витрине WB в этом городе</b>. Самовывоз <b>CC Ковшовой</b> не считаем.
+      Если товар лежит на <b>складе WB</b>, показываем его, а не подменяем на FBS.
+      Срок с нашего FBS — только когда склада WB нет. Жёлтый &gt; 40 ч, красный &gt; 60 ч.
     </span>
   </div>
   <div class="toolbar">
@@ -2869,6 +2869,8 @@ function nsCityCells(a, cities) {
       cell.wh_label || cell.wh_name || '',
       qty ? (qty + ' шт') : 'нет остатка',
       h != null ? (h + ' ч') : '',
+      src === 'fbw' || src === 'fbw_peer' ? 'остаток на складах WB' : '',
+      cell.fbw_qty ? ('на складах WB ' + cell.fbw_qty + ' шт') : '',
       src === 'fbs_hub' ? ('срок с ' + (cell.wh_label || 'нашего FBS')) : '',
       src === 'fbs_hub_peer' || src === 'fbs_msk_peer' ? ('срок с ' + (cell.wh_label || 'нашего FBS') + ' (как у соседних артикулов в этот город)') : '',
       src === 'fbs_msk' ? 'срок с FBS Москва / СЦ Внуково' : '',
