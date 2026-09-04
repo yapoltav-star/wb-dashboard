@@ -12121,7 +12121,7 @@ function drawWbMoney() {
       root.innerHTML = '<div class="empty">Нет отчётов. Нажми «Синк с ВБ» или загрузи Excel еженедельного отчёта.</div>';
     } else {
       root.innerHTML = `<table class="money-table"><thead><tr>
-        <th>Период</th><th>Тип</th><th>№ отчёта</th><th>Итого к оплате</th><th>Статус</th><th>Платёж</th><th>Отметка</th>
+        <th>Период</th><th>Тип</th><th>№ отчёта</th><th>Продажа</th><th>Итого к оплате</th><th>Статус</th><th>Платёж</th><th>Отметка</th>
       </tr></thead><tbody>` + reports.map(r => {
         const st = r.payment_status || 'unknown';
         const mp = r.matched_payment;
@@ -12130,10 +12130,12 @@ function drawWbMoney() {
           : (r.payment_source === 'manual' ? 'вручную' : '—');
         const keyEnc = encodeURIComponent(r.key || '');
         const cur = r.payment_source === 'manual' ? st : 'auto';
+        const sale = r.sale_amount != null ? r.sale_amount : ((r.money || {}).retailAmountSum);
         return `<tr>
           <td>${moneyFmtDate(r.date_from)} – ${moneyFmtDate(r.date_to)}</td>
           <td>${escapeHtml(r.type || '—')}</td>
           <td>${escapeHtml(r.report_id != null ? String(r.report_id) : '—')}</td>
+          <td style="color:var(--wb-muted)">${sale != null ? fmtMoney(sale) : '—'}</td>
           <td style="font-weight:600">${r.amount != null ? fmtMoney(r.amount) : '—'}</td>
           <td><span class="money-badge ${st}">${moneyStatusLabel(st)}</span></td>
           <td>${escapeHtml(mpTxt)}</td>
