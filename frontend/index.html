@@ -1725,7 +1725,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
         <input type="file" id="moneyExcelInput" accept=".xlsx,.xls" style="display:none" onchange="uploadWbMoneyExcel(this.files[0])">
         <span class="cfo-status" id="moneyStatus"></span>
       </div>
-      <div class="money-note" id="moneyNote">Загрузи еженедельный Excel с колонкой «Итого к оплате» и добавь заявки из «Истории платежей» — увидишь, какие отчёты уже переведены.</div>
+      <div class="money-note" id="moneyNote">Заявка из «Истории платежей» обычно = сумма за неделю (Основной + По выкупам). Добавь заявки — статусы проставятся сами. Публичный API историю выплат не отдаёт.</div>
       <div class="cards" id="moneyCards"></div>
       <div class="cfo-box">
         <h3>Добавить платёж / заявку</h3>
@@ -12137,7 +12137,9 @@ function drawWbMoney() {
         const st = r.payment_status || 'unknown';
         const mp = r.matched_payment;
         const mpTxt = mp
-          ? ('#' + (mp.id || '—') + (mp.near_match_diff != null ? ' (~' + fmt(mp.near_match_diff) + ')' : ''))
+          ? ('#' + (mp.id || '—')
+            + (r.week_total != null ? ' · нед. ' + fmtMoney(r.week_total) : '')
+            + (mp.near_match_diff != null ? ' (~' + fmt(mp.near_match_diff) + ')' : ''))
           : (r.payment_source === 'manual' ? 'вручную' : '—');
         const keyEnc = encodeURIComponent(r.key || '');
         const cur = r.payment_source === 'manual' ? st : 'auto';
