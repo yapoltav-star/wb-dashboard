@@ -10426,21 +10426,127 @@ def _enrich_reports_with_payments(store: dict) -> dict:
 
     reports.sort(key=lambda x: (str(x.get("date_from") or ""), str(x.get("type") or "")), reverse=True)
 
+    # Одна строка на неделю: Основной + По выкупам → одна сумма к сверке с заявкой
+    week_groups = {}
+    for row in reports:
+        wk = (str(row.get("date_from") or "")[:10], str(row.get("date_to") or "")[:10])
+        g = week_groups.setdefault(wk, {
+            "date_from": wk[0] or None,
+            "date_to": wk[1] or None,
+            "parts": [],
+            "week_total": 0.0,
+            "sale_total": 0.0,
+            "keys": [],
+            "report_ids": [],
+        })
+        amt = 0.0
+        try:
+            amt = float(row.get("amount") or 0)
+        except (TypeError, ValueError):
+            amt = 0.0
+        sale = None
+        try:
+            if row.get("sale_amount") is not None:
+                sale = float(row.get("sale_amount"))
+            elif isinstance(row.get("money"), dict) and row["money"].get("retailAmountSum") is not None:
+                sale = float(row["money"]["retailAmountSum"])
+        except (TypeError, ValueError):
+            sale = None
+        g["parts"].append({
+            "type": row.get("type"),
+            "report_id": row.get("report_id"),
+            "amount": row.get("amount"),
+            "sale_amount": sale,
+            "key": row.get("key"),
+        })
+        g["week_total"] += amt
+        if sale is not None:
+            g["sale_total"] += sale
+        if row.get("key"):
+            g["keys"].append(row["key"])
+        if row.get("report_id") is not None:
+            g["report_ids"].append(row["report_id"])
+        # статус/платёж одинаковые для всех строк недели после матчинга
+        for fld in (
+            "payment_status", "payment_source", "matched_payment",
+            "paid_amount", "remaining_amount", "week_total",
+        ):
+            if row.get(fld) is not None or fld in ("payment_status", "payment_source", "matched_payment"):
+                g[fld] = row.get(fld)
+
+    weeks = []
+    for wk, g in week_groups.items():
+        # сумма частей надёжнее, чем week_total после копирования полей строки
+        week_total = round(sum(float(p.get("amount") or 0) for p in (g.get("parts") or [])), 2)
+        if not week_total:
+            week_total = round(float(g.get("week_total") or 0), 2)
+        paid_amt = g.get("paid_amount")
+        try:
+            paid_amt = float(paid_amt) if paid_amt is not None else None
+        except (TypeError, ValueError):
+            paid_amt = None
+        status = g.get("payment_status") or "unknown"
+        if paid_amt is not None:
+            diff = round(week_total - paid_amt, 2)
+        elif status == "unpaid":
+            diff = week_total
+        else:
+            diff = None
+        # сколько ВБ ещё должен по этой неделе (не переплата)
+        wb_owes = round(diff, 2) if diff is not None and diff > 1 else 0.0
+        overpay = round(-diff, 2) if diff is not None and diff < -1 else 0.0
+        parts = sorted(
+            g["parts"],
+            key=lambda p: (0 if "основ" in str(p.get("type") or "").lower() else 1, str(p.get("type") or "")),
+        )
+        weeks.append({
+            "key": f"week:{wk[0]}:{wk[1]}",
+            "date_from": g.get("date_from"),
+            "date_to": g.get("date_to"),
+            "week_total": week_total,
+            "sale_total": round(float(g.get("sale_total") or 0), 2) or None,
+            "paid_amount": paid_amt,
+            "diff": diff,
+            "wb_owes": wb_owes,
+            "overpay": overpay,
+            "payment_status": status,
+            "payment_source": g.get("payment_source"),
+            "matched_payment": g.get("matched_payment"),
+            "parts": parts,
+            "keys": g.get("keys") or [],
+            "report_ids": g.get("report_ids") or [],
+            "type_label": " + ".join(
+                str(p.get("type") or "Отчёт") for p in parts
+            ) if parts else "Неделя",
+        })
+
+    weeks.sort(key=lambda x: (str(x.get("date_from") or ""), str(x.get("date_to") or "")), reverse=True)
+
     def _sum(status):
         return round(sum(float(r.get("amount") or 0) for r in reports if r.get("payment_status") == status), 2)
 
     unmatched_payments = [p for i, p in enumerate(payments) if i not in used_pay]
+    weeks_total = round(sum(float(w.get("week_total") or 0) for w in weeks), 2)
+    weeks_paid = round(sum(float(w.get("paid_amount") or 0) for w in weeks if w.get("paid_amount") is not None), 2)
+    wb_owes_total = round(sum(float(w.get("wb_owes") or 0) for w in weeks), 2)
+    overpay_total = round(sum(float(w.get("overpay") or 0) for w in weeks), 2)
 
     return {
         "reports": reports,
+        "weeks": weeks,
         "summary": {
             "count": len(reports),
+            "weeks_count": len(weeks),
             "paid": _sum("paid"),
             "processing": _sum("processing"),
             "partial": _sum("partial"),
             "unpaid": _sum("unpaid"),
             "unknown": _sum("unknown"),
             "total_amount": round(sum(float(r.get("amount") or 0) for r in reports), 2),
+            "weeks_total": weeks_total,
+            "weeks_paid": weeks_paid,
+            "wb_owes": wb_owes_total,
+            "overpay": overpay_total,
             "payments_total": round(sum(float(p.get("amount") or 0) for p in payments), 2),
             "payments_matched": len(used_pay),
             "payments_unmatched": len(unmatched_payments),

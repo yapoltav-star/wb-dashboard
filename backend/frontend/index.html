@@ -186,6 +186,11 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .money-badge.partial{background:rgba(46,144,250,.15);color:#2E90FA}
 .money-remain{display:block;margin-top:4px;font-size:11px;color:var(--amber);font-weight:600;white-space:nowrap}
 .money-pay-sub{display:block;margin-top:3px;font-size:11px;color:var(--wb-muted);line-height:1.35}
+.money-debt{color:var(--red);font-weight:700}
+.money-week-parts{display:block;margin-top:3px;font-size:11px;color:var(--wb-muted);line-height:1.35;font-weight:400}
+.money-diff-pos{color:var(--red);font-weight:600}
+.money-diff-zero{color:var(--green);font-weight:600}
+.money-diff-neg{color:var(--wb-muted);font-weight:600}
 .money-badge.unpaid{background:rgba(240,68,56,.15);color:var(--red)}
 .money-badge.unknown{background:rgba(107,107,138,.12);color:var(--wb-muted)}
 .money-table{width:100%;border-collapse:collapse;font-size:12px;min-width:780px}
@@ -1727,7 +1732,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
         <input type="file" id="moneyExcelInput" accept=".xlsx,.xls" style="display:none" onchange="uploadWbMoneyExcel(this.files[0])">
         <span class="cfo-status" id="moneyStatus"></span>
       </div>
-      <div class="money-note" id="moneyNote">Заявка из «Истории платежей» обычно = сумма за неделю (Основной + По выкупам). Добавь заявки — статусы проставятся сами. Публичный API историю выплат не отдаёт.</div>
+      <div class="money-note" id="moneyNote">По каждой неделе суммируем Основной + По выкупам и сравниваем с заявкой из «Истории платежей». Сверху — сколько ВБ ещё должен. Публичный API историю выплат не отдаёт — заявки добавь вручную или скринами.</div>
       <div class="cards" id="moneyCards"></div>
       <div class="cfo-box">
         <h3>Добавить платёж / заявку</h3>
@@ -1748,7 +1753,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
         <div id="moneyPaymentsList"></div>
       </div>
       <div class="cfo-box">
-        <h3>Отчёты реализации</h3>
+        <h3>По неделям · Основной + По выкупам</h3>
         <div class="cfo-scroll" id="moneyReportsRoot">
           <div class="loading"><div class="spinner"></div><span>Загрузка отчётов…</span></div>
         </div>
@@ -12086,7 +12091,7 @@ function drawWbMoney() {
   const pays = document.getElementById('moneyPaymentsList');
   const note = document.getElementById('moneyNote');
   const meta = document.getElementById('finMeta');
-  if(d.error && !(d.reports || []).length) {
+  if(d.error && !(d.reports || []).length && !(d.weeks || []).length) {
     if(root) root.innerHTML = `<div class="empty">${escapeHtml(d.error)}</div>`;
     return;
   }
@@ -12102,10 +12107,11 @@ function drawWbMoney() {
   if(cards) {
     const balCur = bal.current != null ? bal.current : null;
     const balWd = bal.for_withdraw != null ? bal.for_withdraw : null;
+    const owes = s.wb_owes != null ? s.wb_owes : 0;
     cards.innerHTML = [
-      ['К оплате всего', fmtMoney(s.total_amount), ''],
-      ['Переведено', fmtMoney(s.paid), 'color:var(--green)'],
-      ['В обработке', fmtMoney(s.processing), 'color:var(--amber)'],
+      ['ВБ должен', fmtMoney(owes), owes > 1 ? 'color:var(--red)' : 'color:var(--green)'],
+      ['К оплате за год', fmtMoney(s.weeks_total != null ? s.weeks_total : s.total_amount), ''],
+      ['Переведено (заявки)', fmtMoney(s.weeks_paid != null ? s.weeks_paid : s.paid), 'color:var(--green)'],
       ['Не переведено', fmtMoney(s.unpaid), 'color:var(--red)'],
       ['Баланс ВБ', balCur != null ? fmtMoney(balCur) : (bal.error || '—'), ''],
       ['К выводу', balWd != null ? fmtMoney(balWd) : '—', ''],
@@ -12114,7 +12120,7 @@ function drawWbMoney() {
   if(pays) {
     const list = d.payments || [];
     if(!list.length) {
-      pays.innerHTML = '<div class="cfo-hint">Пока нет заявок — добавь из «Истории платежей» (номер, сумма, статус).</div>';
+      pays.innerHTML = '<div class="cfo-hint">Пока нет заявок — добавь из «Истории платежей» (номер, сумма, статус). Скрины за год тоже ок — по ним внесём суммы.</div>';
     } else {
       pays.innerHTML = `<table class="money-table" style="min-width:0"><thead><tr>
         <th>№</th><th>Сумма</th><th>Создана</th><th>Оплачена</th><th>Статус</th><th></th>
@@ -12123,52 +12129,92 @@ function drawWbMoney() {
         <td>${fmtMoney(p.amount)}</td>
         <td>${escapeHtml(p.created || '—')}</td>
         <td>${escapeHtml(p.paid_at || '—')}</td>
-        <td><span class="money-badge ${p.status === 'paid' ? 'paid' : (p.status === 'queue' ? 'processing' : 'processing')}">${escapeHtml(p.status || '')}</span></td>
+        <td><span class="money-badge ${p.status === 'paid' ? 'paid' : 'processing'}">${escapeHtml(p.status || '')}</span></td>
         <td><button class="cfo-del" title="Удалить" onclick="removeWbMoneyPayment(${i})">✕</button></td>
       </tr>`).join('') + '</tbody></table>';
     }
   }
-  const reports = d.reports || [];
+
+  let weeks = d.weeks || [];
+  if(!weeks.length && (d.reports || []).length) {
+    // fallback: склеить на клиенте, если бэк ещё старый
+    const map = {};
+    (d.reports || []).forEach(r => {
+      const wk = String(r.date_from || '').slice(0,10) + '|' + String(r.date_to || '').slice(0,10);
+      if(!map[wk]) {
+        map[wk] = {
+          key: 'week:' + wk.replace('|', ':'),
+          date_from: r.date_from, date_to: r.date_to,
+          week_total: 0, paid_amount: r.paid_amount, diff: null, wb_owes: 0,
+          payment_status: r.payment_status, payment_source: r.payment_source,
+          matched_payment: r.matched_payment, parts: [], keys: [],
+        };
+      }
+      const g = map[wk];
+      g.week_total += Number(r.amount || 0);
+      g.parts.push({type: r.type, amount: r.amount, report_id: r.report_id, key: r.key});
+      if(r.key) g.keys.push(r.key);
+      if(r.paid_amount != null) g.paid_amount = r.paid_amount;
+      if(r.matched_payment) g.matched_payment = r.matched_payment;
+      if(r.payment_status) g.payment_status = r.payment_status;
+    });
+    weeks = Object.values(map).map(g => {
+      g.week_total = Math.round(g.week_total * 100) / 100;
+      if(g.paid_amount != null) g.diff = Math.round((g.week_total - g.paid_amount) * 100) / 100;
+      else if(g.payment_status === 'unpaid') g.diff = g.week_total;
+      g.wb_owes = (g.diff != null && g.diff > 1) ? g.diff : 0;
+      g.type_label = g.parts.map(p => p.type || 'Отчёт').join(' + ');
+      return g;
+    }).sort((a,b) => String(b.date_from).localeCompare(String(a.date_from)));
+  }
+
   if(root) {
-    if(!reports.length) {
+    if(!weeks.length) {
       root.innerHTML = '<div class="empty">Нет отчётов. Нажми «Синк с ВБ» или загрузи Excel еженедельного отчёта.</div>';
     } else {
       root.innerHTML = `<table class="money-table"><thead><tr>
-        <th>Период</th><th>Тип</th><th>№ отчёта</th><th>Продажа</th><th>Итого к оплате</th><th>Статус</th><th>Платёж</th><th>Отметка</th>
-      </tr></thead><tbody>` + reports.map(r => {
-        const st = r.payment_status || 'unknown';
-        const mp = r.matched_payment;
-        const remain = r.remaining_amount != null ? r.remaining_amount
-          : (mp && mp.near_match_diff != null ? mp.near_match_diff : null);
-        const weekTot = r.week_total != null ? r.week_total : (mp && mp.week_total);
-        const paidAmt = r.paid_amount != null ? r.paid_amount : (mp && mp.amount);
+        <th>Неделя</th><th>К оплате</th><th>Переведено</th><th>Разница (должен ВБ)</th><th>Статус</th><th>Заявка</th><th>Отметка</th>
+      </tr></thead><tbody>` + weeks.map(w => {
+        const st = w.payment_status || 'unknown';
+        const mp = w.matched_payment;
+        const weekTot = w.week_total;
+        const paidAmt = w.paid_amount != null ? w.paid_amount : (mp && mp.amount);
+        const diff = w.diff != null ? w.diff
+          : (paidAmt != null && weekTot != null ? Math.round((weekTot - paidAmt) * 100) / 100 : null);
+        const owes = w.wb_owes != null ? w.wb_owes : (diff != null && diff > 1 ? diff : 0);
+        const parts = (w.parts || []).map(p =>
+          `${escapeHtml(p.type || '')} ${p.amount != null ? fmtMoney(p.amount) : ''}`
+        ).join(' · ');
+        let diffHtml = '—';
+        if(diff == null) diffHtml = '—';
+        else if(Math.abs(diff) <= 1) diffHtml = `<span class="money-diff-zero">0 ₽</span>`;
+        else if(diff > 1) diffHtml = `<span class="money-diff-pos">${fmtMoney(diff)}</span>`;
+        else diffHtml = `<span class="money-diff-neg">переплата ${fmtMoney(-diff)}</span>`;
+
         let statusHtml = `<span class="money-badge ${st}">${moneyStatusLabel(st)}</span>`;
-        if(remain != null && remain > 1 && (st === 'partial' || st === 'processing')) {
-          statusHtml += `<span class="money-remain">разница ${fmtMoney(remain)}</span>`;
-        }
+        if(owes > 1) statusHtml += `<span class="money-remain">должен ${fmtMoney(owes)}</span>`;
+
         let mpHtml = '—';
         if(mp) {
           mpHtml = `#${escapeHtml(mp.id || '—')}`;
-          const bits = [];
-          if(paidAmt != null) bits.push('заявка ' + fmtMoney(paidAmt));
-          if(weekTot != null) bits.push('неделя ' + fmtMoney(weekTot));
-          if(remain != null && remain > 1) bits.push('разница ' + fmtMoney(remain));
-          if(bits.length) mpHtml += `<span class="money-pay-sub">${bits.join(' · ')}</span>`;
-        } else if(r.payment_source === 'manual') {
+          if(paidAmt != null) mpHtml += `<span class="money-pay-sub">заявка ${fmtMoney(paidAmt)}</span>`;
+        } else if(w.payment_source === 'manual') {
           mpHtml = 'вручную';
         }
-        const keyEnc = encodeURIComponent(r.key || '');
-        const cur = r.payment_source === 'manual' ? st : 'auto';
-        const sale = r.sale_amount != null ? r.sale_amount : ((r.money || {}).retailAmountSum);
+
+        const keysEnc = encodeURIComponent(JSON.stringify(w.keys || []));
+        const cur = w.payment_source === 'manual' ? st : 'auto';
         return `<tr>
-          <td>${moneyFmtDate(r.date_from)} – ${moneyFmtDate(r.date_to)}</td>
-          <td>${escapeHtml(r.type || '—')}</td>
-          <td>${escapeHtml(r.report_id != null ? String(r.report_id) : '—')}</td>
-          <td style="color:var(--wb-muted)">${sale != null ? fmtMoney(sale) : '—'}</td>
-          <td style="font-weight:600">${r.amount != null ? fmtMoney(r.amount) : '—'}</td>
+          <td>
+            <div style="font-weight:600">${moneyFmtDate(w.date_from)} – ${moneyFmtDate(w.date_to)}</div>
+            <span class="money-week-parts">${parts || escapeHtml(w.type_label || '')}</span>
+          </td>
+          <td style="font-weight:700">${weekTot != null ? fmtMoney(weekTot) : '—'}</td>
+          <td>${paidAmt != null ? fmtMoney(paidAmt) : '—'}</td>
+          <td>${diffHtml}</td>
           <td>${statusHtml}</td>
           <td>${mpHtml}</td>
-          <td><select class="money-mark" onchange="markWbMoneyReport(decodeURIComponent('${keyEnc}'), this.value)">
+          <td><select class="money-mark" onchange="markWbMoneyWeek(decodeURIComponent('${keysEnc}'), this.value)">
             <option value="auto"${cur==='auto'?' selected':''}>Авто</option>
             <option value="paid"${cur==='paid'?' selected':''}>Переведено</option>
             <option value="processing"${cur==='processing'?' selected':''}>В обработке</option>
@@ -12178,6 +12224,30 @@ function drawWbMoney() {
         </tr>`;
       }).join('') + '</tbody></table>';
     }
+  }
+}
+
+async function markWbMoneyWeek(keysJson, status) {
+  let keys = [];
+  try { keys = JSON.parse(keysJson || '[]'); } catch(e) { keys = []; }
+  if(!keys.length) {
+    setMoneyStatus('Нет ключей отчётов для отметки', false);
+    return;
+  }
+  try {
+    for(const key of keys) {
+      const payload = {key, status: status === 'auto' ? 'clear' : status};
+      const r = await fetch(`${RAILWAY_URL}/api/wb-money/mark`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.detail || ('HTTP ' + r.status));
+    }
+    await loadWbMoney(false);
+  } catch(e) {
+    setMoneyStatus('Ошибка: ' + e.message, false);
   }
 }
 
