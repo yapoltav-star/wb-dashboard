@@ -10469,7 +10469,7 @@ def _enrich_reports_with_payments(store: dict) -> dict:
         # статус/платёж одинаковые для всех строк недели после матчинга
         for fld in (
             "payment_status", "payment_source", "matched_payment",
-            "paid_amount", "remaining_amount", "week_total",
+            "paid_amount", "remaining_amount",
         ):
             if row.get(fld) is not None or fld in ("payment_status", "payment_source", "matched_payment"):
                 g[fld] = row.get(fld)
@@ -10648,6 +10648,66 @@ def sync_wb_money(date_from: str = None, date_to: str = None):
     return get_wb_money(date_from=date_from, date_to=date_to, refresh=True)
 
 
+
+def parse_wb_active_payments_html(content: bytes) -> list:
+    """Парсит сохранённую страницу seller.wildberries.ru/payment-history/active.
+
+    Возвращает [{id, amount, created, paid_at, status}].
+    """
+    import re
+    from html import unescape
+    try:
+        text = content.decode("utf-8")
+    except Exception:
+        text = content.decode("cp1251", errors="replace")
+    clean = re.sub(r"<script[\s\S]*?</script>", " ", text, flags=re.I)
+    clean = re.sub(r"<style[\s\S]*?</style>", " ", clean, flags=re.I)
+    clean = re.sub(r"<(br|p|div|tr|li|h[1-6]|td|th)[^>]*>", "\n", clean, flags=re.I)
+    clean = re.sub(r"<[^>]+>", " ", clean)
+    clean = unescape(clean)
+    clean = re.sub(r"[ \t\f\v]+", " ", clean)
+    lines = [ln.strip() for ln in clean.splitlines() if ln.strip()]
+    rows = []
+    i = 0
+    while i < len(lines):
+        m = re.fullmatch(r"(\d+)/(\d+)", lines[i])
+        if m and i + 3 < len(lines):
+            amt_raw = lines[i + 1].replace(" ", "").replace("\xa0", "").replace(",", ".")
+            if lines[i + 2] == "руб." and re.match(r"\d{2}\.\d{2}\.\d{4}$", lines[i + 3]):
+                try:
+                    amount = float(amt_raw)
+                except Exception:
+                    i += 1
+                    continue
+                status_raw = lines[i + 4] if i + 4 < len(lines) else ""
+                low = status_raw.lower()
+                paid_at = None
+                if "успешно" in low or "проведена банком" in low:
+                    status = "paid"
+                    dm = re.search(r"(\d{2}\.\d{2}\.\d{4})", status_raw)
+                    if dm:
+                        paid_at = dm.group(1)
+                elif "очеред" in low:
+                    status = "queue"
+                else:
+                    status = "processing"
+                rows.append({
+                    "id": m.group(2),
+                    "amount": amount,
+                    "created": lines[i + 3],
+                    "paid_at": paid_at,
+                    "status": status,
+                })
+                i += 5
+                continue
+        i += 1
+    # новее сверху в HTML — оставим как есть; уникализируем по id
+    by_id = {}
+    for r in rows:
+        by_id[str(r["id"])] = r
+    return list(by_id.values())
+
+
 @app.post("/api/wb-money/upload-reports")
 async def upload_wb_money_reports(file: UploadFile = File(...)):
     content = await file.read()
@@ -10684,11 +10744,11 @@ async def save_wb_money_payments(request: dict):
         if amount is None:
             continue
         status = str(p.get("status") or "processing").strip().lower()
-        if status in ("оплачено", "done", "success"):
+        if status in ("оплачено", "done", "success", "paid") or "успешно" in status or "проведена банком" in status:
             status = "paid"
-        elif status in ("очередь", "в очереди", "поручение в очереди"):
+        elif status in ("очередь", "в очереди", "поручение в очереди", "queue") or "очеред" in status:
             status = "queue"
-        elif status in ("обрабатывается", "оплата обрабатывается"):
+        elif status in ("обрабатывается", "оплата обрабатывается", "processing") or "обрабат" in status:
             status = "processing"
         cleaned.append({
             "id": str(p.get("id") or p.get("payment_id") or ""),
@@ -10714,6 +10774,33 @@ async def save_wb_money_payments(request: dict):
         "status": "ok",
         "payments": len(store["payments"]),
         "summary": _enrich_reports_with_payments(store)["summary"],
+    }
+
+
+
+@app.post("/api/wb-money/upload-payments-html")
+async def upload_wb_money_payments_html(file: UploadFile = File(...)):
+    """Импорт заявок из HTML «Активные платежи» (сохранённая страница кабинета ВБ)."""
+    content = await file.read()
+    try:
+        rows = parse_wb_active_payments_html(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not rows:
+        raise HTTPException(status_code=400, detail="В HTML не нашёл заявок на оплату")
+    store = _money_store()
+    # мержим по id: HTML — источник правды по статусу/сумме
+    by_id = {str(p.get("id")): p for p in (store.get("payments") or []) if p.get("id")}
+    for r in rows:
+        by_id[str(r["id"])] = r
+    store["payments"] = list(by_id.values())
+    _save_money_store(store)
+    enriched = _enrich_reports_with_payments(store)
+    return {
+        "status": "ok",
+        "imported": len(rows),
+        "payments": len(store["payments"]),
+        "summary": enriched.get("summary"),
     }
 
 

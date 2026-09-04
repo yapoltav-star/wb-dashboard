@@ -1730,9 +1730,11 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
         <button class="action-btn primary" onclick="syncWbMoney()">↻ Синк с ВБ</button>
         <button class="action-btn" onclick="document.getElementById('moneyExcelInput').click()">⬆ Excel отчётов</button>
         <input type="file" id="moneyExcelInput" accept=".xlsx,.xls" style="display:none" onchange="uploadWbMoneyExcel(this.files[0])">
+        <button class="action-btn" onclick="document.getElementById('moneyPaymentsHtmlInput').click()">⬆ HTML платежей</button>
+        <input type="file" id="moneyPaymentsHtmlInput" accept=".html,.htm" style="display:none" onchange="uploadWbMoneyPaymentsHtml(this.files[0])">
         <span class="cfo-status" id="moneyStatus"></span>
       </div>
-      <div class="money-note" id="moneyNote">По каждой неделе суммируем Основной + По выкупам и сравниваем с заявкой из «Истории платежей». Сверху — сколько ВБ ещё должен. Публичный API историю выплат не отдаёт — заявки добавь вручную или скринами.</div>
+      <div class="money-note" id="moneyNote">По каждой неделе суммируем Основной + По выкупам и сравниваем с заявкой из «Истории платежей». Сверху — сколько ВБ ещё должен. Публичный API историю выплат не отдаёт — загрузи HTML «Активные платежи» из кабинета ВБ или добавь заявки вручную.</div>
       <div class="cards" id="moneyCards"></div>
       <div class="cfo-box">
         <h3>Добавить платёж / заявку</h3>
@@ -12022,6 +12024,25 @@ async function uploadWbMoneyExcel(file) {
   }
 }
 
+async function uploadWbMoneyPaymentsHtml(file) {
+  if(!file) return;
+  setMoneyStatus('Импорт HTML платежей…');
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch(`${RAILWAY_URL}/api/wb-money/upload-payments-html`, {method: 'POST', body: fd});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
+    setMoneyStatus('Платежи: +' + (j.imported || 0) + ' · всего ' + (j.payments || 0), true);
+    await loadWbMoney(false);
+  } catch(e) {
+    setMoneyStatus('Ошибка: ' + e.message, false);
+  } finally {
+    const inp = document.getElementById('moneyPaymentsHtmlInput');
+    if(inp) inp.value = '';
+  }
+}
+
 async function addWbMoneyPayment() {
   const id = (document.getElementById('moneyPayId') || {}).value || '';
   const amount = (document.getElementById('moneyPayAmount') || {}).value || '';
@@ -12120,7 +12141,7 @@ function drawWbMoney() {
   if(pays) {
     const list = d.payments || [];
     if(!list.length) {
-      pays.innerHTML = '<div class="cfo-hint">Пока нет заявок — добавь из «Истории платежей» (номер, сумма, статус). Скрины за год тоже ок — по ним внесём суммы.</div>';
+      pays.innerHTML = '<div class="cfo-hint">Пока нет заявок — добавь из «Истории платежей» (номер, сумма, статус). Или загрузи HTML «Активные платежи» кнопкой сверху.</div>';
     } else {
       pays.innerHTML = `<table class="money-table" style="min-width:0"><thead><tr>
         <th>№</th><th>Сумма</th><th>Создана</th><th>Оплачена</th><th>Статус</th><th></th>
