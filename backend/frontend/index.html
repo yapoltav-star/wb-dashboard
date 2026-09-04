@@ -184,6 +184,8 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .money-badge.paid{background:rgba(18,183,106,.15);color:var(--green)}
 .money-badge.processing{background:rgba(247,144,9,.18);color:var(--amber)}
 .money-badge.partial{background:rgba(46,144,250,.15);color:#2E90FA}
+.money-remain{display:block;margin-top:4px;font-size:11px;color:var(--amber);font-weight:600;white-space:nowrap}
+.money-pay-sub{display:block;margin-top:3px;font-size:11px;color:var(--wb-muted);line-height:1.35}
 .money-badge.unpaid{background:rgba(240,68,56,.15);color:var(--red)}
 .money-badge.unknown{background:rgba(107,107,138,.12);color:var(--wb-muted)}
 .money-table{width:100%;border-collapse:collapse;font-size:12px;min-width:780px}
@@ -12136,11 +12138,25 @@ function drawWbMoney() {
       </tr></thead><tbody>` + reports.map(r => {
         const st = r.payment_status || 'unknown';
         const mp = r.matched_payment;
-        const mpTxt = mp
-          ? ('#' + (mp.id || '—')
-            + (r.week_total != null ? ' · нед. ' + fmtMoney(r.week_total) : '')
-            + (mp.near_match_diff != null ? ' (~' + fmt(mp.near_match_diff) + ')' : ''))
-          : (r.payment_source === 'manual' ? 'вручную' : '—');
+        const remain = r.remaining_amount != null ? r.remaining_amount
+          : (mp && mp.near_match_diff != null ? mp.near_match_diff : null);
+        const weekTot = r.week_total != null ? r.week_total : (mp && mp.week_total);
+        const paidAmt = r.paid_amount != null ? r.paid_amount : (mp && mp.amount);
+        let statusHtml = `<span class="money-badge ${st}">${moneyStatusLabel(st)}</span>`;
+        if(remain != null && remain > 1 && (st === 'partial' || st === 'processing')) {
+          statusHtml += `<span class="money-remain">разница ${fmtMoney(remain)}</span>`;
+        }
+        let mpHtml = '—';
+        if(mp) {
+          mpHtml = `#${escapeHtml(mp.id || '—')}`;
+          const bits = [];
+          if(paidAmt != null) bits.push('заявка ' + fmtMoney(paidAmt));
+          if(weekTot != null) bits.push('неделя ' + fmtMoney(weekTot));
+          if(remain != null && remain > 1) bits.push('разница ' + fmtMoney(remain));
+          if(bits.length) mpHtml += `<span class="money-pay-sub">${bits.join(' · ')}</span>`;
+        } else if(r.payment_source === 'manual') {
+          mpHtml = 'вручную';
+        }
         const keyEnc = encodeURIComponent(r.key || '');
         const cur = r.payment_source === 'manual' ? st : 'auto';
         const sale = r.sale_amount != null ? r.sale_amount : ((r.money || {}).retailAmountSum);
@@ -12150,8 +12166,8 @@ function drawWbMoney() {
           <td>${escapeHtml(r.report_id != null ? String(r.report_id) : '—')}</td>
           <td style="color:var(--wb-muted)">${sale != null ? fmtMoney(sale) : '—'}</td>
           <td style="font-weight:600">${r.amount != null ? fmtMoney(r.amount) : '—'}</td>
-          <td><span class="money-badge ${st}">${moneyStatusLabel(st)}</span></td>
-          <td>${escapeHtml(mpTxt)}</td>
+          <td>${statusHtml}</td>
+          <td>${mpHtml}</td>
           <td><select class="money-mark" onchange="markWbMoneyReport(decodeURIComponent('${keyEnc}'), this.value)">
             <option value="auto"${cur==='auto'?' selected':''}>Авто</option>
             <option value="paid"${cur==='paid'?' selected':''}>Переведено</option>
