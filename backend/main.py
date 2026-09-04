@@ -37,6 +37,7 @@ WB_CONTENT_URL = "https://content-api.wildberries.ru"
 WB_PRICES_URL = "https://discounts-prices-api.wildberries.ru"
 WB_MARKETPLACE_URL = "https://marketplace-api.wildberries.ru"
 WB_CHAT_URL = "https://buyer-chat-api.wildberries.ru"
+WB_FINANCE_URL = "https://finance-api.wildberries.ru"
 WB_CHAT_AUTOREPLY_KEY = "wb_chat_autoreply"
 WB_CHAT_DEFAULT_TEXT = "Здравствуйте! Сообщение получено, ответим в ближайшее время."
 WB_CHAT_REPLIED_KEEP = 2500
@@ -9862,6 +9863,137 @@ def enrich_cfo_snapshot(raw: dict) -> dict:
         "health": health,
     }
     return data
+
+
+def _wb_money(v):
+    """WB finance API часто отдаёт деньги строкой."""
+    if v is None or v == "":
+        return None
+    try:
+        return float(str(v).replace(" ", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def fetch_wb_account_balance() -> dict:
+    """Виджет баланса с главной seller.wildberries.ru."""
+    if not WB_TOKEN:
+        return {"error": "WB_TOKEN не задан"}
+    try:
+        r = httpx.get(
+            f"{WB_FINANCE_URL}/api/v1/account/balance",
+            headers=wb_headers(),
+            timeout=30,
+        )
+    except Exception as e:
+        return {"error": str(e)}
+    if r.status_code != 200:
+        return {"error": f"HTTP {r.status_code}", "body": r.text[:400]}
+    data = r.json() if r.content else {}
+    # иногда обёртка data
+    if isinstance(data, dict) and isinstance(data.get("data"), dict):
+        data = data["data"]
+    return {
+        "currency": data.get("currency") or "RUB",
+        "current": _wb_money(data.get("current")),
+        "for_withdraw": _wb_money(data.get("for_withdraw")),
+        "raw_keys": sorted(data.keys()) if isinstance(data, dict) else [],
+    }
+
+
+def fetch_wb_sales_reports(date_from: str, date_to: str) -> dict:
+    """Список еженедельных отчётов реализации (Финансы → отчёты)."""
+    if not WB_TOKEN:
+        return {"error": "WB_TOKEN не задан", "reports": []}
+    payload = {"dateFrom": date_from, "dateTo": date_to}
+    try:
+        r = httpx.post(
+            f"{WB_FINANCE_URL}/api/finance/v1/sales-reports/list",
+            headers={**wb_headers(), "Content-Type": "application/json"},
+            json=payload,
+            timeout=60,
+        )
+    except Exception as e:
+        return {"error": str(e), "reports": []}
+    if r.status_code == 204:
+        return {"reports": [], "note": "пусто за период"}
+    if r.status_code != 200:
+        return {"error": f"HTTP {r.status_code}", "body": r.text[:500], "reports": []}
+    raw = r.json() if r.content else []
+    # может быть list или {data:[...]} / {reports:[...]}
+    items = raw
+    if isinstance(raw, dict):
+        items = raw.get("data") or raw.get("reports") or raw.get("list") or []
+    if not isinstance(items, list):
+        return {"error": "неожиданный формат", "raw_type": str(type(raw)), "reports": []}
+
+    reports = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        # Поля в разных версиях API называются по-разному — собираем всё денежное.
+        money_fields = {}
+        for k, v in it.items():
+            mv = _wb_money(v)
+            if mv is not None and any(
+                x in k.lower()
+                for x in ("pay", "sum", "total", "amount", "transfer", "оплат", "перечисл")
+            ):
+                money_fields[k] = mv
+        reports.append({
+            "report_id": it.get("reportId") or it.get("report_id") or it.get("id"),
+            "date_from": it.get("dateFrom") or it.get("date_from") or it.get("begin"),
+            "date_to": it.get("dateTo") or it.get("date_to") or it.get("end"),
+            "created": it.get("createDate") or it.get("createdAt") or it.get("created"),
+            "type": it.get("type") or it.get("reportType") or it.get("category"),
+            "status": it.get("status") or it.get("paymentStatus") or it.get("state"),
+            "money": money_fields,
+            "raw": {k: it.get(k) for k in list(it.keys())[:40]},
+        })
+    return {"reports": reports, "count": len(reports)}
+
+
+@app.get("/api/wb-money")
+def get_wb_money(date_from: str = None, date_to: str = None):
+    """Живые деньги WB через Finance API (токен Railway).
+
+    Раздел seller «История платежей» отдельным публичным методом не отдан —
+    тянем баланс + список отчётов реализации за период (как еженедельный Excel).
+    """
+    today = _msk_now().date()
+    if not date_to:
+        date_to = today.isoformat()
+    if not date_from:
+        date_from = (today - timedelta(days=100)).isoformat()
+
+    balance = fetch_wb_account_balance()
+    reports = fetch_wb_sales_reports(date_from, date_to)
+
+    # CFO snapshot — ручная дебиторка, как запасной ориентир
+    cfo = get_setting_json(CFO_SNAPSHOT_KEY, {}) or {}
+    wb_recv = cfo.get("wb_receivables") if isinstance(cfo, dict) else []
+    try:
+        wb_recv_sum = round(sum(float(x or 0) for x in (wb_recv or [])), 2)
+    except Exception:
+        wb_recv_sum = None
+
+    return {
+        "as_of": _msk_now().strftime("%d.%m.%Y %H:%M"),
+        "period": {"from": date_from, "to": date_to},
+        "balance": balance,
+        "sales_reports": reports,
+        "cfo_snapshot": {
+            "wb_receivables": wb_recv,
+            "wb_receivables_sum": wb_recv_sum,
+            "wb_balance_saved": cfo.get("wb_balance") if isinstance(cfo, dict) else None,
+            "updated_at": cfo.get("updated_at") if isinstance(cfo, dict) else None,
+            "note": "Это сохранённый снимок CFO в Supabase, не live история платежей",
+        },
+        "payment_history_note": (
+            "Страница https://seller.wildberries.ru/payment-history/active "
+            "в публичном WB API не опубликована. Здесь — баланс и отчёты реализации."
+        ),
+    }
 
 
 @app.get("/api/finance/cfo")
