@@ -10326,21 +10326,59 @@ def _enrich_reports_with_payments(store: dict) -> dict:
     }
 
 
+def _wb_money_default_period():
+    """По умолчанию — с 1 января текущего (МСК) года по сегодня."""
+    today = _msk_now().date()
+    return today.replace(month=1, day=1).isoformat(), today.isoformat()
+
+
+def fetch_wb_sales_reports_range(date_from: str, date_to: str, chunk_days: int = 100) -> dict:
+    """Тянет отчёты кусками — у list-API иногда режется длинный период."""
+    try:
+        d0 = datetime.strptime(str(date_from)[:10], "%Y-%m-%d").date()
+        d1 = datetime.strptime(str(date_to)[:10], "%Y-%m-%d").date()
+    except Exception:
+        return fetch_wb_sales_reports(date_from, date_to)
+
+    if d1 < d0:
+        d0, d1 = d1, d0
+
+    all_rows = []
+    errors = []
+    cur = d0
+    while cur <= d1:
+        end = min(cur + timedelta(days=chunk_days - 1), d1)
+        part = fetch_wb_sales_reports(cur.isoformat(), end.isoformat())
+        if part.get("error"):
+            errors.append(f"{cur}…{end}: {part.get('error')}")
+        else:
+            all_rows.extend(part.get("reports") or [])
+        cur = end + timedelta(days=1)
+
+    merged = _merge_reports([], all_rows)
+    out = {"reports": merged, "count": len(merged)}
+    if errors and not merged:
+        out["error"] = "; ".join(errors[:3])
+    elif errors:
+        out["note"] = "; ".join(errors[:3])
+    return out
+
+
 @app.get("/api/wb-money")
 def get_wb_money(date_from: str = None, date_to: str = None, refresh: bool = False):
     """Отчёты ВБ + статус оплаты (сверка с историей платежей)."""
     store = _money_store()
-    today = _msk_now().date()
+    def_from, def_to = _wb_money_default_period()
     if not date_to:
-        date_to = today.isoformat()
+        date_to = def_to
     if not date_from:
-        date_from = (today - timedelta(days=100)).isoformat()
+        date_from = def_from
 
     balance = store.get("balance")
     api_err = None
     if refresh or not store.get("reports"):
         balance = fetch_wb_account_balance()
-        api = fetch_wb_sales_reports(date_from, date_to)
+        api = fetch_wb_sales_reports_range(date_from, date_to)
         if api.get("error"):
             api_err = api.get("error")
             if api.get("body"):
@@ -10351,9 +10389,16 @@ def get_wb_money(date_from: str = None, date_to: str = None, refresh: bool = Fal
         _save_money_store(store)
 
     enriched = _enrich_reports_with_payments(store)
+    # период в ответе — фактический охват отчётов, если шире запроса
+    reps = enriched.get("reports") or []
+    if reps:
+        real_from = min((r.get("date_from") or date_from) for r in reps)
+        real_to = max((r.get("date_to") or r.get("date_from") or date_to) for r in reps)
+    else:
+        real_from, real_to = date_from, date_to
     return {
         "as_of": _msk_now().strftime("%d.%m.%Y %H:%M"),
-        "period": {"from": date_from, "to": date_to},
+        "period": {"from": real_from, "to": real_to, "requested_from": date_from, "requested_to": date_to},
         "balance": balance or {},
         "api_error": api_err,
         **enriched,
