@@ -10396,11 +10396,22 @@ def _enrich_reports_with_payments(store: dict) -> dict:
             if match:
                 p, status, diff = match
                 row = dict(row)
+                week_total = round(g["amount"], 2)
+                try:
+                    paid_amt = float(p.get("amount") or 0)
+                except (TypeError, ValueError):
+                    paid_amt = None
+                remaining = None
+                if paid_amt is not None:
+                    remaining = round(week_total - paid_amt, 2)
                 row.update({
                     "payment_status": status,
                     "payment_source": "payment_match",
                     "matched_payment": p,
-                    "week_total": round(g["amount"], 2),
+                    "week_total": week_total,
+                    "paid_amount": paid_amt,
+                    # разница неделя − заявка (для частичных / если заявка меньше недели)
+                    "remaining_amount": remaining if remaining is not None and remaining > 1 else None,
                 })
             else:
                 row = dict(row)
@@ -10409,6 +10420,8 @@ def _enrich_reports_with_payments(store: dict) -> dict:
                 else:
                     row.update({"payment_status": "unpaid", "payment_source": None, "matched_payment": None})
                 row["week_total"] = round(g["amount"], 2)
+                row["paid_amount"] = None
+                row["remaining_amount"] = None
             reports.append(row)
 
     reports.sort(key=lambda x: (str(x.get("date_from") or ""), str(x.get("type") or "")), reverse=True)
