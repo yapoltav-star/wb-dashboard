@@ -10225,12 +10225,37 @@ def _merge_reports(existing: list, incoming: list) -> list:
     return rows
 
 
+def _payment_status_from_row(p: dict) -> str:
+    st = (p.get("status") or "").lower()
+    if p.get("paid_at") or st in ("paid", "done", "success", "оплачено"):
+        return "paid"
+    if st in ("processing", "queue", "pending", "обрабатывается", "очередь", "оплата обрабатывается"):
+        return "processing"
+    return "processing" if not p.get("paid_at") else "paid"
+
+
+def _parse_ru_date(s) -> date | None:
+    if not s:
+        return None
+    t = str(s).strip()[:10]
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(t, fmt).date()
+        except Exception:
+            continue
+    return None
+
+
 def _enrich_reports_with_payments(store: dict) -> dict:
-    reports = []
+    """Сверяет отчёты с платежами.
+
+    Важно: в кабинете ВБ одна заявка часто = сумма за неделю
+    (Основной + По выкупам). Поэтому матчим платёж к неделе, а не к одной строке.
+    """
     payments = list(store.get("payments") or [])
     marks = store.get("marks") or {}
-    # жадное сопоставление: каждый платёж — максимум к одному отчёту
-    used_pay_idx = set()
+
+    locked = []
     pending = []
     for r in store.get("reports") or []:
         if not isinstance(r, dict):
@@ -10243,70 +10268,155 @@ def _enrich_reports_with_payments(store: dict) -> dict:
                 "payment_source": "manual",
                 "matched_payment": None,
             })
-            reports.append(row)
+            locked.append(row)
         else:
             pending.append(row)
 
-    # сначала точные совпадения (±1₽), потом near-match
-    def try_match(rows, max_diff_fn):
-        for row in rows:
-            amount = row.get("amount")
-            if amount is None:
-                continue
-            best_i = None
-            best_diff = None
-            for i, p in enumerate(payments):
-                if i in used_pay_idx:
-                    continue
-                try:
-                    pam = float(p.get("amount") or 0)
-                except (TypeError, ValueError):
-                    continue
-                diff = abs(pam - float(amount))
-                limit = max_diff_fn(float(amount))
-                if diff > limit:
-                    continue
-                if best_diff is None or diff < best_diff:
-                    best_diff = diff
-                    best_i = i
-            if best_i is None:
-                continue
-            p = payments[best_i]
-            used_pay_idx.add(best_i)
-            st = (p.get("status") or "").lower()
-            if p.get("paid_at") or st in ("paid", "done", "success", "оплачено"):
-                status = "paid"
-            elif st in ("processing", "queue", "pending", "обрабатывается", "очередь"):
-                status = "processing"
-            else:
-                status = "processing" if not p.get("paid_at") else "paid"
-            matched = dict(p)
-            if best_diff is not None and best_diff > 1.0:
-                matched["near_match_diff"] = round(best_diff, 2)
-            row.update({
-                "payment_status": status,
-                "payment_source": "payment_match",
-                "matched_payment": matched,
-            })
-
-    # exact
-    try_match(pending, lambda a: 1.0)
-    # near
-    remaining = [r for r in pending if "payment_status" not in r]
-    try_match(remaining, lambda a: max(5000.0, abs(a) * 0.01))
-
+    # группы по неделе
+    weeks = {}
     for row in pending:
-        if "payment_status" not in row:
-            if row.get("amount") is None:
-                row.update({"payment_status": "unknown", "payment_source": None, "matched_payment": None})
+        wk = (str(row.get("date_from") or "")[:10], str(row.get("date_to") or "")[:10])
+        g = weeks.setdefault(wk, {"rows": [], "amount": 0.0})
+        g["rows"].append(row)
+        try:
+            g["amount"] += float(row.get("amount") or 0)
+        except (TypeError, ValueError):
+            pass
+
+    used_pay = set()
+    week_match = {}  # wk -> (payment, status, diff)
+
+    def assign(wk, pay_i, status, diff):
+        if wk in week_match or pay_i in used_pay:
+            return False
+        used_pay.add(pay_i)
+        p = dict(payments[pay_i])
+        if diff and diff > 1.0:
+            p["near_match_diff"] = round(diff, 2)
+        p["week_total"] = round(weeks[wk]["amount"], 2)
+        week_match[wk] = (p, status, diff)
+        return True
+
+    def pay_amount(i):
+        try:
+            return float(payments[i].get("amount") or 0)
+        except (TypeError, ValueError):
+            return None
+
+    def pay_anchor(i):
+        p = payments[i]
+        return _parse_ru_date(p.get("created")) or _parse_ru_date(p.get("paid_at"))
+
+    def week_end(wk):
+        return _parse_ru_date(wk[1]) or _parse_ru_date(wk[0])
+
+    # 1) точное совпадение суммы недели (±1₽)
+    for i, p in enumerate(payments):
+        pam = pay_amount(i)
+        if pam is None:
+            continue
+        candidates = []
+        for wk, g in weeks.items():
+            if wk in week_match:
+                continue
+            diff = abs(g["amount"] - pam)
+            if diff <= 1.0:
+                candidates.append((diff, wk))
+        if not candidates:
+            continue
+        # ближайшая по дате к созданию заявки
+        anchor = pay_anchor(i)
+        candidates.sort(key=lambda x: (
+            abs((week_end(x[1]) - anchor).days) if anchor and week_end(x[1]) else 10**6,
+            x[0],
+        ))
+        assign(candidates[0][1], i, _payment_status_from_row(p), candidates[0][0])
+
+    # 2) near-match недели (±1% или 8к₽), окно ±35 дней (заявку часто создают через 2–3 недели)
+    for i, p in enumerate(payments):
+        if i in used_pay:
+            continue
+        pam = pay_amount(i)
+        if pam is None:
+            continue
+        anchor = pay_anchor(i)
+        best = None
+        for wk, g in weeks.items():
+            if wk in week_match:
+                continue
+            diff = abs(g["amount"] - pam)
+            limit = max(8000.0, abs(g["amount"]) * 0.01)
+            if diff > limit:
+                continue
+            we = week_end(wk)
+            date_pen = abs((we - anchor).days) if anchor and we else 999
+            if anchor and we and date_pen > 35:
+                continue
+            score = (date_pen, diff)
+            if best is None or score < best[0]:
+                best = (score, wk, diff)
+        if best:
+            assign(best[1], i, _payment_status_from_row(p), best[2])
+
+    # 3) частичные выплаты: сумма заявки < суммы недели.
+    # Заявку обычно создают через 5–28 дней после конца недели (не на следующий день).
+    for i, p in enumerate(payments):
+        if i in used_pay:
+            continue
+        pam = pay_amount(i)
+        if pam is None or pam <= 0:
+            continue
+        anchor = pay_anchor(i)
+        best = None
+        for wk, g in weeks.items():
+            if wk in week_match:
+                continue
+            total = g["amount"]
+            if total <= 0 or pam >= total - 1:
+                continue
+            if pam < total * 0.15:
+                continue
+            we = week_end(wk)
+            if not anchor or not we:
+                continue
+            days_after = (anchor - we).days
+            if days_after < 5 or days_after > 28:
+                continue
+            # чем ближе доля к полной неделе и чем типичнее лаг ~14 дней — тем лучше
+            score = (abs(days_after - 14), -pam / total)
+            if best is None or score < best[0]:
+                best = (score, wk, total - pam)
+        if best:
+            assign(best[1], i, "partial", best[2])
+
+    reports = list(locked)
+    for wk, g in weeks.items():
+        match = week_match.get(wk)
+        for row in g["rows"]:
+            if match:
+                p, status, diff = match
+                row = dict(row)
+                row.update({
+                    "payment_status": status,
+                    "payment_source": "payment_match",
+                    "matched_payment": p,
+                    "week_total": round(g["amount"], 2),
+                })
             else:
-                row.update({"payment_status": "unpaid", "payment_source": None, "matched_payment": None})
-        reports.append(row)
+                row = dict(row)
+                if row.get("amount") is None:
+                    row.update({"payment_status": "unknown", "payment_source": None, "matched_payment": None})
+                else:
+                    row.update({"payment_status": "unpaid", "payment_source": None, "matched_payment": None})
+                row["week_total"] = round(g["amount"], 2)
+            reports.append(row)
 
     reports.sort(key=lambda x: (str(x.get("date_from") or ""), str(x.get("type") or "")), reverse=True)
 
     def _sum(status):
         return round(sum(float(r.get("amount") or 0) for r in reports if r.get("payment_status") == status), 2)
+
+    unmatched_payments = [p for i, p in enumerate(payments) if i not in used_pay]
 
     return {
         "reports": reports,
@@ -10318,8 +10428,12 @@ def _enrich_reports_with_payments(store: dict) -> dict:
             "unpaid": _sum("unpaid"),
             "unknown": _sum("unknown"),
             "total_amount": round(sum(float(r.get("amount") or 0) for r in reports), 2),
+            "payments_total": round(sum(float(p.get("amount") or 0) for p in payments), 2),
+            "payments_matched": len(used_pay),
+            "payments_unmatched": len(unmatched_payments),
         },
         "payments": payments,
+        "unmatched_payments": unmatched_payments,
         "marks": marks,
         "updated_at": store.get("updated_at"),
         "balance": store.get("balance"),
