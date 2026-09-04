@@ -9865,14 +9865,129 @@ def enrich_cfo_snapshot(raw: dict) -> dict:
     return data
 
 
+WB_MONEY_STORE_KEY = "wb_money_store"
+
+
 def _wb_money(v):
     """WB finance API часто отдаёт деньги строкой."""
     if v is None or v == "":
         return None
     try:
-        return float(str(v).replace(" ", "").replace(",", "."))
+        return float(str(v).replace(" ", "").replace("\xa0", "").replace(",", "."))
     except (TypeError, ValueError):
         return None
+
+
+def _money_store() -> dict:
+    raw = get_setting_json(WB_MONEY_STORE_KEY, None)
+    if not isinstance(raw, dict):
+        return {"reports": [], "payments": [], "marks": {}, "updated_at": None}
+    return {
+        "reports": list(raw.get("reports") or []),
+        "payments": list(raw.get("payments") or []),
+        "marks": dict(raw.get("marks") or {}),
+        "updated_at": raw.get("updated_at"),
+        "balance": raw.get("balance"),
+    }
+
+
+def _save_money_store(store: dict) -> bool:
+    store = dict(store or {})
+    store["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return save_setting_value(WB_MONEY_STORE_KEY, store)
+
+
+def _report_key(r: dict) -> str:
+    rid = r.get("report_id") or r.get("id") or ""
+    return "|".join([
+        str(r.get("date_from") or "")[:10],
+        str(r.get("date_to") or "")[:10],
+        str(r.get("type") or ""),
+        str(rid),
+    ])
+
+
+def _pick_report_amount(money: dict, fallback=None):
+    if not isinstance(money, dict):
+        return fallback
+    # приоритет полей «к оплате / перечислению»
+    preferred = (
+        "totalToPay", "total_to_pay", "toPay", "forPay", "ppvz_for_pay",
+        "Итого к оплате", "итог_к_оплате", "paid_sum", "transferAmount",
+    )
+    for k in preferred:
+        if k in money and money[k] is not None:
+            return float(money[k])
+    # иначе самая крупная денежная сумма в money
+    vals = [float(v) for v in money.values() if isinstance(v, (int, float))]
+    if vals:
+        return max(vals, key=abs)
+    return fallback
+
+
+def _match_payment_status(report: dict, payments: list, marks: dict) -> dict:
+    """Сверяет отчёт с историей платежей и ручными отметками."""
+    key = report.get("key") or _report_key(report)
+    amount = report.get("amount")
+    manual = (marks or {}).get(key)
+    if manual in ("paid", "unpaid", "processing", "partial"):
+        return {
+            "payment_status": manual,
+            "payment_source": "manual",
+            "matched_payment": None,
+            "key": key,
+        }
+
+    if amount is None or not payments:
+        return {
+            "payment_status": "unknown",
+            "payment_source": None,
+            "matched_payment": None,
+            "key": key,
+        }
+
+    best = None
+    best_diff = None
+    for p in payments:
+        try:
+            pam = float(p.get("amount") or 0)
+        except (TypeError, ValueError):
+            continue
+        diff = abs(pam - float(amount))
+        if best_diff is None or diff < best_diff:
+            best_diff = diff
+            best = p
+
+    if best is None or best_diff is None:
+        status = "unpaid"
+        matched = None
+    elif best_diff <= 1.0:
+        st = (best.get("status") or "").lower()
+        if best.get("paid_at") or st in ("paid", "done", "success", "оплачено"):
+            status = "paid"
+        elif st in ("processing", "queue", "pending", "обрабатывается", "очередь"):
+            status = "processing"
+        else:
+            status = "processing" if not best.get("paid_at") else "paid"
+        matched = best
+    elif best_diff <= max(5000.0, abs(float(amount)) * 0.01):
+        # близко — считаем near-match, статус по платежу
+        st = (best.get("status") or "").lower()
+        if best.get("paid_at") or st in ("paid", "done", "success", "оплачено"):
+            status = "paid"
+        else:
+            status = "processing"
+        matched = {**best, "near_match_diff": round(best_diff, 2)}
+    else:
+        status = "unpaid"
+        matched = None
+
+    return {
+        "payment_status": status,
+        "payment_source": "payment_match" if matched else None,
+        "matched_payment": matched,
+        "key": key,
+    }
 
 
 def fetch_wb_account_balance() -> dict:
@@ -9890,7 +10005,6 @@ def fetch_wb_account_balance() -> dict:
     if r.status_code != 200:
         return {"error": f"HTTP {r.status_code}", "body": r.text[:400]}
     data = r.json() if r.content else {}
-    # иногда обёртка data
     if isinstance(data, dict) and isinstance(data.get("data"), dict):
         data = data["data"]
     return {
@@ -9920,7 +10034,6 @@ def fetch_wb_sales_reports(date_from: str, date_to: str) -> dict:
     if r.status_code != 200:
         return {"error": f"HTTP {r.status_code}", "body": r.text[:500], "reports": []}
     raw = r.json() if r.content else []
-    # может быть list или {data:[...]} / {reports:[...]}
     items = raw
     if isinstance(raw, dict):
         items = raw.get("data") or raw.get("reports") or raw.get("list") or []
@@ -9931,69 +10044,364 @@ def fetch_wb_sales_reports(date_from: str, date_to: str) -> dict:
     for it in items:
         if not isinstance(it, dict):
             continue
-        # Поля в разных версиях API называются по-разному — собираем всё денежное.
         money_fields = {}
         for k, v in it.items():
             mv = _wb_money(v)
             if mv is not None and any(
-                x in k.lower()
-                for x in ("pay", "sum", "total", "amount", "transfer", "оплат", "перечисл")
+                x in str(k).lower()
+                for x in ("pay", "sum", "total", "amount", "transfer", "оплат", "перечисл", "sale", "retail")
             ):
-                money_fields[k] = mv
-        reports.append({
-            "report_id": it.get("reportId") or it.get("report_id") or it.get("id"),
-            "date_from": it.get("dateFrom") or it.get("date_from") or it.get("begin"),
-            "date_to": it.get("dateTo") or it.get("date_to") or it.get("end"),
+                money_fields[str(k)] = mv
+        date_from_v = it.get("dateFrom") or it.get("date_from") or it.get("begin")
+        date_to_v = it.get("dateTo") or it.get("date_to") or it.get("end")
+        typ = it.get("type") or it.get("reportType") or it.get("category") or "Отчёт"
+        rid = it.get("reportId") or it.get("report_id") or it.get("id")
+        amount = _pick_report_amount(money_fields)
+        row = {
+            "report_id": rid,
+            "date_from": str(date_from_v)[:10] if date_from_v else None,
+            "date_to": str(date_to_v)[:10] if date_to_v else None,
             "created": it.get("createDate") or it.get("createdAt") or it.get("created"),
-            "type": it.get("type") or it.get("reportType") or it.get("category"),
-            "status": it.get("status") or it.get("paymentStatus") or it.get("state"),
+            "type": typ,
+            "api_status": it.get("status") or it.get("paymentStatus") or it.get("state"),
+            "amount": amount,
             "money": money_fields,
-            "raw": {k: it.get(k) for k in list(it.keys())[:40]},
-        })
+            "source": "wb_api",
+        }
+        row["key"] = _report_key(row)
+        reports.append(row)
     return {"reports": reports, "count": len(reports)}
 
 
-@app.get("/api/wb-money")
-def get_wb_money(date_from: str = None, date_to: str = None):
-    """Живые деньги WB через Finance API (токен Railway).
+def parse_wb_weekly_pay_excel(content: bytes) -> list:
+    """Excel «Еженедельный отчет …» с колонкой «Итого к оплате»."""
+    import io
+    try:
+        import openpyxl
+    except ImportError:
+        raise RuntimeError("openpyxl не установлен")
+    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+    ws = wb.active
+    headers = {}
+    for c in range(1, (ws.max_column or 1) + 1):
+        h = ws.cell(1, c).value
+        if h is None:
+            continue
+        headers[str(h).strip().lower()] = c
 
-    Раздел seller «История платежей» отдельным публичным методом не отдан —
-    тянем баланс + список отчётов реализации за период (как еженедельный Excel).
-    """
+    def col(*names):
+        for n in names:
+            if n.lower() in headers:
+                return headers[n.lower()]
+        return None
+
+    c_id = col("№ отчета", "номер отчета", "report id", "id")
+    c_from = col("дата начала", "date from", "from")
+    c_to = col("дата конца", "дата окончания", "date to", "to")
+    c_type = col("тип отчета", "тип", "type")
+    c_pay = col("итого к оплате", "к оплате", "total to pay")
+    if not c_from or not c_to or not c_pay:
+        raise RuntimeError("Не нашёл колонки «Дата начала/конца» и «Итого к оплате»")
+
+    def cell_date(v):
+        if v is None:
+            return None
+        if hasattr(v, "date"):
+            try:
+                return v.date().isoformat()
+            except Exception:
+                pass
+        s = str(v)
+        if "T" in s:
+            return s[:10]
+        if len(s) >= 10 and s[4] == "-":
+            return s[:10]
+        # 01.06.2026
+        try:
+            return datetime.strptime(s[:10], "%d.%m.%Y").date().isoformat()
+        except Exception:
+            return s[:10]
+
+    out = []
+    for r in range(2, (ws.max_row or 1) + 1):
+        amount = _wb_money(ws.cell(r, c_pay).value)
+        if amount is None:
+            continue
+        dfrom = cell_date(ws.cell(r, c_from).value)
+        dto = cell_date(ws.cell(r, c_to).value)
+        typ = ws.cell(r, c_type).value if c_type else "Основной"
+        rid = ws.cell(r, c_id).value if c_id else None
+        row = {
+            "report_id": str(rid) if rid is not None else None,
+            "date_from": dfrom,
+            "date_to": dto,
+            "type": str(typ or "Основной"),
+            "amount": float(amount),
+            "source": "excel",
+        }
+        row["key"] = _report_key(row)
+        out.append(row)
+    wb.close()
+    return out
+
+
+def _merge_reports(existing: list, incoming: list) -> list:
+    by = {}
+    for r in existing or []:
+        if isinstance(r, dict) and r.get("key"):
+            by[r["key"]] = r
+    for r in incoming or []:
+        if not isinstance(r, dict):
+            continue
+        key = r.get("key") or _report_key(r)
+        r = {**r, "key": key}
+        prev = by.get(key) or {}
+        # excel amount предпочтительнее, если api без суммы
+        amount = r.get("amount")
+        if amount is None:
+            amount = prev.get("amount")
+        elif prev.get("source") == "excel" and r.get("source") == "wb_api" and prev.get("amount") is not None:
+            amount = prev.get("amount")
+            r = {**r, "source": "excel+api"}
+        by[key] = {**prev, **r, "amount": amount, "key": key}
+    rows = list(by.values())
+    rows.sort(key=lambda x: (str(x.get("date_from") or ""), str(x.get("type") or "")), reverse=True)
+    return rows
+
+
+def _enrich_reports_with_payments(store: dict) -> dict:
+    reports = []
+    payments = list(store.get("payments") or [])
+    marks = store.get("marks") or {}
+    # жадное сопоставление: каждый платёж — максимум к одному отчёту
+    used_pay_idx = set()
+    pending = []
+    for r in store.get("reports") or []:
+        if not isinstance(r, dict):
+            continue
+        row = dict(r)
+        row["key"] = row.get("key") or _report_key(row)
+        manual = marks.get(row["key"])
+        if manual in ("paid", "unpaid", "processing", "partial"):
+            row.update({
+                "payment_status": manual,
+                "payment_source": "manual",
+                "matched_payment": None,
+            })
+            reports.append(row)
+        else:
+            pending.append(row)
+
+    # сначала точные совпадения (±1₽), потом near-match
+    def try_match(rows, max_diff_fn):
+        for row in rows:
+            amount = row.get("amount")
+            if amount is None:
+                continue
+            best_i = None
+            best_diff = None
+            for i, p in enumerate(payments):
+                if i in used_pay_idx:
+                    continue
+                try:
+                    pam = float(p.get("amount") or 0)
+                except (TypeError, ValueError):
+                    continue
+                diff = abs(pam - float(amount))
+                limit = max_diff_fn(float(amount))
+                if diff > limit:
+                    continue
+                if best_diff is None or diff < best_diff:
+                    best_diff = diff
+                    best_i = i
+            if best_i is None:
+                continue
+            p = payments[best_i]
+            used_pay_idx.add(best_i)
+            st = (p.get("status") or "").lower()
+            if p.get("paid_at") or st in ("paid", "done", "success", "оплачено"):
+                status = "paid"
+            elif st in ("processing", "queue", "pending", "обрабатывается", "очередь"):
+                status = "processing"
+            else:
+                status = "processing" if not p.get("paid_at") else "paid"
+            matched = dict(p)
+            if best_diff is not None and best_diff > 1.0:
+                matched["near_match_diff"] = round(best_diff, 2)
+            row.update({
+                "payment_status": status,
+                "payment_source": "payment_match",
+                "matched_payment": matched,
+            })
+
+    # exact
+    try_match(pending, lambda a: 1.0)
+    # near
+    remaining = [r for r in pending if "payment_status" not in r]
+    try_match(remaining, lambda a: max(5000.0, abs(a) * 0.01))
+
+    for row in pending:
+        if "payment_status" not in row:
+            if row.get("amount") is None:
+                row.update({"payment_status": "unknown", "payment_source": None, "matched_payment": None})
+            else:
+                row.update({"payment_status": "unpaid", "payment_source": None, "matched_payment": None})
+        reports.append(row)
+
+    reports.sort(key=lambda x: (str(x.get("date_from") or ""), str(x.get("type") or "")), reverse=True)
+
+    def _sum(status):
+        return round(sum(float(r.get("amount") or 0) for r in reports if r.get("payment_status") == status), 2)
+
+    return {
+        "reports": reports,
+        "summary": {
+            "count": len(reports),
+            "paid": _sum("paid"),
+            "processing": _sum("processing"),
+            "partial": _sum("partial"),
+            "unpaid": _sum("unpaid"),
+            "unknown": _sum("unknown"),
+            "total_amount": round(sum(float(r.get("amount") or 0) for r in reports), 2),
+        },
+        "payments": payments,
+        "marks": marks,
+        "updated_at": store.get("updated_at"),
+        "balance": store.get("balance"),
+    }
+
+
+@app.get("/api/wb-money")
+def get_wb_money(date_from: str = None, date_to: str = None, refresh: bool = False):
+    """Отчёты ВБ + статус оплаты (сверка с историей платежей)."""
+    store = _money_store()
     today = _msk_now().date()
     if not date_to:
         date_to = today.isoformat()
     if not date_from:
         date_from = (today - timedelta(days=100)).isoformat()
 
-    balance = fetch_wb_account_balance()
-    reports = fetch_wb_sales_reports(date_from, date_to)
+    balance = store.get("balance")
+    api_err = None
+    if refresh or not store.get("reports"):
+        balance = fetch_wb_account_balance()
+        api = fetch_wb_sales_reports(date_from, date_to)
+        if api.get("error"):
+            api_err = api.get("error")
+            if api.get("body"):
+                api_err = f"{api_err}: {api.get('body')}"
+        else:
+            store["reports"] = _merge_reports(store.get("reports") or [], api.get("reports") or [])
+        store["balance"] = balance
+        _save_money_store(store)
 
-    # CFO snapshot — ручная дебиторка, как запасной ориентир
-    cfo = get_setting_json(CFO_SNAPSHOT_KEY, {}) or {}
-    wb_recv = cfo.get("wb_receivables") if isinstance(cfo, dict) else []
-    try:
-        wb_recv_sum = round(sum(float(x or 0) for x in (wb_recv or [])), 2)
-    except Exception:
-        wb_recv_sum = None
-
+    enriched = _enrich_reports_with_payments(store)
     return {
         "as_of": _msk_now().strftime("%d.%m.%Y %H:%M"),
         "period": {"from": date_from, "to": date_to},
-        "balance": balance,
-        "sales_reports": reports,
-        "cfo_snapshot": {
-            "wb_receivables": wb_recv,
-            "wb_receivables_sum": wb_recv_sum,
-            "wb_balance_saved": cfo.get("wb_balance") if isinstance(cfo, dict) else None,
-            "updated_at": cfo.get("updated_at") if isinstance(cfo, dict) else None,
-            "note": "Это сохранённый снимок CFO в Supabase, не live история платежей",
-        },
+        "balance": balance or {},
+        "api_error": api_err,
+        **enriched,
         "payment_history_note": (
-            "Страница https://seller.wildberries.ru/payment-history/active "
-            "в публичном WB API не опубликована. Здесь — баланс и отчёты реализации."
+            "Историю платежей из кабинета API не отдаёт — добавь заявки вручную "
+            "(сумма + статус), отчёты сверятся автоматически. "
+            "Или загрузи Excel «Еженедельный отчет» с колонкой «Итого к оплате»."
         ),
     }
+
+
+@app.post("/api/wb-money/sync")
+def sync_wb_money(date_from: str = None, date_to: str = None):
+    return get_wb_money(date_from=date_from, date_to=date_to, refresh=True)
+
+
+@app.post("/api/wb-money/upload-reports")
+async def upload_wb_money_reports(file: UploadFile = File(...)):
+    content = await file.read()
+    try:
+        rows = parse_wb_weekly_pay_excel(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    store = _money_store()
+    store["reports"] = _merge_reports(store.get("reports") or [], rows)
+    _save_money_store(store)
+    return {
+        "status": "ok",
+        "imported": len(rows),
+        "total_reports": len(store["reports"]),
+        "summary": _enrich_reports_with_payments(store)["summary"],
+    }
+
+
+@app.post("/api/wb-money/payments")
+async def save_wb_money_payments(request: dict):
+    """Сохранить заявки из «Истории платежей».
+
+    body: {payments:[{id, amount, created, paid_at, status}], replace?: bool}
+    status: paid | processing | queue
+    """
+    items = request.get("payments") if isinstance(request, dict) else None
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="нужен payments: []")
+    cleaned = []
+    for p in items:
+        if not isinstance(p, dict):
+            continue
+        amount = _wb_money(p.get("amount"))
+        if amount is None:
+            continue
+        status = str(p.get("status") or "processing").strip().lower()
+        if status in ("оплачено", "done", "success"):
+            status = "paid"
+        elif status in ("очередь", "в очереди", "поручение в очереди"):
+            status = "queue"
+        elif status in ("обрабатывается", "оплата обрабатывается"):
+            status = "processing"
+        cleaned.append({
+            "id": str(p.get("id") or p.get("payment_id") or ""),
+            "amount": float(amount),
+            "created": str(p.get("created") or p.get("created_at") or "")[:32] or None,
+            "paid_at": str(p.get("paid_at") or p.get("paid") or "")[:32] or None,
+            "status": status,
+        })
+    store = _money_store()
+    replace = bool(request.get("replace", True))
+    if replace:
+        store["payments"] = cleaned
+    else:
+        by_id = {p.get("id"): p for p in (store.get("payments") or []) if p.get("id")}
+        for p in cleaned:
+            if p.get("id"):
+                by_id[p["id"]] = p
+            else:
+                store.setdefault("payments", []).append(p)
+        store["payments"] = list(by_id.values())
+    _save_money_store(store)
+    return {
+        "status": "ok",
+        "payments": len(store["payments"]),
+        "summary": _enrich_reports_with_payments(store)["summary"],
+    }
+
+
+@app.post("/api/wb-money/mark")
+async def mark_wb_money_report(request: dict):
+    """Ручная отметка отчёта: paid | unpaid | processing | partial | clear."""
+    key = str((request or {}).get("key") or "").strip()
+    status = str((request or {}).get("status") or "").strip().lower()
+    if not key:
+        raise HTTPException(status_code=400, detail="нужен key")
+    store = _money_store()
+    marks = dict(store.get("marks") or {})
+    if status in ("", "clear", "none", "auto"):
+        marks.pop(key, None)
+    elif status in ("paid", "unpaid", "processing", "partial"):
+        marks[key] = status
+    else:
+        raise HTTPException(status_code=400, detail="status: paid|unpaid|processing|partial|clear")
+    store["marks"] = marks
+    _save_money_store(store)
+    return {"status": "ok", "key": key, "mark": marks.get(key), "summary": _enrich_reports_with_payments(store)["summary"]}
 
 
 @app.get("/api/finance/cfo")
