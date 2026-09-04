@@ -1695,6 +1695,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
       <div class="cards" id="finCards"></div>
       <div class="fin-tabs">
         <button class="filter-btn on" id="finTabWb" onclick="setFinTab('wb')">Склад WB</button>
+        <button class="filter-btn" id="finTabFf" onclick="setFinTab('ff')">Склад ФФ</button>
         <button class="filter-btn" id="finTabOwn" onclick="setFinTab('own')">Наш склад</button>
         <button class="filter-btn" id="finTabMiss" onclick="setFinTab('miss')">Без себестоимости</button>
         <button class="filter-btn" id="finTabAll" onclick="setFinTab('all')">Все цены</button>
@@ -11644,15 +11645,19 @@ function drawFinance() {
     meta.textContent = bits.join(' · ') || 'Загрузи файл себестоимости';
   }
   const wb = d.wb || {};
+  const ff = d.ff || {};
   const own = d.own || {};
+  const missArts = (wb.articles_without_cost||0) + (ff.articles_without_cost||0) + (own.articles_without_cost||0);
   if(cards) {
     cards.innerHTML = [
       ['Итого себестоимость', fmtMoney(d.grand_total), 'color:var(--wb-purple)'],
       ['Склад WB', fmtMoney(wb.total_value)],
+      ['Склад ФФ', fmtMoney(ff.total_value)],
       ['Наш склад', fmtMoney(own.total_value)],
-      ['Шт на WB', fmt(wb.total_qty || 0)],
+      ['Шт WB', fmt(wb.total_qty || 0)],
+      ['Шт ФФ', fmt(ff.total_qty || 0)],
       ['Шт у нас', fmt(own.total_qty || 0)],
-      ['Без себестоимости', fmt((wb.articles_without_cost||0) + (own.articles_without_cost||0)), (wb.articles_without_cost||own.articles_without_cost) ? 'color:var(--amber)' : ''],
+      ['Без себестоимости', fmt(missArts), missArts ? 'color:var(--amber)' : ''],
     ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
   }
   drawFinanceTable();
@@ -11660,9 +11665,9 @@ function drawFinance() {
 
 function setFinTab(t) {
   FIN_TAB = t;
-  ['Wb','Own','Miss','All'].forEach(k => {
+  ['Wb','Ff','Own','Miss','All'].forEach(k => {
     const el = document.getElementById('finTab' + k);
-    if(el) el.classList.toggle('on', ({Wb:'wb',Own:'own',Miss:'miss',All:'all'})[k] === t);
+    if(el) el.classList.toggle('on', ({Wb:'wb',Ff:'ff',Own:'own',Miss:'miss',All:'all'})[k] === t);
   });
   drawFinanceTable();
 }
@@ -11695,7 +11700,10 @@ function drawFinanceTable() {
   let showQty = true;
   if(FIN_TAB === 'wb') {
     rows = [...(d.wb && d.wb.rows || [])];
-    title = 'Остатки на складах WB';
+    title = 'Остатки на складах WB (FBW)';
+  } else if(FIN_TAB === 'ff') {
+    rows = [...(d.ff && d.ff.rows || [])];
+    title = 'Остатки на складах ФФ (FBS, кроме Москвы)';
   } else if(FIN_TAB === 'own') {
     rows = [...(d.own && d.own.rows || [])];
     title = 'Остатки на нашем складе';
@@ -11716,6 +11724,7 @@ function drawFinanceTable() {
   } else {
     const miss = [];
     (d.wb && d.wb.rows || []).forEach(r => { if(r.cost == null) miss.push({...r, where: 'WB'}); });
+    (d.ff && d.ff.rows || []).forEach(r => { if(r.cost == null) miss.push({...r, where: 'ФФ'}); });
     (d.own && d.own.rows || []).forEach(r => { if(r.cost == null) miss.push({...r, where: 'Наш'}); });
     rows = miss;
     title = 'Артикулы без себестоимости — впиши цену';

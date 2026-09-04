@@ -9352,13 +9352,73 @@ def _load_cost_indexes():
             out_v.setdefault(_norm_vendor_key(entry["vendor_code"]), entry)
     return out_v, out_n
 
+def _finance_warehouse_bucket(name: str) -> str:
+    """Корзина склада для себеса: wb (FBW) | ff (FBS/ФФ не Москва) | skip (Москва FBS).
+
+    FBS в stock_warehouses приходит как «Маркетплейс (FBS) · …».
+    Склад ФФ = FBS/ФФ/DBS кроме Москвы. Москва FBS и CC Ковшовой не считаем
+    (пересечение с «нашим складом» / самовывоз).
+    """
+    raw = (name or "").strip()
+    if not raw:
+        return "skip"
+    if _fbs_wh_is_ignored(raw):
+        return "skip"
+    n = raw.lower().replace("ё", "е")
+    is_fbs = (
+        "маркетплейс" in n
+        or "fbs" in n
+        or "ффиточка" in n
+        or "фф " in n
+        or n.startswith("фф")
+        or " dbs" in n
+        or n.startswith("dbs")
+        or "edbs" in n
+        or "деливери" in n
+    )
+    if not is_fbs:
+        return "wb"
+    moscow = any(x in n for x in ("москв", "ковшов", "внуков", "мск", "mgt", "pvs", "хорошев"))
+    return "skip" if moscow else "ff"
+
+
+def _finance_stock_by_bucket() -> dict:
+    """nm_id → {wb: qty, ff: qty} из stock_warehouses."""
+    out = {}
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_warehouses?select=nm_id,warehouse_name,quantity&quantity=gt.0&limit=50000",
+            headers=sb_headers(),
+            timeout=30,
+        )
+        rows = r.json() if r.is_success else []
+        if not isinstance(rows, list):
+            rows = []
+    except Exception as e:
+        logger.error(f"finance stock_warehouses: {e}")
+        return out
+    for row in rows:
+        try:
+            nm = int(row.get("nm_id"))
+        except Exception:
+            continue
+        qty = int(row.get("quantity") or 0)
+        if qty <= 0:
+            continue
+        bucket = _finance_warehouse_bucket(row.get("warehouse_name") or "")
+        if bucket == "skip":
+            continue
+        slot = out.setdefault(nm, {"wb": 0, "ff": 0})
+        slot[bucket] = int(slot.get(bucket) or 0) + qty
+    return out
+
+
 @app.get("/api/finance")
 def get_finance():
-    """Себестоимость остатков: WB + наш склад (актуальная цена на сегодня)."""
+    """Себестоимость остатков: склад WB (FBW) + склад ФФ (FBS не Москва) + наш склад."""
     by_vendor, by_nm = _load_cost_indexes()
     meta = get_setting_json(COST_META_KEY, {}) or {}
     nm_to_vendor = build_nm_to_vendor_map()
-    # дополняем карту из файла себестоимости (если SKU был в Excel)
     for nm_s, entry in by_nm.items():
         try:
             nm = int(nm_s)
@@ -9374,7 +9434,6 @@ def get_finance():
             return by_vendor[vc]
         if nm_id is not None and str(nm_id) in by_nm:
             return by_nm[str(nm_id)]
-        # иногда в by_vendor ключ с другим регистром
         if vc:
             low = vc.lower()
             for k, e in by_vendor.items():
@@ -9382,53 +9441,64 @@ def get_finance():
                     return e
         return {}
 
-    # WB остатки — vendor_code в stock_totals часто пустой, матчим через ratings/nm_id
-    wb_rows = []
+    totals_by_nm = {}
     try:
         st = httpx.get(
             f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code,quantity_warehouses_full,in_way_to_client,in_way_from_client,subject_name",
-            headers=sb_headers(), timeout=20,
+            headers=sb_headers(),
+            timeout=20,
         )
         if st.is_success:
             for r in st.json() or []:
-                nm_id = r.get("nm_id")
-                qty = int(r.get("quantity_warehouses_full") or 0)
-                if qty <= 0:
-                    continue
                 try:
-                    nm_int = int(nm_id) if nm_id is not None else None
+                    nm_int = int(r.get("nm_id"))
                 except Exception:
-                    nm_int = None
-                stock_vc = _norm_vendor_key(r.get("vendor_code"))
-                if stock_vc and nm_int is not None and stock_vc == str(nm_int):
-                    stock_vc = ""
-                seller = (
-                    stock_vc
-                    or (nm_to_vendor.get(nm_int) if nm_int is not None else "")
-                    or ""
-                )
-                seller = _norm_vendor_key(seller)
-                cm = resolve_cost(seller, nm_id)
-                # если себес нашли по nm — подтянем артикул из файла
-                if not seller:
-                    seller = _norm_vendor_key(cm.get("vendor_code")) or ""
-                cost = cm.get("cost")
-                value = round(qty * cost, 2) if cost is not None else None
-                wb_rows.append({
-                    "vendor_code": seller or (str(nm_id) if nm_id else ""),
-                    "nm_id": nm_id,
-                    "name": r.get("subject_name") or "",
-                    "qty": qty,
-                    "cost": cost,
-                    "cost_default": cm.get("default"),
-                    "cost_as_of": cm.get("as_of"),
-                    "value": value,
-                    "in_way": int(r.get("in_way_to_client") or 0) + int(r.get("in_way_from_client") or 0),
-                })
+                    continue
+                totals_by_nm[nm_int] = r
     except Exception as e:
         logger.error(f"finance stock_totals: {e}")
 
-    # Наш склад
+    by_bucket = _finance_stock_by_bucket()
+    if not by_bucket and totals_by_nm:
+        for nm_int, r in totals_by_nm.items():
+            qty = int(r.get("quantity_warehouses_full") or 0)
+            if qty > 0:
+                by_bucket[nm_int] = {"wb": qty, "ff": 0}
+
+    def build_rows(bucket: str):
+        rows = []
+        for nm_int, qty_map in by_bucket.items():
+            qty = int(qty_map.get(bucket) or 0)
+            if qty <= 0:
+                continue
+            r = totals_by_nm.get(nm_int) or {}
+            stock_vc = _norm_vendor_key(r.get("vendor_code"))
+            if stock_vc and stock_vc == str(nm_int):
+                stock_vc = ""
+            seller = stock_vc or (nm_to_vendor.get(nm_int) or "") or ""
+            seller = _norm_vendor_key(seller)
+            cm = resolve_cost(seller, nm_int)
+            if not seller:
+                seller = _norm_vendor_key(cm.get("vendor_code")) or ""
+            cost = cm.get("cost")
+            value = round(qty * cost, 2) if cost is not None else None
+            rows.append({
+                "vendor_code": seller or str(nm_int),
+                "nm_id": nm_int,
+                "name": r.get("subject_name") or "",
+                "qty": qty,
+                "cost": cost,
+                "cost_default": cm.get("default"),
+                "cost_as_of": cm.get("as_of"),
+                "value": value,
+                "in_way": int(r.get("in_way_to_client") or 0) + int(r.get("in_way_from_client") or 0),
+                "bucket": bucket,
+            })
+        return rows
+
+    wb_rows = build_rows("wb")
+    ff_rows = build_rows("ff")
+
     own = OWN_WAREHOUSE_CACHE.get("rows") or []
     if not own and not OWN_WAREHOUSE_CACHE.get("syncing"):
         try:
@@ -9459,6 +9529,7 @@ def get_finance():
             "cost_as_of": cm.get("as_of"),
             "value": value,
             "family_stock": r.get("family_stock"),
+            "bucket": "own",
         })
 
     def summarize(rows):
@@ -9474,8 +9545,10 @@ def get_finance():
         }
 
     wb_sum = summarize(wb_rows)
+    ff_sum = summarize(ff_rows)
     own_sum = summarize(own_rows)
     wb_rows.sort(key=lambda x: (-(x["value"] or 0), str(x["vendor_code"])))
+    ff_rows.sort(key=lambda x: (-(x["value"] or 0), str(x["vendor_code"])))
     own_rows.sort(key=lambda x: (-(x["value"] or 0), str(x["vendor_code"])))
 
     return {
@@ -9483,13 +9556,15 @@ def get_finance():
         "nm_mapped": len(by_nm),
         "meta": meta,
         "wb": {**wb_sum, "rows": wb_rows},
+        "ff": {**ff_sum, "rows": ff_rows},
         "own": {
             **own_sum,
             "rows": own_rows,
             "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
             "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
         },
-        "grand_total": round(wb_sum["total_value"] + own_sum["total_value"], 2),
+        "grand_total": round(wb_sum["total_value"] + ff_sum["total_value"] + own_sum["total_value"], 2),
+        "note": "Склад WB = FBW. Склад ФФ = FBS/ФФ кроме Москвы. Москва FBS не входит (пересечение с нашим складом).",
         "costs": sorted(
             [
                 {
@@ -9505,6 +9580,7 @@ def get_finance():
             key=lambda x: str(x.get("vendor_code") or ""),
         ),
     }
+
 
 @app.post("/api/finance/cost")
 async def save_finance_cost(request: dict):
