@@ -10061,15 +10061,33 @@ def fetch_wb_sales_reports(date_from: str, date_to: str) -> dict:
     if not WB_TOKEN:
         return {"error": "WB_TOKEN не задан", "reports": []}
     payload = {"dateFrom": date_from, "dateTo": date_to}
-    try:
-        r = httpx.post(
-            f"{WB_FINANCE_URL}/api/finance/v1/sales-reports/list",
-            headers={**wb_headers(), "Content-Type": "application/json"},
-            json=payload,
-            timeout=60,
-        )
-    except Exception as e:
-        return {"error": str(e), "reports": []}
+    r = None
+    last_err = None
+    for attempt in range(5):
+        try:
+            r = httpx.post(
+                f"{WB_FINANCE_URL}/api/finance/v1/sales-reports/list",
+                headers={**wb_headers(), "Content-Type": "application/json"},
+                json=payload,
+                timeout=60,
+            )
+        except Exception as e:
+            last_err = str(e)
+            time.sleep(1.5 * (attempt + 1))
+            continue
+        if r.status_code != 429:
+            break
+        wait = 3.0 * (attempt + 1)
+        try:
+            ra = float(r.headers.get("Retry-After") or 0)
+            if ra > 0:
+                wait = max(wait, ra)
+        except Exception:
+            pass
+        time.sleep(wait)
+        last_err = "HTTP 429"
+    if r is None:
+        return {"error": last_err or "WB API недоступен", "reports": []}
     if r.status_code == 204:
         return {"reports": [], "note": "пусто за период"}
     if r.status_code != 200:
@@ -10408,6 +10426,7 @@ def _enrich_reports_with_payments(store: dict) -> dict:
                     "payment_status": status,
                     "payment_source": "payment_match",
                     "matched_payment": p,
+                    "payment_id": str(p.get("id") or "") or None,
                     "week_total": week_total,
                     "paid_amount": paid_amt,
                     # разница неделя − заявка (для частичных / если заявка меньше недели)
@@ -10416,9 +10435,9 @@ def _enrich_reports_with_payments(store: dict) -> dict:
             else:
                 row = dict(row)
                 if row.get("amount") is None:
-                    row.update({"payment_status": "unknown", "payment_source": None, "matched_payment": None})
+                    row.update({"payment_status": "unknown", "payment_source": None, "matched_payment": None, "payment_id": None})
                 else:
-                    row.update({"payment_status": "unpaid", "payment_source": None, "matched_payment": None})
+                    row.update({"payment_status": "unpaid", "payment_source": None, "matched_payment": None, "payment_id": None})
                 row["week_total"] = round(g["amount"], 2)
                 row["paid_amount"] = None
                 row["remaining_amount"] = None
@@ -10499,6 +10518,10 @@ def _enrich_reports_with_payments(store: dict) -> dict:
             g["parts"],
             key=lambda p: (0 if "основ" in str(p.get("type") or "").lower() else 1, str(p.get("type") or "")),
         )
+        mp = g.get("matched_payment")
+        pay_id = None
+        if isinstance(mp, dict):
+            pay_id = mp.get("id") or mp.get("payment_id")
         weeks.append({
             "key": f"week:{wk[0]}:{wk[1]}",
             "date_from": g.get("date_from"),
@@ -10511,7 +10534,8 @@ def _enrich_reports_with_payments(store: dict) -> dict:
             "overpay": overpay,
             "payment_status": status,
             "payment_source": g.get("payment_source"),
-            "matched_payment": g.get("matched_payment"),
+            "matched_payment": mp,
+            "payment_id": str(pay_id) if pay_id not in (None, "") else None,
             "parts": parts,
             "keys": g.get("keys") or [],
             "report_ids": g.get("report_ids") or [],
@@ -10560,13 +10584,14 @@ def _enrich_reports_with_payments(store: dict) -> dict:
 
 
 def _wb_money_default_period():
-    """По умолчанию — с 1 января текущего (МСК) года по сегодня."""
+    """По умолчанию — с 1 января прошлого года по сегодня (чтобы был и 2025, и 2026)."""
     today = _msk_now().date()
-    return today.replace(month=1, day=1).isoformat(), today.isoformat()
+    start = today.replace(year=today.year - 1, month=1, day=1)
+    return start.isoformat(), today.isoformat()
 
 
-def fetch_wb_sales_reports_range(date_from: str, date_to: str, chunk_days: int = 100) -> dict:
-    """Тянет отчёты кусками — у list-API иногда режется длинный период."""
+def fetch_wb_sales_reports_range(date_from: str, date_to: str, chunk_days: int = 40) -> dict:
+    """Тянет отчёты кусками — у list-API иногда режется длинный период / 429."""
     try:
         d0 = datetime.strptime(str(date_from)[:10], "%Y-%m-%d").date()
         d1 = datetime.strptime(str(date_to)[:10], "%Y-%m-%d").date()
@@ -10580,13 +10605,15 @@ def fetch_wb_sales_reports_range(date_from: str, date_to: str, chunk_days: int =
     errors = []
     cur = d0
     while cur <= d1:
-        end = min(cur + timedelta(days=chunk_days - 1), d1)
+        end = min(cur + timedelta(days=max(7, int(chunk_days)) - 1), d1)
         part = fetch_wb_sales_reports(cur.isoformat(), end.isoformat())
         if part.get("error"):
             errors.append(f"{cur}…{end}: {part.get('error')}")
         else:
             all_rows.extend(part.get("reports") or [])
         cur = end + timedelta(days=1)
+        if cur <= d1:
+            time.sleep(1.2)
 
     merged = _merge_reports([], all_rows)
     out = {"reports": merged, "count": len(merged)}
