@@ -11964,8 +11964,13 @@ async function loadWbMoney(force) {
     root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Загрузка отчётов ВБ…</span></div>';
   }
   try {
-    const q = force ? '?refresh=true' : '';
-    const r = await fetch(`${RAILWAY_URL}/api/wb-money${q}`);
+    const y = new Date().getFullYear();
+    const q = new URLSearchParams({
+      date_from: `${y}-01-01`,
+      date_to: new Date().toISOString().slice(0, 10),
+    });
+    if(force) q.set('refresh', 'true');
+    const r = await fetch(`${RAILWAY_URL}/api/wb-money?${q}`);
     MONEY_DATA = await r.json();
   } catch(e) {
     MONEY_DATA = {error: e.message, reports: [], summary: {}};
@@ -11974,11 +11979,17 @@ async function loadWbMoney(force) {
 }
 
 async function syncWbMoney() {
-  setMoneyStatus('Синхронизация…');
+  setMoneyStatus('Синхронизация за 2026…');
   try {
-    const r = await fetch(`${RAILWAY_URL}/api/wb-money/sync`, {method: 'POST'});
+    const y = new Date().getFullYear();
+    const q = new URLSearchParams({
+      date_from: `${y}-01-01`,
+      date_to: new Date().toISOString().slice(0, 10),
+    });
+    const r = await fetch(`${RAILWAY_URL}/api/wb-money/sync?${q}`, {method: 'POST'});
     MONEY_DATA = await r.json();
-    setMoneyStatus('Обновлено', true);
+    const n = (MONEY_DATA.reports || []).length;
+    setMoneyStatus('Обновлено · ' + n + ' отчётов', true);
     drawWbMoney();
   } catch(e) {
     setMoneyStatus('Ошибка: ' + e.message, false);
