@@ -10288,6 +10288,28 @@ def _parse_ru_date(s) -> date | None:
     return None
 
 
+# Якорь: № выплаты → неделя отчёта (пользователь: 185 = 10.08–16.08.2026).
+# Имеет приоритет над авто-сверкой по сумме.
+DEFAULT_PAYMENT_WEEK_LINKS = {
+    "185": {"date_from": "2026-08-10", "date_to": "2026-08-16"},
+}
+
+
+def _payment_week_links(store: dict) -> dict:
+    """id выплаты → {date_from, date_to}. Явные связи + дефолтный якорь 185."""
+    out = dict(DEFAULT_PAYMENT_WEEK_LINKS)
+    raw = store.get("payment_links") if isinstance(store, dict) else None
+    if isinstance(raw, dict):
+        for pid, link in raw.items():
+            if not isinstance(link, dict):
+                continue
+            df = str(link.get("date_from") or "")[:10]
+            dt = str(link.get("date_to") or "")[:10]
+            if df and dt:
+                out[str(pid)] = {"date_from": df, "date_to": dt}
+    return out
+
+
 def _enrich_reports_with_payments(store: dict) -> dict:
     """Сверяет отчёты с платежами.
 
@@ -10296,6 +10318,7 @@ def _enrich_reports_with_payments(store: dict) -> dict:
     """
     payments = list(store.get("payments") or [])
     marks = store.get("marks") or {}
+    pay_links = _payment_week_links(store)
 
     locked = []
     pending = []
@@ -10328,7 +10351,7 @@ def _enrich_reports_with_payments(store: dict) -> dict:
     used_pay = set()
     week_match = {}  # wk -> (payment, status, diff)
 
-    def assign(wk, pay_i, status, diff):
+    def assign(wk, pay_i, status, diff, source="payment_match"):
         if wk in week_match or pay_i in used_pay:
             return False
         used_pay.add(pay_i)
@@ -10336,7 +10359,10 @@ def _enrich_reports_with_payments(store: dict) -> dict:
         if diff and diff > 1.0:
             p["near_match_diff"] = round(diff, 2)
         p["week_total"] = round(weeks[wk]["amount"], 2)
-        week_match[wk] = (p, status, diff)
+        p["report_from"] = wk[0]
+        p["report_to"] = wk[1]
+        p["match_source"] = source
+        week_match[wk] = (p, status, diff, source)
         return True
 
     def pay_amount(i):
@@ -10351,6 +10377,23 @@ def _enrich_reports_with_payments(store: dict) -> dict:
 
     def week_end(wk):
         return _parse_ru_date(wk[1]) or _parse_ru_date(wk[0])
+
+    # 0) явные связи № выплаты → неделя (якорь 185 = 10.08–16.08.2026)
+    pay_index = {str(p.get("id") or ""): i for i, p in enumerate(payments) if p.get("id") not in (None, "")}
+    for pid, link in pay_links.items():
+        i = pay_index.get(str(pid))
+        if i is None or i in used_pay:
+            continue
+        wk = (str(link.get("date_from") or "")[:10], str(link.get("date_to") or "")[:10])
+        if wk not in weeks or wk in week_match:
+            continue
+        pam = pay_amount(i)
+        total = weeks[wk]["amount"]
+        diff = abs(total - pam) if pam is not None else 0.0
+        status = _payment_status_from_row(payments[i])
+        if pam is not None and total > 0 and pam < total - 1 and pam >= total * 0.15:
+            status = "partial"
+        assign(wk, i, status, diff, source="payment_link")
 
     # 1) точное совпадение суммы недели (±1₽)
     for i, p in enumerate(payments):
@@ -10436,7 +10479,8 @@ def _enrich_reports_with_payments(store: dict) -> dict:
         match = week_match.get(wk)
         for row in g["rows"]:
             if match:
-                p, status, diff = match
+                p, status, diff, *rest = match
+                src = rest[0] if rest else "payment_match"
                 row = dict(row)
                 week_total = round(g["amount"], 2)
                 try:
@@ -10448,7 +10492,7 @@ def _enrich_reports_with_payments(store: dict) -> dict:
                     remaining = round(week_total - paid_amt, 2)
                 row.update({
                     "payment_status": status,
-                    "payment_source": "payment_match",
+                    "payment_source": src or "payment_match",
                     "matched_payment": p,
                     "payment_id": str(p.get("id") or "") or None,
                     "week_total": week_total,
@@ -10579,6 +10623,34 @@ def _enrich_reports_with_payments(store: dict) -> dict:
     wb_owes_total = round(sum(float(w.get("wb_owes") or 0) for w in weeks), 2)
     overpay_total = round(sum(float(w.get("overpay") or 0) for w in weeks), 2)
 
+    # Проставляем неделю отчёта обратно в список платежей (для таблицы заявок)
+    pay_week = {}
+    for wk, match in week_match.items():
+        p = match[0] if match else None
+        if not isinstance(p, dict):
+            continue
+        pid = str(p.get("id") or "")
+        if not pid:
+            continue
+        pay_week[pid] = {
+            "report_from": wk[0],
+            "report_to": wk[1],
+            "week_total": p.get("week_total"),
+            "match_source": p.get("match_source") or (match[3] if len(match) > 3 else None),
+        }
+    payments_out = []
+    for p in payments:
+        row = dict(p) if isinstance(p, dict) else p
+        if not isinstance(row, dict):
+            continue
+        meta = pay_week.get(str(row.get("id") or ""))
+        if meta:
+            row = {**row, **meta}
+        payments_out.append(row)
+    unmatched_payments = [
+        dict(p) for p in unmatched_payments if isinstance(p, dict)
+    ]
+
     return {
         "reports": reports,
         "weeks": weeks,
@@ -10599,8 +10671,9 @@ def _enrich_reports_with_payments(store: dict) -> dict:
             "payments_matched": len(used_pay),
             "payments_unmatched": len(unmatched_payments),
         },
-        "payments": payments,
+        "payments": payments_out,
         "unmatched_payments": unmatched_payments,
+        "payment_links": pay_links,
         "marks": marks,
         "updated_at": store.get("updated_at"),
         "balance": store.get("balance"),
@@ -10677,6 +10750,17 @@ def get_wb_money(date_from: str = None, date_to: str = None, refresh: bool = Fal
         store["balance"] = balance
         _save_money_store(store)
     elif deduped:
+        _save_money_store(store)
+
+    # якорь связей № выплаты → неделя (185 = 10.08–16.08.2026)
+    links = dict(store.get("payment_links") or {})
+    seeded = False
+    for pid, link in DEFAULT_PAYMENT_WEEK_LINKS.items():
+        if pid not in links:
+            links[pid] = dict(link)
+            seeded = True
+    if seeded:
+        store["payment_links"] = links
         _save_money_store(store)
 
     enriched = _enrich_reports_with_payments(store)
@@ -10880,6 +10964,42 @@ async def mark_wb_money_report(request: dict):
     store["marks"] = marks
     _save_money_store(store)
     return {"status": "ok", "key": key, "mark": marks.get(key), "summary": _enrich_reports_with_payments(store)["summary"]}
+
+
+
+@app.post("/api/wb-money/link-payment")
+async def link_wb_money_payment(request: dict):
+    """Явно связать № выплаты с неделей отчёта.
+
+    body: {payment_id, date_from, date_to} или {payment_id, clear: true}
+    Пример: {"payment_id":"185","date_from":"2026-08-10","date_to":"2026-08-16"}
+    """
+    body = request or {}
+    pid = str(body.get("payment_id") or body.get("id") or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="нужен payment_id")
+    store = _money_store()
+    links = dict(store.get("payment_links") or {})
+    if body.get("clear") or body.get("status") == "clear":
+        links.pop(pid, None)
+        store["payment_links"] = links
+        _save_money_store(store)
+        return {"status": "ok", "payment_id": pid, "link": None, "summary": _enrich_reports_with_payments(store)["summary"]}
+    df = str(body.get("date_from") or "")[:10]
+    dt = str(body.get("date_to") or "")[:10]
+    if not df or not dt:
+        raise HTTPException(status_code=400, detail="нужны date_from и date_to (YYYY-MM-DD)")
+    links[pid] = {"date_from": df, "date_to": dt}
+    store["payment_links"] = links
+    _save_money_store(store)
+    enriched = _enrich_reports_with_payments(store)
+    return {
+        "status": "ok",
+        "payment_id": pid,
+        "link": links[pid],
+        "summary": enriched.get("summary"),
+        "weeks": [w for w in (enriched.get("weeks") or []) if w.get("payment_id") == pid],
+    }
 
 
 @app.get("/api/finance/cfo")
