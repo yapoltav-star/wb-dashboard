@@ -9897,13 +9897,23 @@ def _save_money_store(store: dict) -> bool:
     return save_setting_value(WB_MONEY_STORE_KEY, store)
 
 
+def _report_id_str(r: dict) -> str:
+    rid = r.get("report_id") if r.get("report_id") not in (None, "") else r.get("id")
+    if rid is None or rid == "":
+        return ""
+    # int/str из API и Excel должны считаться одним id
+    return str(rid).strip()
+
+
 def _report_key(r: dict) -> str:
-    rid = r.get("report_id") or r.get("id") or ""
+    """Стабильный ключ: даты + нормализованный тип + report_id как строка."""
+    typ = _report_type_label(r.get("type"))
+    rid = _report_id_str(r)
     return "|".join([
         str(r.get("date_from") or "")[:10],
         str(r.get("date_to") or "")[:10],
-        str(r.get("type") or ""),
-        str(rid),
+        typ,
+        rid,
     ])
 
 
@@ -9961,8 +9971,12 @@ def _normalize_report_row(row: dict) -> dict:
         row["for_pay_amount"] = float(for_pay)
     if to_pay is not None:
         row["amount"] = float(to_pay)
+    rid = _report_id_str(row)
+    if rid:
+        row["report_id"] = rid
     row["type"] = _report_type_label(row.get("type"))
-    row["key"] = row.get("key") or _report_key(row)
+    # ключ всегда после нормализации типа/id — иначе Excel и API не схлопнутся
+    row["key"] = _report_key(row)
     return row
 
 
@@ -10204,18 +10218,26 @@ def parse_wb_weekly_pay_excel(content: bytes) -> list:
     return out
 
 
+def _report_merge_bucket(r: dict) -> str:
+    """Ключ схлопывания: сначала report_id, иначе неделя+тип."""
+    rid = _report_id_str(r)
+    if rid:
+        return "id:" + rid
+    return "k:" + (r.get("key") or _report_key(r))
+
+
 def _merge_reports(existing: list, incoming: list) -> list:
+    """Склеивает отчёты без дублей Excel+API (один report_id = одна строка)."""
     by = {}
-    for r in existing or []:
-        if isinstance(r, dict) and r.get("key"):
-            by[r["key"]] = r
-    for r in incoming or []:
-        if not isinstance(r, dict):
+    for raw in list(existing or []) + list(incoming or []):
+        if not isinstance(raw, dict):
             continue
-        key = r.get("key") or _report_key(r)
-        r = {**r, "key": key}
-        prev = by.get(key) or {}
-        # excel amount предпочтительнее, если api без суммы
+        r = _normalize_report_row(raw)
+        bucket = _report_merge_bucket(r)
+        prev = by.get(bucket)
+        if not prev:
+            by[bucket] = r
+            continue
         money = r.get("money") if isinstance(r.get("money"), dict) else None
         if not money and isinstance(prev.get("money"), dict):
             money = prev.get("money")
@@ -10226,18 +10248,20 @@ def _merge_reports(existing: list, incoming: list) -> list:
                 amount = picked
         if amount is None:
             amount = prev.get("amount")
-        elif prev.get("source") == "excel" and r.get("source") == "wb_api" and prev.get("amount") is not None:
-            # Excel «Итого к оплате» важнее, если API ещё без bankPaymentSum
-            if not money or _pick_report_amount(money) is None:
-                amount = prev.get("amount")
-                r = {**r, "source": "excel+api"}
-            else:
-                # оба есть — API bankPaymentSum точнее для сверки с платежами
-                r = {**r, "source": "excel+api"}
-        merged = {**prev, **r, "amount": amount, "key": key}
+        src_prev = str(prev.get("source") or "")
+        src_new = str(r.get("source") or "")
+        if "excel" in src_prev and "api" in src_new:
+            source = "excel+api"
+        elif "excel" in src_new and "api" in src_prev:
+            source = "excel+api"
+        elif src_new and src_prev and src_new != src_prev:
+            source = "+".join(sorted({src_prev, src_new}))
+        else:
+            source = src_new or src_prev
+        merged = {**prev, **r, "amount": amount, "source": source or r.get("source") or prev.get("source")}
         if money:
             merged["money"] = money
-        by[key] = _normalize_report_row(merged)
+        by[bucket] = _normalize_report_row(merged)
     rows = list(by.values())
     rows.sort(key=lambda x: (str(x.get("date_from") or ""), str(x.get("type") or "")), reverse=True)
     return rows
@@ -10636,6 +10660,10 @@ def get_wb_money(date_from: str = None, date_to: str = None, refresh: bool = Fal
 
     balance = store.get("balance")
     api_err = None
+    # всегда схлопываем Excel+API дубли (старый store мог хранить 2 строки на 1 report_id)
+    before_n = len(store.get("reports") or [])
+    store["reports"] = _merge_reports(store.get("reports") or [], [])
+    deduped = before_n != len(store.get("reports") or [])
     if refresh or not store.get("reports"):
         balance = fetch_wb_account_balance()
         api = fetch_wb_sales_reports_range(date_from, date_to)
@@ -10645,7 +10673,10 @@ def get_wb_money(date_from: str = None, date_to: str = None, refresh: bool = Fal
                 api_err = f"{api_err}: {api.get('body')}"
         else:
             store["reports"] = _merge_reports(store.get("reports") or [], api.get("reports") or [])
+            deduped = True
         store["balance"] = balance
+        _save_money_store(store)
+    elif deduped:
         _save_money_store(store)
 
     enriched = _enrich_reports_with_payments(store)
