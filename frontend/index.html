@@ -1746,7 +1746,10 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
       <div class="money-note" id="moneyNote">По каждой неделе суммируем Основной + По выкупам и сверяем с заявкой (№185 = неделя 10.08–16.08.2026). Кликни платёж → прыжок к неделе, и наоборот. Сверху — сколько ВБ ещё должен. Публичный API историю выплат не отдаёт — загрузи HTML «Активные платежи» из кабинета ВБ или добавь заявки вручную.</div>
       <div class="cards" id="moneyCards"></div>
       <div class="cfo-box">
-        <h3>Добавить платёж / заявку</h3>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+          <h3 style="margin:0">Добавить платёж / заявку</h3>
+          <button type="button" class="action-btn" id="moneyHideOldBtn" onclick="toggleMoneyHideOld()">Скрыть 2024–2025</button>
+        </div>
         <div class="money-pay-form">
           <label>№ заявки<input class="cfo-inp" id="moneyPayId" placeholder="183"></label>
           <label>Сумма ₽<input class="cfo-inp" id="moneyPayAmount" type="number" step="0.01" placeholder="4642081"></label>
@@ -11480,6 +11483,8 @@ let FINANCE_DATA = null;
 let FIN_TAB = 'wb';
 let FIN_MODE = 'stock'; // stock | cfo | money
 let MONEY_DATA = null;
+// скрывать платежи/недели до 2026 (2024–2025 и раньше)
+let MONEY_HIDE_OLD = localStorage.getItem('moneyHideOld') !== '0';
 let CFO_DATA = null;
 let _finPinBound = false;
 
@@ -12155,6 +12160,34 @@ async function markWbMoneyReport(key, status) {
   }
 }
 
+function moneyPaymentYear(p) {
+  for (const k of ['created', 'paid_at', 'report_from', 'report_to']) {
+    const s = String((p && p[k]) || '');
+    // dd.mm.yyyy
+    if (s.length >= 10 && s[2] === '.' && s[5] === '.' && /^\d{4}$/.test(s.slice(6, 10))) {
+      return Number(s.slice(6, 10));
+    }
+    // yyyy-mm-dd
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return Number(s.slice(0, 4));
+  }
+  return null;
+}
+function moneyIsOldPayment(p) {
+  const y = moneyPaymentYear(p);
+  return y != null && y < 2026;
+}
+function moneyIsOldWeek(w) {
+  const s = String((w && w.date_from) || '');
+  if (/^\d{4}-/.test(s)) return Number(s.slice(0, 4)) < 2026;
+  if (s.length >= 10 && s[2] === '.') return Number(s.slice(6, 10)) < 2026;
+  return false;
+}
+function toggleMoneyHideOld() {
+  MONEY_HIDE_OLD = !MONEY_HIDE_OLD;
+  try { localStorage.setItem('moneyHideOld', MONEY_HIDE_OLD ? '1' : '0'); } catch (e) {}
+  drawWbMoney();
+}
+
 function drawWbMoney() {
   const d = MONEY_DATA || {};
   const cards = document.getElementById('moneyCards');
@@ -12196,14 +12229,27 @@ function drawWbMoney() {
       ['К выводу', balWd != null ? fmtMoney(balWd) : '—', ''],
     ].map(([l,v,st]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${st}">${v}</div></div>`).join('');
   }
+  const hideBtn = document.getElementById('moneyHideOldBtn');
+  if(hideBtn) {
+    hideBtn.textContent = MONEY_HIDE_OLD ? 'Показать 2024–2025' : 'Скрыть 2024–2025';
+    hideBtn.title = MONEY_HIDE_OLD
+      ? 'Сейчас скрыты платежи и недели до 2026 года'
+      : 'Скрыть платежи и недели за 2024–2025 (и раньше)';
+  }
   if(pays) {
-    const list = d.payments || [];
-    if(!list.length) {
+    const allPays = d.payments || [];
+    const list = MONEY_HIDE_OLD ? allPays.filter(p => !moneyIsOldPayment(p)) : allPays;
+    const hiddenN = allPays.length - list.length;
+    if(!allPays.length) {
       pays.innerHTML = '<div class="cfo-hint">Пока нет заявок — добавь из «Истории платежей» (номер, сумма, статус). Или загрузи HTML «Активные платежи» кнопкой сверху.</div>';
     } else {
-      pays.innerHTML = `<table class="money-table" style="min-width:0"><thead><tr>
+      const hint = MONEY_HIDE_OLD && hiddenN
+        ? `<div class="cfo-hint" style="margin-bottom:8px">Показаны ${list.length} из ${allPays.length} · скрыто старых: ${hiddenN}</div>`
+        : '';
+      pays.innerHTML = hint + `<table class="money-table" style="min-width:0"><thead><tr>
         <th>№</th><th>Сумма</th><th>Неделя отчёта</th><th>Создана</th><th>Оплачена</th><th>Статус</th><th></th>
-      </tr></thead><tbody>` + list.map((p, i) => {
+      </tr></thead><tbody>` + list.map((p) => {
+        const i = allPays.indexOf(p);
         const pid = String(p.id || '').trim();
         const linked = payToWeek[pid];
         const rf = p.report_from || (p.matched_week && p.matched_week.date_from) || (linked && linked.date_from);
@@ -12262,10 +12308,18 @@ function drawWbMoney() {
   }
 
   if(root) {
-    if(!weeks.length) {
+    const allWeeks = weeks;
+    weeks = MONEY_HIDE_OLD ? allWeeks.filter(w => !moneyIsOldWeek(w)) : allWeeks;
+    const hiddenW = allWeeks.length - weeks.length;
+    if(!allWeeks.length) {
       root.innerHTML = '<div class="empty">Нет отчётов. Нажми «Синк с ВБ» или загрузи Excel еженедельного отчёта.</div>';
+    } else if(!weeks.length) {
+      root.innerHTML = '<div class="empty">Все недели скрыты фильтром «2024–2025». Нажми «Показать 2024–2025».</div>';
     } else {
-      root.innerHTML = `<table class="money-table"><thead><tr>
+      const whint = MONEY_HIDE_OLD && hiddenW
+        ? `<div class="cfo-hint" style="margin-bottom:8px">Недели: ${weeks.length} из ${allWeeks.length} · скрыто: ${hiddenW}</div>`
+        : '';
+      root.innerHTML = whint + `<table class="money-table"><thead><tr>
         <th>Неделя</th><th>К оплате</th><th>Переведено</th><th>Разница (должен ВБ)</th><th>Статус</th><th>№ выплаты</th><th>Отметка</th>
       </tr></thead><tbody>` + weeks.map(w => {
         const st = w.payment_status || 'unknown';
