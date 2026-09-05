@@ -545,6 +545,22 @@ td.tc{text-align:center}
 .ns-fbs span{font-size:10px;opacity:.85}
 .ns-col-h{cursor:grab;user-select:none}
 .ns-col-h .ns-handle{margin-right:3px}
+.ns-rep{margin:0 0 16px;padding:14px 16px;border:1px solid var(--wb-border);border-radius:var(--r);background:linear-gradient(180deg,#FCFAF7 0%,#fff 100%)}
+.ns-rep-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.ns-rep-head h3{margin:0;font-size:14px;font-weight:700}
+.ns-rep-head .pi-sub{display:block;margin-top:3px;font-size:11px;color:var(--wb-muted);line-height:1.4}
+.ns-rep-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.ns-rep-card{border:1px solid var(--wb-border);border-radius:8px;padding:11px 12px;background:#fff}
+.ns-rep-card.ns-rep-bad{background:#FEF2F2;border-color:#FECACA}
+.ns-rep-card.ns-rep-warn{background:#FFFBEB;border-color:#FDE68A}
+.ns-rep-card.ns-rep-ok{background:#F0FDF4;border-color:#A7F3D0}
+.ns-rep-card-h{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+.ns-rep-reg{font-size:10px;font-weight:700;letter-spacing:.2px;padding:2px 7px;border-radius:6px}
+.ns-rep-verdict{font-size:12px;font-weight:700;white-space:nowrap}
+.ns-rep-hours{font-size:12px;font-variant-numeric:tabular-nums;margin-bottom:4px}
+.ns-rep-meta{font-size:11px;color:var(--wb-muted);margin-bottom:6px}
+.ns-rep-blurb{font-size:12px;line-height:1.4;color:var(--wb-text)}
+@media (max-width:1100px){.ns-rep-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .pace-insights{margin:0 0 12px;padding:14px 16px;border:1px solid var(--wb-border);border-radius:var(--r);background:linear-gradient(180deg,#FCFAF7 0%,#fff 100%)}
 .pace-insights-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}
 .pace-insights-h h3{margin:0;font-size:14px;font-weight:700;color:var(--wb-text)}
@@ -1089,6 +1105,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
     <button class="filter-btn" id="nsFltWarn" onclick="setNewStockFilter('warn')">Жёлтые &gt;40ч</button>
     <button class="filter-btn" id="nsFltBad" onclick="setNewStockFilter('bad')">Красные &gt;60ч</button>
     <button class="filter-btn" id="nsFltHidden" onclick="toggleNewStockHidden()">Скрытые</button>
+    <button class="filter-btn on" id="nsFltReport" onclick="toggleNsReport()" title="Сводка по регионам: срок и тонкие остатки">Отчёт</button>
     <div style="position:relative;display:inline-flex">
       <button type="button" class="action-btn" id="nsColPickerBtn" onclick="toggleNsColPicker(event)" title="Показать или скрыть города и FBS">Колонки</button>
       <div id="nsColPicker" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;min-width:300px;max-height:400px;overflow:auto;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--rs);box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:80;padding:8px"></div>
@@ -2398,6 +2415,8 @@ let NEW_STOCK_LOADED = false;
 let NEW_STOCK_FILTER = 'all';
 let NS_LAYOUT = {hidden:[], pinned:[], order:[], groups:[], city_order:[], group_order:[], city_group:{}, hidden_cities:[], hidden_fbs:[], col_w:56};
 let NS_SHOW_HIDDEN = false;
+let NS_REPORT_ON = true;
+try { NS_REPORT_ON = localStorage.getItem('ns_report_hidden') !== '1'; } catch(e) {}
 let NS_DRAG = null;
 let nsPoll = null;
 let nsSaveT = null;
@@ -2966,6 +2985,124 @@ function nsGroupSelect(vc) {
   return `<select class="ns-gselect" onchange="nsSetGroup('${String(vc).replace(/'/g,"\\'")}', this.value)">${opts.join('')}</select>`;
 }
 
+function toggleNsReport() {
+  NS_REPORT_ON = !NS_REPORT_ON;
+  try { localStorage.setItem('ns_report_hidden', NS_REPORT_ON ? '0' : '1'); } catch(e) {}
+  const btn = document.getElementById('nsFltReport');
+  if(btn) btn.classList.toggle('on', NS_REPORT_ON);
+  drawNewStock();
+}
+
+function nsMedian(arr) {
+  const s = (arr || []).filter(x => x != null && !isNaN(x)).map(Number).sort((a, b) => a - b);
+  if(!s.length) return null;
+  const mid = Math.floor((s.length - 1) / 2);
+  if(s.length % 2) return s[mid];
+  return Math.round((s[mid] + s[mid + 1]) / 2);
+}
+
+function nsBuildRegionReport() {
+  const allCities = NEW_STOCK.cities || [];
+  const arts = NEW_STOCK.articles || [];
+  if(!allCities.length || !arts.length) return null;
+  const groups = (nsGeoLayout(true).groups || []);
+  const hasStock = a => allCities.some(c => (((a.cities || {})[c.id] || {}).qty || 0) > 0);
+  const live = arts.filter(hasStock);
+  const regions = groups.map(g => {
+    const gCities = (g.city_ids || []).map(id => allCities.find(c => c.id === id)).filter(Boolean);
+    const cityStats = gCities.map(c => {
+      const hours = [], qtys = [];
+      live.forEach(a => {
+        const cell = (a.cities || {})[c.id] || {};
+        if((cell.qty || 0) > 0) {
+          qtys.push(cell.qty);
+          if(cell.hours != null) hours.push(Number(cell.hours));
+        }
+      });
+      return {id: c.id, name: c.name, label: nsCityLabel(c.name), medH: nsMedian(hours), n: hours.length};
+    });
+    let inRegion = 0, redWorst = 0, thin = 0, fat = 0;
+    live.forEach(a => {
+      let maxH = null, any = false;
+      gCities.forEach(c => {
+        const cell = (a.cities || {})[c.id] || {};
+        const q = cell.qty || 0;
+        if(q > 0) {
+          any = true;
+          if(cell.hours != null) maxH = maxH == null ? Number(cell.hours) : Math.max(maxH, Number(cell.hours));
+        }
+      });
+      if(!any) return;
+      inRegion++;
+      if(maxH != null && maxH > 60) redWorst++;
+      const maxQ = Math.max(0, ...gCities.map(c => ((a.cities || {})[c.id] || {}).qty || 0));
+      if(maxQ <= 5) thin++;
+      if(gCities.length && gCities.every(c => (((a.cities || {})[c.id] || {}).qty || 0) >= 20)) fat++;
+    });
+    const withH = cityStats.filter(c => c.medH != null).sort((a, b) => b.medH - a.medH);
+    const worst = withH[0], best = withH[withH.length - 1];
+    const redShare = live.length ? redWorst / live.length : 0;
+    const thinShare = live.length ? thin / live.length : 0;
+    let tone = 'ok', verdict = 'Норма';
+    if((worst && worst.medH > 80) || redShare >= 0.7) {
+      tone = 'bad';
+      verdict = thinShare >= 0.35 ? 'Долго и тонко' : 'Долго. Остаток есть';
+    } else if((worst && worst.medH > 55) || redShare >= 0.35) {
+      tone = 'warn';
+      verdict = worst ? (worst.label + ' тормозит') : 'Срок средний';
+    } else if(thinShare >= 0.4) {
+      tone = 'warn';
+      verdict = 'Срок ок, запас тонкий';
+    }
+    let blurb = 'Нет остатка в регионе.';
+    if(inRegion) {
+      const bits = [];
+      if(worst && worst.medH > 60) bits.push(worst.label + ' валит срок (' + worst.medH + ' ч)');
+      else if(worst && worst.medH > 40) bits.push('худший срок — ' + worst.label + ' (' + worst.medH + ' ч)');
+      else if(best) bits.push('срок нормальный, лучше всех ' + best.label + ' (' + best.medH + ' ч)');
+      if(thinShare >= 0.4) bits.push('тонких ' + thin + ' арт. (макс. ≤5 шт)');
+      else if(fat >= 12) bits.push('остаток жирный');
+      else bits.push('остаток средний');
+      blurb = bits.join('. ') + '.';
+    }
+    return {
+      id: g.id, name: g.name, tone, verdict, blurb,
+      hoursLine: withH.map(c => c.label + ' ' + c.medH).join(' · '),
+      redWorst, thin, liveN: live.length,
+    };
+  });
+  return {total: arts.length, live: live.length, empty: arts.length - live.length, asOf: NEW_STOCK.as_of || '', regions};
+}
+
+function nsReportHtml() {
+  if(!NS_REPORT_ON) return '';
+  const r = nsBuildRegionReport();
+  if(!r) return '';
+  const gClass = {sib:'ns-g-sib', south:'ns-g-south', center:'ns-g-center', nw:'ns-g-nw', ural:'ns-g-ural', volga:'ns-g-volga'};
+  const cards = r.regions.map(reg => `
+    <div class="ns-rep-card ns-rep-${reg.tone}">
+      <div class="ns-rep-card-h">
+        <span class="ns-rep-reg ${gClass[reg.id] || ''}">${escapeHtml(reg.name)}</span>
+        <span class="ns-rep-verdict">${escapeHtml(reg.verdict)}</span>
+      </div>
+      <div class="ns-rep-hours">${escapeHtml(reg.hoursLine || 'нет срока')}</div>
+      <div class="ns-rep-meta">красных ${reg.redWorst}/${reg.liveN} · тонких ${reg.thin}</div>
+      <div class="ns-rep-blurb">${escapeHtml(reg.blurb)}</div>
+    </div>`).join('');
+  const emptyBit = r.empty ? ' · ' + r.empty + ' пустые везде — одни и те же' : '';
+  const asOf = r.asOf ? ' · на ' + escapeHtml(r.asOf) : '';
+  return `<div class="ns-rep">
+    <div class="ns-rep-head">
+      <div>
+        <h3>По регионам</h3>
+        <span class="pi-sub">${r.live} с остатком из ${r.total}${emptyBit}${asOf} · медиана часов по ячейкам с остатком · жёлтый &gt;40 ч, красный &gt;60 ч</span>
+      </div>
+      <button type="button" class="ns-ico" onclick="toggleNsReport()">Скрыть</button>
+    </div>
+    <div class="ns-rep-grid">${cards}</div>
+  </div>`;
+}
+
 function nsArtRow(a, cities, zone, pinned) {
   const vc = nsVc(a);
   const safe = String(vc).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
@@ -3004,6 +3141,11 @@ function drawNewStock() {
   }
   updateNsColPickerBtn();
   nsSyncColWButtons();
+  const repBtn = document.getElementById('nsFltReport');
+  if(repBtn) {
+    repBtn.classList.toggle('on', NS_REPORT_ON);
+    repBtn.textContent = 'Отчёт';
+  }
 
   if(NEW_STOCK.error) {
     if(info) info.textContent = NEW_STOCK.error;
@@ -3036,11 +3178,11 @@ function drawNewStock() {
   const matchSet = new Set(match.map(nsVc));
 
   if(NEW_STOCK.syncing && !match.length) {
-    root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Тянем витрину WB (до минуты)…</span></div>';
+    root.innerHTML = nsReportHtml() + '<div class="loading"><div class="spinner"></div><span>Тянем витрину WB (до минуты)…</span></div>';
     return;
   }
   if(!match.length && !hidN) {
-    root.innerHTML = `<div class="empty" style="padding:40px 20px">${escapeHtml(NEW_STOCK.error || NEW_STOCK.note || 'Нет артикулов. Обнови «Товары» или нажми «Обновить».')}</div>`;
+    root.innerHTML = nsReportHtml() + `<div class="empty" style="padding:40px 20px">${escapeHtml(NEW_STOCK.error || NEW_STOCK.note || 'Нет артикулов. Обнови «Товары» или нажми «Обновить».')}</div>`;
     return;
   }
 
@@ -3141,7 +3283,7 @@ function drawNewStock() {
     </div>`;
   }
 
-  root.innerHTML = `<div class="matrix-wrap"><table class="matrix promo-xls ns-tbl" style="--ns-col-w:${nsColW()}px">
+  root.innerHTML = nsReportHtml() + `<div class="matrix-wrap"><table class="matrix promo-xls ns-tbl" style="--ns-col-w:${nsColW()}px">
     <thead>
       <tr><th class="ns-art" rowspan="2">Артикул</th>${fbsHead}${groupRow}</tr>
       <tr>${fbsCityRow}${cityRow}</tr>
