@@ -11967,15 +11967,20 @@ function setMoneyStatus(msg, ok) {
   el.className = 'cfo-status' + (ok === true ? ' ok' : ok === false ? ' err' : '');
 }
 
+function moneyPeriodFrom() {
+  // отчёты + сверка: прошлый год с 1 янв. (2025) по сегодня
+  const y = new Date().getFullYear() - 1;
+  return `${y}-01-01`;
+}
+
 async function loadWbMoney(force) {
   const root = document.getElementById('moneyReportsRoot');
   if(root && (!MONEY_DATA || force)) {
     root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Загрузка отчётов ВБ…</span></div>';
   }
   try {
-    const y = new Date().getFullYear();
     const q = new URLSearchParams({
-      date_from: `${y}-01-01`,
+      date_from: moneyPeriodFrom(),
       date_to: new Date().toISOString().slice(0, 10),
     });
     if(force) q.set('refresh', 'true');
@@ -11988,11 +11993,10 @@ async function loadWbMoney(force) {
 }
 
 async function syncWbMoney() {
-  setMoneyStatus('Синхронизация за 2026…');
+  setMoneyStatus('Синхронизация отчётов с 2025…');
   try {
-    const y = new Date().getFullYear();
     const q = new URLSearchParams({
-      date_from: `${y}-01-01`,
+      date_from: moneyPeriodFrom(),
       date_to: new Date().toISOString().slice(0, 10),
     });
     const r = await fetch(`${RAILWAY_URL}/api/wb-money/sync?${q}`, {method: 'POST'});
@@ -12194,7 +12198,7 @@ function drawWbMoney() {
       root.innerHTML = '<div class="empty">Нет отчётов. Нажми «Синк с ВБ» или загрузи Excel еженедельного отчёта.</div>';
     } else {
       root.innerHTML = `<table class="money-table"><thead><tr>
-        <th>Неделя</th><th>К оплате</th><th>Переведено</th><th>Разница (должен ВБ)</th><th>Статус</th><th>Заявка</th><th>Отметка</th>
+        <th>Неделя</th><th>К оплате</th><th>Переведено</th><th>Разница (должен ВБ)</th><th>Статус</th><th>№ выплаты</th><th>Отметка</th>
       </tr></thead><tbody>` + weeks.map(w => {
         const st = w.payment_status || 'unknown';
         const mp = w.matched_payment;
@@ -12216,9 +12220,10 @@ function drawWbMoney() {
         if(owes > 1) statusHtml += `<span class="money-remain">должен ${fmtMoney(owes)}</span>`;
 
         let mpHtml = '—';
-        if(mp) {
-          mpHtml = `#${escapeHtml(mp.id || '—')}`;
-          if(paidAmt != null) mpHtml += `<span class="money-pay-sub">заявка ${fmtMoney(paidAmt)}</span>`;
+        const payNo = w.payment_id || (mp && (mp.id || mp.payment_id));
+        if(payNo) {
+          mpHtml = `<b>выплата №${escapeHtml(String(payNo))}</b>`;
+          if(paidAmt != null) mpHtml += `<span class="money-pay-sub">${fmtMoney(paidAmt)}</span>`;
         } else if(w.payment_source === 'manual') {
           mpHtml = 'вручную';
         }
