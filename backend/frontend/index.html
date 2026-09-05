@@ -199,10 +199,32 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .money-table tr:hover td{background:rgba(0,0,0,.02)}
 .money-row-link{cursor:pointer}
 .money-row-link:hover td{background:rgba(212,98,42,.06)}
-.money-row-flash td{animation:moneyFlash 1.4s ease}
+.money-row-flash td{animation:moneyFlash 2.2s ease}
+.money-row-active td{
+  background:rgba(212,98,42,.14) !important;
+  box-shadow:inset 4px 0 0 #D4622A;
+}
+.money-row-active td:first-child{
+  position:relative;
+}
+.money-row-active td:first-child::after{
+  content:attr(data-money-pin);
+  display:inline-block;
+  margin-left:8px;
+  padding:1px 7px;
+  border-radius:999px;
+  background:#D4622A;
+  color:#fff;
+  font-size:10px;
+  font-weight:700;
+  letter-spacing:.02em;
+  vertical-align:middle;
+  white-space:nowrap;
+}
 @keyframes moneyFlash{
-  0%{background:rgba(212,98,42,.22)}
-  100%{background:transparent}
+  0%{background:rgba(212,98,42,.38)}
+  35%{background:rgba(212,98,42,.22)}
+  100%{background:rgba(212,98,42,.14)}
 }
 .money-jump{color:inherit;text-decoration:none;border-bottom:1px dashed rgba(212,98,42,.55)}
 .money-jump:hover{color:var(--wb-purple);border-bottom-color:var(--wb-purple)}
@@ -12307,12 +12329,23 @@ function moneyWeekDomId(dateFrom, dateTo) {
 function moneyPayDomId(payId) {
   return 'money-pay-' + String(payId || '').trim();
 }
-function flashMoneyRow(el) {
+let MONEY_FOCUS = null; // {type:'pay'|'week', id/from/to}
+
+function clearMoneyFocus() {
+  document.querySelectorAll('.money-row-active').forEach(el => {
+    el.classList.remove('money-row-active', 'money-row-flash');
+    const td = el.querySelector('td');
+    if(td) td.removeAttribute('data-money-pin');
+  });
+}
+function flashMoneyRow(el, pinText) {
   if(!el) return;
+  clearMoneyFocus();
   el.classList.remove('money-row-flash');
-  // restart animation
   void el.offsetWidth;
-  el.classList.add('money-row-flash');
+  el.classList.add('money-row-flash', 'money-row-active');
+  const td = el.querySelector('td');
+  if(td && pinText) td.setAttribute('data-money-pin', pinText);
   try {
     el.scrollIntoView({behavior:'smooth', block:'center'});
   } catch(e) {
@@ -12320,22 +12353,48 @@ function flashMoneyRow(el) {
   }
 }
 function focusMoneyWeek(dateFrom, dateTo) {
-  const el = document.getElementById(moneyWeekDomId(dateFrom, dateTo));
+  MONEY_FOCUS = {type:'week', from:String(dateFrom||'').slice(0,10), to:String(dateTo||'').slice(0,10)};
+  // если неделя скрыта фильтром «старые» — покажем всё и перерисуем
+  let el = document.getElementById(moneyWeekDomId(dateFrom, dateTo));
+  if(!el && MONEY_HIDE_OLD) {
+    MONEY_HIDE_OLD = false;
+    try { localStorage.setItem('moneyHideOld', '0'); } catch(e) {}
+    drawWbMoney();
+    el = document.getElementById(moneyWeekDomId(dateFrom, dateTo));
+  }
   if(!el) {
     setMoneyStatus('Неделя отчёта не найдена', false);
     return;
   }
-  flashMoneyRow(el);
-  setMoneyStatus('Неделя ' + moneyFmtDate(dateFrom) + ' – ' + moneyFmtDate(dateTo), true);
+  flashMoneyRow(el, '← отчёт');
+  setMoneyStatus('Отчёт ' + moneyFmtDate(dateFrom) + ' – ' + moneyFmtDate(dateTo) + ' · подсвечен', true);
 }
 function focusMoneyPayment(payId) {
-  const el = document.getElementById(moneyPayDomId(payId));
+  const pid = String(payId || '').trim();
+  MONEY_FOCUS = {type:'pay', id: pid};
+  let el = document.getElementById(moneyPayDomId(pid));
+  if(!el && MONEY_HIDE_OLD) {
+    MONEY_HIDE_OLD = false;
+    try { localStorage.setItem('moneyHideOld', '0'); } catch(e) {}
+    drawWbMoney();
+    el = document.getElementById(moneyPayDomId(pid));
+  }
   if(!el) {
-    setMoneyStatus('Выплата №' + payId + ' не найдена в списке', false);
+    setMoneyStatus('Выплата №' + pid + ' не найдена в списке', false);
     return;
   }
-  flashMoneyRow(el);
-  setMoneyStatus('Выплата №' + payId, true);
+  flashMoneyRow(el, '№' + pid);
+  setMoneyStatus('Выплата №' + pid + ' · подсвечена в списке платежей', true);
+}
+function restoreMoneyFocus() {
+  if(!MONEY_FOCUS) return;
+  if(MONEY_FOCUS.type === 'pay') {
+    const el = document.getElementById(moneyPayDomId(MONEY_FOCUS.id));
+    if(el) flashMoneyRow(el, '№' + MONEY_FOCUS.id);
+  } else if(MONEY_FOCUS.type === 'week') {
+    const el = document.getElementById(moneyWeekDomId(MONEY_FOCUS.from, MONEY_FOCUS.to));
+    if(el) flashMoneyRow(el, '← отчёт');
+  }
 }
 
 function moneyFmtDate(s) {
@@ -12716,6 +12775,7 @@ function drawWbMoney() {
       }).join('') + '</tbody></table>';
     }
   }
+  restoreMoneyFocus();
 }
 
 async function markWbMoneyWeek(keysJson, status) {
