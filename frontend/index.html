@@ -1734,7 +1734,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
         <input type="file" id="moneyPaymentsHtmlInput" accept=".html,.htm" style="display:none" onchange="uploadWbMoneyPaymentsHtml(this.files[0])">
         <span class="cfo-status" id="moneyStatus"></span>
       </div>
-      <div class="money-note" id="moneyNote">По каждой неделе суммируем Основной + По выкупам и сравниваем с заявкой из «Истории платежей». Сверху — сколько ВБ ещё должен. Публичный API историю выплат не отдаёт — загрузи HTML «Активные платежи» из кабинета ВБ или добавь заявки вручную.</div>
+      <div class="money-note" id="moneyNote">По каждой неделе суммируем Основной + По выкупам и сверяем с заявкой (№185 = неделя 10.08–16.08.2026 и дальше по цепочке). Сверху — сколько ВБ ещё должен. Публичный API историю выплат не отдаёт — загрузи HTML «Активные платежи» из кабинета ВБ или добавь заявки вручную.</div>
       <div class="cards" id="moneyCards"></div>
       <div class="cfo-box">
         <h3>Добавить платёж / заявку</h3>
@@ -12148,15 +12148,24 @@ function drawWbMoney() {
       pays.innerHTML = '<div class="cfo-hint">Пока нет заявок — добавь из «Истории платежей» (номер, сумма, статус). Или загрузи HTML «Активные платежи» кнопкой сверху.</div>';
     } else {
       pays.innerHTML = `<table class="money-table" style="min-width:0"><thead><tr>
-        <th>№</th><th>Сумма</th><th>Создана</th><th>Оплачена</th><th>Статус</th><th></th>
-      </tr></thead><tbody>` + list.map((p, i) => `<tr>
+        <th>№</th><th>Сумма</th><th>Неделя отчёта</th><th>Создана</th><th>Оплачена</th><th>Статус</th><th></th>
+      </tr></thead><tbody>` + list.map((p, i) => {
+        const rf = p.report_from || (p.matched_week && p.matched_week.date_from);
+        const rt = p.report_to || (p.matched_week && p.matched_week.date_to);
+        let weekHtml = '—';
+        if(rf && rt) {
+          weekHtml = `<b>${moneyFmtDate(rf)} – ${moneyFmtDate(rt)}</b>`;
+        }
+        return `<tr>
         <td>${escapeHtml(p.id || '—')}</td>
         <td>${fmtMoney(p.amount)}</td>
+        <td>${weekHtml}</td>
         <td>${escapeHtml(p.created || '—')}</td>
         <td>${escapeHtml(p.paid_at || '—')}</td>
         <td><span class="money-badge ${p.status === 'paid' ? 'paid' : 'processing'}">${escapeHtml(p.status || '')}</span></td>
         <td><button class="cfo-del" title="Удалить" onclick="removeWbMoneyPayment(${i})">✕</button></td>
-      </tr>`).join('') + '</tbody></table>';
+      </tr>`;
+      }).join('') + '</tbody></table>';
     }
   }
 
