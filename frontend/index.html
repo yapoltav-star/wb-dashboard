@@ -560,6 +560,12 @@ td.tc{text-align:center}
 .ns-rep-hours{font-size:12px;font-variant-numeric:tabular-nums;margin-bottom:4px}
 .ns-rep-meta{font-size:11px;color:var(--wb-muted);margin-bottom:6px}
 .ns-rep-blurb{font-size:12px;line-height:1.4;color:var(--wb-text)}
+.ns-rep-acts{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
+.ns-rep-act{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;background:#fff;border:1px solid var(--wb-border);font-size:12px;line-height:1.4}
+.ns-rep-act b{flex:0 0 auto;min-width:132px}
+.ns-rep-act.ns-rep-bad{background:#FEF2F2;border-color:#FECACA}
+.ns-rep-act.ns-rep-warn{background:#FFFBEB;border-color:#FDE68A}
+.ns-rep-act.ns-rep-ok{background:#F0FDF4;border-color:#A7F3D0}
 @media (max-width:1100px){.ns-rep-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .pace-insights{margin:0 0 12px;padding:14px 16px;border:1px solid var(--wb-border);border-radius:var(--r);background:linear-gradient(180deg,#FCFAF7 0%,#fff 100%)}
 .pace-insights-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}
@@ -1227,6 +1233,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
     <select id="geoReg" onchange="loadOrdersGeo()" style="max-width:180px;border:1px solid var(--wb-border);border-radius:6px;padding:5px 8px;font-size:12px;font-family:inherit;background:#fff">
       <option value="all">Все регионы</option>
     </select>
+    <button class="filter-btn on" id="geoFltReport" onclick="toggleGeoReport()" title="Куда грузить: спрос vs местный FBS">Отчёт</button>
     <span id="geoInfo" style="font-size:12px;color:var(--wb-muted);margin-left:4px"></span>
     <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button class="action-btn" onclick="document.getElementById('geoFileInput').click()">⬆ Лента заказов</button>
@@ -1235,6 +1242,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
       <button class="action-btn primary" onclick="loadOrdersGeo()">Показать</button>
     </div>
   </div>
+  <div id="geoReport"></div>
   <div class="cards" id="geoCards"></div>
   <div id="geoDayChart" style="display:none;padding:12px 16px 4px;background:var(--wb-surface);border-bottom:1px solid var(--wb-border)"></div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border-bottom:1px solid var(--wb-border)" class="geo-split">
@@ -3317,6 +3325,8 @@ let GEO_DATA = null;
 let GEO_CHANNEL = 'all';
 let GEO_PERIOD = 28;
 let GEO_LOADED = false;
+let GEO_REPORT_ON = true;
+try { GEO_REPORT_ON = localStorage.getItem('geo_report_hidden') !== '1'; } catch(e) {}
 let geoDebounce = null;
 let geoPoll = null;
 
@@ -3383,6 +3393,13 @@ function renderOrdersGeoPage(force) {
   if(root && !GEO_LOADED) root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Загружаем географию заказов...</span></div>';
   if(force || !GEO_LOADED) loadOrdersGeo();
   else drawOrdersGeo();
+  if(!NEW_STOCK_LOADED) {
+    fetch(`${RAILWAY_URL}/api/new-stock`).then(r => r.json()).then(d => {
+      NEW_STOCK = d;
+      NEW_STOCK_LOADED = true;
+      if(GEO_LOADED && GEO_REPORT_ON) drawOrdersGeo();
+    }).catch(() => {});
+  }
 }
 
 async function loadOrdersGeo() {
@@ -3437,12 +3454,189 @@ async function loadOrdersGeo() {
   }
 }
 
+function toggleGeoReport() {
+  GEO_REPORT_ON = !GEO_REPORT_ON;
+  try { localStorage.setItem('geo_report_hidden', GEO_REPORT_ON ? '0' : '1'); } catch(e) {}
+  const btn = document.getElementById('geoFltReport');
+  if(btn) btn.classList.toggle('on', GEO_REPORT_ON);
+  drawOrdersGeo();
+}
+
+function geoShortRegion(name) {
+  const n = String(name || '');
+  if(/Центральн/.test(n)) return 'Центр';
+  if(/Северо-Западн/.test(n)) return 'СЗ';
+  if(/Приволж/.test(n)) return 'Волга';
+  if(/Южн|Кавказ/.test(n)) return 'Юг';
+  if(/Урал/.test(n)) return 'Урал';
+  if(/Сибир|Дальневосточ/.test(n)) return 'Сибирь';
+  return n;
+}
+
+function geoHubForRegion(name) {
+  const n = String(name || '');
+  if(/Центральн|Северо-Западн/.test(n)) return {key:'msk', label:'FBS Москва / Внуково', re:/внуков|москв/i};
+  if(/Приволж/.test(n)) return {key:'kzn', label:'FBS Казань', re:/казан|столбищ/i};
+  if(/Южн|Кавказ/.test(n)) return {key:'krd', label:'FBS Краснодар', re:/краснодар|тахтамукай/i};
+  if(/Урал|Сибир|Дальневосточ/.test(n)) return {key:'tmn', label:'FBS Тюмень', re:/тюмен/i};
+  return null;
+}
+
+function geoNsForRegion(name) {
+  if(typeof nsBuildRegionReport !== 'function' || !NEW_STOCK || !(NEW_STOCK.articles || []).length) return null;
+  const map = {
+    'Центральный': 'center',
+    'Северо-Западный': 'nw',
+    'Приволжский': 'volga',
+    'Южный и Северо-Кавказский': 'south',
+    'Уральский': 'ural',
+    'Дальневосточный и Сибирский': 'sib',
+  };
+  const id = map[name];
+  if(!id) return null;
+  const built = nsBuildRegionReport();
+  return ((built && built.regions) || []).find(x => x.id === id) || null;
+}
+
+function geoBuildReport() {
+  const d = GEO_DATA;
+  const s = d && d.summary;
+  if(!s || !(s.total_orders > 0)) return null;
+  const total = s.total_orders;
+  const whs = d.by_warehouse || [];
+  const regs = (d.by_region || []).filter(r => !/Армени|Кыргыз|Беларус|Казахстан|Узбекистан|не указан/i.test(r.region || ''));
+  const findHub = re => whs.find(w => re.test(w.warehouse || '')) || null;
+  const cards = regs.slice(0, 6).map(reg => {
+    const hub = geoHubForRegion(reg.region);
+    const hw = hub ? findHub(hub.re) : null;
+    const hubOrders = hw ? hw.orders : 0;
+    const hubShare = Math.round(hubOrders / total * 1000) / 10;
+    const fbsPct = Math.round((reg.fbs_orders || 0) / Math.max(1, reg.total_orders) * 100);
+    const ns = geoNsForRegion(reg.region);
+    const moscowServes = !!(findHub(/внуков/i) || {}).top_regions &&
+      ((findHub(/внуков/i) || {}).top_regions || []).includes(reg.region);
+    const ratio = hubShare / Math.max(0.1, reg.share_pct || 0);
+    let tone = 'ok', verdict = 'Норма', blurb = 'Местный FBS и FBW закрывают спрос.';
+    if(hub && hub.key !== 'msk' && ratio < 0.35 && (reg.share_pct || 0) >= 7) {
+      tone = 'bad';
+      verdict = 'Грузить ' + hub.label.replace(/^FBS /, '');
+      blurb = 'Спрос ' + reg.share_pct + '%, местный FBS ' + hubShare + '% всех отгрузок.' +
+        (moscowServes ? ' Сейчас едет из Москвы.' : ' Едет издалека.');
+    } else if(hub && hub.key !== 'msk' && fbsPct <= 40) {
+      tone = 'warn';
+      verdict = 'FBS недогружен';
+      blurb = 'FBW ' + (100 - fbsPct) + '% заказов региона. ' + hub.label + ' слабо закрывает.';
+    } else if(hub && hub.key === 'msk') {
+      if(/Центральн/.test(reg.region || '')) {
+        tone = 'ok';
+        verdict = 'Внуково закрывает';
+        blurb = 'Местный FBS есть. Не растаскивать Внуково на Юг и Сибирь — их надо закрывать своими СЦ.';
+      } else {
+        tone = 'warn';
+        verdict = 'Держать Внуково';
+        blurb = 'Своего FBS нет. Кормит Москва. Запас с Внуково не снимать.';
+      }
+    }
+    if(ns && /валит|долго/i.test((ns.verdict || '') + ' ' + (ns.blurb || ''))) {
+      blurb += ' Витрина: ' + (ns.hoursLine || ns.verdict) + '.';
+      if(tone === 'ok') tone = 'warn';
+    } else if(ns && ns.thin >= 15) {
+      blurb += ' На витрине тонко: ' + ns.thin + ' арт. ≤5 шт.';
+    }
+    return {
+      id: (hub && hub.key) || 'x',
+      name: geoShortRegion(reg.region),
+      full: reg.region,
+      tone, verdict, blurb,
+      hoursLine: (reg.share_pct || 0) + '% заказов · FBS ' + geoFmt(reg.fbs_orders) + ' / FBW ' + geoFmt(reg.fbw_orders),
+      meta: hub ? ('хаб ' + hub.label + ' · ' + hubShare + '% отгрузок') : 'хаба нет',
+      share: reg.share_pct || 0,
+      hubShare, hub,
+    };
+  });
+
+  const byHub = {};
+  cards.forEach(c => {
+    if(!c.hub || c.share < 5) return;
+    const k = c.hub.key;
+    if(!byHub[k]) byHub[k] = {hub: c.hub, names: [], demand: 0, hubShare: c.hubShare};
+    byHub[k].names.push(c.name);
+    byHub[k].demand += c.share;
+  });
+  const actions = [];
+  Object.keys(byHub).forEach(k => {
+    const h = byHub[k];
+    const ratio = h.hubShare / Math.max(0.1, h.demand);
+    if(k !== 'msk' && ratio < 0.35) {
+      actions.push({
+        pri: ratio, tone: 'bad',
+        title: 'Грузить ' + h.hub.label.replace(/^FBS /, ''),
+        text: h.names.join(' + ') + ': спрос ' + h.demand.toFixed(1) + '%, местный FBS ' + h.hubShare + '%. Докидывать сюда, не возить из Москвы.',
+      });
+    } else if(k === 'msk') {
+      actions.push({
+        pri: 4, tone: 'ok',
+        title: 'Внуково не снимать',
+        text: 'Центр и СЗ — ' + h.demand.toFixed(1) + '% заказов. СЗ без своего FBS, кормит Москва. Юг и Сибирь с Внуково не кормить.',
+      });
+    }
+  });
+  if((s.fbw_share_pct || 0) >= 45) {
+    actions.push({
+      pri: 5, tone: 'ok',
+      title: 'FBW не убирать',
+      text: 'Склады WB дают ' + s.fbw_share_pct + '% заказов. Локальный FBS — добивка срока, не замена FBW.',
+    });
+  }
+  actions.sort((a, b) => a.pri - b.pri);
+  const fromEl = document.getElementById('geoDateFrom');
+  const toEl = document.getElementById('geoDateTo');
+  const period = (fromEl && fromEl.value && toEl && toEl.value) ? (fromEl.value + ' — ' + toEl.value) : '';
+  return {summary: s, cards, actions: actions.slice(0, 5), period};
+}
+
+function geoReportHtml() {
+  if(!GEO_REPORT_ON) return '';
+  const r = geoBuildReport();
+  if(!r) return '';
+  const gClass = {msk:'ns-g-center', kzn:'ns-g-volga', krd:'ns-g-south', tmn:'ns-g-ural', x:''};
+  const acts = (r.actions || []).map(a =>
+    `<div class="ns-rep-act ns-rep-${a.tone}"><b>${geoEsc(a.title)}</b><span>${geoEsc(a.text)}</span></div>`
+  ).join('');
+  const cards = r.cards.map(c => `
+    <div class="ns-rep-card ns-rep-${c.tone}">
+      <div class="ns-rep-card-h">
+        <span class="ns-rep-reg ${gClass[c.id] || ''}">${geoEsc(c.name)}</span>
+        <span class="ns-rep-verdict">${geoEsc(c.verdict)}</span>
+      </div>
+      <div class="ns-rep-hours">${geoEsc(c.hoursLine)}</div>
+      <div class="ns-rep-meta">${geoEsc(c.meta)}</div>
+      <div class="ns-rep-blurb">${geoEsc(c.blurb)}</div>
+    </div>`).join('');
+  const s = r.summary;
+  return `<div class="ns-rep">
+    <div class="ns-rep-head">
+      <div>
+        <h3>Куда грузить</h3>
+        <span class="pi-sub">${geoFmt(s.total_orders)} заказов · FBS ${s.fbs_share_pct || 0}% / FBW ${s.fbw_share_pct || 0}%${r.period ? ' · ' + geoEsc(r.period) : ''} · спрос региона vs отгрузки местного FBS</span>
+      </div>
+      <button type="button" class="ns-ico" onclick="toggleGeoReport()">Скрыть</button>
+    </div>
+    ${acts ? `<div class="ns-rep-acts">${acts}</div>` : ''}
+    <div class="ns-rep-grid">${cards}</div>
+  </div>`;
+}
+
 function drawOrdersGeo() {
   const d = GEO_DATA;
   const root = document.getElementById('geoRoot');
+  const repEl = document.getElementById('geoReport');
+  const repBtn = document.getElementById('geoFltReport');
+  if(repBtn) repBtn.classList.toggle('on', GEO_REPORT_ON);
   if(!d) return;
   if(d.meta?.empty || (!d.filters?.total_cached && !(d.summary?.total_orders))) {
     if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">${geoEsc(d.hint || 'Загрузи Excel «Лента заказов» или нажми «С WB»')}</div>`;
+    if(repEl) repEl.innerHTML = '';
     document.getElementById('geoCards').innerHTML = '';
     document.getElementById('geoDayChart').style.display = 'none';
     ['geoWhTable','geoRegTable','geoCityTable','geoArtTable'].forEach(id => {
@@ -3451,6 +3645,7 @@ function drawOrdersGeo() {
     return;
   }
   if(root) root.innerHTML = '';
+  if(repEl) repEl.innerHTML = geoReportHtml();
 
   const s = d.summary || {};
   document.getElementById('geoCards').innerHTML = `
