@@ -10288,25 +10288,66 @@ def _parse_ru_date(s) -> date | None:
     return None
 
 
-# Якорь: № выплаты → неделя отчёта (пользователь: 185 = 10.08–16.08.2026).
+# Якорь: № выплаты → неделя (или несколько недель) отчёта.
+# 185 = 10.08–16.08.2026. 153 = две короткие недели НГ одной суммой.
 # Имеет приоритет над авто-сверкой по сумме.
 DEFAULT_PAYMENT_WEEK_LINKS = {
     "185": {"date_from": "2026-08-10", "date_to": "2026-08-16"},
+    "153": {
+        "weeks": [
+            {"date_from": "2025-12-29", "date_to": "2025-12-31"},
+            {"date_from": "2026-01-01", "date_to": "2026-01-04"},
+        ]
+    },
 }
 
 
+def _normalize_week_link(link) -> list:
+    """Связь выплаты → [{date_from, date_to}, ...]."""
+    if not isinstance(link, dict):
+        return []
+    weeks = []
+    raw_weeks = link.get("weeks")
+    if isinstance(raw_weeks, list) and raw_weeks:
+        for w in raw_weeks:
+            if not isinstance(w, dict):
+                continue
+            df = str(w.get("date_from") or "")[:10]
+            dt = str(w.get("date_to") or "")[:10]
+            if df and dt:
+                weeks.append({"date_from": df, "date_to": dt})
+    else:
+        df = str(link.get("date_from") or "")[:10]
+        dt = str(link.get("date_to") or "")[:10]
+        if df and dt:
+            weeks.append({"date_from": df, "date_to": dt})
+    return weeks
+
+
+def _compact_week_link(weeks: list) -> dict:
+    if not weeks:
+        return {}
+    out = {
+        "date_from": weeks[0]["date_from"],
+        "date_to": weeks[-1]["date_to"],
+        "weeks": weeks,
+    }
+    return out
+
+
 def _payment_week_links(store: dict) -> dict:
-    """id выплаты → {date_from, date_to}. Явные связи + дефолтный якорь 185."""
-    out = dict(DEFAULT_PAYMENT_WEEK_LINKS)
+    """id выплаты → {date_from, date_to, weeks:[...]}."""
+    out = {}
+    for pid, link in DEFAULT_PAYMENT_WEEK_LINKS.items():
+        weeks = _normalize_week_link(link)
+        if weeks:
+            out[str(pid)] = _compact_week_link(weeks)
     raw = store.get("payment_links") if isinstance(store, dict) else None
     if isinstance(raw, dict):
         for pid, link in raw.items():
-            if not isinstance(link, dict):
-                continue
-            df = str(link.get("date_from") or "")[:10]
-            dt = str(link.get("date_to") or "")[:10]
-            if df and dt:
-                out[str(pid)] = {"date_from": df, "date_to": dt}
+            weeks = _normalize_week_link(link)
+            if weeks:
+                out[str(pid)] = _compact_week_link(weeks)
     return out
 
 
@@ -10351,17 +10392,25 @@ def _enrich_reports_with_payments(store: dict) -> dict:
     used_pay = set()
     week_match = {}  # wk -> (payment, status, diff)
 
-    def assign(wk, pay_i, status, diff, source="payment_match"):
-        if wk in week_match or pay_i in used_pay:
+    def assign(wk, pay_i, status, diff, source="payment_match", reuse_pay=False,
+               paid_for_week=None, group_from=None, group_to=None, group_total=None):
+        if wk in week_match:
+            return False
+        if pay_i in used_pay and not reuse_pay:
             return False
         used_pay.add(pay_i)
         p = dict(payments[pay_i])
         if diff and diff > 1.0:
             p["near_match_diff"] = round(diff, 2)
-        p["week_total"] = round(weeks[wk]["amount"], 2)
-        p["report_from"] = wk[0]
-        p["report_to"] = wk[1]
+        p["week_total"] = round(group_total if group_total is not None else weeks[wk]["amount"], 2)
+        p["report_from"] = group_from or wk[0]
+        p["report_to"] = group_to or wk[1]
         p["match_source"] = source
+        if paid_for_week is not None:
+            try:
+                p["paid_for_week"] = round(float(paid_for_week), 2)
+            except (TypeError, ValueError):
+                pass
         week_match[wk] = (p, status, diff, source)
         return True
 
@@ -10378,22 +10427,42 @@ def _enrich_reports_with_payments(store: dict) -> dict:
     def week_end(wk):
         return _parse_ru_date(wk[1]) or _parse_ru_date(wk[0])
 
-    # 0) явные связи № выплаты → неделя (якорь 185 = 10.08–16.08.2026)
+    # 0) явные связи № выплаты → одна или несколько недель (185; 153 = две недели НГ)
     pay_index = {str(p.get("id") or ""): i for i, p in enumerate(payments) if p.get("id") not in (None, "")}
     for pid, link in pay_links.items():
         i = pay_index.get(str(pid))
         if i is None or i in used_pay:
             continue
-        wk = (str(link.get("date_from") or "")[:10], str(link.get("date_to") or "")[:10])
-        if wk not in weeks or wk in week_match:
+        linked_wks = []
+        for w in link.get("weeks") or []:
+            wk = (str(w.get("date_from") or "")[:10], str(w.get("date_to") or "")[:10])
+            if wk in weeks and wk not in week_match:
+                linked_wks.append(wk)
+        if not linked_wks:
             continue
         pam = pay_amount(i)
-        total = weeks[wk]["amount"]
-        diff = abs(total - pam) if pam is not None else 0.0
+        group_total = sum(weeks[wk]["amount"] for wk in linked_wks)
         status = _payment_status_from_row(payments[i])
-        if pam is not None and total > 0 and pam < total - 1 and pam >= total * 0.15:
+        if pam is not None and group_total > 0 and pam < group_total - 1 and pam >= group_total * 0.15:
             status = "partial"
-        assign(wk, i, status, diff, source="payment_link")
+        diff = abs(group_total - pam) if pam is not None else 0.0
+        group_from = min(wk[0] for wk in linked_wks)
+        group_to = max(wk[1] for wk in linked_wks)
+        covered = pam is not None and abs((pam or 0) - group_total) <= 1.0
+        for wk in linked_wks:
+            week_amt = weeks[wk]["amount"]
+            if covered:
+                share = week_amt
+            elif pam is not None and group_total > 0:
+                share = pam * (week_amt / group_total)
+            else:
+                share = week_amt
+            assign(
+                wk, i, status, diff, source="payment_link",
+                reuse_pay=True,
+                paid_for_week=share,
+                group_from=group_from, group_to=group_to, group_total=group_total,
+            )
 
     # 1) точное совпадение суммы недели (±1₽)
     for i, p in enumerate(payments):
@@ -10484,7 +10553,10 @@ def _enrich_reports_with_payments(store: dict) -> dict:
                 row = dict(row)
                 week_total = round(g["amount"], 2)
                 try:
-                    paid_amt = float(p.get("amount") or 0)
+                    if p.get("paid_for_week") is not None:
+                        paid_amt = float(p.get("paid_for_week"))
+                    else:
+                        paid_amt = float(p.get("amount") or 0)
                 except (TypeError, ValueError):
                     paid_amt = None
                 remaining = None
@@ -10623,7 +10695,7 @@ def _enrich_reports_with_payments(store: dict) -> dict:
     wb_owes_total = round(sum(float(w.get("wb_owes") or 0) for w in weeks), 2)
     overpay_total = round(sum(float(w.get("overpay") or 0) for w in weeks), 2)
 
-    # Проставляем неделю отчёта обратно в список платежей (для таблицы заявок)
+    # Проставляем неделю(и) отчёта обратно в список платежей (для таблицы заявок)
     pay_week = {}
     for wk, match in week_match.items():
         p = match[0] if match else None
@@ -10632,12 +10704,15 @@ def _enrich_reports_with_payments(store: dict) -> dict:
         pid = str(p.get("id") or "")
         if not pid:
             continue
-        pay_week[pid] = {
-            "report_from": wk[0],
-            "report_to": wk[1],
-            "week_total": p.get("week_total"),
+        slot = pay_week.setdefault(pid, {
+            "weeks": [],
             "match_source": p.get("match_source") or (match[3] if len(match) > 3 else None),
-        }
+        })
+        slot["weeks"].append({"date_from": wk[0], "date_to": wk[1]})
+        slot["report_from"] = min(w["date_from"] for w in slot["weeks"])
+        slot["report_to"] = max(w["date_to"] for w in slot["weeks"])
+        slot["week_total"] = p.get("week_total")
+        slot["match_source"] = p.get("match_source") or slot.get("match_source")
     payments_out = []
     for p in payments:
         row = dict(p) if isinstance(p, dict) else p
@@ -10985,11 +11060,14 @@ async def link_wb_money_payment(request: dict):
         store["payment_links"] = links
         _save_money_store(store)
         return {"status": "ok", "payment_id": pid, "link": None, "summary": _enrich_reports_with_payments(store)["summary"]}
-    df = str(body.get("date_from") or "")[:10]
-    dt = str(body.get("date_to") or "")[:10]
-    if not df or not dt:
-        raise HTTPException(status_code=400, detail="нужны date_from и date_to (YYYY-MM-DD)")
-    links[pid] = {"date_from": df, "date_to": dt}
+    weeks = _normalize_week_link({
+        "weeks": body.get("weeks"),
+        "date_from": body.get("date_from"),
+        "date_to": body.get("date_to"),
+    })
+    if not weeks:
+        raise HTTPException(status_code=400, detail="нужны date_from и date_to (YYYY-MM-DD) или weeks: []")
+    links[pid] = _compact_week_link(weeks)
     store["payment_links"] = links
     _save_money_store(store)
     enriched = _enrich_reports_with_payments(store)

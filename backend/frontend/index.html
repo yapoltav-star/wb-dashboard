@@ -12589,11 +12589,20 @@ function drawWbMoney() {
         const i = allPays.indexOf(p);
         const pid = String(p.id || '').trim();
         const linked = payToWeek[pid];
-        const rf = p.report_from || (p.matched_week && p.matched_week.date_from) || (linked && linked.date_from);
-        const rt = p.report_to || (p.matched_week && p.matched_week.date_to) || (linked && linked.date_to);
+        const weekBits = (Array.isArray(p.weeks) && p.weeks.length)
+          ? p.weeks
+          : ((p.report_from || (linked && linked.date_from))
+            ? [{date_from: p.report_from || linked.date_from, date_to: p.report_to || linked.date_to}]
+            : []);
+        const rf = weekBits[0] && weekBits[0].date_from;
+        const rt = weekBits[0] && weekBits[0].date_to;
         let weekHtml = '—';
-        if(rf && rt) {
-          weekHtml = `<a class="money-jump" href="#" onclick="event.preventDefault();event.stopPropagation();focusMoneyWeek('${escapeHtml(String(rf).slice(0,10))}','${escapeHtml(String(rt).slice(0,10))}');">${moneyFmtDate(rf)} – ${moneyFmtDate(rt)}</a>`;
+        if(weekBits.length) {
+          weekHtml = weekBits.map(w => {
+            const a = String(w.date_from || '').slice(0,10);
+            const b = String(w.date_to || '').slice(0,10);
+            return `<a class="money-jump" href="#" onclick="event.preventDefault();event.stopPropagation();focusMoneyWeek('${escapeHtml(a)}','${escapeHtml(b)}');">${moneyFmtDate(a)} – ${moneyFmtDate(b)}</a>`;
+          }).join(' + ');
         }
         const rowClick = (rf && rt)
           ? ` class="money-row-link" id="${moneyPayDomId(pid)}" onclick="focusMoneyWeek('${escapeHtml(String(rf).slice(0,10))}','${escapeHtml(String(rt).slice(0,10))}')"`
@@ -12682,7 +12691,8 @@ function drawWbMoney() {
         const payNo = w.payment_id || (mp && (mp.id || mp.payment_id));
         if(payNo) {
           mpHtml = `<a class="money-jump" href="#" onclick="event.preventDefault();event.stopPropagation();focusMoneyPayment('${escapeHtml(String(payNo))}');"><b>выплата №${escapeHtml(String(payNo))}</b></a>`;
-          if(paidAmt != null) mpHtml += `<span class="money-pay-sub">${fmtMoney(paidAmt)}</span>`;
+          const payShown = (mp && mp.amount != null) ? mp.amount : paidAmt;
+          if(payShown != null) mpHtml += `<span class="money-pay-sub">${fmtMoney(payShown)}</span>`;
         } else if(w.payment_source === 'manual') {
           mpHtml = 'вручную';
         }
