@@ -31,6 +31,7 @@ WB_FEEDBACKS_URL = "https://feedbacks-api.wildberries.ru"
 WB_ANALYTICS_URL = "https://seller-analytics-api.wildberries.ru"
 WB_STATISTICS_URL = "https://statistics-api.wildberries.ru"
 WB_SUPPLIES_URL = "https://supplies-api.wildberries.ru"
+WB_COMMON_URL = "https://common-api.wildberries.ru"
 WB_PROMOTION_URL = "https://advert-api.wildberries.ru"
 WB_CALENDAR_URL = "https://dp-calendar-api.wildberries.ru"
 WB_CONTENT_URL = "https://content-api.wildberries.ru"
@@ -2759,6 +2760,8 @@ NEW_STOCK_GROUPS = [
 # type=128 в stores-data — самовывоз (CC Ковшовой 2с1 и т.п.). Не считаем сроком доставки.
 NEW_STOCK_PICKUP_TYPES = {128}
 NEW_STOCK_PICKUP_RE = re.compile(r"самовывоз|ковшов", re.I)
+# Живой FBW после пожаров — только кластер «Склад WB РФ». Коледино/Электросталь/Шушары не считаем.
+NEW_STOCK_WB_RF_RE = re.compile(r"(?:склад\s+)?(?:wb|вб)[\s\-]*рф", re.I)
 NEW_STOCK_STORES_URL = "https://static-basket-01.wbbasket.ru/vol0/data/stores-data.json"
 NEW_STOCK_STORES_CACHE = {"by_id": {}, "loaded_at": 0.0}
 # Ближайший наш FBS: Центр/СЗ → Москва, Волга → Казань, Юг → Краснодар, Урал/Сибирь → Тюмень.
@@ -2860,6 +2863,23 @@ def _new_stock_wh(product: dict):
 def _fbs_wh_is_ignored(name: str) -> bool:
     """Самовывоз / CC Ковшовой — не склад отгрузки."""
     return bool(NEW_STOCK_PICKUP_RE.search(name or ""))
+
+
+def _is_wb_rf_warehouse(name: str) -> bool:
+    """Единственный учитываемый склад WB: «Склад WB РФ»."""
+    return bool(NEW_STOCK_WB_RF_RE.search(name or ""))
+
+
+def _is_fbs_warehouse_name(name: str) -> bool:
+    n = (name or "").lower()
+    return "fbs" in n or "маркетплейс" in n
+
+
+def _is_countable_stock_warehouse(name: str) -> bool:
+    """Склад WB РФ или наш FBS. Сгоревшие FBW (Коледино и т.п.) — нет."""
+    if _fbs_wh_is_ignored(name):
+        return False
+    return _is_wb_rf_warehouse(name) or _is_fbs_warehouse_name(name)
 
 
 def _new_stock_city_hubs() -> dict:
@@ -3063,7 +3083,7 @@ def _new_stock_city_fbw_hours(by_nm: dict) -> dict:
 
 
 def _new_stock_fbw_qty_by_nm() -> dict:
-    """nm_id → штуки на складах WB из каталога (не FBS, не Ковшовая)."""
+    """nm_id → штуки только на «Склад WB РФ». Сгоревшие склады WB не суммируем."""
     out = {}
     for p in WB_PRODUCTS_CACHE.get("products") or []:
         if not isinstance(p, dict):
@@ -3077,9 +3097,7 @@ def _new_stock_fbw_qty_by_nm() -> dict:
             if not isinstance(w, dict):
                 continue
             name = str(w.get("name") or "")
-            ch = str(w.get("channel") or "").upper()
-            low = name.lower()
-            if ch == "FBS" or "fbs" in low or "маркетплейс" in low or _fbs_wh_is_ignored(name):
+            if not _is_wb_rf_warehouse(name):
                 continue
             try:
                 total += int(w.get("qty") or 0)
@@ -3578,7 +3596,7 @@ def _attach_new_stock_fbs(payload: dict) -> dict:
                     c["qty"] = fbw_qty
                     c["is_fbw"] = True
                     c["source"] = "fbw"
-                    c["wh_label"] = "Склад WB"
+                    c["wh_label"] = "Склад WB РФ"
                     if fbw_h is not None:
                         c["hours"] = fbw_h
                     elif old_src in ("fbs_hub_peer", "fbs_msk_peer"):
@@ -3599,17 +3617,37 @@ def _attach_new_stock_fbs(payload: dict) -> dict:
                     else:
                         c["qty"] = 0
                     c["tone"] = _new_stock_tone(c.get("hours"), int(c.get("qty") or 0))
+            elif fbw_qty > 0:
+                c["qty"] = fbw_qty
+                c["is_fbw"] = True
+                c["fbs_hub"] = None
+                c["source"] = "fbw"
+                c["wh_label"] = "Склад WB РФ"
+                c["tone"] = _new_stock_tone(c.get("hours"), fbw_qty)
             elif c.get("fbs_hub"):
                 hub = NEW_STOCK_FBS_HUBS.get(c.get("fbs_hub"))
                 if hub:
+                    c["qty"] = _fbs_hub_qty(row["fbs"], c.get("fbs_hub"))
                     c["wh_label"] = hub["label"]
                     c["source"] = "fbs_hub"
-            elif c.get("is_fbw") or (not c.get("fbs_hub") and fbw_qty > 0):
-                if fbw_qty > int(c.get("qty") or 0):
-                    c["qty"] = fbw_qty
-                    c["is_fbw"] = True
-                c["wh_label"] = c.get("wh_label") or "Склад WB"
-                c["source"] = "fbw"
+                    c["tone"] = _new_stock_tone(c.get("hours"), int(c.get("qty") or 0))
+            else:
+                hid = _fbs_pick_hub(row["fbs"], cid, city_hubs)
+                hub = NEW_STOCK_FBS_HUBS.get(hid) if hid else None
+                if hid and hub:
+                    c["qty"] = _fbs_hub_qty(row["fbs"], hid)
+                    peer = _new_stock_hub_hours(city_fbs_h, hid, cid)
+                    if peer is not None:
+                        c["hours"] = peer
+                    c["source"] = "fbs_hub"
+                    c["fbs_hub"] = hid
+                    c["wh_label"] = hub["label"]
+                    c["is_fbw"] = False
+                    c["tone"] = _new_stock_tone(c.get("hours"), int(c.get("qty") or 0))
+                else:
+                    c["qty"] = 0
+                    c["is_fbw"] = False
+                    c["tone"] = "oos"
             cities[cid] = c
         row["cities"] = cities
         articles.append(row)
@@ -3646,6 +3684,395 @@ async def save_new_stock_layout(request: dict):
     if not save_setting_value(NEW_STOCK_LAYOUT_KEY, layout):
         raise HTTPException(status_code=500, detail="Не удалось сохранить раскладку")
     return {"status": "ok", "layout": layout}
+
+
+# ---------- План поставок: коэффициенты WB + календарь сдачи в СДЭК ----------
+# WB: GET common-api /api/tariffs/v1/acceptance/coefficients (~14 дней).
+# Приёмка открыта только при coefficient 0 или 1 и allowUnload=true.
+# СДЭК: сколько календарных дней до отгрузки со склада нужно привезти короб на пункт.
+
+_WD_SHORT = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
+
+# weekdays: 0=пн … 6=вс. except — дни без отгрузки (если задан, отгрузка во все остальные).
+# lead_saturday — особый срок для субботней отгрузки (СЦ Истра).
+CDEK_SUPPLY_RULES = [
+    {
+        "id": "krasnodar", "name": "Краснодар",
+        "match": ("краснодар",), "weekdays": (1, 3), "lead_days": 5,
+        "ship_note": "вт, чт", "lead_note": "за 5 дней",
+    },
+    {
+        "id": "samara", "name": "Самара",
+        "match": ("самар",), "except": (6,), "lead_days": 3,
+        "ship_note": "пн–сб", "lead_note": "за 3 дня",
+    },
+    {
+        "id": "podolsk4", "name": "Подольск 4",
+        "match": ("подольск",), "weekdays": (1, 3, 5), "lead_days": 1,
+        "ship_note": "вт, чт, сб", "lead_note": "за 1 день",
+    },
+    {
+        "id": "chashnikovo", "name": "СЦ Чашниково",
+        "match": ("чашник",), "weekdays": (0, 2, 4), "lead_days": 2,
+        "ship_note": "пн, ср, пт", "lead_note": "за 2 дня",
+    },
+    {
+        "id": "novoselki", "name": "Новосёлки",
+        "match": ("новосёлк", "новоселк"), "weekdays": (2, 4, 6), "lead_days": 2,
+        "ship_note": "ср, пт, вс", "lead_note": "за 2 дня",
+    },
+    {
+        "id": "ekb", "name": "СЦ Екатеринбург",
+        "match": ("екатеринбург",), "weekdays": (0, 1, 2, 3, 4), "lead_days": 5,
+        "ship_note": "пн–пт", "lead_note": "за 5 дней",
+    },
+    {
+        "id": "kazan", "name": "Казань",
+        "match": ("казан",), "weekdays": (0, 1, 2, 3, 4, 5, 6), "lead_days": 4,
+        "ship_note": "каждый день", "lead_note": "за 4 дня",
+    },
+    {
+        "id": "nikolskoye", "name": "СЦ Никольское",
+        "match": ("никольск",), "weekdays": (0, 1, 2, 3, 4), "lead_days": 2,
+        "ship_note": "пн–пт", "lead_note": "за 2 дня",
+    },
+    {
+        "id": "radumlya", "name": "СЦ Радумля",
+        "match": ("радумл",), "weekdays": (0, 2, 4), "lead_days": 2,
+        "ship_note": "пн, ср, пт", "lead_note": "за 2 дня",
+    },
+    {
+        "id": "istra", "name": "СЦ Истра",
+        "match": ("истра",), "weekdays": (1, 3, 5), "lead_days": 1, "lead_saturday": 2,
+        "ship_note": "вт, чт, сб", "lead_note": "за 1 день, сб — за 2",
+    },
+    {
+        "id": "ufa", "name": "СЦ Уфа",
+        "match": ("уфа",), "weekdays": (0, 1, 2, 3, 4, 5, 6), "lead_days": 3,
+        "ship_note": "каждый день", "lead_note": "за 3 дня",
+    },
+    {
+        "id": "chelyabinsk", "name": "СЦ Челябинск",
+        "match": ("челябин",), "except": (0,), "lead_days": 4,
+        "ship_note": "вт–вс", "lead_note": "за 4 дня",
+    },
+]
+
+SUPPLIES_PLAN_CACHE = {"ts": 0.0, "raw": None, "error": None, "url": None}
+SUPPLIES_PLAN_TTL = 600
+_SUPPLIES_PLAN_LOCK = threading.Lock()
+
+
+def _cdek_is_ship_day(rule: dict, d: date) -> bool:
+    wd = d.weekday()
+    if "except" in rule:
+        return wd not in rule["except"]
+    return wd in rule.get("weekdays", ())
+
+
+def _cdek_lead_days(rule: dict, ship_d: date) -> int:
+    if ship_d.weekday() == 5 and rule.get("lead_saturday") is not None:
+        return int(rule["lead_saturday"])
+    return int(rule["lead_days"])
+
+
+def _cdek_rule_for_name(name: str):
+    low = (name or "").casefold()
+    for rule in CDEK_SUPPLY_RULES:
+        if any(tok in low for tok in rule["match"]):
+            return rule
+    return None
+
+
+def _parse_wb_coef_date(raw) -> date | None:
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _wb_coef_status(coef, allow: bool) -> str:
+    if coef is None:
+        return "none"
+    try:
+        c = float(coef)
+    except (TypeError, ValueError):
+        return "none"
+    if (not allow) or c < 0:
+        return "closed"
+    if c == 0:
+        return "open0"
+    if c == 1:
+        return "open1"
+    return "paid"
+
+
+def _wb_coef_rank(item: dict):
+    allow = bool(item.get("allowUnload"))
+    try:
+        coef = float(item.get("coefficient"))
+    except (TypeError, ValueError):
+        coef = None
+    if allow and coef == 0:
+        return (0, 0.0)
+    if allow and coef == 1:
+        return (1, 1.0)
+    if allow and coef is not None and coef > 0:
+        return (2, coef)
+    return (3, 99.0)
+
+
+def _extract_acceptance_rows(payload):
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("report", "data", "coefficients", "items"):
+            val = payload.get(key)
+            if isinstance(val, list):
+                return val
+    return []
+
+
+def fetch_acceptance_coefficients(force: bool = False):
+    now = time.time()
+    with _SUPPLIES_PLAN_LOCK:
+        if (
+            not force
+            and SUPPLIES_PLAN_CACHE.get("raw") is not None
+            and (now - float(SUPPLIES_PLAN_CACHE.get("ts") or 0)) < SUPPLIES_PLAN_TTL
+        ):
+            return SUPPLIES_PLAN_CACHE["raw"], SUPPLIES_PLAN_CACHE.get("error"), SUPPLIES_PLAN_CACHE.get("url")
+
+    urls = [
+        f"{WB_COMMON_URL}/api/tariffs/v1/acceptance/coefficients",
+        f"{WB_SUPPLIES_URL}/api/v1/acceptance/coefficients",
+        f"{WB_COMMON_URL}/api/v1/tariffs/acceptance/coefficients",
+    ]
+    last_err = None
+    used = None
+    rows = []
+    for url in urls:
+        try:
+            resp = httpx.get(url, headers=wb_headers(), timeout=30)
+            if resp.status_code == 404:
+                last_err = f"{url} 404"
+                continue
+            if not resp.is_success:
+                last_err = f"{url} {resp.status_code} {resp.text[:180]}"
+                continue
+            rows = _extract_acceptance_rows(resp.json())
+            used = url
+            last_err = None if rows else f"{url}: пустой ответ"
+            if rows:
+                break
+        except Exception as e:
+            last_err = f"{url}: {e}"
+    with _SUPPLIES_PLAN_LOCK:
+        SUPPLIES_PLAN_CACHE["ts"] = time.time()
+        SUPPLIES_PLAN_CACHE["raw"] = rows
+        SUPPLIES_PLAN_CACHE["error"] = last_err
+        SUPPLIES_PLAN_CACHE["url"] = used
+    return rows, last_err, used
+
+
+def _index_acceptance_by_warehouse(raw_rows: list) -> dict:
+    """warehouse_id -> {name, is_sc, days: {date: best_cell}}"""
+    out = {}
+    for item in raw_rows or []:
+        if not isinstance(item, dict):
+            continue
+        wid = item.get("warehouseID") or item.get("warehouseId")
+        name = (item.get("warehouseName") or "").strip()
+        if wid is None and not name:
+            continue
+        key = int(wid) if wid is not None else f"n:{name}"
+        slot = out.setdefault(key, {
+            "warehouse_id": int(wid) if wid is not None else None,
+            "name": name,
+            "is_sc": bool(item.get("isSortingCenter")),
+            "days": {},
+        })
+        if name and (not slot["name"] or len(name) > len(slot["name"])):
+            slot["name"] = name
+        if item.get("isSortingCenter"):
+            slot["is_sc"] = True
+        d = _parse_wb_coef_date(item.get("date"))
+        if not d:
+            continue
+        prev = slot["days"].get(d)
+        if prev is None or _wb_coef_rank(item) < _wb_coef_rank(prev):
+            box = item.get("boxTypeName") or ""
+            slot["days"][d] = {
+                **item,
+                "box_types": sorted({*(prev.get("box_types") if prev else []), box} - {""}),
+            }
+        elif prev is not None:
+            box = item.get("boxTypeName") or ""
+            if box and box not in prev.get("box_types", []):
+                prev["box_types"] = sorted([*prev.get("box_types", []), box])
+    return out
+
+
+def _acceptance_cell(day_item: dict | None) -> dict:
+    if not day_item:
+        return {"status": "none", "coef": None, "allow": False, "box_types": []}
+    allow = bool(day_item.get("allowUnload"))
+    coef = day_item.get("coefficient")
+    try:
+        coef_n = float(coef)
+    except (TypeError, ValueError):
+        coef_n = None
+    return {
+        "status": _wb_coef_status(coef_n, allow),
+        "coef": coef_n,
+        "allow": allow,
+        "box_types": day_item.get("box_types") or [],
+    }
+
+
+def build_supplies_plan(days: int = 21, refresh: bool = False) -> dict:
+    days = max(7, min(int(days or 21), 42))
+    today = _msk_now().date()
+    dates = [today + timedelta(days=i) for i in range(days)]
+    raw, err, used = fetch_acceptance_coefficients(force=refresh)
+    by_wh = _index_acceptance_by_warehouse(raw)
+
+    date_meta = [{
+        "date": d.isoformat(),
+        "wd": d.weekday(),
+        "wd_short": _WD_SHORT[d.weekday()],
+        "is_today": i == 0,
+        "is_weekend": d.weekday() >= 5,
+        "label": f"{d.day} {_WD_SHORT[d.weekday()]}",
+    } for i, d in enumerate(dates)]
+
+    def cells_for(rule, day_map: dict):
+        out = []
+        for d in dates:
+            ship = bool(rule and _cdek_is_ship_day(rule, d))
+            lead = _cdek_lead_days(rule, d) if ship else None
+            cdek_d = (d - timedelta(days=lead)) if lead is not None else None
+            acc = _acceptance_cell(day_map.get(d) if day_map else None)
+            out.append({
+                "date": d.isoformat(),
+                "ship": ship,
+                "cdek_date": cdek_d.isoformat() if cdek_d else None,
+                "cdek_label": f"{cdek_d.day:02d}.{cdek_d.month:02d}" if cdek_d else None,
+                "cdek_today": bool(cdek_d == today) if cdek_d else False,
+                "cdek_past": bool(cdek_d and cdek_d < today),
+                "lead": lead,
+                **acc,
+            })
+        return out
+
+    matched_keys = set()
+    rows = []
+    for rule in CDEK_SUPPLY_RULES:
+        hits = []
+        for key, info in by_wh.items():
+            if _cdek_rule_for_name(info.get("name") or "") is rule:
+                hits.append((key, info))
+        if hits:
+            hits.sort(key=lambda x: ((x[1].get("name") or ""), x[0] if isinstance(x[0], int) else 0))
+            for key, info in hits:
+                matched_keys.add(key)
+                rows.append({
+                    "id": f"{rule['id']}:{info.get('warehouse_id') or key}",
+                    "name": info.get("name") or rule["name"],
+                    "rule_name": rule["name"],
+                    "warehouse_id": info.get("warehouse_id"),
+                    "is_sc": info.get("is_sc"),
+                    "has_wb": True,
+                    "has_cdek": True,
+                    "cdek": {
+                        "id": rule["id"],
+                        "ship_note": rule["ship_note"],
+                        "lead_note": rule["lead_note"],
+                    },
+                    "cells": cells_for(rule, info.get("days") or {}),
+                })
+        else:
+            rows.append({
+                "id": f"{rule['id']}:local",
+                "name": rule["name"],
+                "rule_name": rule["name"],
+                "warehouse_id": None,
+                "is_sc": rule["name"].casefold().startswith("сц"),
+                "has_wb": False,
+                "has_cdek": True,
+                "cdek": {
+                    "id": rule["id"],
+                    "ship_note": rule["ship_note"],
+                    "lead_note": rule["lead_note"],
+                },
+                "cells": cells_for(rule, {}),
+            })
+
+    extra = []
+    for key, info in by_wh.items():
+        if key in matched_keys:
+            continue
+        extra.append({
+            "id": f"wb:{info.get('warehouse_id') or key}",
+            "name": info.get("name") or "Склад WB",
+            "rule_name": None,
+            "warehouse_id": info.get("warehouse_id"),
+            "is_sc": info.get("is_sc"),
+            "has_wb": True,
+            "has_cdek": False,
+            "cdek": None,
+            "cells": cells_for(None, info.get("days") or {}),
+        })
+    extra.sort(key=lambda r: (r.get("name") or "").casefold())
+
+    bring_today = []
+    seen_bring = set()
+    for row in rows:
+        if not row.get("has_cdek"):
+            continue
+        for cell in row["cells"]:
+            if not cell.get("cdek_today"):
+                continue
+            key = (row["name"], cell["date"])
+            if key in seen_bring:
+                continue
+            seen_bring.add(key)
+            bring_today.append({
+                "warehouse": row["name"],
+                "ship_date": cell["date"],
+                "ship_label": next((m["label"] for m in date_meta if m["date"] == cell["date"]), cell["date"]),
+                "lead": cell.get("lead"),
+            })
+
+    return {
+        "today": today.isoformat(),
+        "days": days,
+        "dates": date_meta,
+        "rows": rows,
+        "extra_rows": extra,
+        "bring_today": bring_today,
+        "wb": {
+            "ok": not err and bool(raw),
+            "count": len(raw or []),
+            "warehouses": len(by_wh),
+            "url": used,
+            "error": err,
+            "updated_at": datetime.fromtimestamp(
+                SUPPLIES_PLAN_CACHE.get("ts") or time.time(), timezone.utc
+            ).isoformat(),
+        },
+        "rules": [{
+            "id": r["id"], "name": r["name"],
+            "ship_note": r["ship_note"], "lead_note": r["lead_note"],
+        } for r in CDEK_SUPPLY_RULES],
+    }
+
+
+@app.get("/api/supplies-plan")
+def get_supplies_plan(days: int = 21, refresh: bool = False):
+    return build_supplies_plan(days=days, refresh=refresh)
 
 
 # ---------- Рекомендации по поставкам: заказы + продажи по складам (WB Statistics API) ----------
@@ -8295,6 +8722,17 @@ def _warehouse_channel(name: str) -> str:
     return "FBW"
 
 
+def _filter_live_warehouses(wh_list: list) -> list:
+    """Оставляем Склад WB РФ и FBS. Коледино / Электросталь / Шушары отбрасываем."""
+    out = []
+    for w in wh_list or []:
+        if not isinstance(w, dict):
+            continue
+        if _is_countable_stock_warehouse(str(w.get("name") or "")):
+            out.append(w)
+    return out
+
+
 WB_PRODUCTS_CACHE = {
     "products": [],
     "updated_at": None,
@@ -8487,13 +8925,11 @@ def build_wb_products_catalog(sales_by_nm: dict | None = None) -> dict:
         t = totals_map.get(nm) or {}
         p = price_map.get(nm) or {}
         wh_map = by_nm_wh.get(nm) or {}
-        wh_list = [
+        wh_list = _filter_live_warehouses([
             {"name": name, "qty": qty, "channel": _warehouse_channel(name)}
             for name, qty in sorted(wh_map.items(), key=lambda x: (-x[1], x[0].lower()))
-        ]
+        ])
         stock = sum(w["qty"] for w in wh_list)
-        if not stock:
-            stock = int(t.get("quantity_warehouses_full") or 0)
         channels = []
         for ch in ("FBW", "FBS"):
             if any(w["channel"] == ch for w in wh_list):

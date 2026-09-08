@@ -846,6 +846,39 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
 .spp-alert-badge.up{background:#FEE2E2;color:#B91C1C;border:1px solid #FECACA}
 .spp-alert-cell{font-weight:700}
 .spp-alert-cell .spp-alert-main{color:#9A3412}
+
+/* План поставок — матрица склады × даты */
+#page-supplies-plan{padding:14px 16px 10px}
+.sp-banner{margin-bottom:10px;padding:9px 12px;line-height:1.45}
+.sp-legend{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:11px;color:var(--wb-muted);margin:0 0 10px}
+.sp-legend i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:5px;border:1px solid var(--wb-border)}
+.sp-wrap{overflow:auto;max-height:calc(100vh - 210px);border:1px solid var(--wb-border);border-radius:var(--r);background:#fff}
+.sp-tbl{border-collapse:separate;border-spacing:0;font-size:11px;width:max-content}
+.sp-tbl th,.sp-tbl td{border-right:1px solid var(--wb-border);border-bottom:1px solid var(--wb-border);padding:3px 2px;text-align:center;min-width:52px;width:52px;vertical-align:middle}
+.sp-tbl thead th{position:sticky;top:0;z-index:4;background:#FCFAF7;font-size:10px;font-weight:600;line-height:1.25;padding:6px 2px}
+.sp-tbl th.sp-wh,.sp-tbl td.sp-wh{position:sticky;left:0;z-index:3;min-width:176px;width:176px;max-width:176px;text-align:left;padding:5px 8px;background:#fff}
+.sp-tbl thead th.sp-wh{z-index:5;background:#FCFAF7}
+.sp-tbl th.sp-today{background:#FFF7ED;box-shadow:inset 0 -2px 0 #EA580C}
+.sp-tbl td.sp-today{background:#FFFBF5}
+.sp-tbl th.sp-we{color:#9A3412;background:#FEF2F2}
+.sp-wh-name{display:block;font-weight:650;font-size:12px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sp-wh-meta{display:block;font-size:10px;color:var(--wb-muted);margin-top:2px;line-height:1.25}
+.sp-cell{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:36px}
+.sp-coef{font-size:10px;font-weight:700;line-height:1;letter-spacing:.01em}
+.sp-coef.open0{color:#027A48}
+.sp-coef.open1{color:#175CD3}
+.sp-coef.paid{color:#B54708}
+.sp-coef.closed{color:#98A2B3;font-weight:500}
+.sp-cdek{font-size:10px;font-weight:700;color:#9A3412;line-height:1;white-space:nowrap}
+.sp-cdek.today{background:#FFEDD5;color:#C2410C;border-radius:4px;padding:1px 4px}
+.sp-cdek.past{color:#D0D5DD;font-weight:500}
+.sp-tbl td.sp-ship{background:#F0FDF4}
+.sp-tbl td.sp-ship.sp-today{background:#ECFDF3}
+.sp-tbl td.sp-bring{outline:2px solid #EA580C;outline-offset:-2px}
+.sp-tbl tr:hover td{filter:brightness(.985)}
+.sp-tbl tr:hover td.sp-wh{background:#FFF8F3}
+.sp-empty-cell{color:#D0D5DD}
+.sp-nowb{font-size:10px;color:var(--amber)}
 </style>
 </head>
 <body>
@@ -890,6 +923,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
 </div>
 <div class="subnav" id="subnav-supplies" style="display:none">
   <div class="sn-item on" onclick="showPage('new-stock',this)">Новые остатки</div>
+  <div class="sn-item" onclick="showPage('supplies-plan',this)">План поставок</div>
   <div class="sn-item" onclick="showPage('supply-recs',this)">Рекомендации поставок</div>
   <div class="sn-item" onclick="showPage('own-warehouse',this)">Наш склад</div>
   <div class="sn-item" onclick="showPage('orders-geo',this)">География FBS/FBW</div>
@@ -1097,9 +1131,8 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
 <div class="page" id="page-new-stock">
   <div class="upload-banner hint">
     <span>
-      Срок и штуки — <b>как на витрине WB в этом городе</b>. Самовывоз <b>CC Ковшовой</b> не считаем.
-      Если товар лежит на <b>складе WB</b>, показываем его, а не подменяем на FBS.
-      Срок с нашего FBS — только когда склада WB нет. Жёлтый &gt; 40 ч, красный &gt; 60 ч.
+      Остаток — только <b>Склад WB РФ</b> и наши <b>FBS</b>. Сгоревшие склады WB (Коледино и др.) не считаем.
+      Самовывоз <b>CC Ковшовой</b> не считаем. Срок с FBS — когда WB РФ пуст. Жёлтый &gt; 40 ч, красный &gt; 60 ч.
     </span>
   </div>
   <div class="toolbar">
@@ -1126,6 +1159,37 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
     </div>
   </div>
   <div id="nsRoot"><div class="empty" style="padding:40px 20px">Открой вкладку — подтянем сроки с витрины WB</div></div>
+</div>
+
+<div class="page" id="page-supplies-plan">
+  <div class="upload-banner hint sp-banner" id="spBringBanner">
+    <span>Склады слева, даты сверху — как в ЛК WB. В ячейке: коэффициент приёмки WB и день, когда короб надо сдать в СДЭК.</span>
+  </div>
+  <div class="toolbar">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="spSearch" placeholder="Склад..." oninput="drawSuppliesPlan()">
+    </div>
+    <button class="filter-btn on" id="spFltCdek" onclick="setSpScope('cdek')">Наши СДЭК</button>
+    <button class="filter-btn" id="spFltAll" onclick="setSpScope('all')">Все склады WB</button>
+    <span style="font-size:12px;color:var(--wb-muted);margin-left:4px">Дней:</span>
+    <button type="button" class="filter-btn" id="spDays14" onclick="setSpDays(14)">14</button>
+    <button type="button" class="filter-btn on" id="spDays21" onclick="setSpDays(21)">21</button>
+    <button type="button" class="filter-btn" id="spDays28" onclick="setSpDays(28)">28</button>
+    <span id="spInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
+    <div class="ml-auto">
+      <button class="action-btn" id="spSyncBtn" onclick="loadSuppliesPlan(true)">↻ Обновить</button>
+    </div>
+  </div>
+  <div class="sp-legend">
+    <span><i style="background:#F0FDF4;border-color:#A7F3D0"></i>день отгрузки</span>
+    <span><i style="background:#027A48;border-color:#027A48"></i>x0 бесплатно</span>
+    <span><i style="background:#175CD3;border-color:#175CD3"></i>x1</span>
+    <span><i style="background:#F79009;border-color:#F79009"></i>платный коэф.</span>
+    <span><i style="background:#D0D5DD;border-color:#D0D5DD"></i>закрыто</span>
+    <span><i style="background:#FFEDD5;border-color:#FDBA74"></i>СДЭК сегодня</span>
+  </div>
+  <div id="spRoot"><div class="empty" style="padding:40px 20px">Открой вкладку — подтянем план поставок WB и календарь СДЭК</div></div>
 </div>
 
 <div class="page" id="page-supply-recs">
@@ -2079,6 +2143,7 @@ function showPage(id, btn) {
   if(id === 'groups') renderGroupManager();
   if(id === 'products') renderProducts();
   if(id === 'new-stock') renderNewStock(true);
+  if(id === 'supplies-plan') renderSuppliesPlan(true);
   if(id === 'supply-recs') {
     loadWhDisabledFromServer({migrateLocal: false}).then(() => renderSupplyRecs());
     renderSupplyRecs();
@@ -2525,6 +2590,164 @@ async function triggerNewStockSync() {
     await fetch(`${RAILWAY_URL}/api/sync-new-stock`, { method: 'POST' });
   } catch(e) {}
   setTimeout(loadNewStock, 800);
+}
+
+var SP_PLAN = null;
+var SP_LOADED = false;
+var SP_SCOPE = 'cdek';
+var SP_DAYS = 21;
+
+function renderSuppliesPlan(forceLoad) {
+  if(forceLoad || !SP_LOADED) loadSuppliesPlan(false);
+  else drawSuppliesPlan();
+}
+
+function setSpScope(scope) {
+  SP_SCOPE = scope === 'all' ? 'all' : 'cdek';
+  const cdek = document.getElementById('spFltCdek');
+  const all = document.getElementById('spFltAll');
+  if(cdek) cdek.classList.toggle('on', SP_SCOPE === 'cdek');
+  if(all) all.classList.toggle('on', SP_SCOPE === 'all');
+  drawSuppliesPlan();
+}
+
+function setSpDays(n) {
+  n = Number(n) || 21;
+  if(n === SP_DAYS && SP_LOADED) return;
+  SP_DAYS = n;
+  ['14','21','28'].forEach(d => {
+    const el = document.getElementById('spDays' + d);
+    if(el) el.classList.toggle('on', Number(d) === SP_DAYS);
+  });
+  loadSuppliesPlan(false);
+}
+
+function _spEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function _spCoefHtml(cell) {
+  const st = cell.status || 'none';
+  if(st === 'open0') return '<span class="sp-coef open0">x0</span>';
+  if(st === 'open1') return '<span class="sp-coef open1">x1</span>';
+  if(st === 'paid') {
+    const n = Number(cell.coef);
+    const t = Number.isFinite(n) ? ('x' + (Number.isInteger(n) ? n : n.toFixed(1))) : 'x?';
+    return '<span class="sp-coef paid">' + t + '</span>';
+  }
+  if(st === 'closed') return '<span class="sp-coef closed">закр.</span>';
+  return '<span class="sp-empty-cell">·</span>';
+}
+
+function drawSuppliesPlan() {
+  const root = document.getElementById('spRoot');
+  const info = document.getElementById('spInfo');
+  const banner = document.getElementById('spBringBanner');
+  if(!root) return;
+  const d = SP_PLAN;
+  if(!d) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Загружаем план поставок...</span></div>';
+    return;
+  }
+  const q = ((document.getElementById('spSearch') || {}).value || '').trim().toLowerCase();
+  let rows = (d.rows || []).slice();
+  if(SP_SCOPE === 'all') rows = rows.concat(d.extra_rows || []);
+  if(q) rows = rows.filter(r =>
+    String(r.name || '').toLowerCase().includes(q) ||
+    String(r.rule_name || '').toLowerCase().includes(q)
+  );
+
+  const dates = d.dates || [];
+  const bring = d.bring_today || [];
+  if(banner) {
+    if(bring.length) {
+      banner.innerHTML = '<span>📦 <b>Сегодня сдать в СДЭК:</b> ' +
+        bring.map(b => _spEsc(b.warehouse) + ' → отгрузка ' + _spEsc(b.ship_label)).join(' · ') +
+        '</span>';
+    } else {
+      banner.innerHTML = '<span>Сегодня в СДЭК ничего не надо везти. В ячейке: коэффициент приёмки WB и дата сдачи в СДЭК до отгрузки.</span>';
+    }
+  }
+  if(info) {
+    const wb = d.wb || {};
+    const parts = [];
+    if(wb.ok) parts.push('WB ' + (wb.warehouses || 0) + ' складов');
+    else parts.push(wb.error ? ('WB: ' + wb.error) : 'WB коэффициенты недоступны');
+    parts.push(dates.length + ' дн.');
+    info.textContent = parts.join(' · ');
+  }
+
+  if(!rows.length) {
+    root.innerHTML = '<div class="empty" style="padding:40px 20px">Нет складов по фильтру</div>';
+    return;
+  }
+
+  let head = '<th class="sp-wh">Склад</th>';
+  dates.forEach(col => {
+    const cls = ['sp-d'];
+    if(col.is_today) cls.push('sp-today');
+    if(col.is_weekend) cls.push('sp-we');
+    head += '<th class="' + cls.join(' ') + '">' + _spEsc(col.label) + '</th>';
+  });
+
+  const body = rows.map(row => {
+    const cdek = row.cdek || {};
+    const meta = row.has_cdek
+      ? (_spEsc(cdek.ship_note || '') + ' · ' + _spEsc(cdek.lead_note || ''))
+      : (row.has_wb ? 'нет календаря СДЭК' : '');
+    const nowb = row.has_cdek && !row.has_wb ? ' <span class="sp-nowb">нет в API</span>' : '';
+    let tds = '<td class="sp-wh"><span class="sp-wh-name" title="' + _spEsc(row.name) + '">' +
+      _spEsc(row.name) + nowb + '</span><span class="sp-wh-meta">' + meta + '</span></td>';
+    (row.cells || []).forEach((cell, i) => {
+      const col = dates[i] || {};
+      const cls = [];
+      if(col.is_today) cls.push('sp-today');
+      if(cell.ship) cls.push('sp-ship');
+      if(cell.cdek_today) cls.push('sp-bring');
+      let inner = '<div class="sp-cell">';
+      inner += row.has_wb ? _spCoefHtml(cell) : '<span class="sp-empty-cell">·</span>';
+      if(cell.ship && cell.cdek_label) {
+        const ccls = ['sp-cdek'];
+        if(cell.cdek_today) ccls.push('today');
+        else if(cell.cdek_past) ccls.push('past');
+        const tip = cell.cdek_today
+          ? 'Сдать в СДЭК сегодня'
+          : ('Сдать в СДЭК до ' + cell.cdek_label);
+        inner += '<span class="' + ccls.join(' ') + '" title="' + _spEsc(tip) + '">' +
+          (cell.cdek_today ? 'сегодня' : cell.cdek_label) + '</span>';
+      } else {
+        inner += '<span class="sp-empty-cell"> </span>';
+      }
+      inner += '</div>';
+      tds += '<td class="' + cls.join(' ') + '">' + inner + '</td>';
+    });
+    return '<tr>' + tds + '</tr>';
+  }).join('');
+
+  root.innerHTML = '<div class="sp-wrap"><table class="sp-tbl"><thead><tr>' + head +
+    '</tr></thead><tbody>' + body + '</tbody></table></div>';
+}
+
+async function loadSuppliesPlan(refresh) {
+  const root = document.getElementById('spRoot');
+  const btn = document.getElementById('spSyncBtn');
+  const info = document.getElementById('spInfo');
+  if(btn) btn.disabled = true;
+  if(info) info.textContent = refresh ? 'Обновляем коэффициенты WB…' : 'Загрузка…';
+  if(root && !SP_LOADED) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Загружаем план поставок...</span></div>';
+  }
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/supplies-plan?days=${SP_DAYS}&refresh=${refresh ? 'true' : 'false'}`);
+    SP_PLAN = await r.json();
+    SP_LOADED = true;
+  } catch(e) {
+    SP_PLAN = {dates:[], rows:[], extra_rows:[], bring_today:[], wb:{ok:false, error:e.message}};
+    SP_LOADED = true;
+  }
+  if(btn) btn.disabled = false;
+  drawSuppliesPlan();
 }
 
 function saveNewStockLayoutSoon() {
