@@ -11128,6 +11128,8 @@ function shelfSuggestItemRow(t, compNm, compBrand, compName, opts) {
         style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Задача в CRM: прокачать полки">Афине</button>
       <button class="filter-btn" onclick="sendShelfBoostTask('zaira','${vcJs}',${t.nm_id},${compNm},'${compBrand}','${compName}',this)"
         style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Задача в CRM: прокачать полки">Заире</button>
+      <button class="filter-btn" onclick="sendShelfBoostTask('dilya','${vcJs}',${t.nm_id},${compNm},'${compBrand}','${compName}',this,'cart_warmup')"
+        style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Задача Диле: прогрев корзинами (как выкупы, но корзинами)">Диле · корзины</button>
     </div>`;
 }
 
@@ -11189,13 +11191,16 @@ function removeShelfSuggestArticle(nmId) {
   refreshShelfSuggestPanel();
 }
 
-async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, competitorBrand, competitorName, btn) {
-  const who = manager === 'zaira' ? 'Заире' : 'Афине';
+async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, competitorBrand, competitorName, btn, kind) {
+  kind = kind || 'shelf';
+  const who = manager === 'zaira' ? 'Заире' : (manager === 'dilya' ? 'Диле' : 'Афине');
   if(!ownNm || !competitorNm) {
     alert('Нет артикулов для задачи');
     return;
   }
-  const preview = `Раздача "${ownVendor || ownNm}" и ${ownNm}, через этого конкурента "${competitorNm}".`;
+  const preview = kind === 'cart_warmup'
+    ? `Прогрев корзинами "${ownVendor || ownNm}" и ${ownNm}, через этого конкурента "${competitorNm}".`
+    : `Раздача "${ownVendor || ownNm}" и ${ownNm}, через этого конкурента "${competitorNm}".`;
   if(!confirm(`Отправить задачу ${who}?\n\n${preview}`)) return;
   const prev = btn ? btn.textContent : '';
   if(btn) { btn.disabled = true; btn.textContent = '…'; }
@@ -11205,6 +11210,7 @@ async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, compe
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         manager,
+        kind,
         own_vendor_code: ownVendor || String(ownNm),
         own_nm_id: Number(ownNm),
         competitor_nm_id: Number(competitorNm),

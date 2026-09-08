@@ -45,12 +45,13 @@ WB_CHAT_REPLIED_KEEP = 2500
 _WB_CHAT_LOCK = threading.Lock()
 _WB_CHAT_RUNNING = False
 
-# Team CRM — задачи «прокачать полки» менеджерам (Афина / Заира)
+# Team CRM — задачи «прокачать полки» / прогрев корзинами
 CRM_API_URL = (os.getenv("CRM_API_URL") or os.getenv("TEAM_CRM_URL") or "").rstrip("/")
 CRM_PASSWORD = os.getenv("CRM_PASSWORD") or os.getenv("CRM_WEB_PASSWORD") or ""
 CRM_MANAGER_ALIASES = {
     "afina": ("афина", "афине", "afina"),
     "zaira": ("заира", "заире", "zaira"),
+    "dilya": ("диля", "диле", "дилия", "dilya"),
 }
 
 # Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
@@ -12612,13 +12613,15 @@ def _crm_find_employee(employees: list, aliases: tuple) -> dict | None:
 
 @app.post("/api/crm-shelf-boost-task")
 async def crm_shelf_boost_task(request: dict):
-    """Создать в Team CRM задачу «прокачать полки» на Афину или Заиру.
+    """Создать в Team CRM задачу на менеджера.
 
     Body: {
-      manager: "afina"|"zaira",
+      manager: "afina"|"zaira"|"dilya",
+      kind?: "shelf"|"cart_warmup",
       own_vendor_code, own_nm_id,
       competitor_nm_id, competitor_brand?, competitor_name?
     }
+    kind=cart_warmup — прогрев корзинами (как выкупы, но корзинами), обычно Диле.
     """
     if not CRM_API_URL:
         return {
@@ -12631,7 +12634,14 @@ async def crm_shelf_boost_task(request: dict):
     manager_key = str(request.get("manager") or "").strip().lower()
     aliases = CRM_MANAGER_ALIASES.get(manager_key)
     if not aliases:
-        return {"ok": False, "error": "manager: укажи afina или zaira"}
+        return {"ok": False, "error": "manager: укажи afina, zaira или dilya"}
+
+    kind = str(request.get("kind") or "shelf").strip().lower()
+    if kind not in ("shelf", "cart_warmup"):
+        return {"ok": False, "error": "kind: shelf или cart_warmup"}
+    if kind == "cart_warmup":
+        manager_key = "dilya"
+        aliases = CRM_MANAGER_ALIASES["dilya"]
 
     own_vc = str(request.get("own_vendor_code") or "").strip()
     try:
@@ -12647,11 +12657,20 @@ async def crm_shelf_boost_task(request: dict):
     comp_brand = str(request.get("competitor_brand") or "").strip()
     comp_name = str(request.get("competitor_name") or "").strip()
 
-    title = (
-        f'Раздача "{own_vc}" и {own_nm}, '
-        f'через этого конкурента "{competitor_nm}".'
-    )
-    marker = f"[dash:shelf-boost:{own_nm}:{competitor_nm}]"
+    if kind == "cart_warmup":
+        title = (
+            f'Прогрев корзинами "{own_vc}" и {own_nm}, '
+            f'через этого конкурента "{competitor_nm}".'
+        )
+        marker = f"[dash:cart-warmup:{own_nm}:{competitor_nm}]"
+        action_line = "Прогрев корзинами — как выкупы, но класть в корзину."
+    else:
+        title = (
+            f'Раздача "{own_vc}" и {own_nm}, '
+            f'через этого конкурента "{competitor_nm}".'
+        )
+        marker = f"[dash:shelf-boost:{own_nm}:{competitor_nm}]"
+        action_line = "Прокачать полки."
     comp_bits = [str(competitor_nm)]
     if comp_brand:
         comp_bits.insert(0, comp_brand)
@@ -12659,7 +12678,7 @@ async def crm_shelf_boost_task(request: dict):
         comp_bits.append(comp_name)
     description = (
         f"{marker}\n"
-        f"Прокачать полки.\n"
+        f"{action_line}\n"
         f"Наш: {own_vc} · https://www.wildberries.ru/catalog/{own_nm}/detail.aspx\n"
         f"Конкурент: {' · '.join(comp_bits)} · "
         f"https://www.wildberries.ru/catalog/{competitor_nm}/detail.aspx"
@@ -12726,6 +12745,7 @@ async def crm_shelf_boost_task(request: dict):
         "notified": task.get("notified"),
         "notify_error": task.get("notify_error"),
         "manager": manager_key,
+        "kind": kind,
     }
 
 
