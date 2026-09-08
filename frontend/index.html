@@ -854,31 +854,60 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
 .sp-legend i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:5px;border:1px solid var(--wb-border)}
 .sp-wrap{overflow:auto;max-height:calc(100vh - 210px);border:1px solid var(--wb-border);border-radius:var(--r);background:#fff}
 .sp-tbl{border-collapse:separate;border-spacing:0;font-size:11px;width:max-content}
-.sp-tbl th,.sp-tbl td{border-right:1px solid var(--wb-border);border-bottom:1px solid var(--wb-border);padding:3px 2px;text-align:center;min-width:52px;width:52px;vertical-align:middle}
+.sp-tbl th,.sp-tbl td{border-right:1px solid var(--wb-border);border-bottom:1px solid var(--wb-border);padding:3px 2px;text-align:center;min-width:60px;width:60px;vertical-align:middle}
 .sp-tbl thead th{position:sticky;top:0;z-index:4;background:#FCFAF7;font-size:10px;font-weight:600;line-height:1.25;padding:6px 2px}
 .sp-tbl th.sp-wh,.sp-tbl td.sp-wh{position:sticky;left:0;z-index:3;min-width:176px;width:176px;max-width:176px;text-align:left;padding:5px 8px;background:#fff}
 .sp-tbl thead th.sp-wh{z-index:5;background:#FCFAF7}
+.sp-tbl tfoot td{position:sticky;bottom:0;z-index:4;background:#FFF7ED;font-weight:700;font-size:11px}
+.sp-tbl tfoot td.sp-wh{z-index:5;background:#FFF7ED}
 .sp-tbl th.sp-today{background:#FFF7ED;box-shadow:inset 0 -2px 0 #EA580C}
 .sp-tbl td.sp-today{background:#FFFBF5}
 .sp-tbl th.sp-we{color:#9A3412;background:#FEF2F2}
 .sp-wh-name{display:block;font-weight:650;font-size:12px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sp-wh-meta{display:block;font-size:10px;color:var(--wb-muted);margin-top:2px;line-height:1.25}
-.sp-cell{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:36px}
-.sp-coef{font-size:10px;font-weight:700;line-height:1;letter-spacing:.01em}
+.sp-cell{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;min-height:42px;position:relative;z-index:1}
+.sp-coef{font-size:9px;font-weight:700;line-height:1;letter-spacing:.01em}
 .sp-coef.open0{color:#027A48}
 .sp-coef.open1{color:#175CD3}
 .sp-coef.paid{color:#B54708}
 .sp-coef.closed{color:#98A2B3;font-weight:500}
-.sp-cdek{font-size:10px;font-weight:700;color:#9A3412;line-height:1;white-space:nowrap}
-.sp-cdek.today{background:#FFEDD5;color:#C2410C;border-radius:4px;padding:1px 4px}
-.sp-cdek.past{color:#D0D5DD;font-weight:500}
+.sp-tag{font-size:9px;font-weight:800;letter-spacing:.02em;line-height:1;white-space:nowrap}
+.sp-tag.cdek{color:#C2410C}
+.sp-tag.ship{color:#9A3412}
+.sp-arrow{font-size:10px;font-weight:700;color:#9A3412;line-height:1;white-space:nowrap}
+.sp-num{font-size:9px;font-weight:700;color:#1A1816;line-height:1.1;white-space:nowrap}
+.sp-qty{font-size:10px;font-weight:800;color:#1A1816;line-height:1}
 .sp-tbl td.sp-ship{background:#F0FDF4}
 .sp-tbl td.sp-ship.sp-today{background:#ECFDF3}
-.sp-tbl td.sp-bring{outline:2px solid #EA580C;outline-offset:-2px}
+.sp-tbl td.sp-cdek-on.sp-pc0,.sp-tbl td.sp-ship-on.sp-pc0{background:#FFEDD5;box-shadow:inset 0 0 0 2px #EA580C}
+.sp-tbl td.sp-cdek-on.sp-pc1,.sp-tbl td.sp-ship-on.sp-pc1{background:#EDE9FE;box-shadow:inset 0 0 0 2px #7C3AED}
+.sp-tbl td.sp-cdek-on.sp-pc2,.sp-tbl td.sp-ship-on.sp-pc2{background:#E0F2FE;box-shadow:inset 0 0 0 2px #0369A1}
+.sp-tbl td.sp-cdek-on.sp-pc3,.sp-tbl td.sp-ship-on.sp-pc3{background:#DCFCE7;box-shadow:inset 0 0 0 2px #15803D}
+.sp-tbl td.sp-cdek-on.sp-pc4,.sp-tbl td.sp-ship-on.sp-pc4{background:#FCE7F3;box-shadow:inset 0 0 0 2px #BE185D}
+.sp-tbl td.sp-cdek-on.sp-pc5,.sp-tbl td.sp-ship-on.sp-pc5{background:#FEF3C7;box-shadow:inset 0 0 0 2px #B45309}
+.sp-tbl td.sp-bridge-today{
+  background-image:linear-gradient(#EA580C,#EA580C);
+  background-size:100% 4px;
+  background-position:center;
+  background-repeat:no-repeat;
+}
+.sp-tbl td.sp-cdek-on.sp-pc0.sp-line-start{
+  background-image:linear-gradient(#EA580C,#EA580C);
+  background-size:50% 4px;
+  background-position:right center;
+  background-repeat:no-repeat;
+}
+.sp-tbl td.sp-ship-on.sp-pc0.sp-line-end{
+  background-image:linear-gradient(#EA580C,#EA580C);
+  background-size:50% 4px;
+  background-position:left center;
+  background-repeat:no-repeat;
+}
 .sp-tbl tr:hover td{filter:brightness(.985)}
 .sp-tbl tr:hover td.sp-wh{background:#FFF8F3}
 .sp-empty-cell{color:#D0D5DD}
 .sp-nowb{font-size:10px;color:var(--amber)}
+.sp-total-zero{color:#D0D5DD;font-weight:500}
 </style>
 </head>
 <body>
@@ -1163,7 +1192,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
 
 <div class="page" id="page-supplies-plan">
   <div class="upload-banner hint sp-banner" id="spBringBanner">
-    <span>Склады слева, даты сверху — как в ЛК WB. В ячейке: коэффициент приёмки WB и день, когда короб надо сдать в СДЭК.</span>
+    <span>Склады слева, даты сверху. Номер и штуки — только из поставок WB. Пустые дни с датой вроде 09.09 больше не показываем.</span>
   </div>
   <div class="toolbar">
     <div class="search">
@@ -1182,12 +1211,11 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
     </div>
   </div>
   <div class="sp-legend">
-    <span><i style="background:#F0FDF4;border-color:#A7F3D0"></i>день отгрузки</span>
-    <span><i style="background:#027A48;border-color:#027A48"></i>x0 бесплатно</span>
+    <span><i style="background:#FFEDD5;border-color:#EA580C"></i>реальная поставка WB: сдать в СДЭК → день поставки</span>
+    <span><i style="background:#F0FDF4;border-color:#A7F3D0"></i>склад принимает (календарь, без поставки)</span>
+    <span><i style="background:#027A48;border-color:#027A48"></i>x0</span>
     <span><i style="background:#175CD3;border-color:#175CD3"></i>x1</span>
-    <span><i style="background:#F79009;border-color:#F79009"></i>платный коэф.</span>
     <span><i style="background:#D0D5DD;border-color:#D0D5DD"></i>закрыто</span>
-    <span><i style="background:#FFEDD5;border-color:#FDBA74"></i>СДЭК сегодня</span>
   </div>
   <div id="spRoot"><div class="empty" style="padding:40px 20px">Открой вкладку — подтянем план поставок WB и календарь СДЭК</div></div>
 </div>
@@ -2637,7 +2665,45 @@ function _spCoefHtml(cell) {
     return '<span class="sp-coef paid">' + t + '</span>';
   }
   if(st === 'closed') return '<span class="sp-coef closed">закр.</span>';
-  return '<span class="sp-empty-cell">·</span>';
+  return '';
+}
+
+function _spQty(n) {
+  n = Number(n) || 0;
+  if(!n) return '';
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+}
+
+function _spSupplyNo(id) {
+  const s = String(id || '');
+  if(!s) return '';
+  return '№' + (s.length > 6 ? s.slice(-6) : s);
+}
+
+function _spCellHtml(row, cell) {
+  const today = SP_PLAN && SP_PLAN.today;
+  const bits = [];
+  const coef = row.has_wb ? _spCoefHtml(cell) : '';
+  if(coef) bits.push(coef);
+  const supplies = cell.supplies || [];
+  const hasSupply = !!(supplies.length || cell.qty);
+  if(hasSupply) {
+    bits.push('<span class="sp-tag ship">поставка WB</span>');
+    supplies.forEach(s => {
+      bits.push('<span class="sp-num" title="Поставка ' + _spEsc(s.id) + '">' + _spEsc(_spSupplyNo(s.id)) + '</span>');
+    });
+    if(cell.qty) bits.push('<span class="sp-qty">' + _spQty(cell.qty) + ' шт</span>');
+  }
+  if(cell.is_cdek && cell.cdek_qty) {
+    const todayCdek = cell.date === today;
+    bits.push('<span class="sp-tag cdek">' + (todayCdek ? 'сдать сегодня' : 'сдать в СДЭК') + '</span>');
+    if(cell.cdek_for_label) {
+      bits.push('<span class="sp-arrow" title="День поставки на склад WB">→ ' + _spEsc(cell.cdek_for_label) + '</span>');
+    }
+    if(!hasSupply) bits.push('<span class="sp-qty">' + _spQty(cell.cdek_qty) + ' шт</span>');
+  }
+  if(!bits.length) return '<div class="sp-cell"><span class="sp-empty-cell">·</span></div>';
+  return '<div class="sp-cell">' + bits.join('') + '</div>';
 }
 
 function drawSuppliesPlan() {
@@ -2662,18 +2728,29 @@ function drawSuppliesPlan() {
   const bring = d.bring_today || [];
   if(banner) {
     if(bring.length) {
-      banner.innerHTML = '<span>📦 <b>Сегодня сдать в СДЭК:</b> ' +
-        bring.map(b => _spEsc(b.warehouse) + ' → отгрузка ' + _spEsc(b.ship_label)).join(' · ') +
+      banner.innerHTML = '<span>📦 <b>Сегодня сдать в СДЭК</b> по поставкам из WB: ' +
+        bring.map(b => {
+          let t = _spEsc(b.warehouse) + ' → поставка ' + _spEsc(b.ship_label);
+          if(b.qty) t += ' · ' + _spQty(b.qty) + ' шт';
+          if(b.supply_ids && b.supply_ids.length) t += ' · ' + b.supply_ids.map(_spSupplyNo).join(', ');
+          return t;
+        }).join(' · ') +
         '</span>';
     } else {
-      banner.innerHTML = '<span>Сегодня в СДЭК ничего не надо везти. В ячейке: коэффициент приёмки WB и дата сдачи в СДЭК до отгрузки.</span>';
+      const n = (d.supplies && d.supplies.count) || 0;
+      banner.innerHTML = n
+        ? '<span>Сегодня по API WB в СДЭК ничего сдавать не надо. В ячейках только реальные поставки (номер и штуки), не календарь.</span>'
+        : '<span>Поставок WB в этом окне нет — или ещё не запланированы. Даты вроде 09.09 больше не рисуем: это был срок сдачи в СДЭК, не номер поставки.</span>';
     }
   }
   if(info) {
     const wb = d.wb || {};
+    const sup = d.supplies || {};
     const parts = [];
     if(wb.ok) parts.push('WB ' + (wb.warehouses || 0) + ' складов');
-    else parts.push(wb.error ? ('WB: ' + wb.error) : 'WB коэффициенты недоступны');
+    else parts.push(wb.error ? ('коэф.: нет') : 'коэф. WB недоступны');
+    if(sup.count) parts.push(sup.count + ' поставок WB');
+    else if(sup.error) parts.push('поставки: нет');
     parts.push(dates.length + ' дн.');
     info.textContent = parts.join(' · ');
   }
@@ -2691,6 +2768,18 @@ function drawSuppliesPlan() {
     head += '<th class="' + cls.join(' ') + '">' + _spEsc(col.label) + '</th>';
   });
 
+  const packByDate = {};
+  dates.forEach(col => { packByDate[col.date] = 0; });
+  let packAll = 0;
+  rows.forEach(row => {
+    (row.cells || []).forEach(cell => {
+      if(cell.is_cdek && cell.cdek_qty) {
+        packByDate[cell.date] = (packByDate[cell.date] || 0) + cell.cdek_qty;
+        packAll += cell.cdek_qty;
+      }
+    });
+  });
+
   const body = rows.map(row => {
     const cdek = row.cdek || {};
     const meta = row.has_cdek
@@ -2703,30 +2792,35 @@ function drawSuppliesPlan() {
       const col = dates[i] || {};
       const cls = [];
       if(col.is_today) cls.push('sp-today');
-      if(cell.ship) cls.push('sp-ship');
-      if(cell.cdek_today) cls.push('sp-bring');
-      let inner = '<div class="sp-cell">';
-      inner += row.has_wb ? _spCoefHtml(cell) : '<span class="sp-empty-cell">·</span>';
-      if(cell.ship && cell.cdek_label) {
-        const ccls = ['sp-cdek'];
-        if(cell.cdek_today) ccls.push('today');
-        else if(cell.cdek_past) ccls.push('past');
-        const tip = cell.cdek_today
-          ? 'Сдать в СДЭК сегодня'
-          : ('Сдать в СДЭК до ' + cell.cdek_label);
-        inner += '<span class="' + ccls.join(' ') + '" title="' + _spEsc(tip) + '">' +
-          (cell.cdek_today ? 'сегодня' : cell.cdek_label) + '</span>';
-      } else {
-        inner += '<span class="sp-empty-cell"> </span>';
-      }
-      inner += '</div>';
-      tds += '<td class="' + cls.join(' ') + '">' + inner + '</td>';
+      if(cell.ship && !cell.is_cdek && !cell.qty && !(cell.supplies || []).length) cls.push('sp-ship');
+      if(cell.is_cdek && cell.cdek_qty) cls.push('sp-cdek-on');
+      if(cell.ship && (cell.qty || (cell.supplies || []).length)) cls.push('sp-ship-on');
+      if(cell.color != null && (cell.cdek_qty || cell.qty || (cell.supplies || []).length || cell.bridge_today)) cls.push('sp-pc' + cell.color);
+      if(cell.bridge_today) cls.push('sp-bridge-today');
+      if(cell.is_cdek && cell.cdek_qty && cell.date === d.today && cell.color === 0) cls.push('sp-line-start');
+      if(cell.ship && cell.qty && cell.cdek_date === d.today && cell.color === 0) cls.push('sp-line-end');
+      const tip = [];
+      if(cell.is_cdek && cell.cdek_qty) tip.push('Сдать в СДЭК' + (cell.cdek_for_label ? (' → поставка ' + cell.cdek_for_label) : ''));
+      if(cell.qty || (cell.supplies || []).length) tip.push('Поставка WB');
+      tds += '<td class="' + cls.join(' ') + '"' + (tip.length ? ' title="' + _spEsc(tip.join('. ')) + '"' : '') + '>' +
+        _spCellHtml(row, cell) + '</td>';
     });
     return '<tr>' + tds + '</tr>';
   }).join('');
 
+  let foot = '<td class="sp-wh"><span class="sp-wh-name">Паковать в СДЭК</span><span class="sp-wh-meta">итого ' +
+    (packAll ? (_spQty(packAll) + ' шт') : 'нет поставок') + '</span></td>';
+  dates.forEach(col => {
+    const n = packByDate[col.date] || 0;
+    const cls = ['sp-d'];
+    if(col.is_today) cls.push('sp-today');
+    foot += '<td class="' + cls.join(' ') + '">' +
+      (n ? ('<span class="sp-qty">' + _spQty(n) + '</span>') : '<span class="sp-total-zero">·</span>') +
+      '</td>';
+  });
+
   root.innerHTML = '<div class="sp-wrap"><table class="sp-tbl"><thead><tr>' + head +
-    '</tr></thead><tbody>' + body + '</tbody></table></div>';
+    '</tr></thead><tbody>' + body + '</tbody><tfoot><tr>' + foot + '</tr></tfoot></table></div>';
 }
 
 async function loadSuppliesPlan(refresh) {

@@ -3759,6 +3759,7 @@ CDEK_SUPPLY_RULES = [
 ]
 
 SUPPLIES_PLAN_CACHE = {"ts": 0.0, "raw": None, "error": None, "url": None}
+PLAN_SUPPLIES_CACHE = {"ts": 0.0, "items": None, "error": None}
 SUPPLIES_PLAN_TTL = 600
 _SUPPLIES_PLAN_LOCK = threading.Lock()
 
@@ -3915,6 +3916,224 @@ def _index_acceptance_by_warehouse(raw_rows: list) -> dict:
     return out
 
 
+def _parse_supply_day(raw) -> date | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
+    except (TypeError, ValueError):
+        return _parse_wb_coef_date(raw)
+
+
+def fetch_plan_supply_items(date_from: date, date_to: date, force: bool = False):
+    """Поставки WB в окне дат: номер, склад, дата отгрузки, штуки."""
+    now = time.time()
+    with _SUPPLIES_PLAN_LOCK:
+        cached = PLAN_SUPPLIES_CACHE.get("items")
+        if (
+            not force
+            and cached is not None
+            and (now - float(PLAN_SUPPLIES_CACHE.get("ts") or 0)) < SUPPLIES_PLAN_TTL
+        ):
+            return cached, PLAN_SUPPLIES_CACHE.get("error")
+
+    items = []
+    err = None
+    try:
+        resp = httpx.post(
+            f"{WB_SUPPLIES_URL}/api/v1/supplies",
+            headers=wb_headers(), params={"limit": 1000, "offset": 0},
+            json={}, timeout=30,
+        )
+        if not resp.is_success:
+            err = f"supplies {resp.status_code} {resp.text[:160]}"
+            logger.error(f"WB supplies list for plan: {err}")
+            with _SUPPLIES_PLAN_LOCK:
+                PLAN_SUPPLIES_CACHE["ts"] = time.time()
+                PLAN_SUPPLIES_CACHE["items"] = []
+                PLAN_SUPPLIES_CACHE["error"] = err
+            return [], err
+        raw = resp.json()
+        if not isinstance(raw, list):
+            err = "supplies: unexpected shape"
+            raw = []
+    except Exception as e:
+        err = str(e)
+        logger.error(f"WB supplies list for plan exception: {e}")
+        with _SUPPLIES_PLAN_LOCK:
+            PLAN_SUPPLIES_CACHE["ts"] = time.time()
+            PLAN_SUPPLIES_CACHE["items"] = []
+            PLAN_SUPPLIES_CACHE["error"] = err
+        return [], err
+
+    todo = []
+    for s in raw or []:
+        if not isinstance(s, dict):
+            continue
+        if s.get("factDate"):
+            continue
+        status = s.get("statusID")
+        if status in (5, 6):
+            continue
+        ship_d = _parse_supply_day(s.get("supplyDate"))
+        if not ship_d or ship_d < date_from or ship_d > date_to:
+            continue
+        sid, is_pre = s.get("supplyID"), False
+        if not sid:
+            sid, is_pre = s.get("preorderID"), True
+        if not sid:
+            continue
+        todo.append((int(sid), bool(is_pre), ship_d, status))
+
+    todo = todo[:80]
+    for sid, is_pre, ship_d, status in todo:
+        try:
+            params = {}
+            if is_pre:
+                params["isPreorderID"] = "true"
+            dresp = httpx.get(
+                f"{WB_SUPPLIES_URL}/api/v1/supplies/{sid}",
+                headers=wb_headers(), params=params, timeout=20,
+            )
+            detail = dresp.json() if dresp.is_success else {}
+            if not isinstance(detail, dict):
+                detail = {}
+            qty = detail.get("quantity")
+            try:
+                qty = int(qty or 0)
+            except (TypeError, ValueError):
+                qty = 0
+            if qty <= 0:
+                try:
+                    gparams = {"limit": 1000, "offset": 0}
+                    if is_pre:
+                        gparams["isPreorderID"] = "true"
+                    gresp = httpx.get(
+                        f"{WB_SUPPLIES_URL}/api/v1/supplies/{sid}/goods",
+                        headers=wb_headers(), params=gparams, timeout=20,
+                    )
+                    if gresp.is_success:
+                        qty = sum(int(g.get("quantity") or 0) for g in (gresp.json() or []) if isinstance(g, dict))
+                except Exception:
+                    pass
+            name = (detail.get("warehouseName") or detail.get("actualWarehouseName") or "").strip()
+            wid = detail.get("warehouseID") or detail.get("actualWarehouseID")
+            rule = _cdek_rule_for_name(name)
+            items.append({
+                "id": sid,
+                "preorder": is_pre,
+                "warehouse_id": int(wid) if wid is not None else None,
+                "warehouse_name": name,
+                "rule_id": rule["id"] if rule else None,
+                "ship_date": ship_d.isoformat(),
+                "qty": qty,
+                "status_id": detail.get("statusID", status),
+            })
+        except Exception as e:
+            logger.warning(f"WB supply {sid} details for plan: {e}")
+        time.sleep(0.05)
+
+    with _SUPPLIES_PLAN_LOCK:
+        PLAN_SUPPLIES_CACHE["ts"] = time.time()
+        PLAN_SUPPLIES_CACHE["items"] = items
+        PLAN_SUPPLIES_CACHE["error"] = err
+    return items, err
+
+
+def _pick_row_for_supply(item: dict, rows: list):
+    wid = item.get("warehouse_id")
+    if wid:
+        for row in rows:
+            if row.get("warehouse_id") == wid:
+                return row
+    rid = item.get("rule_id")
+    name = (item.get("warehouse_name") or "").casefold()
+    if rid:
+        named = [r for r in rows if (r.get("cdek") or {}).get("id") == rid]
+        if name:
+            for row in named:
+                if name in (row.get("name") or "").casefold() or (row.get("name") or "").casefold() in name:
+                    return row
+        if named:
+            return named[0]
+    if name:
+        for row in rows:
+            if name in (row.get("name") or "").casefold():
+                return row
+    return None
+
+
+def _annotate_plan_links(rows: list, items: list, dates: list, today: date):
+    """Связка СДЭК-день → день отгрузки + номера поставок."""
+    date_set = {d.isoformat() for d in dates}
+    date_index = {d.isoformat(): i for i, d in enumerate(dates)}
+
+    for row in rows:
+        for cell in row.get("cells") or []:
+            cell["is_cdek"] = False
+            cell["cdek_for"] = None
+            cell["cdek_for_label"] = None
+            cell["cdek_qty"] = 0
+            cell["cdek_pair"] = None
+            cell["supplies"] = []
+            cell["qty"] = 0
+            cell["pair"] = None
+            cell["bridge"] = False
+            cell["bridge_today"] = False
+            cell["color"] = None
+
+    assigned = []
+    for item in items or []:
+        row = _pick_row_for_supply(item, rows)
+        if row:
+            assigned.append((row, item))
+
+    for row, item in assigned:
+        ship_iso = item["ship_date"]
+        cell = next((c for c in row["cells"] if c["date"] == ship_iso), None)
+        if not cell:
+            continue
+        if not any(s["id"] == item["id"] for s in cell["supplies"]):
+            cell["supplies"].append({"id": item["id"], "qty": item.get("qty") or 0})
+            cell["qty"] = sum(s["qty"] for s in cell["supplies"])
+
+    for row in rows:
+        by_date = {c["date"]: c for c in row.get("cells") or []}
+        for cell in row.get("cells") or []:
+            if not cell.get("ship"):
+                continue
+            if not (cell.get("supplies") or cell.get("qty")):
+                continue
+            pair = f"{row.get('id')}:{cell['date']}"
+            cell["pair"] = pair
+            cdek_iso = cell.get("cdek_date")
+            if cdek_iso and cdek_iso in by_date:
+                cc = by_date[cdek_iso]
+                cc["is_cdek"] = True
+                cc["cdek_for"] = cell["date"]
+                try:
+                    sd = date.fromisoformat(cell["date"])
+                    cc["cdek_for_label"] = f"{sd.day} {_WD_SHORT[sd.weekday()]}"
+                except Exception:
+                    cc["cdek_for_label"] = cell["date"]
+                cc["cdek_qty"] = cell.get("qty") or 0
+                cc["cdek_pair"] = pair
+                today_pair = bool(cdek_iso == today.isoformat() or cell.get("cdek_today"))
+                color = 0 if today_pair else (1 + (abs(hash(pair)) % 5))
+                if today_pair or cc.get("color") is None:
+                    cc["color"] = color
+                if today_pair or cell.get("color") is None:
+                    cell["color"] = color
+                if today_pair and cdek_iso in date_index and cell["date"] in date_index:
+                    i0, i1 = date_index[cdek_iso], date_index[cell["date"]]
+                    lo, hi = (i0, i1) if i0 <= i1 else (i1, i0)
+                    for i in range(lo + 1, hi):
+                        mid = by_date[dates[i].isoformat()]
+                        mid["bridge"] = True
+                        mid["bridge_today"] = True
+                        mid["color"] = 0
+
+
 def _acceptance_cell(day_item: dict | None) -> dict:
     if not day_item:
         return {"status": "none", "coef": None, "allow": False, "box_types": []}
@@ -3937,6 +4156,10 @@ def build_supplies_plan(days: int = 21, refresh: bool = False) -> dict:
     today = _msk_now().date()
     dates = [today + timedelta(days=i) for i in range(days)]
     raw, err, used = fetch_acceptance_coefficients(force=refresh)
+    if refresh:
+        with _SUPPLIES_PLAN_LOCK:
+            PLAN_SUPPLIES_CACHE["ts"] = 0.0
+    supply_items, supply_err = fetch_plan_supply_items(today, dates[-1], force=refresh)
     by_wh = _index_acceptance_by_warehouse(raw)
 
     date_meta = [{
@@ -4027,23 +4250,36 @@ def build_supplies_plan(days: int = 21, refresh: bool = False) -> dict:
         })
     extra.sort(key=lambda r: (r.get("name") or "").casefold())
 
+    all_rows = rows + extra
+    _annotate_plan_links(all_rows, supply_items, dates, today)
+
     bring_today = []
     seen_bring = set()
     for row in rows:
         if not row.get("has_cdek"):
             continue
         for cell in row["cells"]:
-            if not cell.get("cdek_today"):
+            if not cell.get("is_cdek"):
                 continue
-            key = (row["name"], cell["date"])
+            if cell.get("date") != today.isoformat():
+                continue
+            if not cell.get("cdek_qty"):
+                continue
+            key = (row["name"], cell.get("cdek_for"))
             if key in seen_bring:
                 continue
             seen_bring.add(key)
+            nums = []
+            ship_cell = next((c for c in row["cells"] if c["date"] == cell.get("cdek_for")), None)
+            if ship_cell:
+                nums = [s["id"] for s in ship_cell.get("supplies") or []]
             bring_today.append({
                 "warehouse": row["name"],
-                "ship_date": cell["date"],
-                "ship_label": next((m["label"] for m in date_meta if m["date"] == cell["date"]), cell["date"]),
-                "lead": cell.get("lead"),
+                "ship_date": cell.get("cdek_for"),
+                "ship_label": cell.get("cdek_for_label") or cell.get("cdek_for"),
+                "lead": (ship_cell or {}).get("lead") or cell.get("lead"),
+                "qty": cell.get("cdek_qty") or 0,
+                "supply_ids": nums,
             })
 
     return {
@@ -4053,6 +4289,10 @@ def build_supplies_plan(days: int = 21, refresh: bool = False) -> dict:
         "rows": rows,
         "extra_rows": extra,
         "bring_today": bring_today,
+        "supplies": {
+            "count": len(supply_items or []),
+            "error": supply_err,
+        },
         "wb": {
             "ok": not err and bool(raw),
             "count": len(raw or []),
