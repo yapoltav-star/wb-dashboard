@@ -1211,7 +1211,8 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
     </div>
   </div>
   <div class="sp-legend">
-    <span><i style="background:#FFEDD5;border-color:#EA580C"></i>реальная поставка WB: сдать в СДЭК → день поставки</span>
+    <span><i style="background:#FFEDD5;border-color:#EA580C"></i>запланировано — сдать в СДЭК</span>
+    <span><i style="background:#F0FDF4;border-color:#A7F3D0"></i>отгрузка разрешена — уже отнесли</span>
     <span><i style="background:#F0FDF4;border-color:#A7F3D0"></i>склад принимает (календарь, без поставки)</span>
     <span><i style="background:#027A48;border-color:#027A48"></i>x0</span>
     <span><i style="background:#175CD3;border-color:#175CD3"></i>x1</span>
@@ -2690,17 +2691,19 @@ function _spCellHtml(row, cell) {
   if(hasSupply) {
     bits.push('<span class="sp-tag ship">поставка WB</span>');
     supplies.forEach(s => {
-      bits.push('<span class="sp-num" title="Поставка ' + _spEsc(s.id) + '">' + _spEsc(_spSupplyNo(s.id)) + '</span>');
+      const st = s.need_cdek ? 'запланир.' : (s.at_cdek ? 'уже в СДЭК' : (s.status_label || ''));
+      bits.push('<span class="sp-num" title="Поставка ' + _spEsc(s.id) + (s.status_label ? (' · ' + s.status_label) : '') + '">' +
+        _spEsc(_spSupplyNo(s.id)) + (st ? (' · ' + _spEsc(st)) : '') + '</span>');
     });
     if(cell.qty) bits.push('<span class="sp-qty">' + _spQty(cell.qty) + ' шт</span>');
   }
-  if(cell.is_cdek && cell.cdek_qty) {
+  if(cell.is_cdek && (cell.cdek_for || cell.cdek_qty)) {
     const todayCdek = cell.date === today;
     bits.push('<span class="sp-tag cdek">' + (todayCdek ? 'сдать сегодня' : 'сдать в СДЭК') + '</span>');
     if(cell.cdek_for_label) {
       bits.push('<span class="sp-arrow" title="День поставки на склад WB">→ ' + _spEsc(cell.cdek_for_label) + '</span>');
     }
-    if(!hasSupply) bits.push('<span class="sp-qty">' + _spQty(cell.cdek_qty) + ' шт</span>');
+    if(!hasSupply && cell.cdek_qty) bits.push('<span class="sp-qty">' + _spQty(cell.cdek_qty) + ' шт</span>');
   }
   if(!bits.length) return '<div class="sp-cell"><span class="sp-empty-cell">·</span></div>';
   return '<div class="sp-cell">' + bits.join('') + '</div>';
@@ -2728,7 +2731,7 @@ function drawSuppliesPlan() {
   const bring = d.bring_today || [];
   if(banner) {
     if(bring.length) {
-      banner.innerHTML = '<span>📦 <b>Сегодня сдать в СДЭК</b> по поставкам из WB: ' +
+      banner.innerHTML = '<span>📦 <b>Сегодня сдать в СДЭК</b> (статус «запланировано», ещё не отнесли): ' +
         bring.map(b => {
           let t = _spEsc(b.warehouse) + ' → поставка ' + _spEsc(b.ship_label);
           if(b.qty) t += ' · ' + _spQty(b.qty) + ' шт';
@@ -2739,8 +2742,8 @@ function drawSuppliesPlan() {
     } else {
       const n = (d.supplies && d.supplies.count) || 0;
       banner.innerHTML = n
-        ? '<span>Сегодня по API WB в СДЭК ничего сдавать не надо. В ячейках только реальные поставки (номер и штуки), не календарь.</span>'
-        : '<span>Поставок WB в этом окне нет — или ещё не запланированы. Даты вроде 09.09 больше не рисуем: это был срок сдачи в СДЭК, не номер поставки.</span>';
+        ? '<span>Сегодня в СДЭК везти нечего: «запланировано» на сегодня нет. «Отгрузка разрешена» — уже сдали, в паковать не считаем.</span>'
+        : '<span>Поставок WB в этом окне нет. «Запланировано» = ещё пакуем, «отгрузка разрешена» = уже в СДЭК.</span>';
     }
   }
   if(info) {
@@ -2749,8 +2752,11 @@ function drawSuppliesPlan() {
     const parts = [];
     if(wb.ok) parts.push('WB ' + (wb.warehouses || 0) + ' складов');
     else parts.push(wb.error ? ('коэф.: нет') : 'коэф. WB недоступны');
-    if(sup.count) parts.push(sup.count + ' поставок WB');
-    else if(sup.error) parts.push('поставки: нет');
+    if(sup.count) {
+      let t = sup.count + ' поставок WB';
+      if(sup.unmatched && sup.unmatched.length) t += ', не привязались ' + sup.unmatched.length;
+      parts.push(t);
+    } else if(sup.error) parts.push('поставки: нет');
     parts.push(dates.length + ' дн.');
     info.textContent = parts.join(' · ');
   }
@@ -2773,9 +2779,10 @@ function drawSuppliesPlan() {
   let packAll = 0;
   rows.forEach(row => {
     (row.cells || []).forEach(cell => {
-      if(cell.is_cdek && cell.cdek_qty) {
-        packByDate[cell.date] = (packByDate[cell.date] || 0) + cell.cdek_qty;
-        packAll += cell.cdek_qty;
+      if(cell.is_cdek && (cell.cdek_qty || cell.cdek_for)) {
+        const n = Number(cell.cdek_qty) || 0;
+        packByDate[cell.date] = (packByDate[cell.date] || 0) + n;
+        packAll += n;
       }
     });
   });
@@ -2793,14 +2800,14 @@ function drawSuppliesPlan() {
       const cls = [];
       if(col.is_today) cls.push('sp-today');
       if(cell.ship && !cell.is_cdek && !cell.qty && !(cell.supplies || []).length) cls.push('sp-ship');
-      if(cell.is_cdek && cell.cdek_qty) cls.push('sp-cdek-on');
+      if(cell.is_cdek && (cell.cdek_for || cell.cdek_qty)) cls.push('sp-cdek-on');
       if(cell.ship && (cell.qty || (cell.supplies || []).length)) cls.push('sp-ship-on');
-      if(cell.color != null && (cell.cdek_qty || cell.qty || (cell.supplies || []).length || cell.bridge_today)) cls.push('sp-pc' + cell.color);
+      if(cell.color != null && (cell.cdek_for || cell.cdek_qty || cell.qty || (cell.supplies || []).length || cell.bridge_today)) cls.push('sp-pc' + cell.color);
       if(cell.bridge_today) cls.push('sp-bridge-today');
-      if(cell.is_cdek && cell.cdek_qty && cell.date === d.today && cell.color === 0) cls.push('sp-line-start');
-      if(cell.ship && cell.qty && cell.cdek_date === d.today && cell.color === 0) cls.push('sp-line-end');
+      if(cell.is_cdek && cell.date === d.today && cell.color === 0) cls.push('sp-line-start');
+      if((cell.qty || (cell.supplies || []).length) && cell.cdek_date === d.today && cell.color === 0) cls.push('sp-line-end');
       const tip = [];
-      if(cell.is_cdek && cell.cdek_qty) tip.push('Сдать в СДЭК' + (cell.cdek_for_label ? (' → поставка ' + cell.cdek_for_label) : ''));
+      if(cell.is_cdek && (cell.cdek_for || cell.cdek_qty)) tip.push('Сдать в СДЭК' + (cell.cdek_for_label ? (' → поставка ' + cell.cdek_for_label) : ''));
       if(cell.qty || (cell.supplies || []).length) tip.push('Поставка WB');
       tds += '<td class="' + cls.join(' ') + '"' + (tip.length ? ' title="' + _spEsc(tip.join('. ')) + '"' : '') + '>' +
         _spCellHtml(row, cell) + '</td>';
@@ -2819,8 +2826,26 @@ function drawSuppliesPlan() {
       '</td>';
   });
 
+  let extraHtml = '';
+  const um = (d.supplies && d.supplies.unmatched) || [];
+  if(um.length) {
+    extraHtml = '<div class="upload-banner hint" style="margin-top:10px"><span><b>Поставки WB без склада в таблице:</b> ' +
+      um.map(u => {
+        let t = _spSupplyNo(u.id);
+        if(u.warehouse_name) t += ' · ' + _spEsc(u.warehouse_name);
+        if(u.ship_date) {
+          const dd = String(u.ship_date).slice(8,10) + '.' + String(u.ship_date).slice(5,7);
+          t += ' · отгрузка ' + dd;
+        }
+        if(u.qty) t += ' · ' + _spQty(u.qty) + ' шт';
+        if(u.status_label) t += ' · ' + _spEsc(u.status_label);
+        return t;
+      }).join(' · ') +
+      '</span></div>';
+  }
+
   root.innerHTML = '<div class="sp-wrap"><table class="sp-tbl"><thead><tr>' + head +
-    '</tr></thead><tbody>' + body + '</tbody><tfoot><tr>' + foot + '</tr></tfoot></table></div>';
+    '</tr></thead><tbody>' + body + '</tbody><tfoot><tr>' + foot + '</tr></tfoot></table></div>' + extraHtml;
 }
 
 async function loadSuppliesPlan(refresh) {
@@ -10864,6 +10889,9 @@ function drawWhoShelfResults(data) {
 // ─────────── Полки у конкурентов («Смотрите также») ───────────
 let SHELF_COMPETITORS = JSON.parse(localStorage.getItem('shelf_competitors') || '[]'); // [{nm_id, brand, name, thumb}]
 let SHELF_ACTIVE = Number(localStorage.getItem('shelf_active_nm') || 0) || null;
+var SHELF_SENT = {};
+var SHELF_SENT_LOADED = false;
+var SHELF_SHARE_WOW = null;
 let SHELF_CACHE = {}; // nm_id -> {items, competitor, loaded_at, error}
 let SHELF_LOADING = false;
 let SHELF_SUGGEST_ADDED = JSON.parse(localStorage.getItem('shelf_suggest_added') || '{}'); // comp_nm -> [{nm_id, vendor_code, thumb?}]
@@ -10927,6 +10955,7 @@ function renderShelvesPage() {
   buildShelfChips();
   const btn = document.getElementById('shelfRefreshBtn');
   if(btn) btn.disabled = !SHELF_ACTIVE || SHELF_LOADING;
+  if(!SHELF_SENT_LOADED) loadShelfSent();
   if(SHELF_ACTIVE) loadShelfFor(SHELF_ACTIVE, false);
   else {
     const root = document.getElementById('shelfRoot');
@@ -11041,6 +11070,8 @@ async function loadShelfFor(nmId, force) {
   const status = document.getElementById('shelfStatus');
   const root = document.getElementById('shelfRoot');
   if(!force && SHELF_CACHE[nmId] && SHELF_CACHE[nmId].items) {
+    if(!SHELF_SENT_LOADED) await loadShelfSent();
+    else loadShelfSent();
     drawShelfTable(SHELF_CACHE[nmId]);
     if(btn) btn.disabled = false;
     return;
@@ -11052,6 +11083,7 @@ async function loadShelfFor(nmId, force) {
   try {
     const d = await fetchShelfData(nmId);
     SHELF_CACHE[nmId] = d;
+    await loadShelfSent();
     // обновим бренд/имя в сохранённом списке
     const i = SHELF_COMPETITORS.findIndex(c => Number(c.nm_id) === Number(nmId));
     if(i >= 0 && d.competitor) {
@@ -11099,6 +11131,49 @@ function copyShelfNm(nmId) {
   }
 }
 
+function shelfSentKey(manager, kind, ownNm, compNm) {
+  return String(manager || '') + ':' + (kind || 'shelf') + ':' + Number(ownNm) + ':' + Number(compNm);
+}
+
+function shelfSentOf(manager, kind, ownNm, compNm) {
+  return SHELF_SENT[shelfSentKey(manager, kind, ownNm, compNm)] || null;
+}
+
+function shelfSentWhen(rec) {
+  if(!rec || !rec.at) return '';
+  const d = new Date(rec.at);
+  if(isNaN(d.getTime())) return '';
+  const dd = String(d.getDate()).padStart(2,'0');
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  return dd + '.' + mm;
+}
+
+async function loadShelfSent() {
+  try {
+    const scan = !SHELF_SENT_LOADED;
+    const r = await fetch(`${RAILWAY_URL}/api/crm-shelf-boost-sent` + (scan ? '?scan=true' : ''));
+    const d = await r.json();
+    SHELF_SENT = {};
+    (d.items || []).forEach(it => {
+      if(it && it.key) SHELF_SENT[it.key] = it;
+    });
+    SHELF_SENT_LOADED = true;
+  } catch(e) {}
+}
+
+function shelfTaskBtnHtml(manager, kind, label, title, vcJs, ownNm, compNm, compBrand, compName) {
+  kind = kind || 'shelf';
+  const sent = shelfSentOf(manager, kind, ownNm, compNm);
+  const kindArg = kind === 'shelf' ? '' : `,'${kind}'`;
+  const click = `sendShelfBoostTask('${manager}','${vcJs}',${ownNm},${compNm},'${compBrand}','${compName}',this${kindArg})`;
+  if(sent) {
+    const when = shelfSentWhen(sent);
+    const tip = 'Уже ставили' + (sent.task_id ? (' #' + sent.task_id) : '') + (when ? (' · ' + when) : '') + '. Нажми, если нужна ещё одна.';
+    return `<button class="filter-btn on" onclick="${click}" style="padding:4px 8px;font-size:11px;flex-shrink:0" title="${escapeHtml(tip)}">✓ ${escapeHtml(label)}</button>`;
+  }
+  return `<button class="filter-btn" onclick="${click}" style="padding:4px 8px;font-size:11px;flex-shrink:0" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
+}
+
 function shelfSuggestItemRow(t, compNm, compBrand, compName, opts) {
   opts = opts || {};
   const orders = Number(t.orders || 0);
@@ -11107,6 +11182,11 @@ function shelfSuggestItemRow(t, compNm, compBrand, compName, opts) {
   if(orders) metaBits.push(`${orders} зак.`);
   if(t.shape_label) metaBits.push(String(t.shape_label));
   if(opts.inShelf) metaBits.push('уже в полке');
+  const sentBits = [];
+  if(shelfSentOf('afina','shelf', t.nm_id, compNm)) sentBits.push('Афине');
+  if(shelfSentOf('zaira','shelf', t.nm_id, compNm)) sentBits.push('Заире');
+  if(shelfSentOf('dilya','cart_warmup', t.nm_id, compNm)) sentBits.push('Диле');
+  if(sentBits.length) metaBits.push('задачи: ' + sentBits.join(', '));
   const removeBtn = opts.removable
     ? `<span style="cursor:pointer;color:var(--wb-faint);font-size:14px;flex-shrink:0" title="Убрать из списка"
         onclick="removeShelfSuggestArticle(${t.nm_id})">✕</span>`
@@ -11124,12 +11204,9 @@ function shelfSuggestItemRow(t, compNm, compBrand, compName, opts) {
       <button class="filter-btn" onclick="copyShelfNm(${t.nm_id})" style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Скопировать nmID">копир.</button>
       <a href="${wbCatalogUrl(t.nm_id)}" target="_blank" rel="noopener"
         style="font-size:11px;color:var(--wb-purple);flex-shrink:0">WB</a>
-      <button class="filter-btn" onclick="sendShelfBoostTask('afina','${vcJs}',${t.nm_id},${compNm},'${compBrand}','${compName}',this)"
-        style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Задача в CRM: прокачать полки">Афине</button>
-      <button class="filter-btn" onclick="sendShelfBoostTask('zaira','${vcJs}',${t.nm_id},${compNm},'${compBrand}','${compName}',this)"
-        style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Задача в CRM: прокачать полки">Заире</button>
-      <button class="filter-btn" onclick="sendShelfBoostTask('dilya','${vcJs}',${t.nm_id},${compNm},'${compBrand}','${compName}',this,'cart_warmup')"
-        style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Задача Диле: прогрев корзинами (как выкупы, но корзинами)">Диле · корзины</button>
+      ${shelfTaskBtnHtml('afina','shelf','Афине','Задача в CRM: прокачать полки',vcJs,t.nm_id,compNm,compBrand,compName)}
+      ${shelfTaskBtnHtml('zaira','shelf','Заире','Задача в CRM: прокачать полки',vcJs,t.nm_id,compNm,compBrand,compName)}
+      ${shelfTaskBtnHtml('dilya','cart_warmup','Диле · корзины','Задача Диле: прогрев корзинами',vcJs,t.nm_id,compNm,compBrand,compName)}
     </div>`;
 }
 
@@ -11201,7 +11278,15 @@ async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, compe
   const preview = kind === 'cart_warmup'
     ? `Прогрев корзинами "${ownVendor || ownNm}" и ${ownNm}, через этого конкурента "${competitorNm}".`
     : `Раздача "${ownVendor || ownNm}" и ${ownNm}, через этого конкурента "${competitorNm}".`;
-  if(!confirm(`Отправить задачу ${who}?\n\n${preview}`)) return;
+  const already = shelfSentOf(manager, kind, ownNm, competitorNm);
+  let ask = `Отправить задачу ${who}?\n\n${preview}`;
+  if(already) {
+    ask = `Уже ставили ${who}` +
+      (already.task_id ? ` (#${already.task_id})` : '') +
+      (shelfSentWhen(already) ? ` ${shelfSentWhen(already)}` : '') +
+      `.\nПоставить ещё одну?\n\n${preview}`;
+  }
+  if(!confirm(ask)) return;
   const prev = btn ? btn.textContent : '';
   if(btn) { btn.disabled = true; btn.textContent = '…'; }
   try {
@@ -11227,7 +11312,15 @@ async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, compe
       msg += `\nTelegram: ${d.notify_error || 'не ушло — пусть нажмёт /start у бота'}`;
     }
     alert(msg);
-    if(btn) btn.textContent = '✓';
+    if(d.sent && d.sent.key) SHELF_SENT[d.sent.key] = d.sent;
+    else {
+      SHELF_SENT[shelfSentKey(manager, kind, ownNm, competitorNm)] = {
+        key: shelfSentKey(manager, kind, ownNm, competitorNm),
+        manager, kind, own_nm_id: Number(ownNm), competitor_nm_id: Number(competitorNm),
+        task_id: d.task_id, at: new Date().toISOString(),
+      };
+    }
+    refreshShelfSuggestPanel();
   } catch(e) {
     alert('Не отправилось: ' + (e.message || e));
     if(btn) { btn.disabled = false; btn.textContent = prev; }
@@ -11338,6 +11431,156 @@ function shelfBrandShares(items, ownSet) {
 }
 
 const SHELF_SHARE_COLORS = ['#7C3AED','#2563EB','#0891B2','#059669','#CA8A04','#EA580C','#DC2626','#DB2777','#4F46E5','#0D9488'];
+
+function shelfShareSnapHtml(snap) {
+  if(!snap || snap.mine_pct == null) return '<span style="color:var(--wb-faint)">нет замера</span>';
+  const n = snap.mine_count, t = snap.total;
+  const extra = (t != null) ? ` <span style="color:var(--wb-muted);font-weight:400">(${n} из ${t})</span>` : '';
+  return `<b style="font-variant-numeric:tabular-nums">${snap.mine_pct}%</b>${extra}`;
+}
+
+function shelfShareDeltaHtml(row) {
+  const pp = row && row.delta_pp;
+  const pct = row && row.delta_pct;
+  if(pp == null && pct == null) return '<span style="color:var(--wb-faint)">—</span>';
+  const up = (pp != null ? pp : pct) > 0;
+  const down = (pp != null ? pp : pct) < 0;
+  const color = up ? 'var(--green)' : (down ? 'var(--red)' : 'var(--wb-muted)');
+  const sign = (v) => (v > 0 ? '+' : '') + v;
+  const main = pct != null ? `${sign(pct)}%` : `${sign(pp)} п.п.`;
+  const sub = (pct != null && pp != null) ? `${sign(pp)} п.п.` : '';
+  return `<span style="color:${color};font-weight:700;font-variant-numeric:tabular-nums">${main}</span>` +
+    (sub ? `<div style="font-size:11px;color:${color};opacity:.8">${sub}</div>` : '');
+}
+
+function shelfShareLiveSnap(shares) {
+  if(!shares) return null;
+  return {
+    mine_pct: shares.minePct,
+    mine_count: shares.mineCount,
+    total: shares.total,
+  };
+}
+
+async function loadShelfShareWow(liveData, liveShares) {
+  const dest = shelfDest();
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/shelf-share-history?dest=${dest}`);
+    SHELF_SHARE_WOW = await r.json();
+  } catch(e) {
+    SHELF_SHARE_WOW = {ok: false, items: [], error: e.message};
+  }
+  renderShelfShareWow(liveData, liveShares);
+}
+
+function renderShelfShareWow(liveData, liveShares) {
+  const el = document.getElementById('shelfShareWow');
+  if(!el) return;
+  const hist = SHELF_SHARE_WOW || {};
+  const byNm = {};
+  (hist.items || []).forEach(it => { if(it && it.nm_id) byNm[Number(it.nm_id)] = it; });
+
+  const liveNm = Number((liveData && (liveData.nm_id || (liveData.competitor || {}).nm_id)) || SHELF_ACTIVE || 0);
+  if(liveNm && liveShares) {
+    const cur = byNm[liveNm] || {
+      nm_id: liveNm,
+      brand: (liveData.competitor || {}).brand || '',
+      name: (liveData.competitor || {}).name || '',
+      prev_week: null,
+      delta_pp: null,
+      delta_pct: null,
+    };
+    cur.this_week = shelfShareLiveSnap(liveShares);
+    const prev = cur.prev_week;
+    if(prev && prev.mine_pct != null) {
+      const pp = Math.round((cur.this_week.mine_pct - prev.mine_pct) * 10) / 10;
+      cur.delta_pp = pp;
+      cur.delta_pct = prev.mine_pct === 0 ? null : Math.round(((cur.this_week.mine_pct - prev.mine_pct) / prev.mine_pct) * 1000) / 10;
+    }
+    byNm[liveNm] = cur;
+  }
+
+  (SHELF_COMPETITORS || []).forEach(c => {
+    const nid = Number(c.nm_id);
+    if(!nid || byNm[nid]) return;
+    byNm[nid] = {nm_id: nid, brand: c.brand || '', name: c.name || '', this_week: null, prev_week: null, delta_pp: null, delta_pct: null};
+  });
+
+  const rows = Object.values(byNm).sort((a, b) => {
+    const ta = (a.this_week && a.this_week.mine_pct != null) ? a.this_week.mine_pct : -1;
+    const tb = (b.this_week && b.this_week.mine_pct != null) ? b.this_week.mine_pct : -1;
+    if(tb !== ta) return tb - ta;
+    return String(a.brand || '').localeCompare(String(b.brand || ''), 'ru');
+  });
+
+  const withThis = rows.filter(r => r.this_week && r.this_week.mine_pct != null);
+  const withBoth = rows.filter(r => r.this_week && r.prev_week && r.this_week.mine_pct != null && r.prev_week.mine_pct != null);
+  const avg = (list, field) => {
+    if(!list.length) return null;
+    return Math.round(list.reduce((s, r) => s + Number(r[field].mine_pct), 0) / list.length * 10) / 10;
+  };
+  const avgThis = avg(withThis, 'this_week');
+  const avgPrev = avg(withBoth, 'prev_week');
+  const avgThisBoth = avg(withBoth, 'this_week');
+  const sumRow = (avgThisBoth != null && avgPrev != null)
+    ? {delta_pp: Math.round((avgThisBoth - avgPrev) * 10) / 10,
+       delta_pct: avgPrev === 0 ? null : Math.round(((avgThisBoth - avgPrev) / avgPrev) * 1000) / 10}
+    : {delta_pp: null, delta_pct: null};
+
+  const weekLabel = hist.week_label || 'эта неделя';
+  const prevLabel = hist.prev_week_label || 'прошлая неделя';
+  const city = (document.getElementById('shelfCity') || {}).selectedOptions;
+  const cityName = (city && city[0] && city[0].textContent) || '';
+
+  if(!rows.length) {
+    el.innerHTML = `<div style="padding:16px 20px 24px;border-top:1px solid var(--wb-border)">
+      <div style="font-size:13px;font-weight:600;margin-bottom:4px">Динамика моей доли в топ-15</div>
+      <div style="font-size:12px;color:var(--wb-muted)">Замер появится, когда откроешь полку конкурента. Сравнивать начнём со следующей недели.</div>
+    </div>`;
+    return;
+  }
+
+  el.innerHTML = `<div style="padding:16px 20px 24px;border-top:1px solid var(--wb-border)">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+      <div>
+        <div style="font-size:13px;font-weight:600">Динамика моей доли в топ-15</div>
+        <div style="font-size:12px;color:var(--wb-muted);margin-top:2px">
+          ${escapeHtml(weekLabel)} vs ${escapeHtml(prevLabel)}${cityName ? ' · ' + escapeHtml(cityName) : ''}
+          · пишется при открытии полки
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--wb-muted);text-align:right">
+        Средняя доля сейчас: <b style="color:var(--wb-purple)">${avgThis != null ? avgThis + '%' : '—'}</b>
+        ${avgPrev != null ? ' · была <b>' + avgPrev + '%</b>' : ''}
+        ${sumRow.delta_pct != null || sumRow.delta_pp != null ? ' · ' + shelfShareDeltaHtml(sumRow) : ''}
+      </div>
+    </div>
+    <div style="overflow:auto">
+      <table class="comp-tbl" style="width:100%">
+        <thead><tr>
+          <th>Конкурент</th>
+          <th style="width:160px">Эта неделя</th>
+          <th style="width:160px">Прошлая неделя</th>
+          <th style="width:120px">Динамика</th>
+        </tr></thead>
+        <tbody>
+          ${rows.map(r => {
+            const on = Number(r.nm_id) === liveNm;
+            return `<tr style="${on?'background:rgba(155,81,224,.07)':''}">
+              <td>
+                <div style="font-weight:600">${escapeHtml(r.brand || 'Конкурент')}</div>
+                <div style="font-size:11px;color:var(--wb-muted)">${r.nm_id}${r.name ? ' · ' + escapeHtml(r.name) : ''}</div>
+              </td>
+              <td>${shelfShareSnapHtml(r.this_week)}</td>
+              <td>${shelfShareSnapHtml(r.prev_week)}</td>
+              <td>${shelfShareDeltaHtml(r)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+}
 
 function drawShelfTable(data, opts) {
   opts = opts || {};
@@ -11468,8 +11711,10 @@ function drawShelfTable(data, opts) {
       ? `<div style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(280px,.9fr);gap:16px;padding:14px 20px;align-items:start">
           <div style="overflow:auto">${shelfTable}</div>
           ${suggestHtml}
-        </div>`
+        </div>
+        <div id="shelfShareWow"></div>`
       : shelfTable}`;
+  if(showSuggest) loadShelfShareWow(data, shares);
 }
 
 // ─────────── Полки у моих карточек ───────────

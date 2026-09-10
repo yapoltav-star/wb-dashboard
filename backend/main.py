@@ -53,6 +53,10 @@ CRM_MANAGER_ALIASES = {
     "zaira": ("заира", "заире", "zaira"),
     "dilya": ("диля", "диле", "дилия", "dilya"),
 }
+CRM_SHELF_TASKS_KEY = "crm_shelf_boost_sent"
+_CRM_SENT_MARKER_RE = re.compile(r"\[dash:(shelf-boost|cart-warmup):(\d+):(\d+)\]")
+SHELF_SHARE_HISTORY_KEY = "shelf_share_weekly"
+_SHELF_SHARE_LOCK = threading.Lock()
 
 # Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
 # а агрегаты — переносим их в отдельные поля stock_totals вместо списка складов.
@@ -3739,7 +3743,7 @@ CDEK_SUPPLY_RULES = [
     },
     {
         "id": "radumlya", "name": "СЦ Радумля",
-        "match": ("радумл",), "weekdays": (0, 2, 4), "lead_days": 2,
+        "match": ("радумл", "радум"), "weekdays": (0, 2, 4), "lead_days": 2,
         "ship_note": "пн, ср, пт", "lead_note": "за 2 дня",
     },
     {
@@ -3926,6 +3930,96 @@ def _parse_supply_day(raw) -> date | None:
         return _parse_wb_coef_date(raw)
 
 
+def _supply_name_candidates(detail: dict) -> list:
+    names = []
+    for key in (
+        "actualWarehouseName", "warehouseName", "transitWarehouseName",
+        "destinationWarehouseName", "officeName",
+    ):
+        val = str(detail.get(key) or "").strip()
+        if val and val not in names:
+            names.append(val)
+    return names
+
+
+def _rule_from_names(names: list):
+    for n in names or []:
+        rule = _cdek_rule_for_name(n)
+        if rule:
+            return rule, n
+    return None, (names[0] if names else "")
+
+
+def _fetch_one_plan_supply(sid: int, is_pre: bool, ship_d, status):
+    params = {}
+    if is_pre:
+        params["isPreorderID"] = "true"
+    detail = {}
+    try:
+        dresp = httpx.get(
+            f"{WB_SUPPLIES_URL}/api/v1/supplies/{sid}",
+            headers=wb_headers(), params=params, timeout=20,
+        )
+        if dresp.is_success:
+            raw = dresp.json()
+            if isinstance(raw, dict):
+                detail = raw
+    except Exception as e:
+        logger.warning(f"WB supply {sid} details: {e}")
+
+    if ship_d is None:
+        ship_d = _parse_supply_day(detail.get("supplyDate"))
+    qty = detail.get("quantity")
+    try:
+        qty = int(qty or 0)
+    except (TypeError, ValueError):
+        qty = 0
+    if qty <= 0:
+        try:
+            gparams = {"limit": 1000, "offset": 0}
+            if is_pre:
+                gparams["isPreorderID"] = "true"
+            gresp = httpx.get(
+                f"{WB_SUPPLIES_URL}/api/v1/supplies/{sid}/goods",
+                headers=wb_headers(), params=gparams, timeout=20,
+            )
+            if gresp.is_success:
+                qty = sum(int(g.get("quantity") or 0) for g in (gresp.json() or []) if isinstance(g, dict))
+        except Exception:
+            pass
+    names = _supply_name_candidates(detail)
+    rule, name = _rule_from_names(names)
+    wid = detail.get("actualWarehouseID") or detail.get("warehouseID")
+    if not ship_d:
+        return None
+    st = detail.get("statusID", status)
+    try:
+        st = int(st) if st is not None else None
+    except (TypeError, ValueError):
+        st = None
+    return {
+        "id": sid,
+        "preorder": is_pre,
+        "warehouse_id": int(wid) if wid is not None else None,
+        "warehouse_name": name,
+        "names": names,
+        "rule_id": rule["id"] if rule else None,
+        "ship_date": ship_d.isoformat(),
+        "qty": qty,
+        "status_id": st,
+        "need_cdek": st == 2,
+        "at_cdek": st == 3,
+        "status_label": {
+            1: "не запланировано",
+            2: "запланировано",
+            3: "отгрузка разрешена",
+            4: "приёмка",
+            5: "принято",
+            6: "на воротах",
+        }.get(st, ""),
+    }
+
+
 def fetch_plan_supply_items(date_from: date, date_to: date, force: bool = False):
     """Поставки WB в окне дат: номер, склад, дата отгрузки, штуки."""
     now = time.time()
@@ -3977,7 +4071,9 @@ def fetch_plan_supply_items(date_from: date, date_to: date, force: bool = False)
         if status in (5, 6):
             continue
         ship_d = _parse_supply_day(s.get("supplyDate"))
-        if not ship_d or ship_d < date_from or ship_d > date_to:
+        if ship_d and (ship_d < date_from - timedelta(days=1) or ship_d > date_to):
+            continue
+        if not ship_d and status not in (1, 2, 3, 4, None):
             continue
         sid, is_pre = s.get("supplyID"), False
         if not sid:
@@ -3986,54 +4082,24 @@ def fetch_plan_supply_items(date_from: date, date_to: date, force: bool = False)
             continue
         todo.append((int(sid), bool(is_pre), ship_d, status))
 
-    todo = todo[:80]
-    for sid, is_pre, ship_d, status in todo:
-        try:
-            params = {}
-            if is_pre:
-                params["isPreorderID"] = "true"
-            dresp = httpx.get(
-                f"{WB_SUPPLIES_URL}/api/v1/supplies/{sid}",
-                headers=wb_headers(), params=params, timeout=20,
-            )
-            detail = dresp.json() if dresp.is_success else {}
-            if not isinstance(detail, dict):
-                detail = {}
-            qty = detail.get("quantity")
+    todo.sort(key=lambda x: (x[2] is None, x[2] or date.max))
+    todo = todo[:120]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futs = [pool.submit(_fetch_one_plan_supply, *t) for t in todo]
+        for fut in as_completed(futs):
             try:
-                qty = int(qty or 0)
-            except (TypeError, ValueError):
-                qty = 0
-            if qty <= 0:
-                try:
-                    gparams = {"limit": 1000, "offset": 0}
-                    if is_pre:
-                        gparams["isPreorderID"] = "true"
-                    gresp = httpx.get(
-                        f"{WB_SUPPLIES_URL}/api/v1/supplies/{sid}/goods",
-                        headers=wb_headers(), params=gparams, timeout=20,
-                    )
-                    if gresp.is_success:
-                        qty = sum(int(g.get("quantity") or 0) for g in (gresp.json() or []) if isinstance(g, dict))
-                except Exception:
-                    pass
-            name = (detail.get("warehouseName") or detail.get("actualWarehouseName") or "").strip()
-            wid = detail.get("warehouseID") or detail.get("actualWarehouseID")
-            rule = _cdek_rule_for_name(name)
-            items.append({
-                "id": sid,
-                "preorder": is_pre,
-                "warehouse_id": int(wid) if wid is not None else None,
-                "warehouse_name": name,
-                "rule_id": rule["id"] if rule else None,
-                "ship_date": ship_d.isoformat(),
-                "qty": qty,
-                "status_id": detail.get("statusID", status),
-            })
-        except Exception as e:
-            logger.warning(f"WB supply {sid} details for plan: {e}")
-        time.sleep(0.05)
+                item = fut.result()
+            except Exception as e:
+                logger.warning(f"WB supply details: {e}")
+                continue
+            if not item:
+                continue
+            sd = _parse_supply_day(item.get("ship_date"))
+            if not sd or sd < date_from or sd > date_to:
+                continue
+            items.append(item)
 
+    items.sort(key=lambda x: (x.get("ship_date") or "", x.get("id") or 0))
     with _SUPPLIES_PLAN_LOCK:
         PLAN_SUPPLIES_CACHE["ts"] = time.time()
         PLAN_SUPPLIES_CACHE["items"] = items
@@ -4042,32 +4108,37 @@ def fetch_plan_supply_items(date_from: date, date_to: date, force: bool = False)
 
 
 def _pick_row_for_supply(item: dict, rows: list):
+    names = [n for n in (item.get("names") or []) if n]
+    if item.get("warehouse_name") and item["warehouse_name"] not in names:
+        names.append(item["warehouse_name"])
+    rid = item.get("rule_id")
+    if not rid:
+        rule, _ = _rule_from_names(names)
+        rid = rule["id"] if rule else None
+    if rid:
+        named = [r for r in rows if (r.get("cdek") or {}).get("id") == rid]
+        if named:
+            return named[0]
     wid = item.get("warehouse_id")
     if wid:
         for row in rows:
             if row.get("warehouse_id") == wid:
                 return row
-    rid = item.get("rule_id")
-    name = (item.get("warehouse_name") or "").casefold()
-    if rid:
-        named = [r for r in rows if (r.get("cdek") or {}).get("id") == rid]
-        if name:
-            for row in named:
-                if name in (row.get("name") or "").casefold() or (row.get("name") or "").casefold() in name:
-                    return row
-        if named:
-            return named[0]
-    if name:
+    for name in names:
+        low = name.casefold()
         for row in rows:
-            if name in (row.get("name") or "").casefold():
+            rname = (row.get("name") or "").casefold()
+            if low and rname and (low in rname or rname in low):
+                return row
+            if _cdek_rule_for_name(name) and row.get("cdek") and _cdek_rule_for_name(name)["id"] == row["cdek"]["id"]:
                 return row
     return None
 
 
 def _annotate_plan_links(rows: list, items: list, dates: list, today: date):
     """Связка СДЭК-день → день отгрузки + номера поставок."""
-    date_set = {d.isoformat() for d in dates}
     date_index = {d.isoformat(): i for i, d in enumerate(dates)}
+    rules_by_id = {r["id"]: r for r in CDEK_SUPPLY_RULES}
 
     for row in rows:
         for cell in row.get("cells") or []:
@@ -4075,39 +4146,66 @@ def _annotate_plan_links(rows: list, items: list, dates: list, today: date):
             cell["cdek_for"] = None
             cell["cdek_for_label"] = None
             cell["cdek_qty"] = 0
+            cell["pack_qty"] = 0
             cell["cdek_pair"] = None
             cell["supplies"] = []
             cell["qty"] = 0
+            cell["pack_qty_ship"] = 0
             cell["pair"] = None
             cell["bridge"] = False
             cell["bridge_today"] = False
             cell["color"] = None
 
     assigned = []
+    unmatched = []
     for item in items or []:
         row = _pick_row_for_supply(item, rows)
         if row:
             assigned.append((row, item))
+        else:
+            unmatched.append(item)
 
     for row, item in assigned:
         ship_iso = item["ship_date"]
         cell = next((c for c in row["cells"] if c["date"] == ship_iso), None)
         if not cell:
+            unmatched.append(item)
             continue
         if not any(s["id"] == item["id"] for s in cell["supplies"]):
-            cell["supplies"].append({"id": item["id"], "qty": item.get("qty") or 0})
+            cell["supplies"].append({
+                "id": item["id"],
+                "qty": item.get("qty") or 0,
+                "status_id": item.get("status_id"),
+                "need_cdek": bool(item.get("need_cdek")),
+                "at_cdek": bool(item.get("at_cdek")),
+                "status_label": item.get("status_label") or "",
+            })
             cell["qty"] = sum(s["qty"] for s in cell["supplies"])
+            cell["pack_qty_ship"] = sum(s["qty"] for s in cell["supplies"] if s.get("need_cdek"))
 
     for row in rows:
+        rule = rules_by_id.get((row.get("cdek") or {}).get("id"))
         by_date = {c["date"]: c for c in row.get("cells") or []}
         for cell in row.get("cells") or []:
-            if not cell.get("ship"):
-                continue
-            if not (cell.get("supplies") or cell.get("qty")):
+            to_pack = [s for s in (cell.get("supplies") or []) if s.get("need_cdek")]
+            if not to_pack:
                 continue
             pair = f"{row.get('id')}:{cell['date']}"
             cell["pair"] = pair
+            pack_qty = sum(s.get("qty") or 0 for s in to_pack)
             cdek_iso = cell.get("cdek_date")
+            if not cdek_iso and rule:
+                try:
+                    ship_d = date.fromisoformat(cell["date"])
+                    lead = _cdek_lead_days(rule, ship_d)
+                    cdek_d = ship_d - timedelta(days=lead)
+                    cdek_iso = cdek_d.isoformat()
+                    cell["cdek_date"] = cdek_iso
+                    cell["cdek_label"] = f"{cdek_d.day:02d}.{cdek_d.month:02d}"
+                    cell["lead"] = lead
+                    cell["cdek_today"] = cdek_d == today
+                except Exception:
+                    cdek_iso = None
             if cdek_iso and cdek_iso in by_date:
                 cc = by_date[cdek_iso]
                 cc["is_cdek"] = True
@@ -4117,7 +4215,8 @@ def _annotate_plan_links(rows: list, items: list, dates: list, today: date):
                     cc["cdek_for_label"] = f"{sd.day} {_WD_SHORT[sd.weekday()]}"
                 except Exception:
                     cc["cdek_for_label"] = cell["date"]
-                cc["cdek_qty"] = cell.get("qty") or 0
+                cc["cdek_qty"] = pack_qty or (1 if to_pack else 0)
+                cc["pack_qty"] = pack_qty
                 cc["cdek_pair"] = pair
                 today_pair = bool(cdek_iso == today.isoformat() or cell.get("cdek_today"))
                 color = 0 if today_pair else (1 + (abs(hash(pair)) % 5))
@@ -4133,6 +4232,8 @@ def _annotate_plan_links(rows: list, items: list, dates: list, today: date):
                         mid["bridge"] = True
                         mid["bridge_today"] = True
                         mid["color"] = 0
+
+    return unmatched
 
 
 def _acceptance_cell(day_item: dict | None) -> dict:
@@ -4252,7 +4353,7 @@ def build_supplies_plan(days: int = 21, refresh: bool = False) -> dict:
     extra.sort(key=lambda r: (r.get("name") or "").casefold())
 
     all_rows = rows + extra
-    _annotate_plan_links(all_rows, supply_items, dates, today)
+    unmatched = _annotate_plan_links(all_rows, supply_items, dates, today) or []
 
     bring_today = []
     seen_bring = set()
@@ -4264,8 +4365,6 @@ def build_supplies_plan(days: int = 21, refresh: bool = False) -> dict:
                 continue
             if cell.get("date") != today.isoformat():
                 continue
-            if not cell.get("cdek_qty"):
-                continue
             key = (row["name"], cell.get("cdek_for"))
             if key in seen_bring:
                 continue
@@ -4274,6 +4373,8 @@ def build_supplies_plan(days: int = 21, refresh: bool = False) -> dict:
             ship_cell = next((c for c in row["cells"] if c["date"] == cell.get("cdek_for")), None)
             if ship_cell:
                 nums = [s["id"] for s in ship_cell.get("supplies") or []]
+            if not nums and not cell.get("cdek_qty"):
+                continue
             bring_today.append({
                 "warehouse": row["name"],
                 "ship_date": cell.get("cdek_for"),
@@ -4292,6 +4393,16 @@ def build_supplies_plan(days: int = 21, refresh: bool = False) -> dict:
         "bring_today": bring_today,
         "supplies": {
             "count": len(supply_items or []),
+            "matched": len(supply_items or []) - len(unmatched),
+            "unmatched": [{
+                "id": u.get("id"),
+                "warehouse_name": u.get("warehouse_name") or "склад не указан",
+                "names": u.get("names") or [],
+                "ship_date": u.get("ship_date"),
+                "qty": u.get("qty") or 0,
+                "status_label": u.get("status_label") or "",
+                "need_cdek": bool(u.get("need_cdek")),
+            } for u in unmatched],
             "error": supply_err,
         },
         "wb": {
@@ -12551,6 +12662,98 @@ def _shelf_suggest_add(competitor: dict, shelf_items: list, top_n: int = 20) -> 
     }
 
 
+def _shelf_is_mine_item(it: dict, own_set: set) -> bool:
+    try:
+        nid = int(it.get("nm_id"))
+    except (TypeError, ValueError):
+        nid = 0
+    if nid and nid in own_set:
+        return True
+    return str(it.get("brand") or "").strip().upper() == "PVS"
+
+
+def _shelf_mine_share(items: list, own_set: set) -> dict:
+    rows = [it for it in (items or []) if isinstance(it, dict)]
+    total = len(rows)
+    mine = sum(1 for it in rows if _shelf_is_mine_item(it, own_set))
+    pct = round((mine / total) * 1000) / 10 if total else 0.0
+    return {"mine_count": mine, "total": total, "mine_pct": pct}
+
+
+def _shelf_share_store() -> dict:
+    raw = get_setting_json(SHELF_SHARE_HISTORY_KEY, {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _shelf_share_record(nm_id: int, dest: int, competitor: dict, share: dict) -> dict | None:
+    if not share or not int(share.get("total") or 0):
+        return None
+    week, start, end, label = _own_wh_week_bounds(_msk_now())
+    rec = {
+        "nm_id": int(nm_id),
+        "dest": int(dest),
+        "week": week,
+        "week_start": start,
+        "week_end": end,
+        "week_label": label,
+        "brand": str((competitor or {}).get("brand") or ""),
+        "name": str((competitor or {}).get("name") or ""),
+        "mine_pct": float(share.get("mine_pct") or 0),
+        "mine_count": int(share.get("mine_count") or 0),
+        "total": int(share.get("total") or 0),
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    with _SHELF_SHARE_LOCK:
+        store = _shelf_share_store()
+        by_week = store.get("by_week") if isinstance(store.get("by_week"), dict) else {}
+        dest_map = by_week.get(week) if isinstance(by_week.get(week), dict) else {}
+        dest_key = str(int(dest))
+        comps = dest_map.get(dest_key) if isinstance(dest_map.get(dest_key), dict) else {}
+        comps[str(int(nm_id))] = rec
+        dest_map[dest_key] = comps
+        by_week[week] = dest_map
+        keep = sorted(by_week.keys())[-12:]
+        store["by_week"] = {k: by_week[k] for k in keep}
+        save_setting_value(SHELF_SHARE_HISTORY_KEY, store)
+    return rec
+
+
+def _shelf_share_week_pair():
+    week, start, end, label = _own_wh_week_bounds(_msk_now())
+    prev_dt = _msk_now() - timedelta(days=7)
+    prev_week, p_start, p_end, prev_label = _own_wh_week_bounds(prev_dt)
+    return {
+        "week": week,
+        "week_start": start,
+        "week_end": end,
+        "week_label": label,
+        "prev_week": prev_week,
+        "prev_week_start": p_start,
+        "prev_week_end": p_end,
+        "prev_week_label": prev_label,
+    }
+
+
+def _shelf_share_week_map(store: dict, week: str, dest: int) -> dict:
+    by_week = store.get("by_week") if isinstance(store.get("by_week"), dict) else {}
+    dest_map = by_week.get(week) if isinstance(by_week.get(week), dict) else {}
+    comps = dest_map.get(str(int(dest))) if isinstance(dest_map.get(str(int(dest))), dict) else {}
+    return comps if isinstance(comps, dict) else {}
+
+
+def _shelf_share_delta(this: dict | None, prev: dict | None) -> dict:
+    if not this or this.get("mine_pct") is None or not prev or prev.get("mine_pct") is None:
+        return {"delta_pp": None, "delta_pct": None}
+    this_pct = float(this["mine_pct"])
+    prev_pct = float(prev["mine_pct"])
+    delta_pp = round(this_pct - prev_pct, 1)
+    if prev_pct == 0:
+        delta_pct = None if this_pct == 0 else None
+    else:
+        delta_pct = round((this_pct - prev_pct) / prev_pct * 100, 1)
+    return {"delta_pp": delta_pp, "delta_pct": delta_pct}
+
+
 @app.get("/api/competitor-shelf")
 def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15, top: int = 20):
     """Топ полки «Смотрите также» у конкурента + предложения из нашего топ-20 продаж за неделю."""
@@ -12578,6 +12781,14 @@ def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15, top:
     }
     items = shelf.get("items") or []
     suggest = _shelf_suggest_add(competitor=competitor, shelf_items=items, top_n=top)
+    own_set = set(suggest.get("own_nm_ids") or [])
+    share = _shelf_mine_share(items, own_set)
+    snap = None
+    if items and not shelf.get("error"):
+        try:
+            snap = _shelf_share_record(nm_id, dest, competitor, share)
+        except Exception as e:
+            logger.warning(f"shelf share snapshot: {e}")
     return {
         "nm_id": nm_id,
         "dest": dest,
@@ -12587,7 +12798,71 @@ def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15, top:
         "items": items,
         "shelf_total": shelf.get("total") or 0,
         "error": shelf.get("error"),
+        "mine_share": share,
+        "share_week": snap,
         **suggest,
+    }
+
+
+@app.get("/api/shelf-share-history")
+def shelf_share_history(dest: int = -1257786):
+    """Замеры моей доли в топ-15 полок конкурентов: эта неделя vs прошлая."""
+    try:
+        dest = int(dest)
+    except (TypeError, ValueError):
+        dest = -1257786
+    meta = _shelf_share_week_pair()
+    store = _shelf_share_store()
+    this_map = _shelf_share_week_map(store, meta["week"], dest)
+    prev_map = _shelf_share_week_map(store, meta["prev_week"], dest)
+    nms = set(this_map.keys()) | set(prev_map.keys())
+    items = []
+    for key in nms:
+        this = this_map.get(key) if isinstance(this_map.get(key), dict) else None
+        prev = prev_map.get(key) if isinstance(prev_map.get(key), dict) else None
+        src = this or prev or {}
+        try:
+            nid = int(src.get("nm_id") or key)
+        except (TypeError, ValueError):
+            continue
+        row = {
+            "nm_id": nid,
+            "brand": src.get("brand") or "",
+            "name": src.get("name") or "",
+            "this_week": this,
+            "prev_week": prev,
+            **_shelf_share_delta(this, prev),
+        }
+        items.append(row)
+    items.sort(key=lambda r: (
+        -float((r.get("this_week") or {}).get("mine_pct") or -1),
+        -float((r.get("prev_week") or {}).get("mine_pct") or -1),
+        str(r.get("brand") or ""),
+    ))
+    both = [r for r in items if r.get("this_week") and r.get("prev_week")]
+    def _avg(rows, field):
+        vals = [float((r.get(field) or {}).get("mine_pct") or 0) for r in rows if r.get(field)]
+        return round(sum(vals) / len(vals), 1) if vals else None
+    avg_this = _avg(items, "this_week")
+    avg_prev = _avg(both, "prev_week") if both else _avg(items, "prev_week")
+    avg_this_both = _avg(both, "this_week")
+    summary_delta = _shelf_share_delta(
+        {"mine_pct": avg_this_both} if avg_this_both is not None else None,
+        {"mine_pct": avg_prev} if avg_prev is not None else None,
+    )
+    return {
+        "ok": True,
+        "dest": dest,
+        **meta,
+        "items": items,
+        "summary": {
+            "count_this": sum(1 for r in items if r.get("this_week")),
+            "count_prev": sum(1 for r in items if r.get("prev_week")),
+            "count_both": len(both),
+            "avg_this_pct": avg_this,
+            "avg_prev_pct": avg_prev,
+            **summary_delta,
+        },
     }
 
 
@@ -12596,6 +12871,105 @@ def _crm_headers() -> dict:
     if CRM_PASSWORD:
         h["x-crm-password"] = CRM_PASSWORD
     return h
+
+
+def _crm_sent_key(manager: str, kind: str, own_nm: int, comp_nm: int) -> str:
+    return f"{manager}:{kind}:{int(own_nm)}:{int(comp_nm)}"
+
+
+def _crm_sent_store() -> list:
+    raw = get_setting_json(CRM_SHELF_TASKS_KEY, {}) or {}
+    items = raw.get("items") if isinstance(raw, dict) else raw
+    return [i for i in items if isinstance(i, dict) and i.get("key")] if isinstance(items, list) else []
+
+
+def _crm_sent_save(items: list) -> bool:
+    by = {}
+    for it in items or []:
+        if isinstance(it, dict) and it.get("key"):
+            by[it["key"]] = it
+    out = sorted(by.values(), key=lambda x: str(x.get("at") or ""), reverse=True)
+    return save_setting_value(CRM_SHELF_TASKS_KEY, {"items": out[:2500]})
+
+
+def _crm_sent_record(manager: str, kind: str, own_nm: int, comp_nm: int, task_id, assignee_name: str = ""):
+    rec = {
+        "key": _crm_sent_key(manager, kind, own_nm, comp_nm),
+        "manager": manager,
+        "kind": kind,
+        "own_nm_id": int(own_nm),
+        "competitor_nm_id": int(comp_nm),
+        "task_id": task_id,
+        "assignee_name": assignee_name or "",
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    items = [i for i in _crm_sent_store() if i.get("key") != rec["key"]]
+    items.insert(0, rec)
+    _crm_sent_save(items)
+    return rec
+
+
+def _crm_manager_from_name(name: str):
+    low = str(name or "").strip().lower().replace("ё", "е")
+    if not low:
+        return None
+    for key, aliases in CRM_MANAGER_ALIASES.items():
+        if any(a in low for a in aliases):
+            return key
+    return None
+
+
+def _crm_iter_board_tasks(board: dict):
+    if not isinstance(board, dict):
+        return
+    seen = []
+    blobs = [board.get("tasks"), board.get("items")]
+    for col in board.get("columns") or []:
+        if isinstance(col, dict):
+            blobs.append(col.get("tasks") or col.get("items"))
+    for blob in blobs:
+        if not isinstance(blob, list):
+            continue
+        for t in blob:
+            if isinstance(t, dict) and t not in seen:
+                seen.append(t)
+                yield t
+
+
+def _crm_merge_sent_from_board(board: dict) -> list:
+    items = _crm_sent_store()
+    have = {i.get("key") for i in items}
+    changed = False
+    for task in _crm_iter_board_tasks(board):
+        text = f"{task.get('description') or ''} {task.get('title') or ''}"
+        m = _CRM_SENT_MARKER_RE.search(text)
+        if not m:
+            continue
+        kind = "cart_warmup" if m.group(1) == "cart-warmup" else "shelf"
+        own_nm, comp_nm = int(m.group(2)), int(m.group(3))
+        manager = _crm_manager_from_name(task.get("assignee_name") or "")
+        if not manager:
+            manager = "dilya" if kind == "cart_warmup" else None
+        if not manager:
+            continue
+        key = _crm_sent_key(manager, kind, own_nm, comp_nm)
+        if key in have:
+            continue
+        items.append({
+            "key": key,
+            "manager": manager,
+            "kind": kind,
+            "own_nm_id": own_nm,
+            "competitor_nm_id": comp_nm,
+            "task_id": task.get("id"),
+            "assignee_name": task.get("assignee_name") or "",
+            "at": task.get("created_at") or task.get("updated_at") or datetime.now(timezone.utc).isoformat(),
+        })
+        have.add(key)
+        changed = True
+    if changed:
+        _crm_sent_save(items)
+    return items
 
 
 def _crm_find_employee(employees: list, aliases: tuple) -> dict | None:
@@ -12737,6 +13111,11 @@ async def crm_shelf_boost_task(request: dict):
             "error": f"CRM tasks HTTP {create_resp.status_code}: {create_resp.text[:220]}",
         }
     task = create_resp.json() or {}
+    rec = _crm_sent_record(
+        manager_key, kind, own_nm, competitor_nm,
+        task.get("id"),
+        task.get("assignee_name") or assignee.get("name") or "",
+    )
     return {
         "ok": True,
         "task_id": task.get("id"),
@@ -12746,7 +13125,28 @@ async def crm_shelf_boost_task(request: dict):
         "notify_error": task.get("notify_error"),
         "manager": manager_key,
         "kind": kind,
+        "sent": rec,
     }
+
+
+@app.get("/api/crm-shelf-boost-sent")
+def crm_shelf_boost_sent(competitor_nm_id: int = 0, scan: bool = False):
+    """Какие задачи с дашборда уже ставили (Афине / Заире / Диле)."""
+    items = _crm_sent_store()
+    if CRM_API_URL and (scan or not items):
+        try:
+            board_resp = httpx.get(
+                f"{CRM_API_URL}/api/board",
+                headers=_crm_headers(),
+                timeout=20,
+            )
+            if board_resp.is_success:
+                items = _crm_merge_sent_from_board(board_resp.json() or {})
+        except Exception as e:
+            logger.warning(f"crm sent scan: {e}")
+    if competitor_nm_id:
+        items = [i for i in items if int(i.get("competitor_nm_id") or 0) == int(competitor_nm_id)]
+    return {"ok": True, "items": items}
 
 
 @app.post("/api/shelf-presence")
