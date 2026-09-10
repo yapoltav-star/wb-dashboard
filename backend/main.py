@@ -12418,6 +12418,17 @@ def _own_nm_vendor_map() -> dict:
 
 
 _SHELF_TOP_CACHE = {"ts": 0.0, "days": 0, "items": []}
+_OWN_NM_IDS_CACHE = {"ts": 0.0, "ids": set()}
+
+
+def _own_nm_ids_cached() -> set:
+    now = time.time()
+    if _OWN_NM_IDS_CACHE["ids"] and now - _OWN_NM_IDS_CACHE["ts"] < 300:
+        return _OWN_NM_IDS_CACHE["ids"]
+    ids = set(_own_nm_vendor_map().keys())
+    _OWN_NM_IDS_CACHE["ts"] = now
+    _OWN_NM_IDS_CACHE["ids"] = ids
+    return ids
 
 
 def _own_top_sellers_week(top_n: int = 20, days: int = 7) -> list:
@@ -12698,6 +12709,7 @@ def _shelf_share_record(nm_id: int, dest: int, competitor: dict, share: dict) ->
         "week_label": label,
         "brand": str((competitor or {}).get("brand") or ""),
         "name": str((competitor or {}).get("name") or ""),
+        "thumb": str((competitor or {}).get("thumb") or wb_product_thumb_url(int(nm_id))),
         "mine_pct": float(share.get("mine_pct") or 0),
         "mine_count": int(share.get("mine_count") or 0),
         "total": int(share.get("total") or 0),
@@ -12739,6 +12751,133 @@ def _shelf_share_week_map(store: dict, week: str, dest: int) -> dict:
     dest_map = by_week.get(week) if isinstance(by_week.get(week), dict) else {}
     comps = dest_map.get(str(int(dest))) if isinstance(dest_map.get(str(int(dest))), dict) else {}
     return comps if isinstance(comps, dict) else {}
+
+
+def _shelf_share_remember_competitors(competitors: list, dest: int):
+    if not competitors:
+        return
+    dest = int(dest)
+    with _SHELF_SHARE_LOCK:
+        store = _shelf_share_store()
+        saved = store.get("competitors") if isinstance(store.get("competitors"), dict) else {}
+        for c in competitors:
+            if not isinstance(c, dict):
+                continue
+            try:
+                nid = int(c.get("nm_id"))
+            except (TypeError, ValueError):
+                continue
+            if nid < 1:
+                continue
+            prev = saved.get(str(nid)) if isinstance(saved.get(str(nid)), dict) else {}
+            saved[str(nid)] = {
+                "nm_id": nid,
+                "dest": dest,
+                "brand": str(c.get("brand") or prev.get("brand") or ""),
+                "name": str(c.get("name") or prev.get("name") or ""),
+                "thumb": str(c.get("thumb") or prev.get("thumb") or wb_product_thumb_url(nid)),
+            }
+        store["competitors"] = saved
+        save_setting_value(SHELF_SHARE_HISTORY_KEY, store)
+
+
+def _shelf_share_measure_one(nm_id: int, dest: int, competitor: dict | None = None) -> dict:
+    nm_id = int(nm_id)
+    dest = int(dest)
+    meta = dict(competitor or {})
+    meta.setdefault("nm_id", nm_id)
+    meta.setdefault("thumb", wb_product_thumb_url(nm_id))
+    if not str(meta.get("brand") or "").strip():
+        card = fetch_wb_card_brief(nm_id, dest=dest)
+        if card:
+            for k in ("brand", "name", "thumb"):
+                if card.get(k):
+                    meta[k] = card.get(k)
+    shelf = fetch_wb_see_also_shelf(nm_id, dest=dest, limit=15)
+    items = shelf.get("items") or []
+    if not items:
+        return {"ok": False, "nm_id": nm_id, "error": shelf.get("error") or "пустая полка"}
+    share = _shelf_mine_share(items, _own_nm_ids_cached())
+    snap = _shelf_share_record(nm_id, dest, meta, share)
+    return {
+        "ok": True,
+        "nm_id": nm_id,
+        "brand": meta.get("brand") or "",
+        "name": meta.get("name") or "",
+        "thumb": meta.get("thumb") or wb_product_thumb_url(nm_id),
+        "share": share,
+        "snap": snap,
+    }
+
+
+def _shelf_share_scan(competitors: list, dest: int, skip_have: bool = True) -> dict:
+    dest = int(dest)
+    week = _shelf_share_week_pair()["week"]
+    have = set()
+    if skip_have:
+        have = {
+            str(k) for k, v in _shelf_share_week_map(_shelf_share_store(), week, dest).items()
+            if isinstance(v, dict) and v.get("total")
+        }
+    todo = []
+    seen = set()
+    for c in competitors or []:
+        raw = c if isinstance(c, dict) else {"nm_id": c}
+        try:
+            nid = int(raw.get("nm_id"))
+        except (TypeError, ValueError):
+            continue
+        if nid < 1 or nid in seen:
+            continue
+        seen.add(nid)
+        if skip_have and str(nid) in have:
+            continue
+        todo.append({"nm_id": nid, "brand": raw.get("brand") or "", "name": raw.get("name") or "",
+                     "thumb": raw.get("thumb") or wb_product_thumb_url(nid)})
+    results = []
+    if todo:
+        workers = min(5, len(todo))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(_shelf_share_measure_one, c["nm_id"], dest, c): c
+                for c in todo
+            }
+            for fut in as_completed(futs):
+                try:
+                    results.append(fut.result())
+                except Exception as e:
+                    c = futs[fut]
+                    results.append({"ok": False, "nm_id": c["nm_id"], "error": str(e)[:160]})
+    return {
+        "scanned": len(todo),
+        "ok_count": sum(1 for r in results if r.get("ok")),
+        "results": results,
+    }
+
+
+def sync_shelf_share_snapshots():
+    """Фоном добирает замеры по сохранённым конкурентам, если за эту неделю ещё нет."""
+    store = _shelf_share_store()
+    comps = store.get("competitors") if isinstance(store.get("competitors"), dict) else {}
+    if not comps:
+        return
+    by_dest = {}
+    for c in comps.values():
+        if not isinstance(c, dict):
+            continue
+        dest = int(c.get("dest") or -1257786)
+        by_dest.setdefault(dest, []).append(c)
+    for dest, lst in by_dest.items():
+        try:
+            _shelf_share_scan(lst, dest, skip_have=True)
+        except Exception as e:
+            logger.warning(f"sync_shelf_share dest={dest}: {e}")
+
+
+try:
+    scheduler.add_job(sync_shelf_share_snapshots, "interval", hours=12, id="sync_shelf_share")
+except Exception as e:
+    logger.warning(f"shelf share job: {e}")
 
 
 def _shelf_share_delta(this: dict | None, prev: dict | None) -> dict:
@@ -12787,6 +12926,7 @@ def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15, top:
     if items and not shelf.get("error"):
         try:
             snap = _shelf_share_record(nm_id, dest, competitor, share)
+            _shelf_share_remember_competitors([competitor or {"nm_id": nm_id}], dest)
         except Exception as e:
             logger.warning(f"shelf share snapshot: {e}")
     return {
@@ -12829,6 +12969,7 @@ def shelf_share_history(dest: int = -1257786):
             "nm_id": nid,
             "brand": src.get("brand") or "",
             "name": src.get("name") or "",
+            "thumb": src.get("thumb") or wb_product_thumb_url(nid),
             "this_week": this,
             "prev_week": prev,
             **_shelf_share_delta(this, prev),
@@ -12864,6 +13005,52 @@ def shelf_share_history(dest: int = -1257786):
             **summary_delta,
         },
     }
+
+
+@app.post("/api/shelf-competitors")
+def save_shelf_competitors(request: dict):
+    """Запомнить список конкурентов с полок, чтобы замерять всех без клика."""
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    try:
+        dest = int(request.get("dest") or -1257786)
+    except (TypeError, ValueError):
+        dest = -1257786
+    comps = request.get("competitors") or request.get("items") or []
+    if not isinstance(comps, list):
+        return {"ok": False, "error": "competitors: список"}
+    _shelf_share_remember_competitors(comps, dest)
+    return {"ok": True, "count": len(comps)}
+
+
+@app.post("/api/shelf-share-scan")
+def shelf_share_scan(request: dict):
+    """Замерить мою долю в топ-15 у списка конкурентов (без полного разбора полки)."""
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    try:
+        dest = int(request.get("dest") or -1257786)
+    except (TypeError, ValueError):
+        dest = -1257786
+    comps = request.get("competitors") or request.get("nm_ids") or []
+    if not isinstance(comps, list):
+        return {"ok": False, "error": "competitors: список"}
+    norm = []
+    for c in comps:
+        if isinstance(c, dict):
+            norm.append(c)
+        else:
+            try:
+                norm.append({"nm_id": int(c)})
+            except (TypeError, ValueError):
+                continue
+    if len(norm) > 12:
+        norm = norm[:12]
+    skip_have = bool(request.get("skip_have", True))
+    _shelf_share_remember_competitors(norm, dest)
+    scan = _shelf_share_scan(norm, dest, skip_have=skip_have)
+    hist = shelf_share_history(dest=dest)
+    return {"ok": True, **scan, "history": hist}
 
 
 def _crm_headers() -> dict:

@@ -10892,6 +10892,8 @@ let SHELF_ACTIVE = Number(localStorage.getItem('shelf_active_nm') || 0) || null;
 var SHELF_SENT = {};
 var SHELF_SENT_LOADED = false;
 var SHELF_SHARE_WOW = null;
+var SHELF_SHARE_SCAN = {running: false, done: 0, total: 0, error: ''};
+var SHELF_SHARE_LIVE = {data: null, shares: null};
 let SHELF_CACHE = {}; // nm_id -> {items, competitor, loaded_at, error}
 let SHELF_LOADING = false;
 let SHELF_SUGGEST_ADDED = JSON.parse(localStorage.getItem('shelf_suggest_added') || '{}'); // comp_nm -> [{nm_id, vendor_code, thumb?}]
@@ -10918,6 +10920,22 @@ function saveShelfCompetitors() {
   localStorage.setItem('shelf_competitors', JSON.stringify(SHELF_COMPETITORS));
   if(SHELF_ACTIVE) localStorage.setItem('shelf_active_nm', String(SHELF_ACTIVE));
   else localStorage.removeItem('shelf_active_nm');
+  persistShelfCompetitors();
+}
+
+function persistShelfCompetitors() {
+  const comps = (SHELF_COMPETITORS || []).map(c => ({
+    nm_id: Number(c.nm_id),
+    brand: c.brand || '',
+    name: c.name || '',
+    thumb: c.thumb || '',
+  })).filter(c => c.nm_id);
+  if(!comps.length) return;
+  fetch(`${RAILWAY_URL}/api/shelf-competitors`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({dest: shelfDest(), competitors: comps}),
+  }).catch(()=>{});
 }
 
 function shelfDest() {
@@ -10953,6 +10971,7 @@ function renderShelvesPage() {
     }).catch(()=>{});
   }
   buildShelfChips();
+  persistShelfCompetitors();
   const btn = document.getElementById('shelfRefreshBtn');
   if(btn) btn.disabled = !SHELF_ACTIVE || SHELF_LOADING;
   if(!SHELF_SENT_LOADED) loadShelfSent();
@@ -11463,6 +11482,7 @@ function shelfShareLiveSnap(shares) {
 }
 
 async function loadShelfShareWow(liveData, liveShares) {
+  SHELF_SHARE_LIVE = {data: liveData || null, shares: liveShares || null};
   const dest = shelfDest();
   try {
     const r = await fetch(`${RAILWAY_URL}/api/shelf-share-history?dest=${dest}`);
@@ -11471,6 +11491,50 @@ async function loadShelfShareWow(liveData, liveShares) {
     SHELF_SHARE_WOW = {ok: false, items: [], error: e.message};
   }
   renderShelfShareWow(liveData, liveShares);
+  startShelfShareScan();
+}
+
+function shelfShareMissingNms() {
+  const have = new Set();
+  ((SHELF_SHARE_WOW && SHELF_SHARE_WOW.items) || []).forEach(it => {
+    if(it && it.nm_id && it.this_week && it.this_week.mine_pct != null) have.add(Number(it.nm_id));
+  });
+  return (SHELF_COMPETITORS || []).map(c => Number(c.nm_id)).filter(n => n && !have.has(n));
+}
+
+async function startShelfShareScan() {
+  const missing = shelfShareMissingNms();
+  if(!missing.length || SHELF_SHARE_SCAN.running) return;
+  SHELF_SHARE_SCAN = {running: true, done: 0, total: missing.length, error: ''};
+  renderShelfShareWow(SHELF_SHARE_LIVE.data, SHELF_SHARE_LIVE.shares);
+  const dest = shelfDest();
+  const CHUNK = 6;
+  for(let i = 0; i < missing.length; i += CHUNK) {
+    const chunk = missing.slice(i, i + CHUNK);
+    const competitors = chunk.map(nm => {
+      const c = (SHELF_COMPETITORS || []).find(x => Number(x.nm_id) === nm) || {};
+      return {nm_id: nm, brand: c.brand || '', name: c.name || '', thumb: c.thumb || ''};
+    });
+    try {
+      const r = await fetch(`${RAILWAY_URL}/api/shelf-share-scan`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({dest, competitors, skip_have: true}),
+      });
+      const d = await r.json();
+      if(d.history) SHELF_SHARE_WOW = d.history;
+    } catch(e) {
+      SHELF_SHARE_SCAN.error = e.message || String(e);
+    }
+    SHELF_SHARE_SCAN.done = Math.min(missing.length, i + chunk.length);
+    renderShelfShareWow(SHELF_SHARE_LIVE.data, SHELF_SHARE_LIVE.shares);
+  }
+  SHELF_SHARE_SCAN.running = false;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/shelf-share-history?dest=${dest}`);
+    SHELF_SHARE_WOW = await r.json();
+  } catch(e) {}
+  renderShelfShareWow(SHELF_SHARE_LIVE.data, SHELF_SHARE_LIVE.shares);
 }
 
 function renderShelfShareWow(liveData, liveShares) {
@@ -11502,8 +11566,14 @@ function renderShelfShareWow(liveData, liveShares) {
 
   (SHELF_COMPETITORS || []).forEach(c => {
     const nid = Number(c.nm_id);
-    if(!nid || byNm[nid]) return;
-    byNm[nid] = {nm_id: nid, brand: c.brand || '', name: c.name || '', this_week: null, prev_week: null, delta_pp: null, delta_pct: null};
+    if(!nid) return;
+    if(!byNm[nid]) {
+      byNm[nid] = {nm_id: nid, brand: c.brand || '', name: c.name || '', thumb: c.thumb || '', this_week: null, prev_week: null, delta_pp: null, delta_pct: null};
+      return;
+    }
+    if(!byNm[nid].brand && c.brand) byNm[nid].brand = c.brand;
+    if(!byNm[nid].name && c.name) byNm[nid].name = c.name;
+    if(!byNm[nid].thumb && c.thumb) byNm[nid].thumb = c.thumb;
   });
 
   const rows = Object.values(byNm).sort((a, b) => {
@@ -11532,10 +11602,15 @@ function renderShelfShareWow(liveData, liveShares) {
   const city = (document.getElementById('shelfCity') || {}).selectedOptions;
   const cityName = (city && city[0] && city[0].textContent) || '';
 
+  const scan = SHELF_SHARE_SCAN || {};
+  const scanTxt = scan.running
+    ? `Замеряю полки ${scan.done} из ${scan.total}…`
+    : (scan.error ? `Ошибка замера: ${scan.error}` : 'сам обходит все сохранённые полки');
+
   if(!rows.length) {
     el.innerHTML = `<div style="padding:16px 20px 24px;border-top:1px solid var(--wb-border)">
       <div style="font-size:13px;font-weight:600;margin-bottom:4px">Динамика моей доли в топ-15</div>
-      <div style="font-size:12px;color:var(--wb-muted)">Замер появится, когда откроешь полку конкурента. Сравнивать начнём со следующей недели.</div>
+      <div style="font-size:12px;color:var(--wb-muted)">${scan.running ? escapeHtml(scanTxt) : 'Добавь конкурентов — полки замерю сам.'}</div>
     </div>`;
     return;
   }
@@ -11546,7 +11621,7 @@ function renderShelfShareWow(liveData, liveShares) {
         <div style="font-size:13px;font-weight:600">Динамика моей доли в топ-15</div>
         <div style="font-size:12px;color:var(--wb-muted);margin-top:2px">
           ${escapeHtml(weekLabel)} vs ${escapeHtml(prevLabel)}${cityName ? ' · ' + escapeHtml(cityName) : ''}
-          · пишется при открытии полки
+          · ${escapeHtml(scanTxt)}
         </div>
       </div>
       <div style="font-size:12px;color:var(--wb-muted);text-align:right">
@@ -11558,6 +11633,7 @@ function renderShelfShareWow(liveData, liveShares) {
     <div style="overflow:auto">
       <table class="comp-tbl" style="width:100%">
         <thead><tr>
+          <th style="width:56px">Фото</th>
           <th>Конкурент</th>
           <th style="width:160px">Эта неделя</th>
           <th style="width:160px">Прошлая неделя</th>
@@ -11566,12 +11642,18 @@ function renderShelfShareWow(liveData, liveShares) {
         <tbody>
           ${rows.map(r => {
             const on = Number(r.nm_id) === liveNm;
+            const pending = scan.running && !(r.this_week && r.this_week.mine_pct != null);
             return `<tr style="${on?'background:rgba(155,81,224,.07)':''}">
+              <td><a href="${wbCatalogUrl(r.nm_id)}" target="_blank" rel="noopener" title="Открыть на WB">
+                <img src="${wbThumbUrl(r.nm_id)}" alt="" width="40" height="40" loading="lazy"
+                  style="border-radius:4px;object-fit:cover;background:#f3f3f3;display:block"
+                  onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(r.nm_id,'jpg')}';}else{this.style.display='none'}">
+              </a></td>
               <td>
                 <div style="font-weight:600">${escapeHtml(r.brand || 'Конкурент')}</div>
                 <div style="font-size:11px;color:var(--wb-muted)">${r.nm_id}${r.name ? ' · ' + escapeHtml(r.name) : ''}</div>
               </td>
-              <td>${shelfShareSnapHtml(r.this_week)}</td>
+              <td>${pending ? '<span style="color:var(--wb-faint)">замеряю…</span>' : shelfShareSnapHtml(r.this_week)}</td>
               <td>${shelfShareSnapHtml(r.prev_week)}</td>
               <td>${shelfShareDeltaHtml(r)}</td>
             </tr>`;
