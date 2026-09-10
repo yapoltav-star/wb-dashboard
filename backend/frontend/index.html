@@ -11235,10 +11235,14 @@ async function searchShelfSuggestArticles(q) {
   try {
     const r = await fetch(`${RAILWAY_URL}/api/search-own-articles?q=${encodeURIComponent((q||'').trim())}`);
     const results = await r.json();
+    const typed = (q||'').trim();
     if(!Array.isArray(results) || !results.length) {
-      dd.style.display = (q||'').trim() ? 'block' : 'none';
-      dd.innerHTML = (q||'').trim()
-        ? `<div style="padding:10px 12px;font-size:12px;color:var(--wb-muted)">Ничего не найдено</div>`
+      dd.style.display = typed ? 'block' : 'none';
+      dd.innerHTML = typed
+        ? `<div style="padding:10px 12px;font-size:12px;color:var(--wb-muted)">В каталоге нет — можно добавить как есть</div>
+           <div style="padding:8px 12px;cursor:pointer;font-size:12px;color:var(--wb-purple);font-weight:600"
+             onmousedown="addShelfSuggestManual('shelfSuggestArtSearch')"
+             onmouseover="this.style.background='var(--wb-bg)'" onmouseout="this.style.background=''">+ Добавить «${escapeHtml(typed)}»</div>`
         : '';
       return;
     }
@@ -11262,12 +11266,76 @@ async function searchShelfSuggestArticles(q) {
   } catch(e) { dd.style.display = 'none'; }
 }
 
+function findOwnArticleLocal(q) {
+  const s = String(q || '').trim().toLowerCase();
+  if(!s) return null;
+  const cache = (SHELF_ACTIVE && SHELF_CACHE[SHELF_ACTIVE]) || {};
+  const pools = []
+    .concat(COMP_OWN_ARTICLES || [])
+    .concat(MY_SHELF_CARDS || [])
+    .concat(cache.top_sellers || [])
+    .concat(cache.suggest_add || [])
+    .concat(cache.already_in_shelf || [])
+    .concat(cache.suggest_same_shape || [])
+    .concat(cache.suggest_other_shape || []);
+  const exact = pools.find(a => a && (
+    String(a.vendor_code || '').toLowerCase() === s ||
+    String(a.nm_id || '') === s
+  ));
+  if(exact) return exact;
+  const starts = pools.filter(a => a && String(a.vendor_code || '').toLowerCase().startsWith(s));
+  return starts.length === 1 ? starts[0] : null;
+}
+
+async function resolveOwnArticle(q) {
+  const typed = String(q || '').trim();
+  if(!typed) return null;
+  const local = findOwnArticleLocal(typed);
+  if(local && local.nm_id) {
+    return {nm_id: Number(local.nm_id), vendor_code: local.vendor_code || String(local.nm_id)};
+  }
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/search-own-articles?q=${encodeURIComponent(typed)}`);
+    const results = await r.json();
+    if(Array.isArray(results) && results.length) {
+      const low = typed.toLowerCase();
+      const exact = results.find(a => String(a.vendor_code || '').toLowerCase() === low)
+        || results.find(a => String(a.nm_id) === typed);
+      if(exact) return {nm_id: Number(exact.nm_id), vendor_code: exact.vendor_code || String(exact.nm_id)};
+      if(results.length === 1) return {nm_id: Number(results[0].nm_id), vendor_code: results[0].vendor_code || String(results[0].nm_id)};
+    }
+  } catch(e) {}
+  if(/^\d{6,}$/.test(typed)) {
+    return {nm_id: Number(typed), vendor_code: typed};
+  }
+  return null;
+}
+
+async function addShelfSuggestManual(inputId) {
+  const inp = document.getElementById(inputId || 'shelfSuggestManual') || document.getElementById('shelfSuggestArtSearch');
+  const typed = ((inp && inp.value) || '').trim();
+  if(!typed) {
+    alert('Впиши свой артикул или nmID');
+    return;
+  }
+  const found = await resolveOwnArticle(typed);
+  if(!found) {
+    alert('Не нашёл «' + typed + '». Впиши nmID (цифры) или точный артикул продавца.');
+    return;
+  }
+  addShelfSuggestArticle(found.nm_id, found.vendor_code);
+  const man = document.getElementById('shelfSuggestManual');
+  if(man) man.value = '';
+}
+
 function addShelfSuggestArticle(nmId, vendorCode) {
   if(!SHELF_ACTIVE) return;
   const dd = document.getElementById('shelfSuggestArtDropdown');
   if(dd) dd.style.display = 'none';
   const inp = document.getElementById('shelfSuggestArtSearch');
   if(inp) inp.value = '';
+  const man = document.getElementById('shelfSuggestManual');
+  if(man) man.value = '';
   const list = shelfSuggestAddedList(SHELF_ACTIVE);
   if(list.some(x => Number(x.nm_id) === Number(nmId))) return;
   list.unshift({
@@ -11396,9 +11464,10 @@ function buildShelfSuggestPanel(data) {
   return `<div style="border:1px solid var(--wb-border);border-radius:8px;background:var(--wb-surface);padding:12px 14px;min-width:300px">
     <div style="position:relative;margin-bottom:12px">
       <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Наш артикул</div>
-      <input id="shelfSuggestArtSearch" placeholder="Артикул продавца, напр. 034…" autocomplete="off"
+      <input id="shelfSuggestArtSearch" placeholder="Артикул или nmID — и Enter" autocomplete="off"
         style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:100%;box-sizing:border-box"
-        oninput="searchShelfSuggestArticles(this.value)" onfocus="searchShelfSuggestArticles(this.value)">
+        oninput="searchShelfSuggestArticles(this.value)" onfocus="searchShelfSuggestArticles(this.value)"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();addShelfSuggestManual('shelfSuggestArtSearch');}">
       <div id="shelfSuggestArtDropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--rs);z-index:120;max-height:240px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.1)"></div>
     </div>
 
@@ -11412,6 +11481,12 @@ function buildShelfSuggestPanel(data) {
     <div style="font-size:12px;color:var(--wb-muted);line-height:1.4;margin-bottom:8px">
       Из нашего топ-${topN} продаж за ${days} дн. · форма конкурента: <b>${escapeHtml(shapeLabel)}</b><br>
       Уже в полке из топа: <b>${inTop}</b> · предлагаем: <b>${suggest.filter(t => !addedNms.has(Number(t.nm_id))).length}</b>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:10px">
+      <input id="shelfSuggestManual" placeholder="Нет в списке? Впиши артикул или nmID"
+        style="flex:1;min-width:0;border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();addShelfSuggestManual('shelfSuggestManual');}">
+      <button class="filter-btn" onclick="addShelfSuggestManual('shelfSuggestManual')" style="padding:6px 10px;font-size:12px;flex-shrink:0">Добавить</button>
     </div>
     ${alreadyHtml}
     <div style="margin-top:8px;max-height:360px;overflow:auto">${body}</div>
