@@ -1112,6 +1112,24 @@ def bot_status() -> dict:
     }
 
 
+def notify_allowed(text: str) -> int:
+    """Рассылка во все chat_id из TELEGRAM_ALLOWED_CHAT_IDS."""
+    if not _token():
+        return 0
+    ids = sorted(_allowed_ids())
+    if not ids:
+        logger.warning("telegram notify: TELEGRAM_ALLOWED_CHAT_IDS пуст")
+        return 0
+    sent = 0
+    for cid in ids:
+        try:
+            _send(cid, text)
+            sent += 1
+        except Exception as e:
+            logger.warning(f"telegram notify {cid}: {e}")
+    return sent
+
+
 def start_bot(api: dict):
     """Запускает бота фоновым потоком. api — словарь функций чтения из main."""
     global _STARTED

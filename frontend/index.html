@@ -840,8 +840,8 @@ a.comp-thumb-link:focus-visible{outline:2px solid var(--wb-purple);outline-offse
 .modal-btns{display:flex;gap:8px;justify-content:flex-end}
 .upload-progress{font-size:13px;color:var(--wb-muted);text-align:center;padding:8px;display:none}
 .spp-delta{margin-left:5px;font-weight:700;font-size:12px;white-space:nowrap}
-.spp-delta.up{color:#027A48}
-.spp-delta.down{color:#B42318}
+.spp-delta.up{color:#B42318}
+.spp-delta.down{color:#027A48}
 .spp-price-cell{cursor:pointer}
 .spp-price-cell:hover{background:rgba(139,92,246,.06)}
 .spp-chart-modal{width:720px;max-width:94vw}
@@ -851,12 +851,14 @@ a.comp-thumb-link:focus-visible{outline:2px solid var(--wb-purple);outline-offse
 .spp-chart-empty{padding:48px 16px;text-align:center;color:var(--wb-muted);font-size:13px}
 tr.spp-alert{background:#FFF7ED !important;box-shadow:inset 4px 0 0 #EA580C}
 tr.spp-alert.spp-alert-up{background:#FEF2F2 !important;box-shadow:inset 4px 0 0 #DC2626}
-tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0 0 #EA580C}
+tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0 0 #12B76A}
 .spp-alert-badge{display:inline-flex;align-items:center;gap:4px;margin-left:6px;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;vertical-align:middle;white-space:nowrap}
-.spp-alert-badge.down{background:#FFEDD5;color:#C2410C;border:1px solid #FDBA74}
+.spp-alert-badge.down{background:#D1FADF;color:#027A48;border:1px solid #A6F4C5}
 .spp-alert-badge.up{background:#FEE2E2;color:#B91C1C;border:1px solid #FECACA}
 .spp-alert-cell{font-weight:700}
-.spp-alert-cell .spp-alert-main{color:#9A3412}
+.spp-site{display:inline-block;padding:2px 6px;border-radius:6px;font-weight:700}
+.spp-site.down,.spp-alert-cell.down .spp-alert-main{color:#027A48;background:#ECFDF3}
+.spp-site.up,.spp-alert-cell.up .spp-alert-main{color:#B42318;background:#FEF2F2}
 
 /* План поставок — матрица склады × даты */
 #page-supplies-plan{padding:14px 16px 10px}
@@ -8809,9 +8811,8 @@ function drawSppPrices() {
       ].filter(Boolean).join(' ');
       const tip = sppClientTip(a);
       const saleCell = `<span style="font-weight:600">${sppMoney(a.sale_price)}</span>${sppDeltaHtml(a.sale_price, a.prev_sale_price, a.sale_delta, a.prev_captured_at, 'Цена продавца')}`;
-      const clientCell = changed
-        ? `<span class="spp-alert-cell" title="${escapeHtml(tip)}"><span class="spp-alert-main">${sppMoney(a.client_price)}</span>${sppDeltaHtml(a.client_price, a.prev_client_price, a.client_delta, a.prev_captured_at, 'Цена на сайте')}${sppReasonBadge(a)}</span>`
-        : `${sppMoney(a.client_price)}${sppDeltaHtml(a.client_price, a.prev_client_price, a.client_delta, a.prev_captured_at, 'Цена на сайте')}`;
+      const dir = changed ? (up ? 'up' : 'down') : '';
+      const clientCell = `<span class="spp-alert-cell ${dir}" title="${escapeHtml(tip || 'Цена на сайте')}"><span class="spp-alert-main spp-site ${dir}">${sppMoney(a.client_price)}</span>${sppDeltaHtml(a.client_price, a.prev_client_price, a.client_delta, a.prev_captured_at, 'Цена на сайте')}${sppReasonBadge(a)}</span>`;
       const sppCell = `${sppPctHtml(a.spp)}${sppSppDeltaHtml(a)}`;
       const rowTitle = tip ? ` title="${escapeHtml(tip)}"` : '';
       return `<tr class="${rowCls}"${rowTitle}>
@@ -8828,8 +8829,9 @@ function drawSppPrices() {
   </table></div>
   <div class="pace-hint">СПП = насколько цена на витрине ниже вашей цены продавца после скидки:
     <b>(1 − цена сайта / цена продавца) × 100%</b>.
-    <b>Оранжевая/красная подсветка</b> — цена для клиента изменилась с прошлого обновления; наведи курсор — там написано, снизили ли вы цену или сдвинулся СПП.
-    Стрелки — Δ к прошлому снимку; клик по цене — график. Нужен токен «Цены и скидки».</div>`;
+    <b>Зелёное</b> — цена на сайте упала, <b>красное</b> — выросла.
+    Смотрим в 8:00, 12:00, 18:00 и 22:00 МСК, изменения уходят в Telegram.
+    Наведи — почему сдвинулось; клик по цене — график.</div>`;
 }
 
 function setPromoExcelFilter(f) {

@@ -2,6 +2,7 @@ import httpx
 import os
 import io
 import json
+import html
 import gzip
 import base64
 import time
@@ -8367,7 +8368,50 @@ def save_price_snapshots(articles: list) -> int:
             break
     return saved
 
-def sync_spp_prices():
+def _notify_site_price_changes(articles: list):
+    """В Telegram — только артикулы, у которых сдвинулась цена на сайте."""
+    changed = []
+    for a in articles or []:
+        d = a.get("client_delta")
+        if d is None:
+            continue
+        try:
+            d = float(d)
+        except (TypeError, ValueError):
+            continue
+        if abs(d) < 1:
+            continue
+        changed.append(a)
+    if not changed:
+        return
+    changed.sort(key=lambda x: -abs(float(x.get("client_delta") or 0)))
+    extra = 0
+    if len(changed) > 40:
+        extra = len(changed) - 40
+        changed = changed[:40]
+    now = _msk_now().strftime("%H:%M")
+    lines = [f"<b>Цена на сайте изменилась</b> · {now} МСК", ""]
+    for a in changed:
+        d = float(a.get("client_delta") or 0)
+        prev = a.get("prev_client_price")
+        cur = a.get("client_price")
+        arrow = "↓" if d < 0 else "↑"
+        vc = html.escape(str(a.get("vendor_code") or a.get("nm_id") or "—"))
+        prev_s = f"{int(round(float(prev))):,}".replace(",", " ") if prev is not None else "—"
+        cur_s = f"{int(round(float(cur))):,}".replace(",", " ") if cur is not None else "—"
+        delta_s = f"{int(round(d)):+,}".replace(",", " ")
+        lines.append(f"{arrow} <code>{vc}</code>  {prev_s} → {cur_s} ₽  ({delta_s})")
+    if extra:
+        lines.append(f"\nещё {extra} арт.")
+    try:
+        import telegram_bot
+        n = telegram_bot.notify_allowed("\n".join(lines))
+        logger.info(f"spp price notify: {len(changed) + extra} changed, sent={n}")
+    except Exception as e:
+        logger.warning(f"spp price notify: {e}")
+
+
+def sync_spp_prices(notify: bool = False):
     if SPP_CACHE.get("syncing"):
         return
     SPP_CACHE["syncing"] = True
@@ -8439,6 +8483,8 @@ def sync_spp_prices():
             f"SPP sync: {len(articles)} arts, client_source={source}, "
             f"missing={missing_client}, snapshots={snap_n}"
         )
+        if notify:
+            _notify_site_price_changes(articles)
     except Exception as e:
         logger.error(f"sync_spp_prices error: {e}")
         SPP_CACHE["error"] = str(e)
@@ -8914,7 +8960,14 @@ scheduler.add_job(sync_promotions, "interval", hours=6, id="sync_promotions")
 scheduler.add_job(sync_promo_calendar, "interval", hours=6, id="sync_promo_calendar")
 scheduler.add_job(lambda: sync_sales_pace("day"), "interval", minutes=15, id="sync_sales_pace")
 scheduler.add_job(sync_new_stock, "interval", hours=2, id="sync_new_stock")
-scheduler.add_job(sync_spp_prices, "interval", hours=3, id="sync_spp_prices")
+scheduler.add_job(
+    lambda: sync_spp_prices(notify=True),
+    "cron",
+    hour="8,12,18,22",
+    minute=0,
+    timezone="Europe/Moscow",
+    id="sync_spp_prices",
+)
 # Каталог товаров держим тёплым: он живёт только в памяти и обнуляется при редеплое,
 # а без него «что заканчивается» отвечает пустотой.
 scheduler.add_job(
