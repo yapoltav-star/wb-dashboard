@@ -550,7 +550,18 @@ td.tc{text-align:center}
 .ns-rep-head h3{margin:0;font-size:14px;font-weight:700}
 .ns-rep-head .pi-sub{display:block;margin-top:3px;font-size:11px;color:var(--wb-muted);line-height:1.4}
 .ns-rep-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.ns-wgt-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px}
+.ns-wgt{border:1px solid var(--wb-border);border-radius:10px;padding:12px 12px 10px;background:#fff;min-height:118px}
+.ns-wgt.ns-rep-ok{background:#F0FDF4;border-color:#A7F3D0}
+.ns-wgt.ns-rep-warn{background:#FFFBEB;border-color:#FDE68A}
+.ns-wgt.ns-rep-bad{background:#FEF2F2;border-color:#FECACA}
+.ns-wgt-reg{font-size:11px;font-weight:700;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px}
+.ns-wgt-when{font-size:22px;font-weight:800;line-height:1.1;letter-spacing:-.02em;margin:2px 0 4px}
+.ns-wgt-sub{font-size:11px;color:var(--wb-muted);font-variant-numeric:tabular-nums}
+.ns-wgt-cities{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.ns-wgt-chip{font-size:10px;padding:2px 6px;border-radius:999px;background:rgba(255,255,255,.7);border:1px solid rgba(0,0,0,.06);color:var(--wb-text);white-space:nowrap}
 .ns-rep-card{border:1px solid var(--wb-border);border-radius:8px;padding:11px 12px;background:#fff}
+@media (max-width:1200px){.ns-wgt-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .ns-rep-card.ns-rep-bad{background:#FEF2F2;border-color:#FECACA}
 .ns-rep-card.ns-rep-warn{background:#FFFBEB;border-color:#FDE68A}
 .ns-rep-card.ns-rep-ok{background:#F0FDF4;border-color:#A7F3D0}
@@ -1160,8 +1171,8 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
 <div class="page" id="page-new-stock">
   <div class="upload-banner hint">
     <span>
-      Остаток — только <b>Склад WB РФ</b> и наши <b>FBS</b>. Сгоревшие склады WB (Коледино и др.) не считаем.
-      Самовывоз <b>CC Ковшовой</b> не считаем. Срок с FBS — когда WB РФ пуст. Жёлтый &gt; 40 ч, красный &gt; 60 ч.
+      Как на карточке WB у покупателя: <b>завтра / послезавтра / N дней</b>, не «часы до отгрузки».
+      Остаток — только <b>Склад WB РФ</b> и наши <b>FBS</b>. Жёлтый &gt; 40 ч, красный &gt; 60 ч.
     </span>
   </div>
   <div class="toolbar">
@@ -1173,7 +1184,7 @@ tr.spp-alert.spp-alert-down{background:#FFF7ED !important;box-shadow:inset 4px 0
     <button class="filter-btn" id="nsFltWarn" onclick="setNewStockFilter('warn')">Жёлтые &gt;40ч</button>
     <button class="filter-btn" id="nsFltBad" onclick="setNewStockFilter('bad')">Красные &gt;60ч</button>
     <button class="filter-btn" id="nsFltHidden" onclick="toggleNewStockHidden()">Скрытые</button>
-    <button class="filter-btn on" id="nsFltReport" onclick="toggleNsReport()" title="Сводка по регионам: срок и тонкие остатки">Отчёт</button>
+    <button class="filter-btn on" id="nsFltReport" onclick="toggleNsReport()" title="Как видит покупатель на WB: завтра / послезавтра / дни">Виджет</button>
     <div style="position:relative;display:inline-flex">
       <button type="button" class="action-btn" id="nsColPickerBtn" onclick="toggleNsColPicker(event)" title="Показать или скрыть города и FBS">Колонки</button>
       <div id="nsColPicker" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;min-width:300px;max-height:400px;overflow:auto;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--rs);box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:80;padding:8px"></div>
@@ -3246,6 +3257,15 @@ function nsDrop(ev, targetVc, zone) {
   saveNewStockLayoutSoon();
 }
 
+function nsBuyerWhen(hours) {
+  if(hours == null || hours === '' || isNaN(Number(hours))) return null;
+  const h = Number(hours);
+  if(h <= 24) return {label: 'завтра', days: 1, hours: h};
+  if(h <= 48) return {label: 'послезавтра', days: 2, hours: h};
+  const days = Math.max(3, Math.ceil(h / 24));
+  return {label: days + ' дн', days, hours: h};
+}
+
 function nsCellTone(cell) {
   if(!cell || !(cell.qty > 0)) return 'oos';
   const h = cell.hours;
@@ -3319,9 +3339,12 @@ function nsCityCells(a, cities) {
       cell.pickup ? 'самовывоз отброшен' : '',
       cell.wh ? ('склад #' + cell.wh) : '',
     ].filter(Boolean).join('. ');
-    const main = qty ? (fmt(qty) + ' шт') : 'нет';
-    const sub = h != null ? (h + ' ч') : '—';
-    return `<td class="ns-cell ns-${tone}" title="${tip.replace(/"/g,'&quot;')}"><b>${main}</b><span>${sub}</span></td>`;
+    const when = qty && h != null ? nsBuyerWhen(h) : null;
+    const main = when ? when.label : (qty ? (fmt(qty) + ' шт') : 'нет');
+    const sub = qty
+      ? ((when ? (fmt(qty) + ' шт') : '') + (h != null ? (when ? ' · ' + h + ' ч' : h + ' ч') : '')).replace(/^ · /, '')
+      : 'нет на витрине';
+    return `<td class="ns-cell ns-${tone}" title="${tip.replace(/"/g,'&quot;')}"><b>${main}</b><span>${sub || '—'}</span></td>`;
   }).join('');
 }
 
@@ -3369,7 +3392,9 @@ function nsBuildRegionReport() {
           if(cell.hours != null) hours.push(Number(cell.hours));
         }
       });
-      return {id: c.id, name: c.name, label: nsCityLabel(c.name), medH: nsMedian(hours), n: hours.length};
+      const medH = nsMedian(hours);
+      const when = nsBuyerWhen(medH);
+      return {id: c.id, name: c.name, label: nsCityLabel(c.name), medH, when: when && when.label, n: hours.length};
     });
     let inRegion = 0, redWorst = 0, thin = 0, fat = 0;
     live.forEach(a => {
@@ -3415,9 +3440,14 @@ function nsBuildRegionReport() {
       else bits.push('остаток средний');
       blurb = bits.join('. ') + '.';
     }
+    const regionMed = nsMedian(withH.map(c => c.medH));
+    const regionWhen = nsBuyerWhen(regionMed);
     return {
       id: g.id, name: g.name, tone, verdict, blurb,
-      hoursLine: withH.map(c => c.label + ' ' + c.medH).join(' · '),
+      hoursLine: withH.map(c => c.label + ' ' + (c.when || (c.medH + 'ч'))).join(' · '),
+      cities: withH,
+      medH: regionMed,
+      when: (regionWhen && regionWhen.label) || 'нет',
       redWorst, thin, liveN: live.length,
     };
   });
@@ -3428,28 +3458,32 @@ function nsReportHtml() {
   if(!NS_REPORT_ON) return '';
   const r = nsBuildRegionReport();
   if(!r) return '';
-  const gClass = {sib:'ns-g-sib', south:'ns-g-south', center:'ns-g-center', nw:'ns-g-nw', ural:'ns-g-ural', volga:'ns-g-volga'};
-  const cards = r.regions.map(reg => `
-    <div class="ns-rep-card ns-rep-${reg.tone}">
-      <div class="ns-rep-card-h">
-        <span class="ns-rep-reg ${gClass[reg.id] || ''}">${escapeHtml(reg.name)}</span>
-        <span class="ns-rep-verdict">${escapeHtml(reg.verdict)}</span>
-      </div>
-      <div class="ns-rep-hours">${escapeHtml(reg.hoursLine || 'нет срока')}</div>
-      <div class="ns-rep-meta">красных ${reg.redWorst}/${reg.liveN} · тонких ${reg.thin}</div>
-      <div class="ns-rep-blurb">${escapeHtml(reg.blurb)}</div>
-    </div>`).join('');
-  const emptyBit = r.empty ? ' · ' + r.empty + ' пустые везде — одни и те же' : '';
+  const cards = r.regions.map(reg => {
+    const chips = (reg.cities || []).map(c =>
+      `<span class="ns-wgt-chip">${escapeHtml(c.label)} · ${escapeHtml(c.when || '—')}</span>`
+    ).join('');
+    const sub = [
+      reg.medH != null ? ('медиана ' + reg.medH + ' ч') : '',
+      'красных ' + reg.redWorst + '/' + reg.liveN,
+    ].filter(Boolean).join(' · ');
+    return `<div class="ns-wgt ns-rep-${reg.tone}">
+      <div class="ns-wgt-reg">${escapeHtml(reg.name)}</div>
+      <div class="ns-wgt-when">${escapeHtml(reg.when)}</div>
+      <div class="ns-wgt-sub">${escapeHtml(sub)}</div>
+      <div class="ns-wgt-cities">${chips}</div>
+    </div>`;
+  }).join('');
+  const emptyBit = r.empty ? ' · ' + r.empty + ' пустые везде' : '';
   const asOf = r.asOf ? ' · на ' + escapeHtml(r.asOf) : '';
   return `<div class="ns-rep">
     <div class="ns-rep-head">
       <div>
-        <h3>По регионам</h3>
-        <span class="pi-sub">${r.live} с остатком из ${r.total}${emptyBit}${asOf} · медиана часов по ячейкам с остатком · жёлтый &gt;40 ч, красный &gt;60 ч</span>
+        <h3>Как видит покупатель</h3>
+        <span class="pi-sub">Срок с витрины WB: завтра ≤24 ч, послезавтра ≤48 ч, дальше дни. Не время до нашей отгрузки.${emptyBit}${asOf}</span>
       </div>
       <button type="button" class="ns-ico" onclick="toggleNsReport()">Скрыть</button>
     </div>
-    <div class="ns-rep-grid">${cards}</div>
+    <div class="ns-wgt-grid">${cards}</div>
   </div>`;
 }
 
