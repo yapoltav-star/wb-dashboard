@@ -2770,7 +2770,7 @@ NEW_STOCK_PICKUP_RE = re.compile(r"самовывоз|ковшов", re.I)
 NEW_STOCK_WB_RF_RE = re.compile(r"(?:склад\s+)?(?:wb|вб)[\s\-]*рф", re.I)
 NEW_STOCK_STORES_URL = "https://static-basket-01.wbbasket.ru/vol0/data/stores-data.json"
 NEW_STOCK_STORES_CACHE = {"by_id": {}, "loaded_at": 0.0}
-# Ближайший наш FBS: Центр/СЗ → Москва, Волга → Казань, Юг → Краснодар, Урал/Сибирь → Тюмень.
+# Запасной FBS, только если витрина по dest пустая. Штуки/часы города — с клиентского WB.
 NEW_STOCK_FBS_HUBS = {
     "msk": {
         "label": "FBS Москва / СЦ Внуково",
@@ -2781,6 +2781,11 @@ NEW_STOCK_FBS_HUBS = {
         "label": "FBS Казань / СЦ Столбище",
         "store_re": re.compile(r"казан", re.I),
         "stock_re": re.compile(r"казан", re.I),
+    },
+    "ufa": {
+        "label": "FBS Уфа / СЦ Зубово",
+        "store_re": re.compile(r"уфа|зубов", re.I),
+        "stock_re": re.compile(r"уфа|зубов", re.I),
     },
     "krd": {
         "label": "FBS Краснодар / СЦ Тахтамукай",
@@ -2796,11 +2801,12 @@ NEW_STOCK_FBS_HUBS = {
 NEW_STOCK_GROUP_HUBS = {
     "center": ["msk"],
     "nw": ["msk"],
-    "volga": ["kzn", "msk"],
+    "volga": ["kzn", "ufa", "msk"],
     "south": ["krd", "msk"],
-    "ural": ["tmn", "msk"],
-    "sib": ["tmn", "msk"],
+    "ural": ["ufa", "tmn", "kzn", "msk"],
+    "sib": ["tmn", "ufa", "msk"],
 }
+NEW_STOCK_SELLER_STORE_TYPES = {2, 10, 14, 74, 78}
 
 
 def _new_stock_hours(product: dict):
@@ -2821,32 +2827,85 @@ def _new_stock_hours(product: dict):
         return None
 
 
-def _new_stock_qty(product: dict) -> int:
-    """Остаток на складах, с которых WB предлагает доставку в этот dest."""
+def _new_stock_stock_hours(item: dict):
+    if not isinstance(item, dict):
+        return None
+    if item.get("time1") is None and item.get("time2") is None:
+        return None
+    try:
+        return int(item.get("time1") or 0) + int(item.get("time2") or 0)
+    except Exception:
+        return None
+
+
+def _new_stock_stock_rows(product: dict) -> list:
+    """Склады в ответе витрины для этого dest: (wh_id, qty, hours)."""
+    rows = []
     if not isinstance(product, dict):
-        return 0
-    qty = 0
+        return rows
     for sz in product.get("sizes") or []:
         if not isinstance(sz, dict):
             continue
-        stocks = sz.get("stocks")
+        stocks = sz.get("stocks") or []
         if stocks:
             for st in stocks:
+                if not isinstance(st, dict):
+                    continue
+                wid = _new_stock_wh_int(st.get("wh") or st.get("whId") or st.get("warehouseId"))
                 try:
-                    qty += int((st or {}).get("qty") or 0)
+                    q = int(st.get("qty") or 0)
                 except Exception:
-                    pass
+                    q = 0
+                if q > 0:
+                    rows.append((wid, q, _new_stock_stock_hours(st)))
         else:
+            wid = _new_stock_wh_int(sz.get("wh") or sz.get("whId"))
             try:
-                qty += int(sz.get("qty") or 0)
+                q = int(sz.get("qty") or 0)
             except Exception:
-                pass
-    if qty > 0:
-        return qty
-    try:
-        return int(product.get("totalQuantity") or product.get("total_quantity") or 0)
-    except Exception:
-        return 0
+                q = 0
+            if q > 0:
+                rows.append((wid, q, _new_stock_stock_hours(sz)))
+    return rows
+
+
+def _new_stock_store_is_pickup(wid, stores: dict) -> bool:
+    if not stores or wid is None:
+        return False
+    meta = stores.get(wid)
+    meta = meta if isinstance(meta, dict) else {}
+    name = str(meta.get("name") or "")
+    return meta.get("type") in NEW_STOCK_PICKUP_TYPES or bool(NEW_STOCK_PICKUP_RE.search(name))
+
+
+def _new_stock_pick_stock(product: dict, stores: dict | None = None, skip_pickup: bool = False):
+    """Один склад, с которого WB везёт в этот dest.
+
+    Как у партнёрки: Москва 15, Нижний 1, СПб 50, Казань 1 — не сумма и не totalQuantity.
+    Берём product.wh; если это ПВЗ — склад из stocks с тем же сроком.
+    """
+    rows = _new_stock_stock_rows(product)
+    if skip_pickup:
+        rows = [(w, q, h) for w, q, h in rows if not _new_stock_store_is_pickup(w, stores or {})]
+    assigned = _new_stock_wh_int(_new_stock_wh(product))
+    hours = _new_stock_hours(product)
+    if assigned is not None:
+        hit = [(w, q, h) for w, q, h in rows if w == assigned]
+        if hit:
+            return hit[0]
+    if hours is not None:
+        hit = [(w, q, h) for w, q, h in rows if h == hours]
+        if hit:
+            return hit[0]
+    if len(rows) == 1:
+        return rows[0]
+    return None
+
+
+def _new_stock_qty(product: dict, stores: dict | None = None, skip_pickup: bool = False) -> int:
+    """Остаток склада отгрузки в этот dest. Не сумма по стране."""
+    picked = _new_stock_pick_stock(product, stores=stores, skip_pickup=skip_pickup)
+    return int(picked[1]) if picked else 0
 
 
 def _new_stock_wh(product: dict):
@@ -2901,12 +2960,10 @@ def _new_stock_city_hubs() -> dict:
 def _new_stock_hub_for_store(name: str, meta: dict):
     """Какой наш FBS-хаб у витринного склада. Самовывоз и склады WB — None."""
     if not isinstance(meta, dict):
-        return None
+        meta = {}
     if meta.get("type") in NEW_STOCK_PICKUP_TYPES:
         return None
     if meta.get("is_wb"):
-        return None
-    if meta.get("type") not in (None, 2):
         return None
     n = name or meta.get("name") or ""
     if _fbs_wh_is_ignored(n):
@@ -2996,19 +3053,30 @@ def _new_stock_parse_cell(product: dict, stores: dict) -> dict:
     name = str(meta.get("name") or "")
     pickup = meta.get("type") in NEW_STOCK_PICKUP_TYPES or bool(NEW_STOCK_PICKUP_RE.search(name))
     hub = None if pickup else _new_stock_hub_for_store(name, meta)
-    is_fbw = (not pickup) and (hub is None) and (
-        bool(meta.get("is_wb")) or meta.get("type") not in (2, 128)
+    known_store = bool(name) or meta.get("type") is not None
+    is_fbw = (not pickup) and (hub is None) and known_store and (
+        bool(meta.get("is_wb")) or meta.get("type") not in NEW_STOCK_SELLER_STORE_TYPES
     )
     if pickup:
+        picked = _new_stock_pick_stock(product, stores=stores, skip_pickup=True)
+        alt_wh, alt_qty, _alt_h = picked if picked else (None, 0, None)
+        meta2 = stores.get(alt_wh) if (stores and alt_wh is not None) else None
+        meta2 = meta2 if isinstance(meta2, dict) else {}
+        name2 = str(meta2.get("name") or "")
+        alt_hub = _new_stock_hub_for_store(name2, meta2)
+        known2 = bool(name2) or meta2.get("type") is not None
+        alt_fbw = (alt_hub is None) and known2 and (
+            bool(meta2.get("is_wb")) or meta2.get("type") not in NEW_STOCK_SELLER_STORE_TYPES
+        )
         return {
-            "qty": 0,
-            "hours": None,
-            "tone": "oos",
-            "wh": wh,
-            "wh_name": name or None,
+            "qty": alt_qty,
+            "hours": hours if alt_qty else None,
+            "tone": _new_stock_tone(hours if alt_qty else None, alt_qty),
+            "wh": alt_wh or wh,
+            "wh_name": name2 or name or None,
             "pickup": True,
-            "is_fbw": False,
-            "fbs_hub": None,
+            "is_fbw": alt_fbw,
+            "fbs_hub": alt_hub,
             "source": "pickup",
         }
     return {
@@ -3364,7 +3432,7 @@ def sync_new_stock():
             "articles_source": "env" if (os.getenv("NEW_STOCK_ARTICLES_JSON") or "").strip() else "catalog",
             "city_fbs_hours": city_fbs_h,
             "city_fbw_hours": city_fbw_h,
-            "note": "Срок и штуки — как на витрине WB в этом городе, без самовывоза CC Ковшовой. Если витрина спрятала склад WB за ПВЗ — показываем остаток FBW. Срок с нашего FBS только когда склада WB нет.",
+            "note": "Штуки — остаток склада, с которого WB везёт в этот город (не сумма по стране). Срок — часы витрины. Самовывоз CC Ковшовой не считаем.",
         }
         NEW_STOCK_CACHE["payload"] = payload
         NEW_STOCK_CACHE["error"] = err
@@ -3591,52 +3659,20 @@ def _attach_new_stock_fbs(payload: dict) -> dict:
                 continue
             c = dict(cell)
             c["fbw_qty"] = fbw_qty
-            if c.get("pickup"):
-                fbw_h = city_fbw_h.get(cid)
-                try:
-                    fbw_h = int(fbw_h) if fbw_h is not None else None
-                except Exception:
-                    fbw_h = None
-                old_src = c.get("source")
-                if fbw_qty > 0:
-                    c["qty"] = fbw_qty
-                    c["is_fbw"] = True
-                    c["source"] = "fbw"
-                    c["wh_label"] = "Склад WB РФ"
-                    if fbw_h is not None:
-                        c["hours"] = fbw_h
-                    elif old_src in ("fbs_hub_peer", "fbs_msk_peer"):
-                        c["hours"] = None
-                    c["tone"] = _new_stock_tone(c.get("hours"), fbw_qty)
-                else:
-                    hid = _fbs_pick_hub(row["fbs"], cid, city_hubs)
-                    hub = NEW_STOCK_FBS_HUBS.get(hid) if hid else None
-                    primary = (city_hubs.get(str(cid)) or ["msk"])[0]
-                    if hid and hub and hid == primary:
-                        c["qty"] = _fbs_hub_qty(row["fbs"], hid)
-                        peer = _new_stock_hub_hours(city_fbs_h, hid, cid)
-                        if peer is not None:
-                            c["hours"] = peer
-                        c["source"] = "fbs_hub_peer"
-                        c["fbs_hub"] = hid
+            storefront_qty = int(c.get("qty") or 0)
+            storefront_hours = c.get("hours")
+            # Клиентский WB уже ответил по этому dest: склад, штуки, часы.
+            # Не подменяем FBS Москвой (Челябинск 38 шт / 38 ч ≠ Москва 93 / 94 ч).
+            if storefront_qty > 0 or storefront_hours is not None:
+                if c.get("fbs_hub"):
+                    hub = NEW_STOCK_FBS_HUBS.get(c.get("fbs_hub"))
+                    if hub:
                         c["wh_label"] = hub["label"]
-                    else:
-                        c["qty"] = 0
-                    c["tone"] = _new_stock_tone(c.get("hours"), int(c.get("qty") or 0))
-            elif fbw_qty > 0:
-                c["qty"] = fbw_qty
-                c["is_fbw"] = True
-                c["fbs_hub"] = None
-                c["source"] = "fbw"
-                c["wh_label"] = "Склад WB РФ"
-                c["tone"] = _new_stock_tone(c.get("hours"), fbw_qty)
-            elif c.get("fbs_hub"):
-                hub = NEW_STOCK_FBS_HUBS.get(c.get("fbs_hub"))
-                if hub:
-                    c["qty"] = _fbs_hub_qty(row["fbs"], c.get("fbs_hub"))
-                    c["wh_label"] = hub["label"]
-                    c["source"] = "fbs_hub"
-                    c["tone"] = _new_stock_tone(c.get("hours"), int(c.get("qty") or 0))
+                elif c.get("wh_name"):
+                    c["wh_label"] = c.get("wh_label") or c.get("wh_name")
+                elif not c.get("wh_label"):
+                    c["wh_label"] = "склад витрины WB"
+                c["tone"] = _new_stock_tone(c.get("hours"), storefront_qty)
             else:
                 hid = _fbs_pick_hub(row["fbs"], cid, city_hubs)
                 hub = NEW_STOCK_FBS_HUBS.get(hid) if hid else None
