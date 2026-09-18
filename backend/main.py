@@ -6783,6 +6783,95 @@ def get_competitor_sessions():
     except Exception:
         return []
 
+
+def _comp_metric_int(row: dict, *keys) -> int:
+    for k in keys:
+        v = (row or {}).get(k)
+        if v is None or v == "":
+            continue
+        try:
+            return int(float(v))
+        except Exception:
+            continue
+    return 0
+
+
+@app.get("/api/competitor-brand-weeks")
+def competitor_brand_weeks(brand: str = ""):
+    """Показы и заказы бренда по неделям из загруженных «Сравнений карточек»."""
+    brand = (brand or "").strip()
+    if not brand:
+        return {"brand": "", "weeks": []}
+    try:
+        sess_resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/competitor_sessions?select=id,period_begin,period_end&order=period_begin.asc",
+            headers=sb_headers(),
+            timeout=20,
+        )
+        sessions = sess_resp.json() if sess_resp.is_success else []
+        if not isinstance(sessions, list) or not sessions:
+            return {"brand": brand, "weeks": []}
+        met_resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/competitor_metrics",
+            params={
+                "brand": f"eq.{brand}",
+                "select": "session_id,nm_id,views,orders,buyouts,card_opens",
+                "limit": "20000",
+            },
+            headers=sb_headers(),
+            timeout=30,
+        )
+        metrics = met_resp.json() if met_resp.is_success else []
+        if not isinstance(metrics, list):
+            metrics = []
+        by_sid = {}
+        for row in metrics:
+            if not isinstance(row, dict):
+                continue
+            sid = row.get("session_id")
+            if sid is None:
+                continue
+            acc = by_sid.setdefault(sid, {"views": 0, "orders": 0, "buyouts": 0, "card_opens": 0, "nms": set()})
+            acc["views"] += _comp_metric_int(row, "views")
+            acc["orders"] += _comp_metric_int(row, "orders")
+            acc["buyouts"] += _comp_metric_int(row, "buyouts")
+            acc["card_opens"] += _comp_metric_int(row, "card_opens")
+            try:
+                acc["nms"].add(int(row.get("nm_id")))
+            except Exception:
+                pass
+        merged = {}
+        for s in sessions:
+            acc = by_sid.get(s.get("id"))
+            if not acc:
+                continue
+            key = f"{s.get('period_begin') or ''}__{s.get('period_end') or ''}"
+            slot = merged.setdefault(key, {
+                "period_begin": s.get("period_begin"),
+                "period_end": s.get("period_end"),
+                "views": 0,
+                "orders": 0,
+                "buyouts": 0,
+                "card_opens": 0,
+                "articles": 0,
+                "nms": set(),
+            })
+            slot["views"] += acc["views"]
+            slot["orders"] += acc["orders"]
+            slot["buyouts"] += acc["buyouts"]
+            slot["card_opens"] += acc["card_opens"]
+            slot["nms"].update(acc["nms"])
+        weeks = []
+        for slot in merged.values():
+            nms = slot.pop("nms")
+            slot["articles"] = len(nms)
+            weeks.append(slot)
+        weeks.sort(key=lambda w: str(w.get("period_begin") or ""))
+        return {"brand": brand, "weeks": weeks}
+    except Exception as e:
+        logger.warning(f"competitor-brand-weeks: {e}")
+        return {"brand": brand, "weeks": [], "error": str(e)}
+
 @app.get("/api/competitor-data/{session_id}")
 def get_competitor_data(session_id: int):
     """Метрики и поисковые запросы по сессии (+ живая цена покупателя / СПП с витрины WB)."""

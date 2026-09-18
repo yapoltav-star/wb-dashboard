@@ -513,6 +513,7 @@ td.tc{text-align:center}
 .ns-oos{background:#F8FAFC;color:var(--wb-faint)}
 .ns-cell b{display:block;font-size:12px}
 .ns-cell span{font-size:10px;opacity:.85}
+.ns-cell b.ns-qty-low{color:#B42318;font-weight:700}
 .ns-art-row{display:flex;align-items:center;gap:6px;width:max-content}
 .ns-handle{cursor:grab;color:var(--wb-faint);font-size:12px;user-select:none}
 .ns-ico{border:1px solid var(--wb-border);background:#fff;border-radius:5px;padding:1px 5px;font-size:11px;cursor:pointer;line-height:1.4}
@@ -676,6 +677,13 @@ td.tc{text-align:center}
 .comp-tbl{width:100%;border-collapse:collapse;font-size:12px}
 .comp-period-btn{padding:5px 12px;border-radius:20px;border:1px solid var(--wb-border);font-size:12px;color:var(--wb-muted);cursor:pointer;background:var(--wb-bg);font-family:inherit;white-space:normal;text-align:left;line-height:1.35;max-width:280px}
 .comp-period-btn.on{background:var(--wb-purple);color:#fff;border-color:var(--wb-purple)}
+.comp-date-group{display:flex;flex-direction:column;gap:4px;padding:6px 8px;border:1px solid var(--wb-border);border-radius:10px;background:#FAFAFA}
+.comp-date-h{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;font-weight:600;color:var(--wb-text)}
+.comp-date-h .comp-arch-all{border:1px solid var(--wb-border);background:#fff;border-radius:12px;font-size:11px;padding:2px 8px;cursor:pointer;font-family:inherit;color:var(--wb-muted)}
+.comp-date-h .comp-arch-all:hover{border-color:var(--wb-orange);color:var(--wb-orange)}
+.comp-date-items{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.comp-brand-chip{padding:4px 10px;border-radius:16px;border:1px solid var(--wb-border);font-size:12px;cursor:pointer;background:#fff;font-family:inherit;color:var(--wb-text)}
+.comp-brand-chip.on{background:var(--wb-purple);color:#fff;border-color:var(--wb-purple)}
 .comp-art-check{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:6px;border:1px solid var(--wb-border);cursor:pointer;font-size:12px;background:var(--wb-bg);user-select:none}
 .comp-art-check.on{background:var(--wb-purple-light);border-color:var(--wb-purple)}
 .comp-art-check.own{border-color:var(--wb-purple);font-weight:600}
@@ -1555,7 +1563,9 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
           <button class="action-btn" onclick="selectAllCompPeriods()" style="font-size:11px;padding:3px 10px">Отметить все периоды</button>
           <button class="action-btn" onclick="archiveOldCompSessions()" style="font-size:11px;padding:3px 10px" title="Оставить только текущий отчётный период (пересекающиеся недели), остальное в архив">В архив старые</button>
         </div>
-        <div id="compPeriodBtns" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        <div id="compPeriodBtns" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start"></div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin:12px 0 6px">Бренды <span style="font-weight:400;text-transform:none">(тык — показы и заказы по неделям)</span></div>
+        <div id="compBrandBtns" style="display:flex;gap:6px;flex-wrap:wrap"></div>
       </div>
     </div>
   </div>
@@ -3332,7 +3342,8 @@ function nsCityCells(a, cities) {
     ].filter(Boolean).join('. ');
     const main = qty ? (fmt(qty) + ' шт') : 'нет';
     const sub = h != null ? (h + ' ч') : '—';
-    return `<td class="ns-cell ns-${tone}" title="${tip.replace(/"/g,'&quot;')}"><b>${main}</b><span>${sub}</span></td>`;
+    const low = qty > 0 && qty <= 5;
+    return `<td class="ns-cell ns-${tone}" title="${tip.replace(/"/g,'&quot;')}"><b${low ? ' class="ns-qty-low"' : ''}>${main}</b><span>${sub}</span></td>`;
   }).join('');
 }
 
@@ -9187,6 +9198,8 @@ let COMP_SELECTED_SESSIONS = new Set();
 let COMP_SELECTED_NMS = new Set(JSON.parse(localStorage.getItem('comp_selected_nms') || '[]').map(Number).filter(Boolean));
 let COMP_ARCHIVED = new Set(JSON.parse(localStorage.getItem('comp_archived_sessions') || '[]'));
 let COMP_ARCHIVE_OPEN = false;
+let COMP_BRAND_FILTER = null;
+let COMP_BRAND_CHART = null;
 let COMP_OWN_ARTICLES = JSON.parse(localStorage.getItem('comp_own_articles') || '[]');
 let OWN_ARTICLE_STATS = {};
 let COMP_TAB = 'metrics';
@@ -9202,6 +9215,7 @@ async function renderCompetitors() {
     DAILY_STATS = await dailyR.json();
     document.getElementById('compFilters').style.display = '';
     buildOwnArtChips();
+    buildBrandChips();
     if(!COMP_SESSIONS.length) {
       document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners</div>';
       return;
@@ -9239,46 +9253,83 @@ function formatCompSessionLabel(s) {
   return `${period} · ${shown}`;
 }
 
+function compPeriodKey(s) {
+  return `${s.period_begin || ''}__${s.period_end || ''}`;
+}
+
+function sessionBrandLabel(s) {
+  const brands = (s.brands || []).filter(Boolean);
+  if(!brands.length) return s.id ? ('отчёт #' + s.id) : 'без бренда';
+  return brands.length > 3 ? brands.slice(0, 3).join(', ') + '…' : brands.join(', ');
+}
+
+function groupSessionsByPeriod(list) {
+  const map = new Map();
+  (list || []).forEach(s => {
+    const k = compPeriodKey(s);
+    if(!map.has(k)) map.set(k, {begin: s.period_begin, end: s.period_end, items: []});
+    map.get(k).items.push(s);
+  });
+  return [...map.values()].sort((a, b) => String(b.begin || '').localeCompare(String(a.begin || '')));
+}
+
+function compPeriodIconBtn(onclick, title, char, hoverColor) {
+  return `<button type="button" onclick="${onclick}" title="${title}" style="border:none;background:none;cursor:pointer;color:var(--wb-faint);font-size:14px;padding:2px 4px" onmouseover="this.style.color='${hoverColor}'" onmouseout="this.style.color='var(--wb-faint)'">${char}</button>`;
+}
+
+function renderCompSessionChip(s, archived) {
+  const brand = sessionBrandLabel(s);
+  const tip = formatCompSessionLabel(s).replace(/"/g, '&quot;');
+  if(archived) {
+    return `<div style="display:flex;align-items:center;gap:2px;opacity:.75">
+      <button type="button" class="comp-period-btn" onclick="unarchiveSession(${s.id})" title="Вернуть из архива: ${tip}">${escapeHtml(brand)} ↩</button>
+      ${compPeriodIconBtn(`deleteCompSession(${s.id})`, 'Удалить', '✕', 'var(--red)')}
+    </div>`;
+  }
+  return `<div style="display:flex;align-items:center;gap:2px">
+    <button type="button" class="comp-period-btn${COMP_SELECTED_SESSIONS.has(s.id)?' on':''}" onclick="togglePeriod(${s.id})" title="${tip}">${escapeHtml(brand)}</button>
+    ${compPeriodIconBtn(`archiveSession(${s.id})`, 'В архив', '📦', 'var(--wb-orange)')}
+    ${compPeriodIconBtn(`deleteCompSession(${s.id})`, 'Удалить', '✕', 'var(--red)')}
+  </div>`;
+}
+
 function buildPeriodButtons() {
   const el = document.getElementById('compPeriodBtns');
   if(!el) return;
-  const active = COMP_SESSIONS.filter(s => !COMP_ARCHIVED.has(s.id));
-  const archived = COMP_SESSIONS.filter(s => COMP_ARCHIVED.has(s.id));
-  const iconBtn = (onclick, title, char, hoverColor) =>
-    `<button onclick="${onclick}" title="${title}" style="border:none;background:none;cursor:pointer;color:var(--wb-faint);font-size:14px;padding:2px 4px" onmouseover="this.style.color='${hoverColor}'" onmouseout="this.style.color='var(--wb-faint)'">${char}</button>`;
+  let active = COMP_SESSIONS.filter(s => !COMP_ARCHIVED.has(s.id));
+  let archived = COMP_SESSIONS.filter(s => COMP_ARCHIVED.has(s.id));
+  if(COMP_BRAND_FILTER) {
+    const hasB = s => (s.brands || []).includes(COMP_BRAND_FILTER);
+    active = active.filter(hasB);
+    archived = archived.filter(hasB);
+  }
 
-  let html = active.map(s => {
-    const label = formatCompSessionLabel(s);
-    const tip = (s.brands||[]).length ? `${formatCompPeriod(s.period_begin,s.period_end)} · ${(s.brands||[]).join(', ')}` : label;
-    return `
-    <div style="display:flex;align-items:center;gap:2px">
-      <button class="comp-period-btn${COMP_SELECTED_SESSIONS.has(s.id)?' on':''}" onclick="togglePeriod(${s.id})" title="${tip.replace(/"/g,'&quot;')}">
-        ${label}
-      </button>
-      ${iconBtn(`archiveSession(${s.id})`, 'В архив', '📦', 'var(--wb-orange)')}
-      ${iconBtn(`deleteCompSession(${s.id})`, 'Удалить', '✕', 'var(--red)')}
+  const renderGroups = (groups, archived) => groups.map(g => {
+    const dateLabel = formatCompPeriod(g.begin, g.end);
+    const begin = String(g.begin || '');
+    const end = String(g.end || '');
+    const bulk = g.items.length > 1
+      ? (archived
+        ? `<button type="button" class="comp-arch-all" onclick="unarchivePeriodGroup('${begin}','${end}')">↩ все ${g.items.length}</button>`
+        : `<button type="button" class="comp-arch-all" onclick="archivePeriodGroup('${begin}','${end}')" title="Все отчёты за эти даты в архив">📦 все ${g.items.length}</button>`)
+      : '';
+    return `<div class="comp-date-group">
+      <div class="comp-date-h"><span>${escapeHtml(dateLabel)}</span>${bulk}</div>
+      <div class="comp-date-items">${g.items.map(s => renderCompSessionChip(s, archived)).join('')}</div>
     </div>`;
   }).join('');
 
+  let html = renderGroups(groupSessionsByPeriod(active), false);
   if(archived.length) {
     html += `
       <div style="width:100%;margin-top:4px">
-        <button onclick="toggleArchiveView()" style="border:none;background:none;cursor:pointer;color:var(--wb-muted);font-size:12px;padding:2px 0">
+        <button type="button" onclick="toggleArchiveView()" style="border:none;background:none;cursor:pointer;color:var(--wb-muted);font-size:12px;padding:2px 0">
           🗄 Архив (${archived.length}) ${COMP_ARCHIVE_OPEN?'▲':'▼'}
         </button>
-        ${COMP_ARCHIVE_OPEN ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">` + archived.map(s => {
-          const label = formatCompSessionLabel(s);
-          return `
-          <div style="display:flex;align-items:center;gap:2px;opacity:.65">
-            <button class="comp-period-btn" onclick="unarchiveSession(${s.id})" title="Вернуть из архива">
-              ${label} ↩
-            </button>
-            ${iconBtn(`deleteCompSession(${s.id})`, 'Удалить', '✕', 'var(--red)')}
-          </div>`;
-        }).join('') + `</div>` : ''}
+        ${COMP_ARCHIVE_OPEN ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;align-items:flex-start">${renderGroups(groupSessionsByPeriod(archived), true)}</div>` : ''}
       </div>`;
   }
-  el.innerHTML = html;
+  el.innerHTML = html || '<span style="font-size:12px;color:var(--wb-muted)">Нет отчётов за выбранный бренд</span>';
 }
 
 function saveCompSelectedNms() {
@@ -9361,8 +9412,44 @@ async function archiveOldCompSessions() {
   COMP_SELECTED_SESSIONS = new Set([...COMP_SELECTED_SESSIONS].filter(id => keep.has(id)));
   if(!COMP_SELECTED_SESSIONS.size && keep.size) COMP_SELECTED_SESSIONS.add([...keep][0]);
   buildPeriodButtons();
+  buildBrandChips();
   if(COMP_SELECTED_SESSIONS.size) await loadAllSelectedSessions();
   else document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Все файлы в архиве. Верни нужный из архива или загрузи новый.</div>';
+}
+
+async function archivePeriodGroup(begin, end) {
+  const group = COMP_SESSIONS.filter(s =>
+    !COMP_ARCHIVED.has(s.id) && String(s.period_begin || '') === String(begin || '') && String(s.period_end || '') === String(end || '')
+  );
+  if(!group.length) return;
+  const label = formatCompPeriod(begin, end);
+  if(!confirm(`Отправить в архив все отчёты за ${label}?\n${group.length} шт: ${group.map(sessionBrandLabel).join(', ')}`)) return;
+  group.forEach(s => {
+    COMP_ARCHIVED.add(s.id);
+    COMP_SELECTED_SESSIONS.delete(s.id);
+  });
+  saveArchived();
+  const active = COMP_SESSIONS.filter(s => !COMP_ARCHIVED.has(s.id));
+  if(!COMP_SELECTED_SESSIONS.size && active.length) COMP_SELECTED_SESSIONS.add(active[0].id);
+  buildPeriodButtons();
+  buildBrandChips();
+  if(COMP_SELECTED_SESSIONS.size) await loadAllSelectedSessions();
+  else document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Все файлы в архиве. Верни нужный из архива или загрузи новый.</div>';
+}
+
+async function unarchivePeriodGroup(begin, end) {
+  const group = COMP_SESSIONS.filter(s =>
+    COMP_ARCHIVED.has(s.id) && String(s.period_begin || '') === String(begin || '') && String(s.period_end || '') === String(end || '')
+  );
+  if(!group.length) return;
+  group.forEach(s => {
+    COMP_ARCHIVED.delete(s.id);
+    COMP_SELECTED_SESSIONS.add(s.id);
+  });
+  saveArchived();
+  buildPeriodButtons();
+  buildBrandChips();
+  await loadAllSelectedSessions();
 }
 
 function syncCompSelectedNms() {
@@ -9414,6 +9501,7 @@ async function archiveSession(sessionId) {
   const active = COMP_SESSIONS.filter(s => !COMP_ARCHIVED.has(s.id));
   if(!COMP_SELECTED_SESSIONS.size && active.length) COMP_SELECTED_SESSIONS.add(active[0].id);
   buildPeriodButtons();
+  buildBrandChips();
   if(COMP_SELECTED_SESSIONS.size) await loadAllSelectedSessions();
   else document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Все файлы в архиве. Верни нужный из архива или загрузи новый.</div>';
 }
@@ -9423,6 +9511,7 @@ async function unarchiveSession(sessionId) {
   saveArchived();
   COMP_SELECTED_SESSIONS.add(sessionId);
   buildPeriodButtons();
+  buildBrandChips();
   await loadAllSelectedSessions();
 }
 
@@ -9447,6 +9536,7 @@ async function deleteCompSession(sessionId) {
     const active = COMP_SESSIONS.filter(s => !COMP_ARCHIVED.has(s.id));
     if(active.length && !COMP_SELECTED_SESSIONS.size) COMP_SELECTED_SESSIONS.add(active[0].id);
     buildPeriodButtons();
+    buildBrandChips();
     if(COMP_SELECTED_SESSIONS.size) await loadAllSelectedSessions();
     else if(!COMP_SESSIONS.length) document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Загрузи файл «Сравнение карточек» из WB Partners</div>';
     else document.getElementById('compRoot').innerHTML = '<div class="empty" style="padding:40px 20px">Все файлы в архиве. Верни нужный из архива или загрузи новый.</div>';
@@ -9538,12 +9628,152 @@ function removeOwnArticle(nmId) {
 function buildOwnArtChips() {
   const el = document.getElementById('ownArtChips');
   if(!el) return;
-  el.innerHTML = COMP_OWN_ARTICLES.map((a,i) =>
+    el.innerHTML = COMP_OWN_ARTICLES.map((a,i) =>
     `<div style="display:flex;align-items:center;gap:5px;padding:4px 8px;background:var(--wb-purple-light);border:1px solid var(--wb-purple);border-radius:6px;font-size:12px">
       <div style="width:8px;height:8px;border-radius:50%;background:${COMP_COLORS[i%2]}"></div>
       <b>${a.vendor_code}</b>
       <span style="cursor:pointer;color:var(--wb-faint);margin-left:2px" onclick="removeOwnArticle(${a.nm_id})">✕</span>
     </div>`).join('');
+}
+
+function allCompBrands() {
+  const set = new Map();
+  (COMP_SESSIONS || []).forEach(s => {
+    (s.brands || []).forEach(b => {
+      if(!b) return;
+      const rec = set.get(b) || {brand: b, n: 0};
+      rec.n += 1;
+      set.set(b, rec);
+    });
+  });
+  return [...set.values()].sort((a, b) => a.brand.localeCompare(b.brand, 'ru'));
+}
+
+function buildBrandChips() {
+  const el = document.getElementById('compBrandBtns');
+  if(!el) return;
+  const brands = allCompBrands();
+  if(!brands.length) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--wb-muted)">Бренды появятся после загрузки отчётов</span>';
+    return;
+  }
+  const allOn = !COMP_BRAND_FILTER;
+  el.innerHTML = `<button type="button" class="comp-brand-chip${allOn?' on':''}" onclick="selectCompBrand('')">Все бренды</button>` +
+    brands.map(b => {
+      const enc = encodeURIComponent(b.brand);
+      const on = COMP_BRAND_FILTER === b.brand ? ' on' : '';
+      return `<button type="button" class="comp-brand-chip${on}" onclick="selectCompBrand('${enc}')">${escapeHtml(b.brand)} <span style="opacity:.7">${b.n}</span></button>`;
+    }).join('');
+}
+
+async function selectCompBrand(enc) {
+  const brand = decodeURIComponent(enc || '');
+  COMP_BRAND_FILTER = brand || null;
+  buildBrandChips();
+  buildPeriodButtons();
+  if(COMP_BRAND_FILTER) {
+    const match = COMP_SESSIONS.filter(s => !COMP_ARCHIVED.has(s.id) && (s.brands || []).includes(COMP_BRAND_FILTER));
+    if(match.length) COMP_SELECTED_SESSIONS = new Set(match.map(s => s.id));
+  }
+  if(COMP_SELECTED_SESSIONS.size) await loadAllSelectedSessions();
+  else renderCompetitorView();
+}
+
+function drawCompBrandChart(weeks, brand) {
+  const canvas = document.getElementById('brandWeekCanvas');
+  if(!canvas || typeof Chart === 'undefined') return;
+  if(COMP_BRAND_CHART) {
+    COMP_BRAND_CHART.destroy();
+    COMP_BRAND_CHART = null;
+  }
+  const labels = (weeks || []).map(w => formatCompPeriod(w.period_begin, w.period_end));
+  COMP_BRAND_CHART = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Показы',
+          data: weeks.map(w => Number(w.views) || 0),
+          borderColor: '#2563EB',
+          backgroundColor: 'transparent',
+          yAxisID: 'y',
+          tension: 0.3,
+          borderWidth: 2,
+          pointRadius: 3,
+        },
+        {
+          label: 'Заказы',
+          data: weeks.map(w => Number(w.orders) || 0),
+          borderColor: '#EA580C',
+          backgroundColor: 'transparent',
+          yAxisID: 'y1',
+          tension: 0.3,
+          borderWidth: 2,
+          pointRadius: 3,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: true, position: 'top', labels: { boxWidth: 10, font: { size: 11 } } },
+        tooltip: {
+          backgroundColor: '#fff', borderColor: '#E2DDD8', borderWidth: 1,
+          titleColor: '#1A1816', bodyColor: '#6B6560', padding: 10,
+          callbacks: {
+            label: item => ` ${item.dataset.label}: ${item.parsed.y.toLocaleString('ru')}`,
+          },
+        },
+      },
+      scales: {
+        x: { grid: { color: '#F0EDE8' }, ticks: { color: '#A09890', font: { size: 10 }, maxRotation: 40 } },
+        y: { position: 'left', title: { display: true, text: 'Показы', color: '#2563EB', font: { size: 10 } }, grid: { color: '#F0EDE8' }, ticks: { color: '#A09890', font: { size: 10 } } },
+        y1: { position: 'right', title: { display: true, text: 'Заказы', color: '#EA580C', font: { size: 10 } }, grid: { drawOnChartArea: false }, ticks: { color: '#A09890', font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+async function loadCompBrandWeeks() {
+  const wrap = document.getElementById('compBrandWeekWrap');
+  if(!wrap || !COMP_BRAND_FILTER) return;
+  wrap.innerHTML = `<div style="padding:12px 16px;font-size:12px;color:var(--wb-muted)">Грузим недели ${escapeHtml(COMP_BRAND_FILTER)}…</div>`;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/competitor-brand-weeks?brand=${encodeURIComponent(COMP_BRAND_FILTER)}`);
+    const d = await r.json();
+    const weeks = d.weeks || [];
+    if(!weeks.length) {
+      wrap.innerHTML = `<div style="padding:12px 16px;font-size:12px;color:var(--wb-muted)">Нет недель с метриками для ${escapeHtml(COMP_BRAND_FILTER)}</div>`;
+      return;
+    }
+    const totV = weeks.reduce((s, w) => s + (Number(w.views) || 0), 0);
+    const totO = weeks.reduce((s, w) => s + (Number(w.orders) || 0), 0);
+    wrap.innerHTML = `
+      <div style="padding:12px 16px 0;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline">
+        <div>
+          <div style="font-size:14px;font-weight:600">${escapeHtml(COMP_BRAND_FILTER)} · по неделям</div>
+          <div style="font-size:12px;color:var(--wb-muted);margin-top:2px">Показы ${fmt(totV)} · заказы ${fmt(totO)} · ${weeks.length} нед.</div>
+        </div>
+      </div>
+      <div style="padding:8px 16px 4px;height:240px;position:relative"><canvas id="brandWeekCanvas"></canvas></div>
+      <div style="overflow-x:auto;padding:0 8px 12px">
+        <table class="comp-tbl" style="min-width:420px">
+          <thead><tr><th>Неделя</th><th>Показы</th><th>Заказы</th><th>Карточки</th></tr></thead>
+          <tbody>${weeks.map(w => `<tr>
+            <td>${escapeHtml(formatCompPeriod(w.period_begin, w.period_end))}</td>
+            <td>${fmt(w.views || 0)}</td>
+            <td>${fmt(w.orders || 0)}</td>
+            <td>${fmt(w.articles || 0)}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>`;
+    drawCompBrandChart(weeks, COMP_BRAND_FILTER);
+  } catch(e) {
+    wrap.innerHTML = `<div style="padding:12px 16px;font-size:12px;color:var(--red)">Не удалось загрузить недели: ${escapeHtml(e.message || '')}</div>`;
+  }
 }
 
 async function refreshOwnArticleStats() {
@@ -9739,14 +9969,16 @@ function renderCompetitorView() {
   const compMetrics = COMP_ALL_METRICS
     .filter(m => !COMP_OWN_ARTICLES.find(a => a.nm_id === m.nm_id))
     .filter(m => COMP_SELECTED_NMS.has(Number(m.nm_id)))
+    .filter(m => !COMP_BRAND_FILTER || String(m.brand || '') === COMP_BRAND_FILTER)
     .map(m => ({...m, is_own: false}));
   const allCompetitors = COMP_ALL_METRICS
-    .filter(m => !COMP_OWN_ARTICLES.find(a => Number(a.nm_id) === Number(m.nm_id)));
+    .filter(m => !COMP_OWN_ARTICLES.find(a => Number(a.nm_id) === Number(m.nm_id)))
+    .filter(m => !COMP_BRAND_FILTER || String(m.brand || '') === COMP_BRAND_FILTER);
   const hiddenCompetitors = allCompetitors.filter(m => !COMP_SELECTED_NMS.has(Number(m.nm_id)));
   const allCompCount = allCompetitors.length;
   const allMetrics = [...ownMetrics, ...compMetrics];
 
-  if(!allMetrics.length) {
+  if(!allMetrics.length && !COMP_BRAND_FILTER) {
     document.getElementById('compRoot').innerHTML = '<div class="empty">Добавь свои артикулы через поиск, отметь конкурентов или загрузи файл</div>';
     return;
   }
@@ -9758,6 +9990,7 @@ function renderCompetitorView() {
     : '';
 
   document.getElementById('compRoot').innerHTML = `
+    ${COMP_BRAND_FILTER ? '<div class="card" id="compBrandWeekWrap" style="margin:12px 16px 0"></div>' : ''}
     <div class="comp-tabs">
       <div class="comp-tab${COMP_TAB==='metrics'?' on':''}" onclick="switchCompTab('metrics')">Показатели</div>
     </div>
@@ -9772,8 +10005,9 @@ function renderCompetitorView() {
         ${hiddenChips}
       </div>
       ${buildCompTopAnalysis(compMetrics)}
-      <div style="overflow-x:auto">${buildCompMetricsTable(allMetrics, ownMetrics[0]?.nm_id)}</div>
+      <div style="overflow-x:auto">${allMetrics.length ? buildCompMetricsTable(allMetrics, ownMetrics[0]?.nm_id) : '<div class="empty" style="padding:24px">Нет строк в выбранных отчётах — график бренда выше, если недели нашлись.</div>'}</div>
     </div>`;
+  if(COMP_BRAND_FILTER) loadCompBrandWeeks();
 }
 
 function compMetricVal(m, fields) {
@@ -10690,10 +10924,14 @@ function buildWhoShelfPeriodBtns() {
     el.innerHTML = '<span style="font-size:12px;color:var(--wb-muted)">Нет загруженных отчётов — загрузи в «Сравнение карточек»</span>';
     return;
   }
-  el.innerHTML = active.map(s => {
-    const label = typeof formatCompSessionLabel === 'function' ? formatCompSessionLabel(s) : `${s.period_begin}–${s.period_end}`;
-    const on = WHO_SHELF_SELECTED.has(s.id) ? ' on' : '';
-    return `<button class="comp-period-btn${on}" onclick="toggleWhoShelfPeriod(${s.id})">${label}</button>`;
+  el.innerHTML = groupSessionsByPeriod(active).map(g => {
+    const dateLabel = formatCompPeriod(g.begin, g.end);
+    const chips = g.items.map(s => {
+      const label = sessionBrandLabel(s);
+      const on = WHO_SHELF_SELECTED.has(s.id) ? ' on' : '';
+      return `<button type="button" class="comp-period-btn${on}" onclick="toggleWhoShelfPeriod(${s.id})">${escapeHtml(label)}</button>`;
+    }).join('');
+    return `<div class="comp-date-group"><div class="comp-date-h">${escapeHtml(dateLabel)}</div><div class="comp-date-items">${chips}</div></div>`;
   }).join('');
 }
 
