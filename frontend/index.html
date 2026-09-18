@@ -528,6 +528,8 @@ td.tc{text-align:center}
 .ns-tbl tbody tr.ns-pin-row td.ns-art{background:#FFFBEB}
 .ns-g-fbs{background:#ECFDF5;color:#047857}
 .ns-g-wb{background:#FFF4ED;color:#B54708}
+.ns-tbl thead th.ns-wb-col{min-width:72px;max-width:88px;width:80px;white-space:normal;line-height:1.2;font-size:11px;vertical-align:middle}
+.ns-tbl tbody td.ns-wb-col{min-width:72px;font-weight:700}
 .ns-tbl{--ns-col-w:56px}
 .ns-tbl thead th.ns-col-h,
 .ns-tbl thead th.ns-fbs,
@@ -3310,7 +3312,7 @@ function nsFbwCell(a) {
   const tone = qty > 0 ? 'ok' : 'oos';
   const low = qty > 0 && qty <= 5;
   const tip = 'Склад WB РФ: ' + (qty ? (qty + ' шт из отчёта складов') : 'пусто');
-  return `<td class="ns-cell ns-fbs ns-${tone}" title="${tip.replace(/"/g,'&quot;')}"><b${low ? ' class="ns-qty-low"' : ''}>${qty ? fmt(qty) : '—'}</b><span>шт</span></td>`;
+  return `<td class="ns-cell ns-wb-col ns-${tone}" title="${tip.replace(/"/g,'&quot;')}"><b${low ? ' class="ns-qty-low"' : ''}>${qty ? fmt(qty) : '—'}</b><span>WB РФ</span></td>`;
 }
 
 function nsFbsCells(a) {
@@ -3583,8 +3585,7 @@ function drawNewStock() {
       <input type="checkbox" class="wh-en-cb" ${fbsOn?'checked':''} onclick="event.stopPropagation()" onchange="nsToggleAllFbs(event)" title="Скрыть все FBS">
       FBS · склад продавца
     </th>` : '';
-  const wbHead = `<th class="ns-g ns-g-wb" colspan="1" title="Остаток на Склад WB РФ из отчёта складов. Сгоревшие FBW не считаем.">Склад WB РФ</th>`;
-  const wbCityRow = `<th class="ns-fbs" title="Склад WB РФ · общий остаток FBW">WB РФ</th>`;
+  const wbHead = `<th class="ns-g ns-g-wb ns-wb-col" rowspan="2" title="Остаток на Склад WB РФ из отчёта складов. Сгоревшие FBW не считаем.">WB РФ<br><span style="font-weight:400;font-size:9px">остаток</span></th>`;
   const groupRow = cityGroups.map(g => {
     const n = (g.city_ids || []).length || 1;
     const safe = String(g.id).replace(/'/g, "\\'");
@@ -3678,7 +3679,7 @@ function drawNewStock() {
   root.innerHTML = nsReportHtml() + `<div class="matrix-wrap"><table class="matrix promo-xls ns-tbl" style="--ns-col-w:${nsColW()}px">
     <thead>
       <tr><th class="ns-art" rowspan="2">Артикул</th>${wbHead}${fbsHead}${groupRow}</tr>
-      <tr>${wbCityRow}${fbsCityRow}${cityRow}</tr>
+      <tr>${fbsCityRow}${cityRow}</tr>
     </thead>
     <tbody>${body || `<tr><td colspan="${colCount}" style="padding:24px;color:var(--wb-muted)">Все артикулы скрыты. Открой «Скрытые».</td></tr>`}</tbody>
   </table></div>
