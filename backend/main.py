@@ -18,12 +18,14 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import pandas as pd
 from pathlib import Path
+from site_auth import register_site_auth
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+register_site_auth(app)
 
 WB_TOKEN = os.getenv("WB_TOKEN", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
@@ -55,7 +57,12 @@ CRM_MANAGER_ALIASES = {
     "dilya": ("диля", "диле", "дилия", "dilya"),
 }
 CRM_SHELF_TASKS_KEY = "crm_shelf_boost_sent"
-_CRM_SENT_MARKER_RE = re.compile(r"\[dash:(shelf-boost|cart-warmup):(\d+):(\d+)\]")
+_CRM_SENT_MARKER_RE = re.compile(r"\[dash:(shelf-boost|cart-warmup|high-drr):(\d+):(\d+)\]")
+_CRM_MARKER_KIND = {
+    "shelf-boost": "shelf",
+    "cart-warmup": "cart_warmup",
+    "high-drr": "high_drr",
+}
 SHELF_SHARE_HISTORY_KEY = "shelf_share_weekly"
 _SHELF_SHARE_LOCK = threading.Lock()
 
@@ -13315,11 +13322,13 @@ def _crm_merge_sent_from_board(board: dict) -> list:
         m = _CRM_SENT_MARKER_RE.search(text)
         if not m:
             continue
-        kind = "cart_warmup" if m.group(1) == "cart-warmup" else "shelf"
+        kind = _CRM_MARKER_KIND.get(m.group(1))
+        if not kind:
+            continue
         own_nm, comp_nm = int(m.group(2)), int(m.group(3))
         manager = _crm_manager_from_name(task.get("assignee_name") or "")
         if not manager:
-            manager = "dilya" if kind == "cart_warmup" else None
+            manager = "dilya" if kind in ("cart_warmup", "high_drr") else None
         if not manager:
             continue
         key = _crm_sent_key(manager, kind, own_nm, comp_nm)
@@ -13340,6 +13349,93 @@ def _crm_merge_sent_from_board(board: dict) -> list:
     if changed:
         _crm_sent_save(items)
     return items
+
+
+def _crm_post_once_task(
+    *,
+    manager_key: str,
+    aliases: tuple,
+    title: str,
+    description: str,
+    articles: str,
+    kind: str,
+    own_nm: int,
+    comp_nm: int,
+):
+    if not CRM_API_URL:
+        return {
+            "ok": False,
+            "error": "CRM_API_URL не задан в Railway (URL team-crm без слэша в конце)",
+        }
+    try:
+        board_resp = httpx.get(
+            f"{CRM_API_URL}/api/board",
+            headers=_crm_headers(),
+            timeout=25,
+        )
+    except Exception as e:
+        return {"ok": False, "error": f"CRM недоступен: {e}"}
+    if board_resp.status_code == 401:
+        return {"ok": False, "error": "CRM: неверный CRM_PASSWORD (x-crm-password)"}
+    if not board_resp.is_success:
+        return {"ok": False, "error": f"CRM board HTTP {board_resp.status_code}: {board_resp.text[:180]}"}
+
+    board = board_resp.json() or {}
+    employees = board.get("employees") or []
+    assignee = _crm_find_employee(employees, aliases)
+    if not assignee:
+        names = ", ".join(str(e.get("name") or "") for e in employees[:20])
+        return {
+            "ok": False,
+            "error": f"В CRM не найден менеджер «{manager_key}». Есть: {names}",
+        }
+
+    owner = next((e for e in employees if str(e.get("role") or "") == "owner"), None)
+    created_by_id = (owner or assignee).get("id")
+
+    payload = {
+        "title": title[:500],
+        "description": description[:2000],
+        "articles": (articles or "")[:500],
+        "assignee_id": assignee.get("id"),
+        "assignee_ids": [assignee.get("id")],
+        "created_by_id": created_by_id,
+        "status": "todo",
+        "kind": "once",
+        "priority": "normal",
+        "notify_now": True,
+    }
+    try:
+        create_resp = httpx.post(
+            f"{CRM_API_URL}/api/tasks",
+            headers=_crm_headers(),
+            json=payload,
+            timeout=30,
+        )
+    except Exception as e:
+        return {"ok": False, "error": f"CRM create: {e}"}
+    if not create_resp.is_success:
+        return {
+            "ok": False,
+            "error": f"CRM tasks HTTP {create_resp.status_code}: {create_resp.text[:220]}",
+        }
+    task = create_resp.json() or {}
+    rec = _crm_sent_record(
+        manager_key, kind, own_nm, comp_nm,
+        task.get("id"),
+        task.get("assignee_name") or assignee.get("name") or "",
+    )
+    return {
+        "ok": True,
+        "task_id": task.get("id"),
+        "title": task.get("title") or title,
+        "assignee_name": task.get("assignee_name") or assignee.get("name"),
+        "notified": task.get("notified"),
+        "notify_error": task.get("notify_error"),
+        "manager": manager_key,
+        "kind": kind,
+        "sent": rec,
+    }
 
 
 def _crm_find_employee(employees: list, aliases: tuple) -> dict | None:
@@ -13428,75 +13524,66 @@ async def crm_shelf_boost_task(request: dict):
         f"https://www.wildberries.ru/catalog/{competitor_nm}/detail.aspx"
     )
 
-    try:
-        board_resp = httpx.get(
-            f"{CRM_API_URL}/api/board",
-            headers=_crm_headers(),
-            timeout=25,
-        )
-    except Exception as e:
-        return {"ok": False, "error": f"CRM недоступен: {e}"}
-    if board_resp.status_code == 401:
-        return {"ok": False, "error": "CRM: неверный CRM_PASSWORD (x-crm-password)"}
-    if not board_resp.is_success:
-        return {"ok": False, "error": f"CRM board HTTP {board_resp.status_code}: {board_resp.text[:180]}"}
-
-    board = board_resp.json() or {}
-    employees = board.get("employees") or []
-    assignee = _crm_find_employee(employees, aliases)
-    if not assignee:
-        names = ", ".join(str(e.get("name") or "") for e in employees[:20])
-        return {
-            "ok": False,
-            "error": f"В CRM не найден менеджер «{manager_key}». Есть: {names}",
-        }
-
-    owner = next((e for e in employees if str(e.get("role") or "") == "owner"), None)
-    created_by_id = (owner or assignee).get("id")
-
-    payload = {
-        "title": title[:500],
-        "description": description[:2000],
-        "articles": f"{own_vc} {own_nm} / {competitor_nm}"[:500],
-        "assignee_id": assignee.get("id"),
-        "assignee_ids": [assignee.get("id")],
-        "created_by_id": created_by_id,
-        "status": "todo",
-        "kind": "once",
-        "priority": "normal",
-        "notify_now": True,
-    }
-    try:
-        create_resp = httpx.post(
-            f"{CRM_API_URL}/api/tasks",
-            headers=_crm_headers(),
-            json=payload,
-            timeout=30,
-        )
-    except Exception as e:
-        return {"ok": False, "error": f"CRM create: {e}"}
-    if not create_resp.is_success:
-        return {
-            "ok": False,
-            "error": f"CRM tasks HTTP {create_resp.status_code}: {create_resp.text[:220]}",
-        }
-    task = create_resp.json() or {}
-    rec = _crm_sent_record(
-        manager_key, kind, own_nm, competitor_nm,
-        task.get("id"),
-        task.get("assignee_name") or assignee.get("name") or "",
+    return _crm_post_once_task(
+        manager_key=manager_key,
+        aliases=aliases,
+        title=title,
+        description=description,
+        articles=f"{own_vc} {own_nm} / {competitor_nm}",
+        kind=kind,
+        own_nm=own_nm,
+        comp_nm=competitor_nm,
     )
-    return {
-        "ok": True,
-        "task_id": task.get("id"),
-        "title": task.get("title") or title,
-        "assignee_name": task.get("assignee_name") or assignee.get("name"),
-        "notified": task.get("notified"),
-        "notify_error": task.get("notify_error"),
-        "manager": manager_key,
-        "kind": kind,
-        "sent": rec,
-    }
+
+
+@app.post("/api/crm-ads-drr-task")
+async def crm_ads_drr_task(request: dict):
+    """Задача Диле: высокий ДРР по рекламной кампании — разобраться."""
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    try:
+        campaign_id = int(request.get("campaign_id"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "нужен campaign_id"}
+    if campaign_id < 1:
+        return {"ok": False, "error": "некорректный campaign_id"}
+
+    name = str(request.get("campaign_name") or f"#{campaign_id}").strip() or f"#{campaign_id}"
+    raw_drr = request.get("drr")
+    try:
+        drr = None if raw_drr in (None, "") else float(raw_drr)
+    except (TypeError, ValueError):
+        drr = None
+    try:
+        spend = float(request.get("spend") or 0)
+    except (TypeError, ValueError):
+        spend = 0.0
+    period = str(request.get("period") or "").strip()
+
+    drr_s = "нет продаж" if drr is None else f"{drr:.1f}%".replace(".", ",")
+    spend_s = f"{int(round(spend)):,}".replace(",", " ") + " ₽"
+    title = f'Высокий ДРР {drr_s} · «{name}» · разобраться'
+    marker = f"[dash:high-drr:{campaign_id}:0]"
+    description = (
+        f"{marker}\n"
+        f"Задание: разобраться.\n"
+        f"Кампания: {name} · #{campaign_id}\n"
+        f"ДРР: {drr_s}\n"
+        f"Трат: {spend_s}"
+    )
+    if period:
+        description += f"\nПериод: {period}"
+
+    return _crm_post_once_task(
+        manager_key="dilya",
+        aliases=CRM_MANAGER_ALIASES["dilya"],
+        title=title,
+        description=description,
+        articles=f"{name} #{campaign_id}",
+        kind="high_drr",
+        own_nm=campaign_id,
+        comp_nm=0,
+    )
 
 
 @app.get("/api/crm-shelf-boost-sent")

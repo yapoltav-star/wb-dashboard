@@ -932,6 +932,8 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
 .sp-empty-cell{color:#D0D5DD}
 .sp-nowb{font-size:10px;color:var(--amber)}
 .sp-total-zero{color:#D0D5DD;font-weight:500}
+.ads-drr-hi{color:var(--red);font-weight:600;line-height:1.25}
+.ads-drr-hi .ads-drr-spend{display:block;margin-top:2px;font-size:10px;font-weight:500;color:var(--red)}
 </style>
 </head>
 <body>
@@ -956,6 +958,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
       <div class="tb-dot" id="syncDot"></div>
       <span id="syncText">Загрузка...</span>
     </div>
+    <button class="tb-btn" type="button" onclick="siteLogout()" title="Выйти">Выйти</button>
   </div>
 </div>
 
@@ -1925,6 +1928,24 @@ const RAILWAY_URL = (typeof location !== 'undefined' && location.hostname
   ? 'https://wb-dashboard-production-baf4.up.railway.app'
   : '';
 
+(function () {
+  const native = window.fetch.bind(window);
+  window.fetch = async function (input, init) {
+    const res = await native(input, init);
+    if (res.status === 401) {
+      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      if (String(url).includes('/api/') && !String(url).includes('/api/login')) {
+        location.reload();
+      }
+    }
+    return res;
+  };
+})();
+async function siteLogout() {
+  try { await fetch('/api/logout', { method: 'POST' }); } catch (e) {}
+  location.reload();
+}
+
 var ALL = [], RATINGS = {}, GROUPS = {}, SK = 'avg_rating', SD = -1, EXP = {};
 var HAS_OFFICIAL = false;
 var dragArt = null, dragFrom = null;
@@ -2320,6 +2341,7 @@ async function runWbChatAutoreply() {
 }
 
 async function loadAdsPage() {
+  if(!SHELF_SENT_LOADED) loadShelfSent().then(() => renderAds());
   renderAds();
   try {
     const r = await fetch(`${RAILWAY_URL}/api/ads`);
@@ -6960,6 +6982,93 @@ function adsAggregateCampaigns() {
   }));
 }
 
+const ADS_DRR_HIGH = 20;
+const ADS_DRR_MIN_SPEND = 500;
+
+function adsIsHighDrr(c) {
+  if(!c || (c.spend || 0) < ADS_DRR_MIN_SPEND) return false;
+  if(c.drr == null) return true;
+  return c.drr >= ADS_DRR_HIGH;
+}
+
+function adsDrrLabel(c) {
+  if(!c || c.drr == null) return 'нет продаж';
+  return String(c.drr).replace('.', ',') + '%';
+}
+
+function adsPeriodLabel() {
+  return ((document.getElementById('adsDrpLabel') || {}).textContent || '').trim();
+}
+
+function adsDrrBtnHtml(c) {
+  if(!adsIsHighDrr(c)) return '';
+  const sent = shelfSentOf('dilya', 'high_drr', c.campaign_id, 0);
+  const click = `sendAdsDrrTask(${Number(c.campaign_id)},this)`;
+  if(sent) {
+    const when = shelfSentWhen(sent);
+    const tip = 'Уже ставили Диле' + (sent.task_id ? (' #' + sent.task_id) : '') + (when ? (' · ' + when) : '') + '. Нажми, если нужна ещё одна.';
+    return `<button class="filter-btn on" onclick="${click}" style="padding:4px 8px;font-size:11px;white-space:nowrap" title="${escapeHtml(tip)}">✓ Диле</button>`;
+  }
+  return `<button class="filter-btn" onclick="${click}" style="padding:4px 8px;font-size:11px;white-space:nowrap" title="Задача Диле: высокий ДРР, разобраться">Диле</button>`;
+}
+
+async function sendAdsDrrTask(campaignId, btn) {
+  const c = adsAggregateCampaigns().find(x => Number(x.campaign_id) === Number(campaignId));
+  if(!c) {
+    alert('Кампания не найдена');
+    return;
+  }
+  const drrS = adsDrrLabel(c);
+  const spendS = fmt(Math.round(c.spend || 0)) + ' ₽';
+  const preview = `Высокий ДРР ${drrS} · «${c.name || ('#' + c.campaign_id)}» · разобраться\nТрат: ${spendS}`;
+  const already = shelfSentOf('dilya', 'high_drr', c.campaign_id, 0);
+  let ask = `Отправить задачу Диле?\n\n${preview}`;
+  if(already) {
+    ask = `Уже ставили Диле` +
+      (already.task_id ? ` (#${already.task_id})` : '') +
+      (shelfSentWhen(already) ? ` ${shelfSentWhen(already)}` : '') +
+      `.\nПоставить ещё одну?\n\n${preview}`;
+  }
+  if(!confirm(ask)) return;
+  const prev = btn ? btn.textContent : '';
+  if(btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/crm-ads-drr-task`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        campaign_id: Number(c.campaign_id),
+        campaign_name: c.name || '',
+        drr: c.drr,
+        spend: c.spend || 0,
+        period: adsPeriodLabel(),
+      }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok || !d.ok) {
+      throw new Error(d.error || d.detail || `HTTP ${r.status}`);
+    }
+    let msg = `Задача #${d.task_id} → ${d.assignee_name || 'Диле'}`;
+    if(d.notified === false) {
+      msg += `\nTelegram: ${d.notify_error || 'не ушло — пусть нажмёт /start у бота'}`;
+    }
+    alert(msg);
+    if(d.sent && d.sent.key) SHELF_SENT[d.sent.key] = d.sent;
+    else {
+      SHELF_SENT[shelfSentKey('dilya', 'high_drr', c.campaign_id, 0)] = {
+        key: shelfSentKey('dilya', 'high_drr', c.campaign_id, 0),
+        manager: 'dilya', kind: 'high_drr',
+        own_nm_id: Number(c.campaign_id), competitor_nm_id: 0,
+        task_id: d.task_id, at: new Date().toISOString(),
+      };
+    }
+    renderAds();
+  } catch(e) {
+    alert('Не отправилось: ' + (e.message || e));
+    if(btn) { btn.disabled = false; btn.textContent = prev; }
+  }
+}
+
 function renderAds() {
   const root = document.getElementById('adsRoot');
   const cards = document.getElementById('adsCards');
@@ -7013,16 +7122,22 @@ function renderAds() {
   }
 
   const body = camps.map((c, i) => {
-    const drr = c.drr == null ? '—' : (c.drr + '%');
+    const high = adsIsHighDrr(c);
+    const drrS = adsDrrLabel(c);
+    const spendS = fmt(Math.round(c.spend || 0)) + ' ₽';
+    const drrCell = high
+      ? `<div class="ads-drr-hi">ДРР ${escapeHtml(drrS)}<span class="ads-drr-spend">трат ${escapeHtml(spendS)}</span></div>`
+      : (c.drr == null ? '—' : (c.drr + '%'));
     return `<tr class="${i%2?'wh-even':''}">
       <td class="mcol-art" style="text-align:left">
         <div class="art">${escapeHtml(String(c.name||'—'))}</div>
         <div class="nmid">${escapeHtml(String(c.type||''))}${c.campaign_id ? ' · #' + c.campaign_id : ''}</div>
       </td>
-      <td>${fmt(Math.round(c.spend))} ₽</td>
+      <td>${spendS}</td>
       <td>${fmt(c.views)}</td>
-      <td>${drr}</td>
+      <td>${drrCell}</td>
       <td>${fmt(c.orders)}</td>
+      <td>${adsDrrBtnHtml(c)}</td>
     </tr>`;
   }).join('');
 
@@ -7033,6 +7148,7 @@ function renderAds() {
       ${adsTh('Показы', 'views')}
       ${adsTh('ДРР', 'drr')}
       ${adsTh('Заказы', 'orders')}
+      <th class="mhead"></th>
     </tr></thead>
     <tbody>${body}</tbody>
   </table></div>`;
