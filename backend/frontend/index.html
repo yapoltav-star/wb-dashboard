@@ -1602,8 +1602,11 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
         <div id="whoShelfOwnChip" style="margin-top:8px;min-height:28px"></div>
       </div>
       <div>
-        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Период сравнения</div>
-        <div id="whoShelfPeriodBtns" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+          <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px">Период сравнения</div>
+          <button type="button" class="action-btn" onclick="selectAllWhoShelfPeriods()" style="font-size:11px;padding:3px 10px">Отметить всех</button>
+        </div>
+        <div id="whoShelfPeriodBtns" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start"></div>
       </div>
       <div>
         <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Город</div>
@@ -11038,6 +11041,20 @@ function buildWhoShelfOwnChip() {
     </div>`;
 }
 
+function whoShelfSid(s) {
+  const n = Number(s && s.id != null ? s.id : s);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function whoShelfHas(id) {
+  return WHO_SHELF_SELECTED.has(whoShelfSid(id));
+}
+
+function whoShelfAdd(id) {
+  const n = whoShelfSid(id);
+  if(n) WHO_SHELF_SELECTED.add(n);
+}
+
 function updateWhoShelfCheckBtn() {
   const btn = document.getElementById('whoShelfCheckBtn');
   if(!btn) return;
@@ -11055,21 +11072,57 @@ function buildWhoShelfPeriodBtns() {
   }
   el.innerHTML = groupSessionsByPeriod(active).map(g => {
     const dateLabel = formatCompPeriod(g.begin, g.end);
+    const begin = String(g.begin || '');
+    const end = String(g.end || '');
+    const ids = g.items.map(whoShelfSid).filter(Boolean);
+    const allOn = ids.length > 0 && ids.every(id => whoShelfHas(id));
+    const bulk = g.items.length > 1
+      ? `<button type="button" class="comp-arch-all" onclick="event.stopPropagation();selectWhoShelfPeriodGroup('${begin}','${end}')">${allOn ? 'Снять всех' : 'Отметить всех'}</button>`
+      : '';
     const chips = g.items.map(s => {
       const label = sessionBrandLabel(s);
-      const on = WHO_SHELF_SELECTED.has(s.id) ? ' on' : '';
-      return `<button type="button" class="comp-period-btn${on}" onclick="toggleWhoShelfPeriod(${s.id})">${escapeHtml(label)}</button>`;
+      const sid = whoShelfSid(s);
+      const on = whoShelfHas(sid) ? ' on' : '';
+      return `<button type="button" class="comp-period-btn${on}" onclick="toggleWhoShelfPeriod(${sid})">${escapeHtml(label)}</button>`;
     }).join('');
-    return `<div class="comp-date-group"><div class="comp-date-h">${escapeHtml(dateLabel)}</div><div class="comp-date-items">${chips}</div></div>`;
+    return `<div class="comp-date-group"><div class="comp-date-h"><span style="cursor:pointer" title="Отметить всех конкурентов за эти даты" onclick="selectWhoShelfPeriodGroup('${begin}','${end}')">${escapeHtml(dateLabel)}</span>${bulk}</div><div class="comp-date-items">${chips}</div></div>`;
   }).join('');
 }
 
-async function toggleWhoShelfPeriod(sessionId) {
-  if(WHO_SHELF_SELECTED.has(sessionId)) {
-    if(WHO_SHELF_SELECTED.size <= 1) return;
-    WHO_SHELF_SELECTED.delete(sessionId);
+async function selectWhoShelfPeriodGroup(begin, end) {
+  const active = (COMP_SESSIONS || []).filter(s => !COMP_ARCHIVED.has(s.id));
+  const group = groupSessionsByPeriod(active).find(g =>
+    String(g.begin || '') === String(begin || '') && String(g.end || '') === String(end || '')
+  );
+  if(!group || !group.items.length) return;
+  const ids = group.items.map(whoShelfSid).filter(Boolean);
+  const allOn = ids.length > 0 && ids.every(id => whoShelfHas(id));
+  if(allOn) {
+    ids.forEach(id => WHO_SHELF_SELECTED.delete(id));
+    if(!WHO_SHELF_SELECTED.size && ids[0]) whoShelfAdd(ids[0]);
   } else {
-    WHO_SHELF_SELECTED.add(sessionId);
+    ids.forEach(id => whoShelfAdd(id));
+  }
+  buildWhoShelfPeriodBtns();
+  await loadWhoShelfCompetitors();
+}
+
+async function selectAllWhoShelfPeriods() {
+  const active = (COMP_SESSIONS || []).filter(s => !COMP_ARCHIVED.has(s.id));
+  if(!active.length) return;
+  WHO_SHELF_SELECTED = new Set(active.map(whoShelfSid).filter(Boolean));
+  buildWhoShelfPeriodBtns();
+  await loadWhoShelfCompetitors();
+}
+
+async function toggleWhoShelfPeriod(sessionId) {
+  const sid = whoShelfSid(sessionId);
+  if(!sid) return;
+  if(whoShelfHas(sid)) {
+    if(WHO_SHELF_SELECTED.size <= 1) return;
+    WHO_SHELF_SELECTED.delete(sid);
+  } else {
+    whoShelfAdd(sid);
   }
   buildWhoShelfPeriodBtns();
   await loadWhoShelfCompetitors();
@@ -11087,9 +11140,16 @@ async function loadWhoShelfCompetitors() {
   try {
     const all = [];
     const seen = new Set();
-    for(const sid of WHO_SHELF_SELECTED) {
-      const r = await fetch(`${RAILWAY_URL}/api/competitor-data/${sid}`);
-      const d = await r.json();
+    const sids = [...WHO_SHELF_SELECTED].map(whoShelfSid).filter(Boolean);
+    const packs = await Promise.all(sids.map(async sid => {
+      try {
+        const r = await fetch(`${RAILWAY_URL}/api/competitor-data/${sid}`);
+        return await r.json();
+      } catch(e) {
+        return {};
+      }
+    }));
+    for(const d of packs) {
       for(const m of (d.metrics || [])) {
         const nid = Number(m.nm_id);
         if(!nid || seen.has(nid)) continue;
@@ -11104,8 +11164,8 @@ async function loadWhoShelfCompetitors() {
     WHO_SHELF_COMPS = all.filter(m => !ownIds.has(Number(m.nm_id)));
     if(st) {
       st.textContent = WHO_SHELF_OWN
-        ? `Выбран ${WHO_SHELF_OWN.vendor_code} · конкурентов в отчёте: ${WHO_SHELF_COMPS.length}`
-        : `Конкурентов в отчёте: ${WHO_SHELF_COMPS.length} · выбери свой артикул`;
+        ? `Выбран ${WHO_SHELF_OWN.vendor_code} · брендов: ${sids.length} · конкурентов: ${WHO_SHELF_COMPS.length}`
+        : `Брендов: ${sids.length} · конкурентов: ${WHO_SHELF_COMPS.length} · выбери свой артикул`;
     }
   } catch(e) {
     if(st) st.textContent = `Ошибка загрузки отчёта: ${e.message}`;
@@ -11131,14 +11191,17 @@ async function renderWhoShelvesPage() {
     return;
   }
   const active = (COMP_SESSIONS || []).filter(s => !COMP_ARCHIVED.has(s.id));
-  WHO_SHELF_SELECTED = new Set([...WHO_SHELF_SELECTED].filter(id => active.find(s => s.id === id)));
+  WHO_SHELF_SELECTED = new Set([...WHO_SHELF_SELECTED].map(whoShelfSid).filter(id => active.some(s => whoShelfSid(s) === id)));
   if(!WHO_SHELF_SELECTED.size) {
     if(COMP_SELECTED_SESSIONS && COMP_SELECTED_SESSIONS.size) {
       for(const id of COMP_SELECTED_SESSIONS) {
-        if(active.find(s => s.id === id)) WHO_SHELF_SELECTED.add(id);
+        if(active.some(s => whoShelfSid(s) === whoShelfSid(id))) whoShelfAdd(id);
       }
     }
-    if(!WHO_SHELF_SELECTED.size && active.length) WHO_SHELF_SELECTED.add(active[0].id);
+    if(!WHO_SHELF_SELECTED.size && active.length) {
+      const latest = groupSessionsByPeriod(active)[0];
+      (latest && latest.items ? latest.items : [active[0]]).forEach(s => whoShelfAdd(s));
+    }
   }
   buildWhoShelfPeriodBtns();
   await loadWhoShelfCompetitors();
@@ -11151,7 +11214,9 @@ async function renderWhoShelvesPage() {
 }
 
 async function runWhoShelfCheck() {
-  if(WHO_SHELF_RUNNING || !WHO_SHELF_OWN || !WHO_SHELF_COMPS.length) return;
+  if(WHO_SHELF_RUNNING || !WHO_SHELF_OWN) return;
+  await loadWhoShelfCompetitors();
+  if(!WHO_SHELF_COMPS.length) return;
   const ownNm = Number(WHO_SHELF_OWN.nm_id);
   const comps = WHO_SHELF_COMPS
     .map(m => Number(m.nm_id))

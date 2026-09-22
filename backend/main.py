@@ -2846,33 +2846,33 @@ def _new_stock_stock_hours(item: dict):
 
 
 def _new_stock_stock_rows(product: dict) -> list:
-    """Склады в ответе витрины для этого dest: (wh_id, qty, hours)."""
+    """Склады в ответе витрины для этого dest: (wh_id, qty, hours).
+
+    Только stocks[]. Не берём sizes[].qty / totalQuantity — это часто сумма по стране,
+    и тогда все города рисуются одним FBS/WB РФ числом.
+    """
     rows = []
     if not isinstance(product, dict):
         return rows
+    blobs = []
     for sz in product.get("sizes") or []:
-        if not isinstance(sz, dict):
+        if isinstance(sz, dict):
+            blobs.append(sz.get("stocks") or [])
+    if product.get("stocks"):
+        blobs.append(product.get("stocks"))
+    for stocks in blobs:
+        if not isinstance(stocks, list):
             continue
-        stocks = sz.get("stocks") or []
-        if stocks:
-            for st in stocks:
-                if not isinstance(st, dict):
-                    continue
-                wid = _new_stock_wh_int(st.get("wh") or st.get("whId") or st.get("warehouseId"))
-                try:
-                    q = int(st.get("qty") or 0)
-                except Exception:
-                    q = 0
-                if q > 0:
-                    rows.append((wid, q, _new_stock_stock_hours(st)))
-        else:
-            wid = _new_stock_wh_int(sz.get("wh") or sz.get("whId"))
+        for st in stocks:
+            if not isinstance(st, dict):
+                continue
+            wid = _new_stock_wh_int(st.get("wh") or st.get("whId") or st.get("warehouseId"))
             try:
-                q = int(sz.get("qty") or 0)
+                q = int(st.get("qty") if st.get("qty") is not None else st.get("quantity") or 0)
             except Exception:
                 q = 0
             if q > 0:
-                rows.append((wid, q, _new_stock_stock_hours(sz)))
+                rows.append((wid, q, _new_stock_stock_hours(st)))
     return rows
 
 
@@ -3052,7 +3052,7 @@ def _new_stock_wh_int(wh):
 def _new_stock_parse_cell(product: dict, stores: dict) -> dict:
     """Ячейка витрины: самовывоз отбрасываем, наш FBS-хаб помечаем."""
     hours = _new_stock_hours(product)
-    qty = _new_stock_qty(product)
+    qty = _new_stock_qty(product, stores=stores)
     wh = _new_stock_wh(product)
     wh_i = _new_stock_wh_int(wh)
     meta = stores.get(wh_i) if (stores and wh_i is not None) else None
@@ -3325,35 +3325,56 @@ def _new_stock_articles() -> list:
     return out[:80]
 
 
+def _card_products_from(data) -> list:
+    if not isinstance(data, dict):
+        return []
+    products = (data.get("data") or {}).get("products") or data.get("products") or []
+    return products if isinstance(products, list) else []
+
+
+def _card_has_dest_shelf(p: dict) -> bool:
+    if not isinstance(p, dict):
+        return False
+    return bool(_new_stock_stock_rows(p)) or _new_stock_hours(p) is not None
+
+
 def _fetch_card_detail(nm_ids: list, dest: int) -> dict:
-    """card.wb.ru v4. При 403 — ещё раз с cookie, если она задана."""
+    """card.wb.ru v4, затем v2. При 403 — ещё раз с cookie, если она задана."""
     if not nm_ids:
         return {"products": [], "status": 0, "error": None}
     ids = ";".join(str(int(n)) for n in nm_ids)
-    url = "https://card.wb.ru/cards/v4/detail"
-    params = {"appType": 1, "curr": "rub", "dest": dest, "spp": 30, "nm": ids}
+    params = {"appType": 1, "curr": "rub", "dest": dest, "nm": ids}
     last_status = 0
     last_err = None
-    for attempt in range(2):
-        try:
-            resp = httpx.get(url, params=params, headers=_wb_site_headers(), timeout=25)
-        except Exception as e:
-            last_err = str(e)
+    headers = _wb_site_headers()
+    for url in (
+        "https://card.wb.ru/cards/v4/detail",
+        "https://card.wb.ru/cards/v2/detail",
+    ):
+        for attempt in range(2):
+            try:
+                resp = httpx.get(url, params=params, headers=headers, timeout=25)
+            except Exception as e:
+                last_err = str(e)
+                break
+            last_status = resp.status_code
+            if resp.status_code == 403 and attempt == 0 and _new_stock_has_cookie():
+                time.sleep(0.4)
+                continue
+            if not resp.is_success:
+                last_err = f"HTTP {resp.status_code}"
+                break
+            try:
+                data = resp.json() or {}
+            except Exception as e:
+                last_err = str(e)
+                break
+            products = _card_products_from(data)
+            if products and (any(_card_has_dest_shelf(p) for p in products) or url.endswith("/v2/detail")):
+                return {"products": products, "status": last_status, "error": None}
+            if products:
+                last_err = "нет stocks/срока на витрине"
             break
-        last_status = resp.status_code
-        if resp.status_code == 403 and attempt == 0 and _new_stock_has_cookie():
-            time.sleep(0.4)
-            continue
-        if not resp.is_success:
-            last_err = f"HTTP {resp.status_code}"
-            break
-        try:
-            data = resp.json() or {}
-        except Exception as e:
-            last_err = str(e)
-            break
-        products = (data.get("data") or {}).get("products") or data.get("products") or []
-        return {"products": products if isinstance(products, list) else [], "status": last_status, "error": None}
     return {"products": [], "status": last_status, "error": last_err}
 
 
@@ -3439,7 +3460,7 @@ def sync_new_stock():
             "articles_source": "env" if (os.getenv("NEW_STOCK_ARTICLES_JSON") or "").strip() else "catalog",
             "city_fbs_hours": city_fbs_h,
             "city_fbw_hours": city_fbw_h,
-            "note": "Штуки — остаток склада, с которого WB везёт в этот город (не сумма по стране). Срок — часы витрины. Самовывоз CC Ковшовой не считаем.",
+            "note": "Штуки и часы города — только витрина WB по dest. Колонка FBS — отдельный отчёт складов продавца, в города её не подставляем.",
         }
         NEW_STOCK_CACHE["payload"] = payload
         NEW_STOCK_CACHE["error"] = err
@@ -3643,9 +3664,6 @@ def _attach_new_stock_fbs(payload: dict) -> dict:
     src = payload if isinstance(payload, dict) else {}
     fbs_map, fbs_whs = _new_stock_fbs_bundle()
     fbw_map = _new_stock_fbw_qty_by_nm()
-    city_fbs_h = src.get("city_fbs_hours") if isinstance(src.get("city_fbs_hours"), dict) else {}
-    city_fbw_h = src.get("city_fbw_hours") if isinstance(src.get("city_fbw_hours"), dict) else {}
-    city_hubs = _new_stock_city_hubs()
     articles = []
     for a in src.get("articles") or []:
         if not isinstance(a, dict):
@@ -3668,8 +3686,8 @@ def _attach_new_stock_fbs(payload: dict) -> dict:
             c["fbw_qty"] = fbw_qty
             storefront_qty = int(c.get("qty") or 0)
             storefront_hours = c.get("hours")
-            # Клиентский WB уже ответил по этому dest: склад, штуки, часы.
-            # Не подменяем FBS Москвой (Челябинск 38 шт / 38 ч ≠ Москва 93 / 94 ч).
+            # Только витрина этого dest. FBS-колонки справа от артикула — отдельный отчёт.
+            # Не рисуем FBS Москву/Казань в город: Челябинск 38 шт ≠ FBS Москва 7 шт.
             if storefront_qty > 0 or storefront_hours is not None:
                 if c.get("fbs_hub"):
                     hub = NEW_STOCK_FBS_HUBS.get(c.get("fbs_hub"))
@@ -3681,22 +3699,9 @@ def _attach_new_stock_fbs(payload: dict) -> dict:
                     c["wh_label"] = "склад витрины WB"
                 c["tone"] = _new_stock_tone(c.get("hours"), storefront_qty)
             else:
-                hid = _fbs_pick_hub(row["fbs"], cid, city_hubs)
-                hub = NEW_STOCK_FBS_HUBS.get(hid) if hid else None
-                if hid and hub:
-                    c["qty"] = _fbs_hub_qty(row["fbs"], hid)
-                    peer = _new_stock_hub_hours(city_fbs_h, hid, cid)
-                    if peer is not None:
-                        c["hours"] = peer
-                    c["source"] = "fbs_hub"
-                    c["fbs_hub"] = hid
-                    c["wh_label"] = hub["label"]
-                    c["is_fbw"] = False
-                    c["tone"] = _new_stock_tone(c.get("hours"), int(c.get("qty") or 0))
-                else:
-                    c["qty"] = 0
-                    c["is_fbw"] = False
-                    c["tone"] = "oos"
+                c["qty"] = 0
+                c["is_fbw"] = False
+                c["tone"] = "oos"
             cities[cid] = c
         row["cities"] = cities
         articles.append(row)
@@ -13648,7 +13653,7 @@ def shelf_presence(request: dict):
             continue
         seen.add(nid)
         competitor_ids.append(nid)
-        if len(competitor_ids) >= 80:
+        if len(competitor_ids) >= 400:
             break
 
     if not competitor_ids:
