@@ -515,6 +515,13 @@ td.tc{text-align:center}
 .ns-cell span{font-size:10px;opacity:.85}
 .ns-cell b.ns-qty-low{color:#B42318;font-weight:700}
 .ns-art-row{display:flex;align-items:center;gap:6px;width:max-content}
+.ns-art-meta{display:flex;align-items:center;gap:6px;margin-top:2px;font-size:10px;color:var(--wb-faint)}
+.ns-pct{font-size:12px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-.02em;line-height:1}
+.ns-pct-ok{color:#027A48}
+.ns-pct-warn{color:#B54708}
+.ns-pct-bad{color:#B42318}
+.ns-pct-oos{color:var(--wb-faint)}
+.ns-wgt-pct{font-size:12px;font-weight:800;font-variant-numeric:tabular-nums;margin:0 0 4px}
 .ns-handle{cursor:grab;color:var(--wb-faint);font-size:12px;user-select:none}
 .ns-ico{border:1px solid var(--wb-border);background:#fff;border-radius:5px;padding:1px 5px;font-size:11px;cursor:pointer;line-height:1.4}
 .ns-ico.on{background:#FEF3C7;border-color:#F0C7A0}
@@ -1186,7 +1193,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
 <div class="page" id="page-new-stock">
   <div class="upload-banner hint">
     <span>
-      В ячейке: <b>штуки</b> и <b>часы</b> с витрины WB. Остаток — только <b>Склад WB РФ</b> и наши <b>FBS</b>. Жёлтый &gt; 40 ч, красный &gt; 60 ч.
+      В ячейке: <b>штуки</b> и <b>часы</b> с витрины WB. Остаток — только <b>Склад WB РФ</b> и наши <b>FBS</b>. Жёлтый &gt; 40 ч, красный &gt; 60 ч. <b>%</b> — доля видимых городов с быстрой доставкой (остаток и ≤40 ч). 100% — везде быстро.
     </span>
   </div>
   <div class="toolbar">
@@ -3314,6 +3321,31 @@ function nsRowMaxHours(a) {
   return mx;
 }
 
+function nsRowFastPct(a, cities) {
+  const list = cities || [];
+  if(!list.length) return {pct: 0, fast: 0, total: 0, tone: 'oos'};
+  let fast = 0;
+  list.forEach(c => {
+    const cell = (a.cities || {})[c.id] || {};
+    if((cell.tone || nsCellTone(cell)) === 'ok') fast++;
+  });
+  const pct = Math.round(fast / list.length * 100);
+  let tone = 'ok';
+  if(fast === 0) tone = 'oos';
+  else if(pct < 70) tone = 'bad';
+  else if(pct < 100) tone = 'warn';
+  return {pct, fast, total: list.length, tone};
+}
+
+function nsPctHtml(st, extraTitle) {
+  const tip = [
+    'Быстрая доставка: остаток и ≤40 ч в ' + st.fast + ' из ' + st.total + ' видимых городов.',
+    '100% — везде быстро.',
+    extraTitle || '',
+  ].filter(Boolean).join(' ');
+  return `<span class="ns-pct ns-pct-${st.tone}" title="${tip.replace(/"/g,'&quot;')}">${st.pct}%</span>`;
+}
+
 function nsSortByLayout(list, keyOrder) {
   const idx = new Map((keyOrder || []).map((vc, i) => [vc, i]));
   return [...list].sort((a, b) => {
@@ -3474,12 +3506,23 @@ function nsBuildRegionReport() {
       blurb = bits.join('. ') + '.';
     }
     const regionMed = nsMedian(withH.map(c => c.medH));
+    const cityN = gCities.length;
+    let cellFast = 0, cellAll = 0;
+    live.forEach(a => {
+      gCities.forEach(c => {
+        cellAll++;
+        const cell = (a.cities || {})[c.id] || {};
+        if((cell.tone || nsCellTone(cell)) === 'ok') cellFast++;
+      });
+    });
+    const fastPct = cellAll ? Math.round(cellFast / cellAll * 100) : 0;
     return {
       id: g.id, name: g.name, tone, verdict, blurb,
       hoursLine: withH.map(c => c.label + ' ' + (c.medH != null ? c.medH + ' ч' : '—')).join(' · '),
       cities: withH,
       medH: regionMed,
       when: regionMed != null ? (regionMed + ' ч') : 'нет',
+      fastPct, cellFast, cellAll,
       redWorst, thin, liveN: live.length,
     };
   });
@@ -3494,6 +3537,7 @@ function nsReportHtml() {
     const chips = (reg.cities || []).map(c =>
       `<span class="ns-wgt-chip">${escapeHtml(c.label)} · ${c.medH != null ? c.medH + ' ч' : '—'}</span>`
     ).join('');
+    const pctTone = reg.fastPct >= 100 ? 'ok' : (reg.fastPct >= 70 ? 'warn' : (reg.fastPct > 0 ? 'bad' : 'oos'));
     const sub = [
       reg.medH != null ? ('медиана ' + reg.medH + ' ч') : '',
       'красных ' + reg.redWorst + '/' + reg.liveN,
@@ -3501,6 +3545,7 @@ function nsReportHtml() {
     return `<div class="ns-wgt ns-rep-${reg.tone}">
       <div class="ns-wgt-reg">${escapeHtml(reg.name)}</div>
       <div class="ns-wgt-when">${escapeHtml(reg.when)}</div>
+      <div class="ns-wgt-pct ns-pct-${pctTone}" title="Доля ячеек с быстрой доставкой (остаток и ≤40 ч). 100% — везде быстро.">${reg.fastPct}%</div>
       <div class="ns-wgt-sub">${escapeHtml(sub)}</div>
       <div class="ns-wgt-cities">${chips}</div>
     </div>`;
@@ -3511,7 +3556,7 @@ function nsReportHtml() {
     <div class="ns-rep-head">
       <div>
         <h3>По регионам</h3>
-        <span class="pi-sub">Штуки и часы с витрины WB · жёлтый &gt;40 ч, красный &gt;60 ч${emptyBit}${asOf}</span>
+        <span class="pi-sub">Штуки и часы с витрины WB · жёлтый &gt;40 ч, красный &gt;60 ч · % — доля быстрых городов (≤40 ч)${emptyBit}${asOf}</span>
       </div>
       <button type="button" class="ns-ico" onclick="toggleNsReport()">Скрыть</button>
     </div>
@@ -3534,7 +3579,7 @@ function nsArtRow(a, cities, zone, pinned) {
         <button type="button" class="pace-hide-btn" title="Скрыть у всех" onclick="nsHide('${safe}')">${paceEyeOffSvg()}</button>
         <div>
           <a href="${wbCatalogUrl(a.nm_id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;font-weight:600">${escapeHtml(vc || a.nm_id)}</a>
-          <div style="font-size:10px;color:var(--wb-faint)">${a.nm_id || ''}</div>
+          <div class="ns-art-meta">${nsPctHtml(nsRowFastPct(a, cities))}${a.nm_id ? `<span>${a.nm_id}</span>` : ''}</div>
         </div>
       </div>
     </td>
@@ -3573,6 +3618,14 @@ function drawNewStock() {
     if(NEW_STOCK.as_of) bits.push('на ' + NEW_STOCK.as_of);
     bits.push((NEW_STOCK.articles || []).length + ' арт.');
     bits.push((NEW_STOCK.cities || []).length + ' городов');
+    if((NEW_STOCK.articles || []).length && (NEW_STOCK.cities || []).length) {
+      const visCities = (typeof nsGeoLayout === 'function' ? (nsGeoLayout().cities || NEW_STOCK.cities) : NEW_STOCK.cities) || [];
+      const pcts = (NEW_STOCK.articles || []).map(a => nsRowFastPct(a, visCities).pct);
+      const avg = pcts.length ? Math.round(pcts.reduce((s, x) => s + x, 0) / pcts.length) : 0;
+      const full = pcts.filter(x => x >= 100).length;
+      bits.push('быстро ' + avg + '%');
+      bits.push(full + ' арт. со 100%');
+    }
     if(hidN) bits.push('скрыто ' + hidN);
     if((NEW_STOCK.fbs_warehouses || []).length) bits.push('FBS ' + NEW_STOCK.fbs_warehouses.length + ' скл.');
     bits.push('раскладка общая');
