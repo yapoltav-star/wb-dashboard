@@ -12153,7 +12153,9 @@ async def save_finance_cfo(request: dict):
                 models.append({
                     "id": model.get("id") or f"model_{i}_{j}",
                     "name": str(model.get("name") or ""),
+                    "vendor_code": str(model.get("vendor_code") or "").strip(),
                     "qty": _cfo_num(model.get("qty")),
+                    "unit_cost": _cfo_num(model.get("unit_cost")),
                     "cost": _cfo_num(model.get("cost")),
                 })
             clean_parties.append({
