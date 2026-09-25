@@ -14219,6 +14219,166 @@ function drawCfoPortfolio() {
     <div class="cfo-hint">Сбер бизнес #1 закрыт. Займы 2 и 5 млн — только проценты, тело не уменьшается. Тело ВТБ #2 и Альфы #2 оценочное.</div>`;
 }
 
+
+/** Месячные срезы ОПИУ с учётом ручных opex — для связки с долгами. */
+function cfoPnlMonthSeries() {
+  if(typeof PNL_BASE === 'undefined' || !PNL_BASE || !PNL_BASE.months) return [];
+  let opexLines = [];
+  try { opexLines = typeof pnlOpexLines === 'function' ? pnlOpexLines() : []; } catch(e) { opexLines = []; }
+  return PNL_BASE.months.map((m, mi) => {
+    const colId = m.cols[0];
+    const idx = PNL_BASE.cols.findIndex(c => c.id === colId);
+    const val = (k) => {
+      const r = PNL_BASE.rows.find(x => x.k === k);
+      return r && idx >= 0 ? Number(r.v[idx] || 0) : 0;
+    };
+    const fileOpex = val('opex');
+    const userOpex = opexLines.reduce((s, l) => s + cfoNum((l.by || {})[colId]), 0);
+    const delta = userOpex - fileOpex;
+    const real = val('real');
+    const net = val('net') - delta;
+    const op = val('op') - delta;
+    return {
+      i: mi,
+      label: m.label,
+      colId,
+      sales: val('sales'),
+      real,
+      op,
+      tax: val('tax'),
+      net,
+      opex: userOpex || fileOpex,
+      margin: real > 0 ? net / real : null,
+    };
+  });
+}
+
+function cfoPnlDebtBridge() {
+  const series = cfoPnlMonthSeries();
+  const d = CFO_DATA || {};
+  const t = d.totals || {};
+  const latest = series[0] || null;
+  const trail = series.slice(0, 3);
+  const trailNet = trail.reduce((s, m) => s + m.net, 0);
+  const avg3 = trail.length ? trailNet / trail.length : 0;
+  const bank = cfoNum(t.bank_debt);
+  const bankPay = cfoNum(t.bank_payment);
+  const bankInt = cfoNum(t.bank_interest);
+  const suppliers = cfoNum(t.suppliers);
+  const totalDebt = bank + suppliers;
+  const salary = cfoNum(d.salary_month);
+  const net = latest ? latest.net : 0;
+  const op = latest ? latest.op : 0;
+  const afterSalary = net - salary;
+  const afterDebtService = afterSalary - bankPay;
+  const dscr = bankPay > 0 ? afterSalary / bankPay : null; // покрытие полного платежа ЧП−ЗП
+  const intCov = bankInt > 0 ? op / bankInt : null; // coverage % от операционной прибыли ОПИУ
+  const monthsBank = net > 0 ? bank / net : null;
+  const monthsSup = net > 0 ? suppliers / net : null;
+  const monthsAll = net > 0 ? totalDebt / net : null;
+  const serviceShare = net > 0 ? bankPay / net : null;
+  const manualPnl = cfoNum(d.pnl_wb) + cfoNum(d.pnl_ozon);
+  const gap = net - manualPnl;
+  function grade(ok, warn) { return ok ? 'ok' : (warn ? 'warn' : 'bad'); }
+  const gDscr = grade(dscr != null && dscr >= 1.25, dscr != null && dscr >= 1);
+  const gCov = grade(intCov != null && intCov >= 3, intCov != null && intCov >= 1.5);
+  const gFree = grade(afterDebtService >= 0, afterDebtService >= -bankPay * 0.15);
+  const gLev = grade(monthsAll != null && monthsAll <= 6, monthsAll != null && monthsAll <= 12);
+  return {
+    series, latest, trail, avg3, bank, bankPay, bankInt, suppliers, totalDebt, salary,
+    net, op, afterSalary, afterDebtService, dscr, intCov, monthsBank, monthsSup, monthsAll,
+    serviceShare, manualPnl, gap, gDscr, gCov, gFree, gLev,
+  };
+}
+
+function cfoBridgeNarrative(b) {
+  if(!b.latest) return 'Нет данных ОПИУ — открой вкладку ОПИУ или дождись загрузки PNL_BASE.';
+  const bits = [];
+  bits.push(`По ОПИУ «${b.latest.label}» чистая прибыль <b>${fmtMoney(b.net)}</b> при реализации <b>${fmtMoney(b.latest.real)}</b>${b.latest.margin != null ? ` (маржа ${(b.latest.margin*100).toFixed(1)}%)` : ''}.`);
+  bits.push(`Долг: банки <b>${fmtMoney(b.bank)}</b> + поставщики <b>${fmtMoney(b.suppliers)}</b> = <b>${fmtMoney(b.totalDebt)}</b>. Обслуживание банков <b>${fmtMoney(b.bankPay)}</b>/мес (из них % ≈ <b>${fmtMoney(b.bankInt)}</b>).`);
+  if(b.dscr != null) {
+    if(b.dscr >= 1.25) bits.push(`DSCR ${(b.dscr).toFixed(2)}× — ЧП после ЗП с запасом закрывает полный платёж банкам.`);
+    else if(b.dscr >= 1) bits.push(`DSCR ${(b.dscr).toFixed(2)}× — платёж банкам едва покрывается; запас тонкий, любое проседание недели бьёт по кассе.`);
+    else bits.push(`DSCR ${(b.dscr).toFixed(2)}× — ЧП после ЗП <b>не покрывает</b> полный банковский платёж: дыра ≈ <b>${fmtMoney(Math.abs(b.afterDebtService))}</b>/мес, её едят касса и отсрочки поставщиков.`);
+  }
+  if(b.monthsAll != null) {
+    bits.push(`При текущей ЧП весь долг «отрабатывается» за ≈ <b>${b.monthsAll.toFixed(1)} мес</b> (банки ${b.monthsBank != null ? b.monthsBank.toFixed(1) : '—'}, поставщики ${b.monthsSup != null ? b.monthsSup.toFixed(1) : '—'}) — это не график погашения, а нагрузка на прибыль.`);
+  }
+  if(Math.abs(b.gap) > 50000) {
+    bits.push(`Расхождение: в балансе ЧП каналов <b>${fmtMoney(b.manualPnl)}</b>, в ОПИУ <b>${fmtMoney(b.net)}</b> (Δ ${fmtMoney(b.gap)}). Для управленки лучше подтянуть цифры из ОПИУ кнопкой ниже.`);
+  } else {
+    bits.push(`ЧП в балансе и ОПИУ согласованы (Δ ${fmtMoney(b.gap)}).`);
+  }
+  // priority actions
+  const actions = [];
+  if(b.gDscr === 'bad') actions.push('резать дорогой долг / рефинансировать / не раздувать оперрасходы');
+  if(b.gCov === 'bad') actions.push('coverage по % слабый — смотри ставки >25%');
+  if(b.suppliers > b.net * 3) actions.push('долг поставщикам > 3× месячной ЧП — держи ритм оплат, иначе сорвёшь поставки');
+  if(b.serviceShare != null && b.serviceShare > 0.45) actions.push(`банк забирает ${(b.serviceShare*100).toFixed(0)}% ЧП — потолок для новых кредитов`);
+  if(actions.length) bits.push('<b>Фокус:</b> ' + actions.join('; ') + '.');
+  else bits.push('<b>Фокус:</b> держать DSCR ≥ 1.25× и гасить самый дорогой транш из свободного остатка после платежа.');
+  return bits.map(x => `<p style="margin:0 0 8px;line-height:1.45">${x}</p>`).join('');
+}
+
+function cfoPnlDebtBridgeHtml() {
+  const b = cfoPnlDebtBridge();
+  if(!b.latest) {
+    return `<div class="cfo-box"><h3>Связка ОПИУ ↔ долги</h3><div class="cfo-hint">Нет данных ОПИУ.</div></div>`;
+  }
+  const pill = (g) => g === 'ok' ? 'ok' : (g === 'warn' ? 'warn' : 'bad');
+  const months = b.series.slice(0, 6).map(m => `
+    <tr>
+      <td>${escapeHtml(m.label)}</td>
+      <td style="text-align:right">${fmtMoney(m.real)}</td>
+      <td style="text-align:right">${fmtMoney(m.op)}</td>
+      <td style="text-align:right"><b>${fmtMoney(m.net)}</b></td>
+      <td style="text-align:right">${m.margin != null ? (m.margin*100).toFixed(1) + '%' : '—'}</td>
+    </tr>`).join('');
+  const fmtX = (x) => x == null || !isFinite(x) ? '—' : (Math.round(x * 100) / 100) + '×';
+  const fmtM = (x) => x == null || !isFinite(x) ? '—' : (Math.round(x * 10) / 10) + ' мес';
+  return `<div class="cfo-box">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      <h3 style="margin:0">Связка ОПИУ ↔ кредиты ↔ поставщики</h3>
+      <button type="button" class="action-btn primary" onclick="applyPnlToCfo()">↓ Подтянуть ОПИУ в баланс</button>
+    </div>
+    <div class="cfo-hint" style="margin-bottom:10px">Как CFO-сверка: прибыль из вкладки ОПИУ против обслуживания банков и долга поставщикам. Не путать с кассовым отчётом — это про достаточность прибыли.</div>
+    <div class="cfo-health">
+      <div class="cfo-hcard ${pill(b.gFree)}"><div class="hl">ЧП ОПИУ · ${escapeHtml(b.latest.label)}</div><div class="hv">${fmtMoney(b.net)}</div><div class="hs">после налога · ср. 3 мес ${fmtMoney(b.avg3)}</div></div>
+      <div class="cfo-hcard ${pill(b.gDscr)}"><div class="hl">DSCR (ЧП−ЗП) / платёж банков</div><div class="hv">${fmtX(b.dscr)}</div><div class="hs">цель ≥ 1.25× · платёж ${fmtMoney(b.bankPay)}</div></div>
+      <div class="cfo-hcard ${pill(b.gCov)}"><div class="hl">Coverage % из ОПИУ</div><div class="hv">${fmtX(b.intCov)}</div><div class="hs">оп. прибыль / % банкам · цель ≥ 3×</div></div>
+      <div class="cfo-hcard ${pill(b.gLev)}"><div class="hl">Долг / мес. ЧП</div><div class="hv">${fmtM(b.monthsAll)}</div><div class="hs">банки ${fmtM(b.monthsBank)} · пост. ${fmtM(b.monthsSup)}</div></div>
+      <div class="cfo-hcard"><div class="hl">Свободно после ЗП и банков</div><div class="hv" style="${b.afterDebtService < 0 ? 'color:var(--red)' : 'color:var(--green)'}">${fmtMoney(b.afterDebtService)}</div><div class="hs">ЧП − ЗП − платёж банкам</div></div>
+      <div class="cfo-hcard"><div class="hl">Доля платежа в ЧП</div><div class="hv">${b.serviceShare != null ? (b.serviceShare*100).toFixed(0) + '%' : '—'}</div><div class="hs">банк забирает из прибыли</div></div>
+    </div>
+    <div class="cfo-scroll" style="margin-top:8px">
+      <table class="cfo-floors">
+        <thead><tr><th>Месяц ОПИУ</th><th>Реализация</th><th>Оп. прибыль</th><th>Чистая прибыль</th><th>Маржа</th></tr></thead>
+        <tbody>${months}</tbody>
+      </table>
+    </div>
+    <div style="margin-top:12px;padding:12px 14px;border:1px solid var(--wb-border);border-radius:10px;background:#FAFAF8">
+      <div style="font-size:12px;font-weight:600;margin-bottom:6px;letter-spacing:.01em">Вердикт CFO</div>
+      ${cfoBridgeNarrative(b)}
+    </div>
+    <div class="cfo-hint" style="margin-top:8px">Кнопка подставляет реализацию и ЧП последнего месяца ОПИУ в поля баланса (ЧП → WB, Ozon обнуляется как «сводка»). Сохрани снимок, если ок.</div>
+  </div>`;
+}
+
+function applyPnlToCfo() {
+  if(!CFO_DATA || CFO_DATA.error) return;
+  const b = cfoPnlDebtBridge();
+  if(!b.latest) {
+    setCfoStatus('Нет данных ОПИУ', false);
+    return;
+  }
+  CFO_DATA.realization_month = Math.round(b.latest.real);
+  CFO_DATA.pnl_wb = Math.round(b.net);
+  CFO_DATA.pnl_ozon = 0;
+  recomputeCfoLocal();
+  drawCfo();
+  setCfoStatus('Подтянул ОПИУ «' + b.latest.label + '»: реализация ' + fmtMoney(b.latest.real) + ', ЧП ' + fmtMoney(b.net), true);
+}
+
 function drawCfo() {
   drawCfoPortfolio();
   const d = CFO_DATA || {};
@@ -14237,6 +14397,7 @@ function drawCfo() {
   }
   drawCfoSituation();
   if(cards) {
+    const br = cfoPnlDebtBridge();
     cards.innerHTML = [
       ['Активы', fmtMoney(t.assets), 'color:var(--wb-purple)'],
       ['Обязательства', fmtMoney(t.liabilities)],
@@ -14244,8 +14405,10 @@ function drawCfo() {
       ['Банки (тело)', fmtMoney(t.bank_debt)],
       ['Платёж банков / мес', fmtMoney(t.bank_payment)],
       ['% по кредитам / мес', fmtMoney(t.bank_interest), 'color:var(--amber)'],
-      ['ЧП каналы', fmtMoney(t.pnl_channels)],
+      ['ЧП каналы (баланс)', fmtMoney(t.pnl_channels)],
       ['Честная ЧП (−ЗП −%)', fmtMoney(t.pnl_real), 'color:var(--green)'],
+      ['ЧП ОПИУ (мес)', br.latest ? fmtMoney(br.net) : '—', 'color:var(--wb-purple)'],
+      ['DSCR ОПИУ', br.dscr != null ? (Math.round(br.dscr*100)/100) + '×' : '—', br.gDscr === 'ok' ? 'color:var(--green)' : (br.gDscr === 'warn' ? 'color:var(--amber)' : 'color:var(--red)')],
     ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
   }
   if(!root) return;
@@ -14266,6 +14429,7 @@ function drawCfo() {
 
   root.innerHTML = `
     ${cfoSuppliersHtml()}
+    ${cfoPnlDebtBridgeHtml()}
     <div class="cfo-box">
       <h3>Границы безопасности</h3>
       <table class="cfo-floors">
@@ -14299,7 +14463,7 @@ function drawCfo() {
       </div>
       <div class="cfo-box">
         <h3>Пассивы и P&amp;L периода</h3>
-        <div class="cfo-hint" style="margin-bottom:8px">Долг поставщикам: <b>${fmtMoney(d.suppliers)}</b> — сумма карточек выше.</div>
+        <div class="cfo-hint" style="margin-bottom:8px">Долг поставщикам: <b>${fmtMoney(d.suppliers)}</b> — сумма карточек выше. Сверка с ОПИУ — в блоке «Связка» выше; можно подтянуть реализацию/ЧП кнопкой.</div>
         ${cfoField('realization_month', 'Реализация / мес (WB+Ozon)', d.realization_month)}
         ${cfoField('pnl_wb', 'ЧП WB (дашборд)', d.pnl_wb)}
         ${cfoField('pnl_ozon', 'ЧП Ozon (дашборд)', d.pnl_ozon)}
@@ -14732,6 +14896,7 @@ function drawCfoCardsOnly() {
   const cards = document.getElementById('cfoCards');
   drawCfoSituation();
   if(!cards) return;
+  const br = cfoPnlDebtBridge();
   cards.innerHTML = [
     ['Активы', fmtMoney(t.assets), 'color:var(--wb-purple)'],
     ['Обязательства', fmtMoney(t.liabilities)],
@@ -14739,8 +14904,10 @@ function drawCfoCardsOnly() {
     ['Банки (тело)', fmtMoney(t.bank_debt)],
     ['Платёж банков / мес', fmtMoney(t.bank_payment)],
     ['% по кредитам / мес', fmtMoney(t.bank_interest), 'color:var(--amber)'],
-    ['ЧП каналы', fmtMoney(t.pnl_channels)],
+    ['ЧП каналы (баланс)', fmtMoney(t.pnl_channels)],
     ['Честная ЧП (−ЗП −%)', fmtMoney(t.pnl_real), 'color:var(--green)'],
+    ['ЧП ОПИУ (мес)', br.latest ? fmtMoney(br.net) : '—', 'color:var(--wb-purple)'],
+    ['DSCR ОПИУ', br.dscr != null ? (Math.round(br.dscr*100)/100) + '×' : '—', br.gDscr === 'ok' ? 'color:var(--green)' : (br.gDscr === 'warn' ? 'color:var(--amber)' : 'color:var(--red)')],
   ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
 }
 
