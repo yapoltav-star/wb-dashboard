@@ -12140,6 +12140,30 @@ async def save_finance_cfo(request: dict):
                 "cash_floor", "wb_compensation_pending"):
         if key in payload:
             payload[key] = _cfo_num(payload[key])
+    parties_in = payload.get("supplier_parties")
+    if isinstance(parties_in, list):
+        clean_parties = []
+        for i, party in enumerate(parties_in):
+            if not isinstance(party, dict):
+                continue
+            models = []
+            for j, model in enumerate(party.get("models") or []):
+                if not isinstance(model, dict):
+                    continue
+                models.append({
+                    "id": model.get("id") or f"model_{i}_{j}",
+                    "name": str(model.get("name") or ""),
+                    "qty": _cfo_num(model.get("qty")),
+                    "cost": _cfo_num(model.get("cost")),
+                })
+            clean_parties.append({
+                "id": party.get("id") or f"sup_{i}",
+                "name": str(party.get("name") or f"Поставщик {i+1}"),
+                "debt": _cfo_num(party.get("debt")),
+                "models": models,
+            })
+        payload["supplier_parties"] = clean_parties
+        payload["suppliers"] = round(sum(p["debt"] for p in clean_parties), 2)
     payload["as_of"] = str(payload.get("as_of") or datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
     if not save_setting_value(CFO_SNAPSHOT_KEY, payload):

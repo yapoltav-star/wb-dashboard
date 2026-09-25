@@ -1851,6 +1851,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
       <button class="filter-btn on" id="finModeStock" onclick="setFinMode('stock')">Остатки</button>
       <button class="filter-btn" id="finModeCfo" onclick="setFinMode('cfo')">Баланс / кредиты</button>
       <button class="filter-btn" id="finModeMoney" onclick="setFinMode('money')">Отчёты ВБ</button>
+      <button class="filter-btn" id="finModePnl" onclick="setFinMode('pnl')">ОПИУ</button>
     </div>
 
     <div id="finStockPanel">
@@ -1882,6 +1883,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
         <button class="action-btn" onclick="loadCfo(true)">↺ Сбросить к сохранённому</button>
         <span class="cfo-status" id="cfoStatus"></span>
       </div>
+      <div class="cfo-box" id="cfoPortfolio"></div>
       <div id="cfoVerdict" class="cfo-verdict" style="display:none"></div>
       <div class="cfo-health" id="cfoHealth"></div>
       <div class="cards" id="cfoCards"></div>
@@ -1927,6 +1929,10 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
           <div class="loading"><div class="spinner"></div><span>Загрузка отчётов…</span></div>
         </div>
       </div>
+    </div>
+
+    <div id="finPnlPanel" style="display:none">
+      <div id="pnlRoot"></div>
     </div>
   </div>
 </div>
@@ -13072,13 +13078,147 @@ function renderFinance() {
   setupFinancePin();
 }
 
+const PNL_BASE = {"cols":[{"id":"c0","label":"Сентябрь 2026","short":"Месяц","week":false},{"id":"c1","label":"Неделя 1 (01.09-07.09)","short":"01.09–07.09","week":true},{"id":"c2","label":"Неделя 2 (08.09-14.09)","short":"08.09–14.09","week":true},{"id":"c3","label":"Неделя 3 (15.09-21.09)","short":"15.09–21.09","week":true},{"id":"c4","label":"Неделя 4 (22.09-24.09)","short":"22.09–24.09","week":true},{"id":"c5","label":"Август 2026","short":"Месяц","week":false},{"id":"c6","label":"Неделя 1 (01.08-07.08)","short":"01.08–07.08","week":true},{"id":"c7","label":"Неделя 2 (08.08-14.08)","short":"08.08–14.08","week":true},{"id":"c8","label":"Неделя 3 (15.08-21.08)","short":"15.08–21.08","week":true},{"id":"c9","label":"Неделя 4 (22.08-28.08)","short":"22.08–28.08","week":true},{"id":"c10","label":"Неделя 5 (29.08-31.08)","short":"29.08–31.08","week":true},{"id":"c11","label":"Июль 2026","short":"Месяц","week":false},{"id":"c12","label":"Неделя 1 (01.07-07.07)","short":"01.07–07.07","week":true},{"id":"c13","label":"Неделя 2 (08.07-14.07)","short":"08.07–14.07","week":true},{"id":"c14","label":"Неделя 3 (15.07-21.07)","short":"15.07–21.07","week":true},{"id":"c15","label":"Неделя 4 (22.07-28.07)","short":"22.07–28.07","week":true},{"id":"c16","label":"Неделя 5 (29.07-31.07)","short":"29.07–31.07","week":true},{"id":"c17","label":"Июнь 2026","short":"Месяц","week":false},{"id":"c18","label":"Неделя 1 (01.06-07.06)","short":"01.06–07.06","week":true},{"id":"c19","label":"Неделя 2 (08.06-14.06)","short":"08.06–14.06","week":true},{"id":"c20","label":"Неделя 3 (15.06-21.06)","short":"15.06–21.06","week":true},{"id":"c21","label":"Неделя 4 (22.06-28.06)","short":"22.06–28.06","week":true},{"id":"c22","label":"Неделя 5 (29.06-30.06)","short":"29.06–30.06","week":true},{"id":"c23","label":"Май 2026","short":"Месяц","week":false},{"id":"c24","label":"Неделя 1 (01.05-07.05)","short":"01.05–07.05","week":true},{"id":"c25","label":"Неделя 2 (08.05-14.05)","short":"08.05–14.05","week":true},{"id":"c26","label":"Неделя 3 (15.05-21.05)","short":"15.05–21.05","week":true},{"id":"c27","label":"Неделя 4 (22.05-28.05)","short":"22.05–28.05","week":true},{"id":"c28","label":"Неделя 5 (29.05-31.05)","short":"29.05–31.05","week":true},{"id":"c29","label":"Апрель 2026","short":"Месяц","week":false},{"id":"c30","label":"Неделя 1 (01.04-07.04)","short":"01.04–07.04","week":true},{"id":"c31","label":"Неделя 2 (08.04-14.04)","short":"08.04–14.04","week":true},{"id":"c32","label":"Неделя 3 (15.04-21.04)","short":"15.04–21.04","week":true},{"id":"c33","label":"Неделя 4 (22.04-28.04)","short":"22.04–28.04","week":true},{"id":"c34","label":"Неделя 5 (29.04-30.04)","short":"29.04–30.04","week":true},{"id":"c35","label":"Март 2026","short":"Месяц","week":false},{"id":"c36","label":"Неделя 1 (01.03-07.03)","short":"01.03–07.03","week":true},{"id":"c37","label":"Неделя 2 (08.03-14.03)","short":"08.03–14.03","week":true},{"id":"c38","label":"Неделя 3 (15.03-21.03)","short":"15.03–21.03","week":true},{"id":"c39","label":"Неделя 4 (22.03-28.03)","short":"22.03–28.03","week":true},{"id":"c40","label":"Неделя 5 (29.03-31.03)","short":"29.03–31.03","week":true},{"id":"c41","label":"Февраль 2026","short":"Месяц","week":false},{"id":"c42","label":"Неделя 1 (01.02-07.02)","short":"01.02–07.02","week":true},{"id":"c43","label":"Неделя 2 (08.02-14.02)","short":"08.02–14.02","week":true},{"id":"c44","label":"Неделя 3 (15.02-21.02)","short":"15.02–21.02","week":true},{"id":"c45","label":"Неделя 4 (22.02-28.02)","short":"22.02–28.02","week":true},{"id":"c46","label":"Январь 2026","short":"Месяц","week":false},{"id":"c47","label":"Неделя 1 (01.01-07.01)","short":"01.01–07.01","week":true},{"id":"c48","label":"Неделя 2 (08.01-14.01)","short":"08.01–14.01","week":true},{"id":"c49","label":"Неделя 3 (15.01-21.01)","short":"15.01–21.01","week":true},{"id":"c50","label":"Неделя 4 (22.01-28.01)","short":"22.01–28.01","week":true},{"id":"c51","label":"Неделя 5 (29.01-31.01)","short":"29.01–31.01","week":true}],"months":[{"id":"c0","label":"Сентябрь 2026","cols":["c0","c1","c2","c3","c4"]},{"id":"c5","label":"Август 2026","cols":["c5","c6","c7","c8","c9","c10"]},{"id":"c11","label":"Июль 2026","cols":["c11","c12","c13","c14","c15","c16"]},{"id":"c17","label":"Июнь 2026","cols":["c17","c18","c19","c20","c21","c22"]},{"id":"c23","label":"Май 2026","cols":["c23","c24","c25","c26","c27","c28"]},{"id":"c29","label":"Апрель 2026","cols":["c29","c30","c31","c32","c33","c34"]},{"id":"c35","label":"Март 2026","cols":["c35","c36","c37","c38","c39","c40"]},{"id":"c41","label":"Февраль 2026","cols":["c41","c42","c43","c44","c45"]},{"id":"c46","label":"Январь 2026","cols":["c46","c47","c48","c49","c50","c51"]}],"rows":[{"k":"sales","name":"Сумма продаж","v":[21407452,5831440,6173733,6539420,2862859,26638508,6155546,5872319,5783587,6020137,2806919,31125643,6923795,7593956,7882364,5862382,2863146,27065242,6069946,6001296,6523917,6405176,2064907,21763033,4234487,4393761,4758049,5619582,2757154,16950842,3597759,3964642,4074446,4032919,1281076,25090568,8069783,6939355,4360011,4169003,1552416,19309089,2793015,4811306,5777765,5927003,10251855,2885147,2118346,2281206,2029345,937811],"q":[5552,1455,1542,1729,826,7386,1922,1627,1560,1573,704,10127,2251,2487,2528,1885,976,9321,2266,2114,2164,2093,684,7931,1480,1564,1779,2077,1031,5652,1194,1335,1350,1347,426,7824,2550,2135,1358,1279,502,6392,1006,1606,1882,1898,3755,1021,809,841,743,341],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"real","name":"Реализация","v":[29407350,7835339,8358703,9172911,4040398,36235789,8824740,7800810,7817381,8037440,3755420,45692405,10107585,11084292,11538190,8484702,4477638,39911284,9330221,8811728,9413012,9324320,3032004,32423769,6042444,6417805,7155841,8563289,4244393,24016763,5001665,5651853,5903929,5671194,1788124,35929335,11758459,9976361,6163165,5874593,2156759,28372612,4123821,7047530,8505339,8695923,14391816,4032465,3013350,3203042,2826801,1316159],"q":[5552,1455,1542,1729,826,7386,1922,1627,1560,1573,704,10127,2251,2487,2528,1885,976,9321,2266,2114,2164,2093,684,7931,1480,1564,1779,2077,1031,5652,1194,1335,1350,1347,426,7824,2550,2135,1358,1279,502,6392,1006,1606,1882,1898,3755,1021,809,841,743,341],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"direct","name":"Прямые расходы","v":[13484501,3785930,3869734,4113289,1715550,17423017,3889314,4004487,3838352,3931259,1759606,19328279,3866365,4676242,4997267,4135223,1653185,13758187,2416856,3122644,3637445,3484034,1097210,11294515,2528934,2513728,2492972,2714548,1044335,10667879,2316278,2479631,2494460,2560997,816515,13712830,4212316,3662512,2504187,2410162,923656,10109848,1526093,2400029,3050504,3133223,5475777,1452350,1088833,1244491,1138798,551306],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"cogs","name":"Себестоимость продаж","v":[6873260,1869840,1970030,2114545,918845,9379270,2332370,2069645,2020245,2027690,929320,12592370,2854445,3100990,3128245,2299655,1209035,10922905,2496245,2395330,2587750,2575840,867740,8704692,1706437,1784495,1897130,2230665,1085965,7093539,1517879,1700858,1725216,1643605,505984,10063245,3273415,2776215,1730835,1668260,614520,7923880,1154105,1985800,2367265,2416710,3922270,1068725,821035,874055,790745,367710],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[23.37,23.86,23.57,23.05,22.74,25.88,26.43,26.53,25.84,25.23,24.75,27.56,28.24,27.98,27.11,27.1,27.0,27.37,26.75,27.18,27.49,27.62,28.62,26.85,28.24,27.81,26.51,26.05,25.59,29.54,30.35,30.09,29.22,28.98,28.3,28.01,27.84,27.83,28.08,28.4,28.49,27.93,27.99,28.18,27.83,27.79,27.25,26.5,27.25,27.29,27.97,27.94]},{"k":"ads","name":"Реклама / ДРР","v":[2996544,749049,842040,1019949,385506,3070903,644626,686772,713243,732991,293271,4237710,998293,925467,975006,1053776,285168,2989889,204340,724445,948926,876111,236067,3033919,751783,764420,706271,711362,100083,3161508,645428,713970,769252,795313,237545,3435987,998570,867067,681312,645732,243306,2743412,502866,648968,800972,790606,1411872,339201,266145,325076,305012,176438],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[10.19,9.56,10.07,11.12,9.54,8.47,7.3,8.8,9.12,9.12,7.81,9.27,9.88,8.35,8.45,12.42,6.37,7.49,2.19,8.22,10.08,9.4,7.79,9.36,12.44,11.91,9.87,8.31,2.36,13.16,12.9,12.63,13.03,14.02,13.28,9.56,8.49,8.69,11.05,10.99,11.28,9.67,12.19,9.21,9.42,9.09,9.81,8.41,8.83,10.15,10.79,13.41]},{"k":"storage","name":"Хранение","v":[8067,1525,2239,2878,1427,7538,3207,1797,1147,974,415,35787,9940,9478,8585,5620,2167,39535,7548,7755,10026,11050,3158,33899,8466,7672,7284,7335,3144,37683,8671,8340,8739,9206,2729,34783,8132,7071,7631,8243,3708,19512,2896,3892,6169,6556,8222,955,1146,2514,2487,1121],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[0.03,0.02,0.03,0.03,0.04,0.02,0.04,0.02,0.01,0.01,0.01,0.08,0.1,0.09,0.07,0.07,0.05,0.1,0.08,0.09,0.11,0.12,0.1,0.1,0.14,0.12,0.1,0.09,0.07,0.16,0.17,0.15,0.15,0.16,0.15,0.1,0.07,0.07,0.12,0.14,0.17,0.07,0.07,0.06,0.07,0.08,0.06,0.02,0.04,0.08,0.09,0.09]},{"k":"accept","name":"Плат. приёмка","v":[21580,7030,6920,6500,1130,35095,5850,5530,8940,11900,2875,8995,480,870,1890,4335,1420,5400,2835,1665,510,285,105,8865,495,1500,2940,2790,1140,2100,705,330,255,375,435,15352,6206,6266,150,1065,1665,1080,240,405,180,255,2085,45,630,465,765,180],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"commission","name":"Комиссия","v":[2963290,979229,873039,784679,326344,4045513,679379,1038091,894999,978600,454445,1360808,-234703,376409,619120,547828,52155,-1179026,-542682,-232523,-130751,-191739,-81329,-1332058,-98666,-212834,-326773,-443777,-250006,-279060,9198,-92037,-160770,-34357,-1092,-691334,-347796,-220410,-66635,-57269,778,-1244647,-254120,-385713,-322707,-282106,-368460,-99143,-106730,-79685,-52594,-30305],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[10.08,12.5,10.44,8.55,8.08,11.16,7.7,13.31,11.45,12.18,12.1,2.98,null,3.4,5.37,6.46,1.16,null,null,null,null,null,null,null,null,null,null,null,null,null,0.18,null,null,null,null,null,null,null,null,null,0.04,null,null,null,null,null,null,null,null,null,null,null]},{"k":"logistics","name":"Логистика","v":[614024,179258,173211,181753,79803,860563,215359,194981,194172,179104,76948,1066003,237911,260011,252101,212741,103241,976164,246074,225729,220416,212478,71469,837671,159546,162705,200185,211865,103372,637067,134349,143676,151770,141961,65313,781896,245908,203778,138903,133629,59679,652385,117731,146677,190376,197602,491858,138848,106599,119567,90684,36163],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[2.09,2.29,2.07,1.98,1.98,2.37,2.44,2.5,2.48,2.23,2.05,2.33,2.35,2.35,2.18,2.51,2.31,2.45,2.64,2.56,2.34,2.28,2.36,2.58,2.64,2.54,2.8,2.47,2.44,2.65,2.69,2.54,2.57,2.5,3.65,2.18,2.09,2.04,2.25,2.27,2.77,2.3,2.85,2.08,2.24,2.27,3.42,3.44,3.54,3.73,3.21,2.75]},{"k":"fines","name":"Штрафы","v":[7737,0,2256,2986,2496,24136,8525,7672,5606,0,2333,26607,0,3018,12320,11270,0,3322,2499,245,569,10,0,7529,875,5771,5936,-5690,639,15045,50,4495,0,4896,5604,72902,27881,22526,11992,10503,0,14226,2375,0,8250,3601,7930,3720,10,2500,1700,0],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"hold","name":"Удержания","v":[309213,113187,82666,84577,28784,215492,0,-6734,36815,134061,51351,235574,197102,39528,7721,-8776,0,104994,43140,61854,0,0,0,27428,74715,0,0,-47287,0,43140,43140,0,0,0,0,263326,71396,9736,101675,64416,16104,228778,65710,53195,47141,62733,51216,37528,366,0,0,13323],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"extra","name":"Доплаты","v":[0,0,0,0,0,27133,0,0,4193,19471,3470,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"opex","name":"Операционные расходы","v":[0,0,0,0,0,628678,0,0,0,0,628678,1276974,0,0,0,0,1276974,983788,0,0,0,0,983788,839973,0,0,0,0,839973,1161439,0,0,0,0,1161439,2576861,0,0,4500,0,2572361,2998001,0,0,155404,2842597,2071663,0,0,4031,0,2067632],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"op","name":"Операционная прибыль","v":[7613739,1932325,2221334,2341556,1118526,8398456,2266233,1874567,1912614,1974289,370755,10284818,2860330,2878187,2877377,1735937,-67012,12218274,3609951,2816799,2886473,2921143,-16090,9601119,1630840,1880034,2265078,2952322,872847,5078385,1238342,1485012,1579987,1471923,-696877,8537553,3786073,3267109,1749650,1694426,-1959704,5972464,1201214,2358083,2524717,-111548,2653201,1395271,1029148,1032685,890548,-1694448],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"tax","name":"Налог","v":[2238389,608933,645578,684447,299433,2792011,644867,615196,606139,631638,294172,3260782,725350,795558,825772,614155,299949,2835407,635900,628708,683459,671019,216324,2279937,443613,460299,498463,588719,288845,1775803,376909,415344,426847,422497,134208,2628536,845406,726981,456764,436753,162635,2022857,292602,504042,605290,620925,1074004,302254,221922,238984,212599,98247],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"net","name":"Чистая прибыль / Маржинальность","v":[5375351,1323392,1575756,1657109,819094,5606446,1621366,1259372,1306475,1342652,76583,7024036,2134980,2082630,2051606,1121782,-366961,9382868,2974051,2188092,2203015,2250124,-232413,7321182,1187227,1419736,1766616,2363604,584002,3302583,861434,1069669,1153140,1049427,-831085,5909017,2940667,2540129,1292887,1257674,-2122338,3949607,908613,1854041,1919427,-732472,1579197,1093017,807226,793701,677950,-1792695],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[18.28,16.89,18.85,18.07,20.27,15.47,18.37,16.14,16.71,16.7,2.04,15.37,21.12,18.79,17.78,13.22,null,23.51,31.88,24.83,23.4,24.13,null,22.58,19.65,22.12,24.69,27.6,13.76,13.75,17.22,18.93,19.53,18.5,null,16.45,25.01,25.46,20.98,21.41,null,13.92,22.03,26.31,22.57,null,10.97,27.11,26.79,24.78,23.98,null]}]};
+let PNL_MONTH = 0;
+
+function pnlOpexLines() {
+  try {
+    const raw = localStorage.getItem('wb_pnl_opex');
+    if(raw) {
+      const parsed = JSON.parse(raw);
+      if(Array.isArray(parsed) && parsed.length) return parsed;
+    }
+  } catch(e) {}
+  const opex = PNL_BASE.rows.find(r => r.k === 'opex');
+  const by = {};
+  PNL_BASE.cols.forEach((c, i) => { if(opex.v[i]) by[c.id] = opex.v[i]; });
+  const lines = [{id:'base', name:'Операционные', by}];
+  localStorage.setItem('wb_pnl_opex', JSON.stringify(lines));
+  return lines;
+}
+function savePnlOpex(lines) {
+  localStorage.setItem('wb_pnl_opex', JSON.stringify(lines));
+  drawPnl();
+}
+function pnlLineSum(line, colIds) {
+  return colIds.reduce((s, id) => s + cfoNum((line.by || {})[id]), 0);
+}
+function setPnlMonth(i) {
+  PNL_MONTH = Number(i) || 0;
+  drawPnl();
+}
+function onPnlOpex(id, colId, val) {
+  const lines = pnlOpexLines();
+  const line = lines.find(l => l.id === id);
+  if(!line) return;
+  if(!line.by) line.by = {};
+  line.by[colId] = cfoNum(val);
+  savePnlOpex(lines);
+}
+function onPnlOpexName(id, val) {
+  const lines = pnlOpexLines();
+  const line = lines.find(l => l.id === id);
+  if(!line) return;
+  line.name = val;
+  localStorage.setItem('wb_pnl_opex', JSON.stringify(lines));
+}
+function addPnlOpex() {
+  const lines = pnlOpexLines();
+  lines.push({id:'ox_'+Date.now(), name:'', by:{}});
+  savePnlOpex(lines);
+}
+function removePnlOpex(id) {
+  const lines = pnlOpexLines().filter(l => l.id !== id);
+  if(!lines.length) lines.push({id:'base', name:'Операционные', by:{}});
+  savePnlOpex(lines);
+}
+function drawPnl() {
+  const root = document.getElementById('pnlRoot');
+  if(!root || typeof PNL_BASE === 'undefined') return;
+  const month = PNL_BASE.months[PNL_MONTH] || PNL_BASE.months[0];
+  const colIds = month.cols;
+  const cols = colIds.map(id => PNL_BASE.cols.find(c => c.id === id));
+  const idx = id => PNL_BASE.cols.findIndex(c => c.id === id);
+  const row = k => PNL_BASE.rows.find(r => r.k === k);
+  const lines = pnlOpexLines();
+  const fileOpex = colIds.map(id => row('opex').v[idx(id)] || 0);
+  const userOpex = colIds.map(id => lines.reduce((s, l) => s + cfoNum((l.by || {})[id]), 0));
+  const val = (k, i) => row(k).v[idx(colIds[i])] || 0;
+  const money = n => fmtMoney(n);
+  const head = cols.map(c => `<th>${escapeHtml(c.short)}</th>`).join('');
+  const ro = (k, withQty) => {
+    const r = row(k);
+    const tds = colIds.map(id => {
+      const i = idx(id);
+      const n = r.v[i] || 0;
+      let extra = '';
+      if(withQty && r.q[i]) extra = `<div class="cfo-hint" style="margin:0">${r.q[i].toLocaleString('ru-RU')} шт</div>`;
+      else if(r.p[i] != null) extra = `<div class="cfo-hint" style="margin:0">${r.p[i]}%</div>`;
+      return `<td style="text-align:right">${money(n)}${extra}</td>`;
+    }).join('');
+    return `<tr><td>${escapeHtml(r.name)}</td>${tds}</tr>`;
+  };
+  const opexRows = lines.map(l => {
+    const tds = colIds.map(id => `<td><input class="cfo-inp cfo-num" style="width:110px" type="number" step="1" value="${cfoNum((l.by||{})[id]) || ''}" onchange="onPnlOpex('${l.id}','${id}',this.value)"></td>`).join('');
+    return `<tr>
+      <td><input class="cfo-inp" value="${escapeHtml(l.name || '')}" placeholder="Название расхода" onchange="onPnlOpexName('${l.id}',this.value)"></td>
+      ${tds}
+      <td><button class="cfo-del" onclick="removePnlOpex('${l.id}')">✕</button></td>
+    </tr>`;
+  }).join('');
+  const totalOpex = colIds.map((_, i) => `<td style="text-align:right"><b>${money(userOpex[i])}</b></td>`).join('');
+  const calcRow = (name, nums, strong) => `<tr><td>${strong ? '<b>'+name+'</b>' : name}</td>${nums.map(n => `<td style="text-align:right">${strong ? '<b>'+money(n)+'</b>' : money(n)}</td>`).join('')}</tr>`;
+  const op = colIds.map((_, i) => val('op', i) - (userOpex[i] - fileOpex[i]));
+  const net = colIds.map((_, i) => val('net', i) - (userOpex[i] - fileOpex[i]));
+  const months = PNL_BASE.months.map((m, i) => `<option value="${i}" ${i===PNL_MONTH?'selected':''}>${escapeHtml(m.label)}</option>`).join('');
+  root.innerHTML = `
+    <div class="cfo-actions">
+      <label style="font-size:13px">Месяц <select class="cfo-inp" onchange="setPnlMonth(this.value)">${months}</select></label>
+      <button class="action-btn" onclick="addPnlOpex()">+ Расход</button>
+    </div>
+    <div class="cfo-health">
+      <div class="cfo-hcard"><div class="hl">Сумма продаж</div><div class="hv">${money(val('sales',0))}</div></div>
+      <div class="cfo-hcard"><div class="hl">Операционные</div><div class="hv">${money(userOpex[0])}</div></div>
+      <div class="cfo-hcard"><div class="hl">Операционная прибыль</div><div class="hv">${money(op[0])}</div></div>
+      <div class="cfo-hcard"><div class="hl">Чистая прибыль</div><div class="hv">${money(net[0])}</div></div>
+    </div>
+    <div class="cfo-scroll">
+      <table class="cfo-table" style="min-width:720px">
+        <thead><tr><th>Статья</th>${head}<th></th></tr></thead>
+        <tbody>
+          ${ro('sales', true)}
+          ${ro('real', true)}
+          ${ro('direct')}
+          ${ro('cogs')}
+          ${ro('ads')}
+          ${ro('storage')}
+          ${ro('accept')}
+          ${ro('commission')}
+          ${ro('logistics')}
+          ${ro('fines')}
+          ${ro('hold')}
+          ${ro('extra')}
+          <tr><td colspan="${colIds.length+2}" style="font-weight:600;padding-top:10px">Операционные расходы</td></tr>
+          ${opexRows}
+          <tr><td>Итого операционные</td>${totalOpex}<td></td></tr>
+          ${calcRow('Операционная прибыль', op, true)}
+          ${ro('tax')}
+          ${calcRow('Чистая прибыль', net, true)}
+        </tbody>
+      </table>
+    </div>
+    <div class="cfo-hint">Продажи, прямые расходы и налог — из файла. Операционные строки можно менять и добавлять: прибыль пересчитывается. Первая строка — то, что уже было в отчёте. Налог оставлен как в файле.</div>`;
+}
+
 function setFinMode(mode) {
   if(mode === 'cfo') FIN_MODE = 'cfo';
   else if(mode === 'money') FIN_MODE = 'money';
+  else if(mode === 'pnl') FIN_MODE = 'pnl';
   else FIN_MODE = 'stock';
   applyFinMode();
   if(FIN_MODE === 'cfo') loadCfo(false);
   else if(FIN_MODE === 'money') loadWbMoney(false);
+  else if(FIN_MODE === 'pnl') drawPnl();
   else loadFinance(false);
 }
 
@@ -13086,20 +13226,25 @@ function applyFinMode() {
   const stock = document.getElementById('finStockPanel');
   const cfo = document.getElementById('finCfoPanel');
   const money = document.getElementById('finMoneyPanel');
+  const pnl = document.getElementById('finPnlPanel');
   const btnS = document.getElementById('finModeStock');
   const btnC = document.getElementById('finModeCfo');
   const btnM = document.getElementById('finModeMoney');
+  const btnP = document.getElementById('finModePnl');
   if(stock) stock.style.display = FIN_MODE === 'stock' ? 'block' : 'none';
   if(cfo) cfo.style.display = FIN_MODE === 'cfo' ? 'block' : 'none';
   if(money) money.style.display = FIN_MODE === 'money' ? 'block' : 'none';
+  if(pnl) pnl.style.display = FIN_MODE === 'pnl' ? 'block' : 'none';
   if(btnS) btnS.classList.toggle('on', FIN_MODE === 'stock');
   if(btnC) btnC.classList.toggle('on', FIN_MODE === 'cfo');
   if(btnM) btnM.classList.toggle('on', FIN_MODE === 'money');
+  if(btnP) btnP.classList.toggle('on', FIN_MODE === 'pnl');
 }
 
 function refreshFinancePanel() {
   if(FIN_MODE === 'cfo') loadCfo(true);
   else if(FIN_MODE === 'money') loadWbMoney(true);
+  else if(FIN_MODE === 'pnl') drawPnl();
   else loadFinance(true);
 }
 
@@ -14004,7 +14149,60 @@ function setCfoStatus(msg, ok) {
   el.className = 'cfo-status' + (ok === true ? ' ok' : ok === false ? ' err' : '');
 }
 
+const CFO_PORTFOLIO = [
+  {name:'Кредитная линия 6 млн', body:5747830, pay:243600, day:'25-е', rate:'18,9% + 24 000 (~26,6%)', close:'~06.2029'},
+  {name:'Альфа #1', body:767246, pay:64100, day:'2-е', rate:'22,99%', close:'~02.10.2027'},
+  {name:'ВТБ #2', body:541658, pay:24000, day:'4-е', rate:'17,2%', close:'сен 2028'},
+  {name:'ТБанк', body:1536899, pay:68350, day:'7-е', rate:'34,9%', close:'07.10.2029'},
+  {name:'Сбер #3', body:1222605, pay:75023, day:'7-е', rate:'23,4%', close:'08.04.2028'},
+  {name:'Займ 2 млн', body:2000000, pay:34000, day:'10-е', rate:'~20%, только %', close:'нет'},
+  {name:'Альфа #2, квартира', body:772544, pay:58010, day:'15-е', rate:'25,9%', close:'ноя 2027'},
+  {name:'Сбер бизнес #2', body:305682, pay:23024, day:'~17-е', rate:'~34,3%', close:'17.02.2028'},
+  {name:'Займ 5 млн', body:5000000, pay:83500, day:'20-е', rate:'~20%, только %', close:'нет'},
+  {name:'ВТБ крупный', body:3615951, pay:162334, day:'22-е', rate:'26,5%', close:'23.04.2029'},
+];
+
+function drawCfoPortfolio() {
+  const el = document.getElementById('cfoPortfolio');
+  if(!el) return;
+  const body = CFO_PORTFOLIO.reduce((s, l) => s + l.body, 0);
+  const pay = CFO_PORTFOLIO.reduce((s, l) => s + l.pay, 0);
+  const rows = CFO_PORTFOLIO.map(l => `<tr>
+    <td>${l.name}</td>
+    <td style="text-align:right">${fmtMoney(l.body)}</td>
+    <td style="text-align:right">${fmtMoney(l.pay)}</td>
+    <td>${l.day}</td>
+    <td>${l.rate}</td>
+    <td>${l.close}</td>
+  </tr>`).join('');
+  el.innerHTML = `
+    <h3>Портфель кредитов · срез 24.09.2026</h3>
+    <div class="cfo-health">
+      <div class="cfo-hcard"><div class="hl">Тело</div><div class="hv">${fmtMoney(body)}</div></div>
+      <div class="cfo-hcard"><div class="hl">Платёж / мес</div><div class="hv">${fmtMoney(pay)}</div></div>
+      <div class="cfo-hcard"><div class="hl">Средняя ставка</div><div class="hv">24,6%</div><div class="hs">по телу, линия с комиссией</div></div>
+      <div class="cfo-hcard"><div class="hl">Проценты / мес</div><div class="hv">~420 тыс</div><div class="hs">плата за деньги, не тело</div></div>
+    </div>
+    <div class="cfo-scroll">
+      <table class="cfo-table" style="min-width:0">
+        <thead><tr>
+          <th>Кредит</th><th>Тело</th><th>Платёж</th><th>Дата</th><th>Ставка</th><th>Закрытие</th>
+        </tr></thead>
+        <tbody>${rows}
+          <tr>
+            <td><b>Итого</b></td>
+            <td style="text-align:right"><b>${fmtMoney(body)}</b></td>
+            <td style="text-align:right"><b>${fmtMoney(pay)}</b></td>
+            <td></td><td></td><td></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cfo-hint">Сбер бизнес #1 закрыт. Займы 2 и 5 млн — только проценты, тело не уменьшается. Тело ВТБ #2 и Альфы #2 оценочное.</div>`;
+}
+
 function drawCfo() {
+  drawCfoPortfolio();
   const d = CFO_DATA || {};
   const cards = document.getElementById('cfoCards');
   const root = document.getElementById('cfoRoot');
@@ -14049,6 +14247,7 @@ function drawCfo() {
   const h = t.health || {};
 
   root.innerHTML = `
+    ${cfoSuppliersHtml()}
     <div class="cfo-box">
       <h3>Границы безопасности</h3>
       <table class="cfo-floors">
@@ -14082,7 +14281,7 @@ function drawCfo() {
       </div>
       <div class="cfo-box">
         <h3>Пассивы и P&amp;L периода</h3>
-        ${cfoField('suppliers', 'Долг поставщикам', d.suppliers)}
+        <div class="cfo-hint" style="margin-bottom:8px">Долг поставщикам: <b>${fmtMoney(d.suppliers)}</b> — сумма карточек выше.</div>
         ${cfoField('realization_month', 'Реализация / мес (WB+Ozon)', d.realization_month)}
         ${cfoField('pnl_wb', 'ЧП WB (дашборд)', d.pnl_wb)}
         ${cfoField('pnl_ozon', 'ЧП Ozon (дашборд)', d.pnl_ozon)}
@@ -14175,6 +14374,115 @@ function drawCfoSituation() {
     verdEl.style.display = 'block';
     verdEl.textContent = text;
   }
+}
+
+const CFO_SUPPLIER_SEED = [
+  {id:'sup_huan', name:'Хуан', debt:9870800, models:[{id:'m1', name:'S11 middle, все цвета', qty:0, cost:0}]},
+  {id:'sup_alihan', name:'Алихан', debt:10040140, models:[{id:'m1', name:'Все часы LK', qty:0, cost:0}]},
+  {id:'sup_adam', name:'Адам', debt:361730, models:[]},
+  {id:'sup_davlat', name:'Давлат', debt:1497000, models:[]},
+  {id:'sup_ahmad', name:'Ахмад', debt:882130, models:[{id:'m1', name:'035 grey', qty:0, cost:0}]},
+  {id:'sup_amir', name:'Амир', debt:1331500, models:[
+    {id:'m1', name:'039 GS mini, все цвета', qty:0, cost:0},
+    {id:'m2', name:'042 pink', qty:0, cost:0},
+  ]},
+];
+
+function ensureSupplierParties() {
+  if(!CFO_DATA || CFO_DATA.error) return;
+  if(!Array.isArray(CFO_DATA.supplier_parties)) {
+    CFO_DATA.supplier_parties = JSON.parse(JSON.stringify(CFO_SUPPLIER_SEED));
+  }
+  const debt = CFO_DATA.supplier_parties.reduce((s, p) => s + cfoNum(p.debt), 0);
+  CFO_DATA.suppliers = Math.round(debt * 100) / 100;
+}
+
+function cfoSupplierGoods(party) {
+  return (party.models || []).reduce((s, m) => s + cfoNum(m.cost), 0);
+}
+
+function cfoSuppliersHtml() {
+  ensureSupplierParties();
+  const parties = (CFO_DATA && CFO_DATA.supplier_parties) || [];
+  const debt = parties.reduce((s, p) => s + cfoNum(p.debt), 0);
+  const goods = parties.reduce((s, p) => s + cfoSupplierGoods(p), 0);
+  const cards = parties.map((p, i) => {
+    const g = cfoSupplierGoods(p);
+    const cash = cfoNum(p.debt) - g;
+    const models = (p.models || []).map((m, j) => `
+      <div class="cfo-recv-row">
+        <input class="cfo-inp" placeholder="Модель" value="${escapeHtml(m.name || '')}" oninput="onCfoSupplierModel(${i},${j},'name',this.value)">
+        <input class="cfo-inp cfo-num" style="max-width:90px" type="number" step="1" placeholder="шт" value="${cfoNum(m.qty) || ''}" oninput="onCfoSupplierModel(${i},${j},'qty',this.value)">
+        <input class="cfo-inp cfo-num" style="max-width:130px" type="number" step="1" placeholder="себес ₽" value="${cfoNum(m.cost) || ''}" oninput="onCfoSupplierModel(${i},${j},'cost',this.value)">
+        <button class="cfo-del" onclick="removeCfoSupplierModel(${i},${j})" title="Убрать модель">✕</button>
+      </div>`).join('');
+    return `<div class="cfo-box" style="margin-bottom:10px">
+      <div class="cfo-recv-row">
+        <input class="cfo-inp" value="${escapeHtml(p.name || '')}" oninput="onCfoSupplier(${i},'name',this.value)">
+        <input class="cfo-inp cfo-num" style="max-width:150px" type="number" step="1" placeholder="долг ₽" value="${cfoNum(p.debt) || ''}" oninput="onCfoSupplier(${i},'debt',this.value)">
+        <button class="cfo-del" onclick="removeCfoSupplier(${i})" title="Убрать поставщика">✕</button>
+      </div>
+      <div class="cfo-hint">В товаре <b>${fmtMoney(g)}</b> · в деньгах <b>${fmtMoney(cash)}</b>. Себес модели — сколько этого товара ещё лежит у тебя по закупке.</div>
+      <div class="cfo-recv-list" style="margin-top:8px">${models}</div>
+      <button class="action-btn" style="margin-top:8px;padding:2px 8px;font-size:11px" onclick="addCfoSupplierModel(${i})">+ Модель</button>
+    </div>`;
+  }).join('');
+  return `<div class="cfo-box">
+    <h3>Поставщики <button class="action-btn" style="margin-left:8px;padding:2px 8px;font-size:11px" onclick="addCfoSupplier()">+ Поставщик</button></h3>
+    <div class="cfo-health">
+      <div class="cfo-hcard"><div class="hl">Долг</div><div class="hv">${fmtMoney(debt)}</div></div>
+      <div class="cfo-hcard"><div class="hl">В товаре</div><div class="hv">${fmtMoney(goods)}</div><div class="hs">себес привязанных моделей</div></div>
+      <div class="cfo-hcard"><div class="hl">В деньгах</div><div class="hv">${fmtMoney(debt - goods)}</div><div class="hs">долг минус себес товара</div></div>
+    </div>
+    ${cards}
+    <div class="cfo-hint">Долг поставщикам в балансе считается как сумма этих карточек. Пока себес модели не вписан, вся сумма висит «в деньгах».</div>
+  </div>`;
+}
+
+function onCfoSupplier(i, key, val) {
+  ensureSupplierParties();
+  const p = CFO_DATA.supplier_parties[i];
+  if(!p) return;
+  p[key] = key === 'name' ? val : cfoNum(val);
+  if(key === 'name') return;
+  CFO_DATA.suppliers = CFO_DATA.supplier_parties.reduce((s, x) => s + cfoNum(x.debt), 0);
+  drawCfo();
+}
+
+function onCfoSupplierModel(i, j, key, val) {
+  ensureSupplierParties();
+  const m = (CFO_DATA.supplier_parties[i].models || [])[j];
+  if(!m) return;
+  m[key] = key === 'name' ? val : cfoNum(val);
+  if(key !== 'cost') return;
+  drawCfo();
+}
+
+function addCfoSupplier() {
+  ensureSupplierParties();
+  CFO_DATA.supplier_parties.push({id:'sup_'+Date.now(), name:'', debt:0, models:[]});
+  drawCfo();
+}
+
+function removeCfoSupplier(i) {
+  ensureSupplierParties();
+  CFO_DATA.supplier_parties.splice(i, 1);
+  CFO_DATA.suppliers = CFO_DATA.supplier_parties.reduce((s, x) => s + cfoNum(x.debt), 0);
+  drawCfo();
+}
+
+function addCfoSupplierModel(i) {
+  ensureSupplierParties();
+  const p = CFO_DATA.supplier_parties[i];
+  if(!p.models) p.models = [];
+  p.models.push({id:'m_'+Date.now(), name:'', qty:0, cost:0});
+  drawCfo();
+}
+
+function removeCfoSupplierModel(i, j) {
+  ensureSupplierParties();
+  CFO_DATA.supplier_parties[i].models.splice(j, 1);
+  drawCfo();
 }
 
 function cfoField(key, label, val, type) {
@@ -14282,6 +14590,12 @@ async function saveCfoSnapshot() {
     wb_compensation_pending: cfoNum(CFO_DATA.wb_compensation_pending),
     wb_receivables: (CFO_DATA.wb_receivables || []).map(cfoNum),
     ozon_receivables: (CFO_DATA.ozon_receivables || []).map(cfoNum),
+    supplier_parties: (CFO_DATA.supplier_parties || []).map(p => ({
+      id: p.id, name: p.name || '', debt: cfoNum(p.debt),
+      models: (p.models || []).map(m => ({
+        id: m.id, name: m.name || '', qty: cfoNum(m.qty), cost: cfoNum(m.cost),
+      })),
+    })),
     loans: (CFO_DATA.loans || []).map(l => ({
       id: l.id, name: l.name, contract: l.contract || '',
       balance: cfoNum(l.balance), rate: cfoNum(l.rate), payment: cfoNum(l.payment),
