@@ -14139,6 +14139,24 @@ async function loadCfo(force) {
   } catch(e) {
     CFO_DATA = {error: e.message};
   }
+  // себес и остатки «Наш склад» для блока поставщиков
+  try {
+    if(force || !FINANCE_DATA || FINANCE_DATA.error) {
+      const fr = await fetch(`${RAILWAY_URL}/api/finance`);
+      FINANCE_DATA = await fr.json();
+    }
+  } catch(e) { /* leave as-is */ }
+  try {
+    if(force || !OWN_WH_LOADED) {
+      const or_ = await fetch(`${RAILWAY_URL}/api/own-warehouse-stock`);
+      const od = await or_.json();
+      if(od && !od.error) {
+        OWN_WH = {...OWN_WH, ...od, error: null};
+        if(od.by_vendor) OWN_WH_BY_VENDOR = od.by_vendor;
+        OWN_WH_LOADED = true;
+      }
+    }
+  } catch(e) { /* leave as-is */ }
   drawCfo();
 }
 
@@ -14377,14 +14395,14 @@ function drawCfoSituation() {
 }
 
 const CFO_SUPPLIER_SEED = [
-  {id:'sup_huan', name:'Хуан', debt:9870800, models:[{id:'m1', name:'S11 middle, все цвета', qty:0, cost:0}]},
-  {id:'sup_alihan', name:'Алихан', debt:10040140, models:[{id:'m1', name:'Все часы LK', qty:0, cost:0}]},
+  {id:'sup_huan', name:'Хуан', debt:9870800, models:[{id:'m1', name:'S11 middle, все цвета', vendor_code:'', qty:0, unit_cost:0, cost:0}]},
+  {id:'sup_alihan', name:'Алихан', debt:10040140, models:[{id:'m1', name:'Все часы LK', vendor_code:'', qty:0, unit_cost:0, cost:0}]},
   {id:'sup_adam', name:'Адам', debt:361730, models:[]},
   {id:'sup_davlat', name:'Давлат', debt:1497000, models:[]},
-  {id:'sup_ahmad', name:'Ахмад', debt:882130, models:[{id:'m1', name:'035 grey', qty:0, cost:0}]},
+  {id:'sup_ahmad', name:'Ахмад', debt:882130, models:[{id:'m1', name:'035 grey', vendor_code:'', qty:0, unit_cost:0, cost:0}]},
   {id:'sup_amir', name:'Амир', debt:1331500, models:[
-    {id:'m1', name:'039 GS mini, все цвета', qty:0, cost:0},
-    {id:'m2', name:'042 pink', qty:0, cost:0},
+    {id:'m1', name:'039 GS mini, все цвета', vendor_code:'', qty:0, unit_cost:0, cost:0},
+    {id:'m2', name:'042 pink', vendor_code:'', qty:0, unit_cost:0, cost:0},
   ]},
 ];
 
@@ -14393,8 +14411,115 @@ function ensureSupplierParties() {
   if(!Array.isArray(CFO_DATA.supplier_parties)) {
     CFO_DATA.supplier_parties = JSON.parse(JSON.stringify(CFO_SUPPLIER_SEED));
   }
+  CFO_DATA.supplier_parties.forEach(p => {
+    (p.models || []).forEach(m => {
+      if(m.vendor_code == null) m.vendor_code = '';
+      if(m.unit_cost == null) m.unit_cost = 0;
+    });
+  });
   const debt = CFO_DATA.supplier_parties.reduce((s, p) => s + cfoNum(p.debt), 0);
   CFO_DATA.suppliers = Math.round(debt * 100) / 100;
+}
+
+/** Артикулы «Наш склад» + себес из финансов: vc → {vendor_code,name,qty,unit_cost,cost} */
+function cfoOwnWhArticleMap() {
+  const map = {};
+  const put = (vc, patch) => {
+    const key = String(vc || '').trim();
+    if(!key) return;
+    const k = key.toLowerCase();
+    const prev = map[k] || {vendor_code: key, name: '', qty: 0, unit_cost: null, cost: 0};
+    map[k] = {...prev, ...patch, vendor_code: patch.vendor_code || prev.vendor_code || key};
+  };
+  // FINANCE own rows — qty + cost + value
+  (((FINANCE_DATA || {}).own || {}).rows || []).forEach(r => {
+    const vc = String(r.vendor_code || '').trim();
+    if(!vc) return;
+    const qty = Number(r.qty || 0);
+    const unit = r.cost != null ? Number(r.cost) : null;
+    const value = r.value != null ? Number(r.value) : (unit != null ? unit * qty : 0);
+    put(vc, {vendor_code: vc, name: r.name || '', qty, unit_cost: unit, cost: value});
+  });
+  // unit cost from full cost list if missing
+  ((FINANCE_DATA || {}).costs || []).forEach(c => {
+    const vc = String(c.vendor_code || '').trim();
+    if(!vc) return;
+    const k = vc.toLowerCase();
+    const unit = c.cost != null ? Number(c.cost) : null;
+    if(unit == null) return;
+    if(!map[k]) put(vc, {vendor_code: vc, name: '', qty: 0, unit_cost: unit, cost: 0});
+    else if(map[k].unit_cost == null) {
+      map[k].unit_cost = unit;
+      map[k].cost = unit * Number(map[k].qty || 0);
+    }
+  });
+  // OWN_WH rows — stock qty / names
+  ((OWN_WH && OWN_WH.rows) || []).forEach(r => {
+    const vc = String(r.vendor_code || '').trim();
+    if(!vc) return;
+    const k = vc.toLowerCase();
+    const qty = Number(r.stock || 0);
+    const name = r.model_name || r.name || '';
+    if(!map[k]) put(vc, {vendor_code: vc, name, qty, unit_cost: null, cost: 0});
+    else {
+      if(!map[k].name && name) map[k].name = name;
+      // finance qty предпочтительнее, но если 0 — возьмём склад
+      if(!(map[k].qty > 0) && qty > 0) {
+        map[k].qty = qty;
+        if(map[k].unit_cost != null) map[k].cost = map[k].unit_cost * qty;
+      }
+    }
+  });
+  return map;
+}
+
+function cfoOwnWhArticleList() {
+  const map = cfoOwnWhArticleMap();
+  return Object.values(map).sort((a, b) => String(a.vendor_code).localeCompare(String(b.vendor_code), 'ru'));
+}
+
+function cfoLookupArticle(vc) {
+  if(!vc) return null;
+  const map = cfoOwnWhArticleMap();
+  return map[String(vc).trim().toLowerCase()] || null;
+}
+
+function cfoApplyArticleToModel(m, art) {
+  if(!m || !art) return m;
+  m.vendor_code = art.vendor_code;
+  if(!m.name || m.name === m.vendor_code) m.name = art.name || art.vendor_code;
+  m.qty = Number(art.qty || 0);
+  m.unit_cost = art.unit_cost != null ? Number(art.unit_cost) : 0;
+  m.cost = art.cost != null ? Number(art.cost) : Math.round((m.unit_cost || 0) * (m.qty || 0) * 100) / 100;
+  return m;
+}
+
+/** Подтянуть qty/себес с «Наш склад» + файл себестоимости для привязанных артикулов */
+function cfoSyncSupplierModelsFromOwnWh() {
+  ensureSupplierParties();
+  let changed = false;
+  (CFO_DATA.supplier_parties || []).forEach(p => {
+    (p.models || []).forEach(m => {
+      const vc = String(m.vendor_code || '').trim();
+      if(!vc) return;
+      const art = cfoLookupArticle(vc);
+      if(!art) return;
+      const nextQty = Number(art.qty || 0);
+      const nextUnit = art.unit_cost != null ? Number(art.unit_cost) : Number(m.unit_cost || 0);
+      const nextCost = art.unit_cost != null
+        ? Math.round(nextUnit * nextQty * 100) / 100
+        : Number(m.cost || 0);
+      if(m.qty !== nextQty || m.unit_cost !== nextUnit || m.cost !== nextCost || m.vendor_code !== art.vendor_code) {
+        m.vendor_code = art.vendor_code;
+        m.qty = nextQty;
+        m.unit_cost = nextUnit;
+        m.cost = nextCost;
+        if(!m.name) m.name = art.name || art.vendor_code;
+        changed = true;
+      }
+    });
+  });
+  return changed;
 }
 
 function cfoSupplierGoods(party) {
@@ -14403,39 +14528,65 @@ function cfoSupplierGoods(party) {
 
 function cfoSuppliersHtml() {
   ensureSupplierParties();
+  cfoSyncSupplierModelsFromOwnWh();
   const parties = (CFO_DATA && CFO_DATA.supplier_parties) || [];
   const debt = parties.reduce((s, p) => s + cfoNum(p.debt), 0);
   const goods = parties.reduce((s, p) => s + cfoSupplierGoods(p), 0);
+  const arts = cfoOwnWhArticleList();
+  const datalist = `<datalist id="cfoOwnWhArts">${arts.map(a => {
+    const label = a.unit_cost != null
+      ? `${a.vendor_code} · ${a.qty||0} шт · ${Math.round(a.unit_cost)} ₽`
+      : `${a.vendor_code} · ${a.qty||0} шт`;
+    return `<option value="${escapeHtml(a.vendor_code)}">${escapeHtml(label)}</option>`;
+  }).join('')}</datalist>`;
   const cards = parties.map((p, i) => {
     const g = cfoSupplierGoods(p);
     const cash = cfoNum(p.debt) - g;
-    const models = (p.models || []).map((m, j) => `
-      <div class="cfo-recv-row">
-        <input class="cfo-inp" placeholder="Модель" value="${escapeHtml(m.name || '')}" oninput="onCfoSupplierModel(${i},${j},'name',this.value)">
-        <input class="cfo-inp cfo-num" style="max-width:90px" type="number" step="1" placeholder="шт" value="${cfoNum(m.qty) || ''}" oninput="onCfoSupplierModel(${i},${j},'qty',this.value)">
-        <input class="cfo-inp cfo-num" style="max-width:130px" type="number" step="1" placeholder="себес ₽" value="${cfoNum(m.cost) || ''}" oninput="onCfoSupplierModel(${i},${j},'cost',this.value)">
-        <button class="cfo-del" onclick="removeCfoSupplierModel(${i},${j})" title="Убрать модель">✕</button>
-      </div>`).join('');
+    const models = (p.models || []).map((m, j) => {
+      const vc = String(m.vendor_code || '').trim();
+      const linked = vc ? cfoLookupArticle(vc) : null;
+      const hint = linked
+        ? `${linked.qty||0} шт на нашем складе` + (linked.unit_cost != null ? ` · себес ${fmtMoney(linked.unit_cost)}/шт` : ' · нет себеса')
+        : (vc ? 'артикул не найден на «Наш склад»' : 'выбери артикул с «Наш склад»');
+      return `
+      <div class="cfo-box" style="margin:0 0 8px;padding:10px 12px;background:#FAFAF8">
+        <div class="cfo-recv-row">
+          <input class="cfo-inp" list="cfoOwnWhArts" placeholder="артикул, напр. 042s11middle gold" value="${escapeHtml(vc)}"
+            onchange="onCfoSupplierArticle(${i},${j},this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}">
+          <button class="cfo-del" onclick="removeCfoSupplierModel(${i},${j})" title="Убрать">✕</button>
+        </div>
+        <div class="cfo-hint" style="margin:4px 0 6px">${escapeHtml(hint)}${m.name && m.name !== vc ? ' · ' + escapeHtml(m.name) : ''}</div>
+        <div class="cfo-recv-row">
+          <label style="font-size:11px;color:var(--wb-muted);min-width:52px">шт</label>
+          <input class="cfo-inp cfo-num" style="max-width:90px" type="number" step="1" value="${cfoNum(m.qty) || ''}" oninput="onCfoSupplierModel(${i},${j},'qty',this.value)">
+          <label style="font-size:11px;color:var(--wb-muted);min-width:70px">себес/шт</label>
+          <input class="cfo-inp cfo-num" style="max-width:110px" type="number" step="1" value="${cfoNum(m.unit_cost) || ''}" oninput="onCfoSupplierModel(${i},${j},'unit_cost',this.value)">
+          <label style="font-size:11px;color:var(--wb-muted);min-width:48px">сумма</label>
+          <input class="cfo-inp cfo-num" style="max-width:130px;font-weight:700" type="number" step="1" value="${cfoNum(m.cost) || ''}" oninput="onCfoSupplierModel(${i},${j},'cost',this.value)">
+        </div>
+      </div>`;
+    }).join('');
     return `<div class="cfo-box" style="margin-bottom:10px">
       <div class="cfo-recv-row">
         <input class="cfo-inp" value="${escapeHtml(p.name || '')}" oninput="onCfoSupplier(${i},'name',this.value)">
         <input class="cfo-inp cfo-num" style="max-width:150px" type="number" step="1" placeholder="долг ₽" value="${cfoNum(p.debt) || ''}" oninput="onCfoSupplier(${i},'debt',this.value)">
         <button class="cfo-del" onclick="removeCfoSupplier(${i})" title="Убрать поставщика">✕</button>
       </div>
-      <div class="cfo-hint">В товаре <b>${fmtMoney(g)}</b> · в деньгах <b>${fmtMoney(cash)}</b>. Себес модели — сколько этого товара ещё лежит у тебя по закупке.</div>
-      <div class="cfo-recv-list" style="margin-top:8px">${models}</div>
-      <button class="action-btn" style="margin-top:8px;padding:2px 8px;font-size:11px" onclick="addCfoSupplierModel(${i})">+ Модель</button>
+      <div class="cfo-hint">В товаре <b>${fmtMoney(g)}</b> · в деньгах <b>${fmtMoney(cash)}</b>. Артикулы и себес — с вкладки «Наш склад» / файла себестоимости.</div>
+      <div style="margin-top:8px">${models || '<div class="cfo-hint">Нет артикулов — добавь с «Наш склад»</div>'}</div>
+      <button class="action-btn" style="margin-top:8px;padding:2px 8px;font-size:11px" onclick="addCfoSupplierModel(${i})">+ Артикул с нашего склада</button>
     </div>`;
   }).join('');
   return `<div class="cfo-box">
     <h3>Поставщики <button class="action-btn" style="margin-left:8px;padding:2px 8px;font-size:11px" onclick="addCfoSupplier()">+ Поставщик</button></h3>
     <div class="cfo-health">
       <div class="cfo-hcard"><div class="hl">Долг</div><div class="hv">${fmtMoney(debt)}</div></div>
-      <div class="cfo-hcard"><div class="hl">В товаре</div><div class="hv">${fmtMoney(goods)}</div><div class="hs">себес привязанных моделей</div></div>
+      <div class="cfo-hcard"><div class="hl">В товаре</div><div class="hv">${fmtMoney(goods)}</div><div class="hs">себес артикулов на нашем складе</div></div>
       <div class="cfo-hcard"><div class="hl">В деньгах</div><div class="hv">${fmtMoney(debt - goods)}</div><div class="hs">долг минус себес товара</div></div>
     </div>
+    ${datalist}
     ${cards}
-    <div class="cfo-hint">Долг поставщикам в балансе считается как сумма этих карточек. Пока себес модели не вписан, вся сумма висит «в деньгах».</div>
+    <div class="cfo-hint">Долг поставщикам в балансе = сумма карточек. Выбери артикул как на «Наш склад» (например <b>042s11middle gold</b>) — подтянутся остаток и себес. Пока артикул не выбран, сумма висит «в деньгах».</div>
   </div>`;
 }
 
@@ -14449,12 +14600,34 @@ function onCfoSupplier(i, key, val) {
   drawCfo();
 }
 
+function onCfoSupplierArticle(i, j, raw) {
+  ensureSupplierParties();
+  const m = (CFO_DATA.supplier_parties[i].models || [])[j];
+  if(!m) return;
+  const vc = String(raw || '').trim();
+  m.vendor_code = vc;
+  const art = cfoLookupArticle(vc);
+  if(art) cfoApplyArticleToModel(m, art);
+  else {
+    m.qty = cfoNum(m.qty);
+    m.unit_cost = cfoNum(m.unit_cost);
+    m.cost = Math.round(cfoNum(m.unit_cost) * cfoNum(m.qty) * 100) / 100;
+  }
+  drawCfo();
+}
+
 function onCfoSupplierModel(i, j, key, val) {
   ensureSupplierParties();
   const m = (CFO_DATA.supplier_parties[i].models || [])[j];
   if(!m) return;
-  m[key] = key === 'name' ? val : cfoNum(val);
-  if(key !== 'cost') return;
+  if(key === 'name' || key === 'vendor_code') {
+    m[key] = val;
+    return;
+  }
+  m[key] = cfoNum(val);
+  if(key === 'qty' || key === 'unit_cost') {
+    m.cost = Math.round(cfoNum(m.unit_cost) * cfoNum(m.qty) * 100) / 100;
+  }
   drawCfo();
 }
 
@@ -14475,7 +14648,7 @@ function addCfoSupplierModel(i) {
   ensureSupplierParties();
   const p = CFO_DATA.supplier_parties[i];
   if(!p.models) p.models = [];
-  p.models.push({id:'m_'+Date.now(), name:'', qty:0, cost:0});
+  p.models.push({id:'m_'+Date.now(), name:'', vendor_code:'', qty:0, unit_cost:0, cost:0});
   drawCfo();
 }
 
@@ -14593,7 +14766,12 @@ async function saveCfoSnapshot() {
     supplier_parties: (CFO_DATA.supplier_parties || []).map(p => ({
       id: p.id, name: p.name || '', debt: cfoNum(p.debt),
       models: (p.models || []).map(m => ({
-        id: m.id, name: m.name || '', qty: cfoNum(m.qty), cost: cfoNum(m.cost),
+        id: m.id,
+        name: m.name || '',
+        vendor_code: m.vendor_code || '',
+        qty: cfoNum(m.qty),
+        unit_cost: cfoNum(m.unit_cost),
+        cost: cfoNum(m.cost),
       })),
     })),
     loans: (CFO_DATA.loans || []).map(l => ({
