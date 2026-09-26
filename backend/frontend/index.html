@@ -14278,49 +14278,6 @@ function drawCfo() {
 
   root.innerHTML = `
     ${cfoSuppliersHtml()}
-    <div class="cfo-box">
-      <h3>Границы безопасности</h3>
-      <table class="cfo-floors">
-        <thead><tr><th>Показатель</th><th>Сейчас</th><th>Граница</th><th>Статус</th></tr></thead>
-        <tbody>
-          <tr><td class="cfo-tip" data-tip="${escTip(CFO_TIPS.cash)}">Кэш на счёте</td><td>${fmtMoney(t.cash)}</td><td>${fmtMoney(h.cash_floor)}</td><td>${cfoPill((h.floors||{}).cash)}</td></tr>
-          <tr><td class="cfo-tip" data-tip="${escTip(CFO_TIPS.coverage)}">Interest coverage</td><td>${h.interest_coverage != null ? h.interest_coverage + '×' : '—'}</td><td>≥ 3×</td><td>${cfoPill((h.floors||{}).coverage)}</td></tr>
-          <tr><td class="cfo-tip" data-tip="${escTip(CFO_TIPS.current_ratio)}">Current ratio</td><td>${t.current_ratio != null ? t.current_ratio : '—'}</td><td>≥ 1.1</td><td>${cfoPill((h.floors||{}).current_ratio)}</td></tr>
-          <tr><td class="cfo-tip" data-tip="${escTip(CFO_TIPS.margin)}">Маржа от реализации</td><td>${h.margin_channels_pct != null ? h.margin_channels_pct + '%' : '—'}</td><td>≥ ${h.target_margin_pct}%</td><td>${cfoPill((h.floors||{}).margin)}</td></tr>
-          <tr><td class="cfo-tip" data-tip="${escTip(CFO_TIPS.avg_rate)}">Средняя ставка банков</td><td>${h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—'}</td><td>≤ 25% (потолок)</td><td>${cfoPill((h.floors||{}).avg_rate, 'ceiling')}</td></tr>
-          <tr><td class="cfo-tip" data-tip="${escTip(CFO_TIPS.realization)}">Реализация / мес</td><td>${fmtMoney(t.realization)}</td><td>${fmtMoney(h.min_realization_for_salary_interest)} (ЗП+% при марже ${h.target_margin_pct}%)</td><td>${cfoPill((h.floors||{}).realization)}</td></tr>
-        </tbody>
-      </table>
-      <div class="cfo-hint">
-        При марже ${h.target_margin_pct}% нельзя опускать реализацию ниже <b>${fmtMoney(h.min_realization_for_salary_interest)}</b>
-        (чтобы хватило на ЗП + проценты). Чтобы тянуть ещё полный платёж банкам — ниже
-        <b>${fmtMoney(h.min_realization_for_debt_service)}</b>. ЧП каналов минимум
-        <b>${fmtMoney(h.min_pnl_channels_salary_interest)}</b> (ЗП+%), для кассы с полным платежом —
-        <b>${fmtMoney(h.min_pnl_channels_debt_service)}</b>.
-      </div>
-    </div>
-    <div class="cfo-grid">
-      <div class="cfo-box">
-        <h3>Активы</h3>
-        ${cfoField('cash', 'Деньги на р/с', d.cash)}
-        ${cfoField('inventory_wb_own', 'Товар склады (WB/свой)', d.inventory_wb_own)}
-        ${cfoField('inventory_transit', 'Товар в пути', d.inventory_transit)}
-        ${cfoField('inventory_ozon', 'Товар Ozon (себес)', d.inventory_ozon)}
-        ${cfoField('wb_compensation_pending', 'Компенсация WB (пожар, ждём)', d.wb_compensation_pending)}
-        <div class="cfo-hint">Итого товар: <b>${fmtMoney(t.inventory)}</b> · ДЗ МП: <b>${fmtMoney(t.mp_receivable)}</b>. Компенсацию в кэш не считаем, пока не пришла.</div>
-      </div>
-      <div class="cfo-box">
-        <h3>Пассивы и P&amp;L периода</h3>
-        <div class="cfo-hint" style="margin-bottom:8px">Долг поставщикам: <b>${fmtMoney(d.suppliers)}</b> — сумма карточек выше.</div>
-        ${cfoField('realization_month', 'Реализация / мес (WB+Ozon)', d.realization_month)}
-        ${cfoField('pnl_wb', 'ЧП WB (дашборд)', d.pnl_wb)}
-        ${cfoField('pnl_ozon', 'ЧП Ozon (дашборд)', d.pnl_ozon)}
-        ${cfoField('salary_month', 'ЗП сотрудников / мес', d.salary_month)}
-        ${cfoField('target_margin', 'Целевая маржа (0.15 = 15%)', d.target_margin || 0.15)}
-        ${cfoField('cash_floor', 'Пол по кэшу', d.cash_floor || 4000000)}
-        ${cfoField('as_of', 'Дата среза', d.as_of || '', 'text')}
-      </div>
-    </div>
     <div class="cfo-grid">
       <div class="cfo-box">
         <h3>Дебиторка WB <button class="action-btn" style="margin-left:8px;padding:2px 8px;font-size:11px" onclick="addCfoRecv('wb')">+</button></h3>
