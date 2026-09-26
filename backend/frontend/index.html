@@ -246,6 +246,12 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .cfo-recv-row .cfo-inp{flex:1}
 .cfo-del{border:none;background:transparent;color:var(--wb-faint);cursor:pointer;font-size:14px;padding:4px 6px}
 .cfo-del:hover{color:var(--red)}
+.pnl-opex td{background:var(--wb-purple-light)}
+.pnl-opex tr td:first-child{border-left:2px solid var(--wb-purple)}
+.pnl-opex tr td:last-child{border-right:2px solid var(--wb-purple)}
+.pnl-opex tr:first-child td{border-top:2px solid var(--wb-purple)}
+.pnl-opex tr:last-child td{border-bottom:2px solid var(--wb-purple)}
+.pnl-opex .pnl-opex-head{position:sticky;left:0;display:inline-flex;align-items:center;gap:12px;font-weight:600;font-size:13px;padding:4px 2px}
 .cfo-check{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--wb-muted);white-space:nowrap}
 .cfo-scroll{overflow-x:auto}
 .cfo-health{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:14px}
@@ -13124,8 +13130,11 @@ function onPnlOpexName(id, val) {
 }
 function addPnlOpex() {
   const lines = pnlOpexLines();
-  lines.push({id:'ox_'+Date.now(), name:'', by:{}});
+  const id = 'ox_' + Date.now();
+  lines.push({id, name:'', by:{}});
   savePnlOpex(lines);
+  const inp = document.querySelector(`#pnlRoot input[data-pnl-name="${id}"]`);
+  if(inp) inp.focus();
 }
 function removePnlOpex(id) {
   const lines = pnlOpexLines().filter(l => l.id !== id);
@@ -13161,7 +13170,7 @@ function drawPnl() {
   const opexRows = lines.map(l => {
     const tds = colIds.map(id => `<td><input class="cfo-inp cfo-num" style="width:110px" type="number" step="1" value="${cfoNum((l.by||{})[id]) || ''}" onchange="onPnlOpex('${l.id}','${id}',this.value)"></td>`).join('');
     return `<tr>
-      <td><input class="cfo-inp" value="${escapeHtml(l.name || '')}" placeholder="Название расхода" onchange="onPnlOpexName('${l.id}',this.value)"></td>
+      <td><input class="cfo-inp" style="width:200px" data-pnl-name="${l.id}" value="${escapeHtml(l.name || '')}" placeholder="Название расхода" onchange="onPnlOpexName('${l.id}',this.value)"></td>
       ${tds}
       <td><button class="cfo-del" onclick="removePnlOpex('${l.id}')">✕</button></td>
     </tr>`;
@@ -13174,7 +13183,6 @@ function drawPnl() {
   root.innerHTML = `
     <div class="cfo-actions">
       <label style="font-size:13px">Месяц <select class="cfo-inp" onchange="setPnlMonth(this.value)">${months}</select></label>
-      <button class="action-btn" onclick="addPnlOpex()">+ Расход</button>
     </div>
     <div class="cfo-health">
       <div class="cfo-hcard"><div class="hl">Сумма продаж</div><div class="hv">${money(val('sales',0))}</div></div>
@@ -13198,16 +13206,20 @@ function drawPnl() {
           ${ro('fines')}
           ${ro('hold')}
           ${ro('extra')}
-          <tr><td colspan="${colIds.length+2}" style="font-weight:600;padding-top:10px">Операционные расходы</td></tr>
+        </tbody>
+        <tbody class="pnl-opex">
+          <tr><td colspan="${colIds.length+2}"><div class="pnl-opex-head">Операционные расходы<button class="action-btn" onclick="addPnlOpex()">+ Добавить строку</button></div></td></tr>
           ${opexRows}
-          <tr><td>Итого операционные</td>${totalOpex}<td></td></tr>
+          <tr><td><b>Итого операционные</b></td>${totalOpex}<td></td></tr>
+        </tbody>
+        <tbody>
           ${calcRow('Операционная прибыль', op, true)}
           ${ro('tax')}
           ${calcRow('Чистая прибыль', net, true)}
         </tbody>
       </table>
     </div>
-    <div class="cfo-hint">Продажи, прямые расходы и налог — из файла. Операционные строки можно менять и добавлять: прибыль пересчитывается. Первая строка — то, что уже было в отчёте. Налог оставлен как в файле.</div>`;
+    <div class="cfo-hint">Продажи, прямые расходы и налог — из файла. Строки в рамке — операционные расходы: добавляй свои, называй как угодно, меняй суммы — прибыль пересчитается. Первая строка — то, что уже было в отчёте. Налог оставлен как в файле.</div>`;
 }
 
 function setFinMode(mode) {
