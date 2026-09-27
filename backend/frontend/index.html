@@ -1938,6 +1938,20 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
     </div>
 
     <div id="finPnlPanel" style="display:none">
+      <div class="cfo-actions" style="flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <select class="cfo-inp" id="pnlCabinetSelect" onchange="onPnlCabinetChange(this.value)" style="min-width:160px">
+          <option value="">Нет загруженных ОПИУ</option>
+        </select>
+        <select class="cfo-inp" id="pnlUploadTarget" title="Куда загрузить файл" style="min-width:140px">
+          <option value="ozon_new">Новый кабинет Ozon</option>
+          <option value="wb">WB</option>
+        </select>
+        <button class="action-btn primary" onclick="document.getElementById('pnlFileInput').click()">⬆ Загрузить opiy.xlsx</button>
+        <input type="file" id="pnlFileInput" accept=".xlsx,.xls" style="display:none" onchange="uploadPnlOpiy(this.files[0])">
+        <button class="action-btn" onclick="deletePnlCabinet()" title="Удалить текущий кабинет">✕ Удалить</button>
+        <span class="cfo-status" id="pnlStatus"></span>
+      </div>
+      <div class="cfo-hint" style="margin-bottom:10px">Формат: Excel <b>opiy.xlsx</b> (лист PnL, статьи × месяцы/недели). Каждый кабинет Ozon — отдельная загрузка. Можно смотреть «Все Ozon» или «WB + Ozon».</div>
       <div id="pnlRoot"></div>
     </div>
   </div>
@@ -13086,6 +13100,16 @@ function renderFinance() {
 
 const PNL_BASE = {"cols":[{"id":"c0","label":"Сентябрь 2026","short":"Месяц","week":false},{"id":"c1","label":"Неделя 1 (01.09-07.09)","short":"01.09–07.09","week":true},{"id":"c2","label":"Неделя 2 (08.09-14.09)","short":"08.09–14.09","week":true},{"id":"c3","label":"Неделя 3 (15.09-21.09)","short":"15.09–21.09","week":true},{"id":"c4","label":"Неделя 4 (22.09-24.09)","short":"22.09–24.09","week":true},{"id":"c5","label":"Август 2026","short":"Месяц","week":false},{"id":"c6","label":"Неделя 1 (01.08-07.08)","short":"01.08–07.08","week":true},{"id":"c7","label":"Неделя 2 (08.08-14.08)","short":"08.08–14.08","week":true},{"id":"c8","label":"Неделя 3 (15.08-21.08)","short":"15.08–21.08","week":true},{"id":"c9","label":"Неделя 4 (22.08-28.08)","short":"22.08–28.08","week":true},{"id":"c10","label":"Неделя 5 (29.08-31.08)","short":"29.08–31.08","week":true},{"id":"c11","label":"Июль 2026","short":"Месяц","week":false},{"id":"c12","label":"Неделя 1 (01.07-07.07)","short":"01.07–07.07","week":true},{"id":"c13","label":"Неделя 2 (08.07-14.07)","short":"08.07–14.07","week":true},{"id":"c14","label":"Неделя 3 (15.07-21.07)","short":"15.07–21.07","week":true},{"id":"c15","label":"Неделя 4 (22.07-28.07)","short":"22.07–28.07","week":true},{"id":"c16","label":"Неделя 5 (29.07-31.07)","short":"29.07–31.07","week":true},{"id":"c17","label":"Июнь 2026","short":"Месяц","week":false},{"id":"c18","label":"Неделя 1 (01.06-07.06)","short":"01.06–07.06","week":true},{"id":"c19","label":"Неделя 2 (08.06-14.06)","short":"08.06–14.06","week":true},{"id":"c20","label":"Неделя 3 (15.06-21.06)","short":"15.06–21.06","week":true},{"id":"c21","label":"Неделя 4 (22.06-28.06)","short":"22.06–28.06","week":true},{"id":"c22","label":"Неделя 5 (29.06-30.06)","short":"29.06–30.06","week":true},{"id":"c23","label":"Май 2026","short":"Месяц","week":false},{"id":"c24","label":"Неделя 1 (01.05-07.05)","short":"01.05–07.05","week":true},{"id":"c25","label":"Неделя 2 (08.05-14.05)","short":"08.05–14.05","week":true},{"id":"c26","label":"Неделя 3 (15.05-21.05)","short":"15.05–21.05","week":true},{"id":"c27","label":"Неделя 4 (22.05-28.05)","short":"22.05–28.05","week":true},{"id":"c28","label":"Неделя 5 (29.05-31.05)","short":"29.05–31.05","week":true},{"id":"c29","label":"Апрель 2026","short":"Месяц","week":false},{"id":"c30","label":"Неделя 1 (01.04-07.04)","short":"01.04–07.04","week":true},{"id":"c31","label":"Неделя 2 (08.04-14.04)","short":"08.04–14.04","week":true},{"id":"c32","label":"Неделя 3 (15.04-21.04)","short":"15.04–21.04","week":true},{"id":"c33","label":"Неделя 4 (22.04-28.04)","short":"22.04–28.04","week":true},{"id":"c34","label":"Неделя 5 (29.04-30.04)","short":"29.04–30.04","week":true},{"id":"c35","label":"Март 2026","short":"Месяц","week":false},{"id":"c36","label":"Неделя 1 (01.03-07.03)","short":"01.03–07.03","week":true},{"id":"c37","label":"Неделя 2 (08.03-14.03)","short":"08.03–14.03","week":true},{"id":"c38","label":"Неделя 3 (15.03-21.03)","short":"15.03–21.03","week":true},{"id":"c39","label":"Неделя 4 (22.03-28.03)","short":"22.03–28.03","week":true},{"id":"c40","label":"Неделя 5 (29.03-31.03)","short":"29.03–31.03","week":true},{"id":"c41","label":"Февраль 2026","short":"Месяц","week":false},{"id":"c42","label":"Неделя 1 (01.02-07.02)","short":"01.02–07.02","week":true},{"id":"c43","label":"Неделя 2 (08.02-14.02)","short":"08.02–14.02","week":true},{"id":"c44","label":"Неделя 3 (15.02-21.02)","short":"15.02–21.02","week":true},{"id":"c45","label":"Неделя 4 (22.02-28.02)","short":"22.02–28.02","week":true},{"id":"c46","label":"Январь 2026","short":"Месяц","week":false},{"id":"c47","label":"Неделя 1 (01.01-07.01)","short":"01.01–07.01","week":true},{"id":"c48","label":"Неделя 2 (08.01-14.01)","short":"08.01–14.01","week":true},{"id":"c49","label":"Неделя 3 (15.01-21.01)","short":"15.01–21.01","week":true},{"id":"c50","label":"Неделя 4 (22.01-28.01)","short":"22.01–28.01","week":true},{"id":"c51","label":"Неделя 5 (29.01-31.01)","short":"29.01–31.01","week":true}],"months":[{"id":"c0","label":"Сентябрь 2026","cols":["c0","c1","c2","c3","c4"]},{"id":"c5","label":"Август 2026","cols":["c5","c6","c7","c8","c9","c10"]},{"id":"c11","label":"Июль 2026","cols":["c11","c12","c13","c14","c15","c16"]},{"id":"c17","label":"Июнь 2026","cols":["c17","c18","c19","c20","c21","c22"]},{"id":"c23","label":"Май 2026","cols":["c23","c24","c25","c26","c27","c28"]},{"id":"c29","label":"Апрель 2026","cols":["c29","c30","c31","c32","c33","c34"]},{"id":"c35","label":"Март 2026","cols":["c35","c36","c37","c38","c39","c40"]},{"id":"c41","label":"Февраль 2026","cols":["c41","c42","c43","c44","c45"]},{"id":"c46","label":"Январь 2026","cols":["c46","c47","c48","c49","c50","c51"]}],"rows":[{"k":"sales","name":"Сумма продаж","v":[21407452,5831440,6173733,6539420,2862859,26638508,6155546,5872319,5783587,6020137,2806919,31125643,6923795,7593956,7882364,5862382,2863146,27065242,6069946,6001296,6523917,6405176,2064907,21763033,4234487,4393761,4758049,5619582,2757154,16950842,3597759,3964642,4074446,4032919,1281076,25090568,8069783,6939355,4360011,4169003,1552416,19309089,2793015,4811306,5777765,5927003,10251855,2885147,2118346,2281206,2029345,937811],"q":[5552,1455,1542,1729,826,7386,1922,1627,1560,1573,704,10127,2251,2487,2528,1885,976,9321,2266,2114,2164,2093,684,7931,1480,1564,1779,2077,1031,5652,1194,1335,1350,1347,426,7824,2550,2135,1358,1279,502,6392,1006,1606,1882,1898,3755,1021,809,841,743,341],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"real","name":"Реализация","v":[29407350,7835339,8358703,9172911,4040398,36235789,8824740,7800810,7817381,8037440,3755420,45692405,10107585,11084292,11538190,8484702,4477638,39911284,9330221,8811728,9413012,9324320,3032004,32423769,6042444,6417805,7155841,8563289,4244393,24016763,5001665,5651853,5903929,5671194,1788124,35929335,11758459,9976361,6163165,5874593,2156759,28372612,4123821,7047530,8505339,8695923,14391816,4032465,3013350,3203042,2826801,1316159],"q":[5552,1455,1542,1729,826,7386,1922,1627,1560,1573,704,10127,2251,2487,2528,1885,976,9321,2266,2114,2164,2093,684,7931,1480,1564,1779,2077,1031,5652,1194,1335,1350,1347,426,7824,2550,2135,1358,1279,502,6392,1006,1606,1882,1898,3755,1021,809,841,743,341],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"direct","name":"Прямые расходы","v":[13484501,3785930,3869734,4113289,1715550,17423017,3889314,4004487,3838352,3931259,1759606,19328279,3866365,4676242,4997267,4135223,1653185,13758187,2416856,3122644,3637445,3484034,1097210,11294515,2528934,2513728,2492972,2714548,1044335,10667879,2316278,2479631,2494460,2560997,816515,13712830,4212316,3662512,2504187,2410162,923656,10109848,1526093,2400029,3050504,3133223,5475777,1452350,1088833,1244491,1138798,551306],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"cogs","name":"Себестоимость продаж","v":[6873260,1869840,1970030,2114545,918845,9379270,2332370,2069645,2020245,2027690,929320,12592370,2854445,3100990,3128245,2299655,1209035,10922905,2496245,2395330,2587750,2575840,867740,8704692,1706437,1784495,1897130,2230665,1085965,7093539,1517879,1700858,1725216,1643605,505984,10063245,3273415,2776215,1730835,1668260,614520,7923880,1154105,1985800,2367265,2416710,3922270,1068725,821035,874055,790745,367710],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[23.37,23.86,23.57,23.05,22.74,25.88,26.43,26.53,25.84,25.23,24.75,27.56,28.24,27.98,27.11,27.1,27.0,27.37,26.75,27.18,27.49,27.62,28.62,26.85,28.24,27.81,26.51,26.05,25.59,29.54,30.35,30.09,29.22,28.98,28.3,28.01,27.84,27.83,28.08,28.4,28.49,27.93,27.99,28.18,27.83,27.79,27.25,26.5,27.25,27.29,27.97,27.94]},{"k":"ads","name":"Реклама / ДРР","v":[2996544,749049,842040,1019949,385506,3070903,644626,686772,713243,732991,293271,4237710,998293,925467,975006,1053776,285168,2989889,204340,724445,948926,876111,236067,3033919,751783,764420,706271,711362,100083,3161508,645428,713970,769252,795313,237545,3435987,998570,867067,681312,645732,243306,2743412,502866,648968,800972,790606,1411872,339201,266145,325076,305012,176438],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[10.19,9.56,10.07,11.12,9.54,8.47,7.3,8.8,9.12,9.12,7.81,9.27,9.88,8.35,8.45,12.42,6.37,7.49,2.19,8.22,10.08,9.4,7.79,9.36,12.44,11.91,9.87,8.31,2.36,13.16,12.9,12.63,13.03,14.02,13.28,9.56,8.49,8.69,11.05,10.99,11.28,9.67,12.19,9.21,9.42,9.09,9.81,8.41,8.83,10.15,10.79,13.41]},{"k":"storage","name":"Хранение","v":[8067,1525,2239,2878,1427,7538,3207,1797,1147,974,415,35787,9940,9478,8585,5620,2167,39535,7548,7755,10026,11050,3158,33899,8466,7672,7284,7335,3144,37683,8671,8340,8739,9206,2729,34783,8132,7071,7631,8243,3708,19512,2896,3892,6169,6556,8222,955,1146,2514,2487,1121],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[0.03,0.02,0.03,0.03,0.04,0.02,0.04,0.02,0.01,0.01,0.01,0.08,0.1,0.09,0.07,0.07,0.05,0.1,0.08,0.09,0.11,0.12,0.1,0.1,0.14,0.12,0.1,0.09,0.07,0.16,0.17,0.15,0.15,0.16,0.15,0.1,0.07,0.07,0.12,0.14,0.17,0.07,0.07,0.06,0.07,0.08,0.06,0.02,0.04,0.08,0.09,0.09]},{"k":"accept","name":"Плат. приёмка","v":[21580,7030,6920,6500,1130,35095,5850,5530,8940,11900,2875,8995,480,870,1890,4335,1420,5400,2835,1665,510,285,105,8865,495,1500,2940,2790,1140,2100,705,330,255,375,435,15352,6206,6266,150,1065,1665,1080,240,405,180,255,2085,45,630,465,765,180],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"commission","name":"Комиссия","v":[2963290,979229,873039,784679,326344,4045513,679379,1038091,894999,978600,454445,1360808,-234703,376409,619120,547828,52155,-1179026,-542682,-232523,-130751,-191739,-81329,-1332058,-98666,-212834,-326773,-443777,-250006,-279060,9198,-92037,-160770,-34357,-1092,-691334,-347796,-220410,-66635,-57269,778,-1244647,-254120,-385713,-322707,-282106,-368460,-99143,-106730,-79685,-52594,-30305],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[10.08,12.5,10.44,8.55,8.08,11.16,7.7,13.31,11.45,12.18,12.1,2.98,null,3.4,5.37,6.46,1.16,null,null,null,null,null,null,null,null,null,null,null,null,null,0.18,null,null,null,null,null,null,null,null,null,0.04,null,null,null,null,null,null,null,null,null,null,null]},{"k":"logistics","name":"Логистика","v":[614024,179258,173211,181753,79803,860563,215359,194981,194172,179104,76948,1066003,237911,260011,252101,212741,103241,976164,246074,225729,220416,212478,71469,837671,159546,162705,200185,211865,103372,637067,134349,143676,151770,141961,65313,781896,245908,203778,138903,133629,59679,652385,117731,146677,190376,197602,491858,138848,106599,119567,90684,36163],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[2.09,2.29,2.07,1.98,1.98,2.37,2.44,2.5,2.48,2.23,2.05,2.33,2.35,2.35,2.18,2.51,2.31,2.45,2.64,2.56,2.34,2.28,2.36,2.58,2.64,2.54,2.8,2.47,2.44,2.65,2.69,2.54,2.57,2.5,3.65,2.18,2.09,2.04,2.25,2.27,2.77,2.3,2.85,2.08,2.24,2.27,3.42,3.44,3.54,3.73,3.21,2.75]},{"k":"fines","name":"Штрафы","v":[7737,0,2256,2986,2496,24136,8525,7672,5606,0,2333,26607,0,3018,12320,11270,0,3322,2499,245,569,10,0,7529,875,5771,5936,-5690,639,15045,50,4495,0,4896,5604,72902,27881,22526,11992,10503,0,14226,2375,0,8250,3601,7930,3720,10,2500,1700,0],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"hold","name":"Удержания","v":[309213,113187,82666,84577,28784,215492,0,-6734,36815,134061,51351,235574,197102,39528,7721,-8776,0,104994,43140,61854,0,0,0,27428,74715,0,0,-47287,0,43140,43140,0,0,0,0,263326,71396,9736,101675,64416,16104,228778,65710,53195,47141,62733,51216,37528,366,0,0,13323],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"extra","name":"Доплаты","v":[0,0,0,0,0,27133,0,0,4193,19471,3470,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"opex","name":"Операционные расходы","v":[0,0,0,0,0,628678,0,0,0,0,628678,1276974,0,0,0,0,1276974,983788,0,0,0,0,983788,839973,0,0,0,0,839973,1161439,0,0,0,0,1161439,2576861,0,0,4500,0,2572361,2998001,0,0,155404,2842597,2071663,0,0,4031,0,2067632],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"op","name":"Операционная прибыль","v":[7613739,1932325,2221334,2341556,1118526,8398456,2266233,1874567,1912614,1974289,370755,10284818,2860330,2878187,2877377,1735937,-67012,12218274,3609951,2816799,2886473,2921143,-16090,9601119,1630840,1880034,2265078,2952322,872847,5078385,1238342,1485012,1579987,1471923,-696877,8537553,3786073,3267109,1749650,1694426,-1959704,5972464,1201214,2358083,2524717,-111548,2653201,1395271,1029148,1032685,890548,-1694448],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"tax","name":"Налог","v":[2238389,608933,645578,684447,299433,2792011,644867,615196,606139,631638,294172,3260782,725350,795558,825772,614155,299949,2835407,635900,628708,683459,671019,216324,2279937,443613,460299,498463,588719,288845,1775803,376909,415344,426847,422497,134208,2628536,845406,726981,456764,436753,162635,2022857,292602,504042,605290,620925,1074004,302254,221922,238984,212599,98247],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]},{"k":"net","name":"Чистая прибыль / Маржинальность","v":[5375351,1323392,1575756,1657109,819094,5606446,1621366,1259372,1306475,1342652,76583,7024036,2134980,2082630,2051606,1121782,-366961,9382868,2974051,2188092,2203015,2250124,-232413,7321182,1187227,1419736,1766616,2363604,584002,3302583,861434,1069669,1153140,1049427,-831085,5909017,2940667,2540129,1292887,1257674,-2122338,3949607,908613,1854041,1919427,-732472,1579197,1093017,807226,793701,677950,-1792695],"q":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],"p":[18.28,16.89,18.85,18.07,20.27,15.47,18.37,16.14,16.71,16.7,2.04,15.37,21.12,18.79,17.78,13.22,null,23.51,31.88,24.83,23.4,24.13,null,22.58,19.65,22.12,24.69,27.6,13.76,13.75,17.22,18.93,19.53,18.5,null,16.45,25.01,25.46,20.98,21.41,null,13.92,22.03,26.31,22.57,null,10.97,27.11,26.79,24.78,23.98,null]}]};
 let PNL_MONTH = 0;
+let PNL_LIVE = null;          // активный датасет с API
+let PNL_CABINETS = [];
+let PNL_VIEW = null;
+let PNL_VIEW_LABEL = '';
+let PNL_LOADED = false;
+
+function pnlActiveBase() {
+  if(PNL_LIVE && PNL_LIVE.cols && PNL_LIVE.rows) return PNL_LIVE;
+  return (typeof PNL_BASE !== 'undefined') ? PNL_BASE : null;
+}
 
 function pnlOpexLines() {
   try {
@@ -13095,9 +13119,11 @@ function pnlOpexLines() {
       if(Array.isArray(parsed) && parsed.length) return parsed;
     }
   } catch(e) {}
-  const opex = PNL_BASE.rows.find(r => r.k === 'opex');
+  const base = pnlActiveBase();
+  if(!base) return [{id:'base', name:'Операционные', by:{}}];
+  const opex = base.rows.find(r => r.k === 'opex');
   const by = {};
-  PNL_BASE.cols.forEach((c, i) => { if(opex.v[i]) by[c.id] = opex.v[i]; });
+  if(opex) base.cols.forEach((c, i) => { if(opex.v[i]) by[c.id] = opex.v[i]; });
   const lines = [{id:'base', name:'Операционные', by}];
   localStorage.setItem('wb_pnl_opex', JSON.stringify(lines));
   return lines;
@@ -13143,26 +13169,32 @@ function removePnlOpex(id) {
 }
 function drawPnl() {
   const root = document.getElementById('pnlRoot');
-  if(!root || typeof PNL_BASE === 'undefined') return;
-  const month = PNL_BASE.months[PNL_MONTH] || PNL_BASE.months[0];
+  const base = pnlActiveBase();
+  if(!root || !base) {
+    if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Загрузи Excel <b>opiy.xlsx</b> (Ozon или WB) кнопкой сверху.<br>Каждый кабинет Ozon — отдельный файл.</div>`;
+    return;
+  }
+  if(PNL_MONTH >= (base.months || []).length) PNL_MONTH = 0;
+  const month = base.months[PNL_MONTH] || base.months[0];
   const colIds = month.cols;
-  const cols = colIds.map(id => PNL_BASE.cols.find(c => c.id === id));
-  const idx = id => PNL_BASE.cols.findIndex(c => c.id === id);
-  const row = k => PNL_BASE.rows.find(r => r.k === k);
+  const cols = colIds.map(id => base.cols.find(c => c.id === id));
+  const idx = id => base.cols.findIndex(c => c.id === id);
+  const row = k => base.rows.find(r => r.k === k);
   const lines = pnlOpexLines();
-  const fileOpex = colIds.map(id => row('opex').v[idx(id)] || 0);
+  const fileOpex = colIds.map(id => (row('opex') && row('opex').v[idx(id)]) || 0);
   const userOpex = colIds.map(id => lines.reduce((s, l) => s + cfoNum((l.by || {})[id]), 0));
-  const val = (k, i) => row(k).v[idx(colIds[i])] || 0;
+  const val = (k, i) => (row(k) && row(k).v[idx(colIds[i])]) || 0;
   const money = n => fmtMoney(n);
   const head = cols.map(c => `<th>${escapeHtml(c.short)}</th>`).join('');
   const ro = (k, withQty) => {
     const r = row(k);
+    if(!r) return '';
     const tds = colIds.map(id => {
       const i = idx(id);
       const n = r.v[i] || 0;
       let extra = '';
-      if(withQty && r.q[i]) extra = `<div class="cfo-hint" style="margin:0">${r.q[i].toLocaleString('ru-RU')} шт</div>`;
-      else if(r.p[i] != null) extra = `<div class="cfo-hint" style="margin:0">${r.p[i]}%</div>`;
+      if(withQty && r.q && r.q[i]) extra = `<div class="cfo-hint" style="margin:0">${r.q[i].toLocaleString('ru-RU')} шт</div>`;
+      else if(r.p && r.p[i] != null) extra = `<div class="cfo-hint" style="margin:0">${r.p[i]}%</div>`;
       return `<td style="text-align:right">${money(n)}${extra}</td>`;
     }).join('');
     return `<tr><td>${escapeHtml(r.name)}</td>${tds}</tr>`;
@@ -13179,10 +13211,12 @@ function drawPnl() {
   const calcRow = (name, nums, strong) => `<tr><td>${strong ? '<b>'+name+'</b>' : name}</td>${nums.map(n => `<td style="text-align:right">${strong ? '<b>'+money(n)+'</b>' : money(n)}</td>`).join('')}</tr>`;
   const op = colIds.map((_, i) => val('op', i) - (userOpex[i] - fileOpex[i]));
   const net = colIds.map((_, i) => val('net', i) - (userOpex[i] - fileOpex[i]));
-  const months = PNL_BASE.months.map((m, i) => `<option value="${i}" ${i===PNL_MONTH?'selected':''}>${escapeHtml(m.label)}</option>`).join('');
+  const months = base.months.map((m, i) => `<option value="${i}" ${i===PNL_MONTH?'selected':''}>${escapeHtml(m.label)}</option>`).join('');
+  const viewTitle = PNL_VIEW_LABEL ? escapeHtml(PNL_VIEW_LABEL) : 'ОПИУ';
   root.innerHTML = `
     <div class="cfo-actions">
       <label style="font-size:13px">Месяц <select class="cfo-inp" onchange="setPnlMonth(this.value)">${months}</select></label>
+      <span class="cfo-hint" style="margin:0">${viewTitle}</span>
     </div>
     <div class="cfo-health">
       <div class="cfo-hcard"><div class="hl">Сумма продаж</div><div class="hv">${money(val('sales',0))}</div></div>
@@ -13222,6 +13256,159 @@ function drawPnl() {
     <div class="cfo-hint">Продажи, прямые расходы и налог — из файла. Строки в рамке — операционные расходы: добавляй свои, называй как угодно, меняй суммы — прибыль пересчитается. Первая строка — то, что уже было в отчёте. Налог оставлен как в файле.</div>`;
 }
 
+function setPnlStatus(msg, ok) {
+  const el = document.getElementById('pnlStatus');
+  if(!el) return;
+  el.textContent = msg || '';
+  el.className = 'cfo-status' + (ok === true ? ' ok' : ok === false ? ' err' : '');
+}
+
+function renderPnlCabinetSelect() {
+  const sel = document.getElementById('pnlCabinetSelect');
+  const tgt = document.getElementById('pnlUploadTarget');
+  if(!sel) return;
+  const cabs = PNL_CABINETS || [];
+  const opts = [];
+  if(!cabs.length && !PNL_LIVE) {
+    opts.push('<option value="">Нет загруженных — покажется seed WB</option>');
+  }
+  cabs.forEach(c => {
+    const mark = c.channel === 'ozon' ? 'Ozon' : 'WB';
+    const when = c.uploaded_at ? (' · ' + String(c.uploaded_at).slice(0,10)) : '';
+    opts.push(`<option value="${escapeHtml(c.id)}" ${PNL_VIEW===c.id?'selected':''}>${escapeHtml(c.label || c.id)} (${mark}${when})</option>`);
+  });
+  const oz = cabs.filter(c => c.channel === 'ozon');
+  if(oz.length > 1) opts.push(`<option value="ozon_all" ${PNL_VIEW==='ozon_all'?'selected':''}>Все Ozon (${oz.length})</option>`);
+  if(cabs.length > 1) opts.push(`<option value="all" ${PNL_VIEW==='all'?'selected':''}>WB + Ozon</option>`);
+  if(!opts.length) opts.push('<option value="">—</option>');
+  sel.innerHTML = opts.join('');
+  if(tgt) {
+    const tOpts = ['<option value="ozon_new">Новый кабинет Ozon</option>', '<option value="wb">WB (заменить)</option>'];
+    cabs.filter(c => c.channel === 'ozon').forEach(c => {
+      tOpts.push(`<option value="${escapeHtml(c.id)}">Обновить ${escapeHtml(c.label || c.id)}</option>`);
+    });
+    if(cabs.some(c => c.id === 'wb')) {
+      /* already have wb option */
+    }
+    tgt.innerHTML = tOpts.join('');
+  }
+}
+
+function applyPnlApiPayload(d) {
+  PNL_CABINETS = d.cabinets || [];
+  PNL_VIEW = d.view || d.active_id || null;
+  PNL_VIEW_LABEL = d.view_label || '';
+  if(d.data && d.data.cols && d.data.rows) {
+    PNL_LIVE = d.data;
+  } else if(!(PNL_CABINETS || []).length) {
+    // нет загрузок — оставляем seed WB
+    PNL_LIVE = null;
+    PNL_VIEW_LABEL = PNL_VIEW_LABEL || 'WB (встроенный)';
+  } else {
+    PNL_LIVE = null;
+  }
+  PNL_LOADED = true;
+  renderPnlCabinetSelect();
+}
+
+async function loadPnl(force) {
+  if(PNL_LOADED && !force && PNL_LIVE) { drawPnl(); return; }
+  setPnlStatus('Загрузка…');
+  try {
+    const q = PNL_VIEW ? ('?view=' + encodeURIComponent(PNL_VIEW)) : '';
+    const r = await fetch(`${RAILWAY_URL}/api/finance/pnl` + q);
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail || d.error || ('HTTP ' + r.status));
+    applyPnlApiPayload(d);
+    if(!PNL_LIVE && typeof PNL_BASE !== 'undefined') {
+      PNL_VIEW_LABEL = 'WB (встроенный)';
+      setPnlStatus('Нет загрузок — показан встроенный WB. Залей opiy.xlsx для Ozon.', true);
+    } else {
+      setPnlStatus(PNL_VIEW_LABEL ? ('Открыт: ' + PNL_VIEW_LABEL) : 'ОК', true);
+    }
+    drawPnl();
+  } catch(e) {
+    setPnlStatus('Ошибка: ' + e, false);
+    if(!PNL_LIVE && typeof PNL_BASE !== 'undefined') drawPnl();
+  }
+}
+
+async function onPnlCabinetChange(id) {
+  PNL_VIEW = id || null;
+  setPnlStatus('Переключаю…');
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/finance/pnl?view=` + encodeURIComponent(id || ''));
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    applyPnlApiPayload(d);
+    if(id && id !== 'ozon_all' && id !== 'all') {
+      try {
+        await fetch(`${RAILWAY_URL}/api/finance/pnl/active`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({id}),
+        });
+      } catch(_) {}
+    }
+    setPnlStatus(PNL_VIEW_LABEL ? ('Открыт: ' + PNL_VIEW_LABEL) : 'ОК', true);
+    PNL_MONTH = 0;
+    drawPnl();
+  } catch(e) {
+    setPnlStatus('Ошибка: ' + e, false);
+  }
+}
+
+async function uploadPnlOpiy(file) {
+  if(!file) return;
+  const tgt = document.getElementById('pnlUploadTarget');
+  const cabinetId = (tgt && tgt.value) || 'ozon_new';
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('cabinet_id', cabinetId);
+  if(cabinetId === 'wb') fd.append('channel', 'wb');
+  else fd.append('channel', 'ozon');
+  setPnlStatus('Загружаю ' + file.name + '…');
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/finance/pnl/upload`, { method: 'POST', body: fd });
+    const d = await r.json();
+    if(!r.ok) throw new Error((d.detail && (typeof d.detail==='string'?d.detail:JSON.stringify(d.detail))) || ('HTTP ' + r.status));
+    PNL_CABINETS = d.cabinets || [];
+    PNL_VIEW = d.active_id;
+    PNL_VIEW_LABEL = (d.cabinet && d.cabinet.label) || d.active_id;
+    PNL_LIVE = d.data;
+    PNL_LOADED = true;
+    PNL_MONTH = 0;
+    renderPnlCabinetSelect();
+    setPnlStatus('Загружено в «' + PNL_VIEW_LABEL + '»: ' + ((d.data.months||[]).length) + ' мес.', true);
+    drawPnl();
+  } catch(e) {
+    setPnlStatus('Ошибка загрузки: ' + e, false);
+  } finally {
+    const inp = document.getElementById('pnlFileInput');
+    if(inp) inp.value = '';
+  }
+}
+
+async function deletePnlCabinet() {
+  const id = PNL_VIEW;
+  if(!id || id === 'ozon_all' || id === 'all') {
+    setPnlStatus('Выбери конкретный кабинет для удаления', false);
+    return;
+  }
+  if(!confirm('Удалить ОПИУ «' + (PNL_VIEW_LABEL || id) + '»?')) return;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/finance/pnl/` + encodeURIComponent(id), { method: 'DELETE' });
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    PNL_VIEW = d.active_id || null;
+    await loadPnl(true);
+    setPnlStatus('Удалено', true);
+  } catch(e) {
+    setPnlStatus('Ошибка: ' + e, false);
+  }
+}
+
+
 function setFinMode(mode) {
   if(mode === 'cfo') FIN_MODE = 'cfo';
   else if(mode === 'money') FIN_MODE = 'money';
@@ -13230,7 +13417,7 @@ function setFinMode(mode) {
   applyFinMode();
   if(FIN_MODE === 'cfo') loadCfo(false);
   else if(FIN_MODE === 'money') loadWbMoney(false);
-  else if(FIN_MODE === 'pnl') drawPnl();
+  else if(FIN_MODE === 'pnl') loadPnl(false);
   else loadFinance(false);
 }
 
@@ -13256,7 +13443,7 @@ function applyFinMode() {
 function refreshFinancePanel() {
   if(FIN_MODE === 'cfo') loadCfo(true);
   else if(FIN_MODE === 'money') loadWbMoney(true);
-  else if(FIN_MODE === 'pnl') drawPnl();
+  else if(FIN_MODE === 'pnl') loadPnl(true);
   else loadFinance(true);
 }
 
