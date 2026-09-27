@@ -10776,6 +10776,13 @@ def _save_pnl_store(store: dict) -> bool:
     })
 
 
+# Фиксированные кабинеты Ozon (2 компании)
+PNL_OZON_PRESETS = {
+    "ozon_pvs": {"label": "PVS", "channel": "ozon"},
+    "ozon_dataon": {"label": "Dataon", "channel": "ozon"},
+}
+
+
 def _next_ozon_cabinet_id(cabinets: list) -> str:
     used = set()
     for c in cabinets:
@@ -10786,6 +10793,21 @@ def _next_ozon_cabinet_id(cabinets: list) -> str:
     while n in used:
         n += 1
     return f"ozon_{n}"
+
+
+def _normalize_pnl_cabinet_id(cid: str) -> str:
+    """pvs / dataon / ozon_pvs → стабильный id."""
+    raw = (cid or "").strip().lower().replace(" ", "_")
+    aliases = {
+        "pvs": "ozon_pvs",
+        "ozon-pvs": "ozon_pvs",
+        "ozon_pvs": "ozon_pvs",
+        "dataon": "ozon_dataon",
+        "data_on": "ozon_dataon",
+        "ozon-dataon": "ozon_dataon",
+        "ozon_dataon": "ozon_dataon",
+    }
+    return aliases.get(raw, cid.strip() if cid else "")
 
 
 def _pnl_cabinet_meta(c: dict) -> dict:
@@ -10887,12 +10909,12 @@ def get_finance_pnl(view: str = None):
     view_label = None
     if view_id == "ozon_all":
         oz = [c["data"] for c in cabinets if c.get("channel") == "ozon"]
-        data = _sum_pnl_datasets(oz, "Все Ozon") if oz else None
-        view_label = "Все Ozon"
+        data = _sum_pnl_datasets(oz, "PVS + Dataon") if oz else None
+        view_label = "PVS + Dataon"
     elif view_id == "all":
         all_d = [c["data"] for c in cabinets]
-        data = _sum_pnl_datasets(all_d, "WB + Ozon") if all_d else None
-        view_label = "WB + Ozon"
+        data = _sum_pnl_datasets(all_d, "WB + PVS + Dataon") if all_d else None
+        view_label = "WB + PVS + Dataon"
     else:
         if not view_id and cabinets:
             view_id = cabinets[0]["id"]
@@ -10907,6 +10929,10 @@ def get_finance_pnl(view: str = None):
         "view_label": view_label,
         "data": data,
         "has_data": bool(data and (data.get("cols") or data.get("rows"))),
+        "presets": [
+            {"id": k, "label": v["label"], "channel": v["channel"]}
+            for k, v in PNL_OZON_PRESETS.items()
+        ],
     }
 
 
@@ -10917,7 +10943,7 @@ async def upload_finance_pnl(
     label: str = Form(None),
     channel: str = Form(None),
 ):
-    """Загрузка opiy.xlsx. cabinet_id: wb | ozon_1 | ozon_new | пусто (= новый Ozon)."""
+    """Загрузка opiy.xlsx. cabinet_id: wb | ozon_pvs | ozon_dataon | ozon_new."""
     content = await file.read()
     try:
         data = parse_pnl_opiy_excel(content)
@@ -10926,61 +10952,66 @@ async def upload_finance_pnl(
 
     store = _pnl_store()
     cabinets = list(store.get("cabinets") or [])
-    cid = (cabinet_id or "").strip() or "ozon_new"
+    raw_cid = (cabinet_id or "").strip() or "ozon_pvs"
+    cid = _normalize_pnl_cabinet_id(raw_cid) or raw_cid
     ch = (channel or "").strip().lower()
     fname = file.filename or "opiy.xlsx"
     now = datetime.now(timezone.utc).isoformat()
 
+    def _upsert(entry: dict):
+        nonlocal cabinets
+        existing = next((c for c in cabinets if c["id"] == entry["id"]), None)
+        if existing:
+            cabinets = [entry if c["id"] == entry["id"] else c for c in cabinets]
+        elif entry["id"] == "wb":
+            cabinets.insert(0, entry)
+        else:
+            # PVS перед Dataon
+            order = {"wb": 0, "ozon_pvs": 1, "ozon_dataon": 2}
+            cabinets.append(entry)
+            cabinets.sort(key=lambda c: (order.get(c["id"], 50), c.get("label") or c["id"]))
+
     if cid in ("ozon_new", "new", "ozon"):
-        cid = _next_ozon_cabinet_id(cabinets)
-        ch = "ozon"
-        lbl = (label or "").strip() or f"Ozon #{cid.split('_')[-1]}"
-        cabinets.append({
-            "id": cid,
-            "label": lbl,
-            "channel": "ozon",
-            "filename": fname,
-            "uploaded_at": now,
-            "data": data,
-        })
-    elif cid == "wb" or ch == "wb":
+        # по умолчанию — первый незаполненный пресет PVS/Dataon
+        filled = {c["id"] for c in cabinets}
+        for preset_id in ("ozon_pvs", "ozon_dataon"):
+            if preset_id not in filled:
+                cid = preset_id
+                break
+        else:
+            cid = _next_ozon_cabinet_id(cabinets)
+
+    if cid == "wb" or ch == "wb":
         cid = "wb"
-        lbl = (label or "").strip() or "WB"
-        existing = next((c for c in cabinets if c["id"] == "wb"), None)
-        entry = {
+        _upsert({
             "id": "wb",
-            "label": lbl,
+            "label": (label or "").strip() or "WB",
             "channel": "wb",
             "filename": fname,
             "uploaded_at": now,
             "data": data,
-        }
-        if existing:
-            cabinets = [entry if c["id"] == "wb" else c for c in cabinets]
-        else:
-            cabinets.insert(0, entry)
+        })
     else:
-        existing = next((c for c in cabinets if c["id"] == cid), None)
-        if not existing:
-            # новый id как ozon_N или произвольный
-            if not re.match(r"^ozon_\d+$", cid) and not cid.startswith("ozon_"):
-                cid = _next_ozon_cabinet_id(cabinets)
-            lbl = (label or "").strip() or f"Ozon #{cid.split('_')[-1]}"
-            cabinets.append({
-                "id": cid,
-                "label": lbl,
-                "channel": ch or "ozon",
-                "filename": fname,
-                "uploaded_at": now,
-                "data": data,
-            })
+        preset = PNL_OZON_PRESETS.get(cid)
+        if preset:
+            lbl = (label or "").strip() or preset["label"]
+            ch = "ozon"
+        elif cid.startswith("ozon_") or ch == "ozon":
+            lbl = (label or "").strip() or cid.replace("ozon_", "Ozon ").upper()
+            ch = "ozon"
         else:
-            existing["data"] = data
-            existing["filename"] = fname
-            existing["uploaded_at"] = now
-            if label:
-                existing["label"] = label.strip()
-            cabinets = [existing if c["id"] == existing["id"] else c for c in cabinets]
+            # неизвестный id → как новый ozon_N
+            cid = _next_ozon_cabinet_id(cabinets)
+            lbl = (label or "").strip() or f"Ozon #{cid.split('_')[-1]}"
+            ch = "ozon"
+        _upsert({
+            "id": cid,
+            "label": lbl,
+            "channel": ch,
+            "filename": fname,
+            "uploaded_at": now,
+            "data": data,
+        })
 
     store["cabinets"] = cabinets
     store["active_id"] = cid
@@ -10993,6 +11024,10 @@ async def upload_finance_pnl(
         "cabinets": [_pnl_cabinet_meta(c) for c in cabinets],
         "active_id": cid,
         "data": data,
+        "presets": [
+            {"id": k, "label": v["label"], "channel": v["channel"]}
+            for k, v in PNL_OZON_PRESETS.items()
+        ],
     }
 
 

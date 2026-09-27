@@ -1942,8 +1942,9 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
         <select class="cfo-inp" id="pnlCabinetSelect" onchange="onPnlCabinetChange(this.value)" style="min-width:160px">
           <option value="">Нет загруженных ОПИУ</option>
         </select>
-        <select class="cfo-inp" id="pnlUploadTarget" title="Куда загрузить файл" style="min-width:140px">
-          <option value="ozon_new">Новый кабинет Ozon</option>
+        <select class="cfo-inp" id="pnlUploadTarget" title="Куда загрузить файл" style="min-width:160px">
+          <option value="ozon_pvs">Ozon · PVS</option>
+          <option value="ozon_dataon">Ozon · Dataon</option>
           <option value="wb">WB</option>
         </select>
         <button class="action-btn primary" onclick="document.getElementById('pnlFileInput').click()">⬆ Загрузить opiy.xlsx</button>
@@ -1951,7 +1952,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
         <button class="action-btn" onclick="deletePnlCabinet()" title="Удалить текущий кабинет">✕ Удалить</button>
         <span class="cfo-status" id="pnlStatus"></span>
       </div>
-      <div class="cfo-hint" style="margin-bottom:10px">Формат: Excel <b>opiy.xlsx</b> (лист PnL, статьи × месяцы/недели). Каждый кабинет Ozon — отдельная загрузка. Можно смотреть «Все Ozon» или «WB + Ozon».</div>
+      <div class="cfo-hint" style="margin-bottom:10px">Два кабинета Ozon: <b>PVS</b> и <b>Dataon</b> — грузи каждый своей выгрузкой <b>opiy.xlsx</b>. Потом можно смотреть по отдельности, сумму Ozon или WB + оба.</div>
       <div id="pnlRoot"></div>
     </div>
   </div>
@@ -13268,28 +13269,48 @@ function renderPnlCabinetSelect() {
   const tgt = document.getElementById('pnlUploadTarget');
   if(!sel) return;
   const cabs = PNL_CABINETS || [];
+  const byId = {};
+  cabs.forEach(c => { byId[c.id] = c; });
   const opts = [];
-  if(!cabs.length && !PNL_LIVE) {
-    opts.push('<option value="">Нет загруженных — покажется seed WB</option>');
-  }
-  cabs.forEach(c => {
-    const mark = c.channel === 'ozon' ? 'Ozon' : 'WB';
+  const presets = [
+    {id:'ozon_pvs', label:'PVS', channel:'ozon'},
+    {id:'ozon_dataon', label:'Dataon', channel:'ozon'},
+  ];
+  // WB если есть
+  if(byId.wb) {
+    const c = byId.wb;
     const when = c.uploaded_at ? (' · ' + String(c.uploaded_at).slice(0,10)) : '';
-    opts.push(`<option value="${escapeHtml(c.id)}" ${PNL_VIEW===c.id?'selected':''}>${escapeHtml(c.label || c.id)} (${mark}${when})</option>`);
+    opts.push(`<option value="wb" ${PNL_VIEW==='wb'?'selected':''}>WB${when}</option>`);
+  }
+  presets.forEach(p => {
+    const c = byId[p.id];
+    if(c) {
+      const when = c.uploaded_at ? (' · ' + String(c.uploaded_at).slice(0,10)) : '';
+      opts.push(`<option value="${p.id}" ${PNL_VIEW===p.id?'selected':''}>Ozon · ${escapeHtml(c.label || p.label)}${when}</option>`);
+    } else {
+      opts.push(`<option value="${p.id}" disabled>Ozon · ${p.label} — не загружен</option>`);
+    }
+  });
+  // прочие кабинеты
+  cabs.forEach(c => {
+    if(c.id === 'wb' || c.id === 'ozon_pvs' || c.id === 'ozon_dataon') return;
+    const mark = c.channel === 'ozon' ? 'Ozon · ' : '';
+    const when = c.uploaded_at ? (' · ' + String(c.uploaded_at).slice(0,10)) : '';
+    opts.push(`<option value="${escapeHtml(c.id)}" ${PNL_VIEW===c.id?'selected':''}>${mark}${escapeHtml(c.label || c.id)}${when}</option>`);
   });
   const oz = cabs.filter(c => c.channel === 'ozon');
-  if(oz.length > 1) opts.push(`<option value="ozon_all" ${PNL_VIEW==='ozon_all'?'selected':''}>Все Ozon (${oz.length})</option>`);
-  if(cabs.length > 1) opts.push(`<option value="all" ${PNL_VIEW==='all'?'selected':''}>WB + Ozon</option>`);
-  if(!opts.length) opts.push('<option value="">—</option>');
+  if(oz.length > 1) opts.push(`<option value="ozon_all" ${PNL_VIEW==='ozon_all'?'selected':''}>PVS + Dataon</option>`);
+  if(cabs.length > 1 && cabs.some(c => c.channel === 'wb') && oz.length) {
+    opts.push(`<option value="all" ${PNL_VIEW==='all'?'selected':''}>WB + PVS + Dataon</option>`);
+  }
+  if(!opts.length) opts.push('<option value="">Нет загруженных ОПИУ</option>');
   sel.innerHTML = opts.join('');
   if(tgt) {
-    const tOpts = ['<option value="ozon_new">Новый кабинет Ozon</option>', '<option value="wb">WB (заменить)</option>'];
-    cabs.filter(c => c.channel === 'ozon').forEach(c => {
-      tOpts.push(`<option value="${escapeHtml(c.id)}">Обновить ${escapeHtml(c.label || c.id)}</option>`);
-    });
-    if(cabs.some(c => c.id === 'wb')) {
-      /* already have wb option */
-    }
+    const tOpts = [
+      `<option value="ozon_pvs">Ozon · PVS${byId.ozon_pvs ? ' (обновить)' : ''}</option>`,
+      `<option value="ozon_dataon">Ozon · Dataon${byId.ozon_dataon ? ' (обновить)' : ''}</option>`,
+      `<option value="wb">WB${byId.wb ? ' (обновить)' : ''}</option>`,
+    ];
     tgt.innerHTML = tOpts.join('');
   }
 }
@@ -13361,13 +13382,15 @@ async function onPnlCabinetChange(id) {
 async function uploadPnlOpiy(file) {
   if(!file) return;
   const tgt = document.getElementById('pnlUploadTarget');
-  const cabinetId = (tgt && tgt.value) || 'ozon_new';
+  const cabinetId = (tgt && tgt.value) || 'ozon_pvs';
+  const labels = {ozon_pvs: 'PVS', ozon_dataon: 'Dataon', wb: 'WB'};
   const fd = new FormData();
   fd.append('file', file);
   fd.append('cabinet_id', cabinetId);
+  fd.append('label', labels[cabinetId] || '');
   if(cabinetId === 'wb') fd.append('channel', 'wb');
   else fd.append('channel', 'ozon');
-  setPnlStatus('Загружаю ' + file.name + '…');
+  setPnlStatus('Загружаю ' + file.name + ' → ' + (labels[cabinetId] || cabinetId) + '…');
   try {
     const r = await fetch(`${RAILWAY_URL}/api/finance/pnl/upload`, { method: 'POST', body: fd });
     const d = await r.json();
