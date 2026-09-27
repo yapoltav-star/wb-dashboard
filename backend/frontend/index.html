@@ -252,6 +252,13 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .pnl-opex tr:first-child td{border-top:2px solid var(--wb-purple)}
 .pnl-opex tr:last-child td{border-bottom:2px solid var(--wb-purple)}
 .pnl-opex .pnl-opex-head{position:sticky;left:0;display:inline-flex;align-items:center;gap:12px;font-weight:600;font-size:13px;padding:4px 2px}
+.pnl-chart-box{background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--r);padding:14px 16px 8px;margin-bottom:14px}
+.pnl-chart-leg{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:6px;font-size:12px;color:var(--wb-muted)}
+.pnl-chart-leg span{display:inline-flex;align-items:center;gap:6px}
+.pnl-chart-leg i{width:10px;height:10px;border-radius:2px;display:inline-block}
+.pnl-tot{background:#FAF8F5;font-weight:600}
+.pnl-m{cursor:pointer}
+.pnl-m:hover{color:var(--wb-purple)}
 .cfo-check{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--wb-muted);white-space:nowrap}
 .cfo-scroll{overflow-x:auto}
 .cfo-health{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:14px}
@@ -13106,6 +13113,8 @@ let PNL_CABINETS = [];
 let PNL_VIEW = null;
 let PNL_VIEW_LABEL = '';
 let PNL_LOADED = false;
+let PNL_RANGE = 'year';
+try { PNL_RANGE = localStorage.getItem('wb_pnl_range') || 'year'; } catch(e) {}
 
 function pnlActiveBase() {
   if(PNL_LIVE && PNL_LIVE.cols && PNL_LIVE.rows) return PNL_LIVE;
@@ -13139,6 +13148,116 @@ function pnlLineSum(line, colIds) {
 function setPnlMonth(i) {
   PNL_MONTH = Number(i) || 0;
   drawPnl();
+}
+function setPnlRange(v) {
+  PNL_RANGE = v === 'month' ? 'month' : 'year';
+  try { localStorage.setItem('wb_pnl_range', PNL_RANGE); } catch(e) {}
+  drawPnl();
+}
+function openPnlMonth(i) {
+  PNL_MONTH = Number(i) || 0;
+  setPnlRange('month');
+}
+function pnlMonthsChrono() {
+  const base = pnlActiveBase();
+  return ((base && base.months) || []).map((m, i) => ({...m, i})).slice().reverse();
+}
+function pnlColIdx(id) {
+  const base = pnlActiveBase();
+  return base ? base.cols.findIndex(c => c.id === id) : -1;
+}
+function pnlRaw(k, colId) {
+  const base = pnlActiveBase();
+  const r = base && base.rows.find(x => x.k === k);
+  const i = pnlColIdx(colId);
+  if(!r || i < 0) return 0;
+  return r.v[i] || 0;
+}
+function pnlRawP(k, colId) {
+  const base = pnlActiveBase();
+  const r = base && base.rows.find(x => x.k === k);
+  const i = pnlColIdx(colId);
+  if(!r || i < 0 || !r.p) return null;
+  return r.p[i];
+}
+function pnlRawQ(k, colId) {
+  const base = pnlActiveBase();
+  const r = base && base.rows.find(x => x.k === k);
+  const i = pnlColIdx(colId);
+  if(!r || i < 0 || !r.q) return 0;
+  return r.q[i] || 0;
+}
+function pnlUserOpexAt(colId) {
+  return pnlOpexLines().reduce((s, l) => s + cfoNum((l.by || {})[colId]), 0);
+}
+function pnlOpAt(colId) {
+  return pnlRaw('op', colId) - (pnlUserOpexAt(colId) - pnlRaw('opex', colId));
+}
+function pnlNetAt(colId) {
+  return pnlRaw('net', colId) - (pnlUserOpexAt(colId) - pnlRaw('opex', colId));
+}
+function pnlYearLabel() {
+  const m = pnlMonthsChrono()[0];
+  const hit = String((m && m.label) || '').match(/20\d{2}/);
+  return hit ? hit[0] : '2026';
+}
+function pnlShortMonth(label) {
+  const l = (label || '').toLowerCase();
+  const map = [
+    ['январ', 'Янв'], ['феврал', 'Фев'], ['март', 'Мар'], ['апрел', 'Апр'],
+    ['май', 'Май'], ['июл', 'Июл'], ['июн', 'Июн'], ['август', 'Авг'],
+    ['сентябр', 'Сен'], ['октябр', 'Окт'], ['ноябр', 'Ноя'], ['декабр', 'Дек'],
+  ];
+  const hit = map.find(([k]) => l.includes(k));
+  return hit ? hit[1] : (label || '').slice(0, 3);
+}
+function pnlChartFmt(v) {
+  const a = Math.abs(v);
+  if(a >= 1e6) return (v / 1e6).toFixed(1).replace('.0', '') + ' млн';
+  if(a >= 1e3) return Math.round(v / 1e3) + ' тыс';
+  return String(Math.round(v));
+}
+function drawPnlChart() {
+  const months = pnlMonthsChrono();
+  if(!months.length) return '';
+  const series = [
+    {name: 'Продажи', color: '#4A4540', vals: months.map(m => pnlRaw('sales', m.id))},
+    {name: 'Реализация', color: '#D4622A', vals: months.map(m => pnlRaw('real', m.id))},
+    {name: 'Опер. прибыль', color: '#2E90FA', vals: months.map(m => pnlOpAt(m.id))},
+    {name: 'Чистая прибыль', color: '#12B76A', vals: months.map(m => pnlNetAt(m.id))},
+  ];
+  const W = 920, H = 260, padL = 58, padR = 16, padT = 14, padB = 32;
+  const all = series.flatMap(s => s.vals);
+  let minV = Math.min(0, ...all), maxV = Math.max(...all, 1);
+  const span = maxV - minV || 1;
+  minV -= span * 0.06;
+  maxV += span * 0.08;
+  const n = months.length;
+  const xAt = i => padL + (n === 1 ? (W - padL - padR) / 2 : i * (W - padL - padR) / (n - 1));
+  const yAt = v => padT + (1 - (v - minV) / (maxV - minV)) * (H - padT - padB);
+  let grid = '';
+  for(let t = 0; t <= 4; t++) {
+    const v = minV + (maxV - minV) * (t / 4);
+    const y = yAt(v);
+    grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="#F0EDE8" stroke-width="1"/>`;
+    grid += `<text x="${padL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="#A09890">${escapeHtml(pnlChartFmt(v))}</text>`;
+  }
+  const xLabs = months.map((m, i) =>
+    `<text x="${xAt(i).toFixed(1)}" y="${H - 10}" text-anchor="middle" font-size="11" fill="#A09890">${escapeHtml(pnlShortMonth(m.label))}</text>`
+  ).join('');
+  const lines = series.map(s => {
+    const pts = s.vals.map((v, i) => `${xAt(i).toFixed(1)},${yAt(v).toFixed(1)}`);
+    const dots = s.vals.map((v, i) =>
+      `<circle cx="${xAt(i).toFixed(1)}" cy="${yAt(v).toFixed(1)}" r="3" fill="${s.color}"><title>${escapeHtml(s.name)} · ${escapeHtml((months[i] && months[i].label) || '')}: ${fmtMoney(v)}</title></circle>`
+    ).join('');
+    return `<polyline fill="none" stroke="${s.color}" stroke-width="2.2" points="${pts.join(' ')}"/>` + dots;
+  }).join('');
+  const legend = series.map(s => `<span><i style="background:${s.color}"></i>${escapeHtml(s.name)}</span>`).join('');
+  return `<div class="pnl-chart-box">
+    <div class="pnl-chart-leg">${legend}</div>
+    <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;max-height:280px">${grid}${lines}${xLabs}</svg>
+    <div class="cfo-hint" style="margin-top:2px">По месяцам · клик по месяцу в таблице откроет недели</div>
+  </div>`;
 }
 function onPnlOpex(id, colId, val) {
   const lines = pnlOpexLines();
@@ -13176,6 +13295,112 @@ function drawPnl() {
     return;
   }
   if(PNL_MONTH >= (base.months || []).length) PNL_MONTH = 0;
+  const money = n => fmtMoney(n);
+  const year = pnlYearLabel();
+  const monthOpts = (base.months || []).map((m, i) => `<option value="${i}" ${i===PNL_MONTH?'selected':''}>${escapeHtml(m.label)}</option>`).join('');
+  const viewTitle = PNL_VIEW_LABEL ? escapeHtml(PNL_VIEW_LABEL) : 'ОПИУ';
+  const toolbar = `<div class="cfo-actions">
+      <button class="filter-btn ${PNL_RANGE==='year'?'on':''}" onclick="setPnlRange('year')">Все месяцы</button>
+      <button class="filter-btn ${PNL_RANGE==='month'?'on':''}" onclick="setPnlRange('month')">Недели месяца</button>
+      ${PNL_RANGE === 'month' ? `<label style="font-size:13px">Месяц <select class="cfo-inp" onchange="setPnlMonth(this.value)">${monthOpts}</select></label>` : ''}
+      <span class="cfo-hint" style="margin:0">${viewTitle}</span>
+    </div>`;
+  const hint = `<div class="cfo-hint">Продажи, прямые расходы и налог — из файла. Строки в рамке — операционные расходы. Налог как в файле. В «Все месяцы» колонка «Итого» — сумма года.</div>`;
+
+  if(PNL_RANGE === 'year') {
+    const months = pnlMonthsChrono();
+    const ids = months.map(m => m.id);
+    const yearOf = fn => ids.reduce((s, id) => s + fn(id), 0);
+    const ySales = yearOf(id => pnlRaw('sales', id));
+    const yOpex = yearOf(pnlUserOpexAt);
+    const yOp = yearOf(pnlOpAt);
+    const yNet = yearOf(pnlNetAt);
+    const head = months.map(m => `<th class="pnl-m" title="Открыть недели" onclick="openPnlMonth(${m.i})">${escapeHtml(pnlShortMonth(m.label))}</th>`).join('') + `<th class="pnl-tot">Итого ${escapeHtml(year)}</th>`;
+    const tdMoney = (n, extra, tot) => `<td style="text-align:right"${tot?' class="pnl-tot"':''}>${money(n)}${extra || ''}</td>`;
+    const ro = (k, withQty) => {
+      const r = base.rows.find(x => x.k === k);
+      if(!r) return '';
+      let sum = 0, qsum = 0;
+      const tds = ids.map(id => {
+        const n = pnlRaw(k, id);
+        sum += n;
+        const q = withQty ? pnlRawQ(k, id) : 0;
+        qsum += q;
+        const p = pnlRawP(k, id);
+        let extra = '';
+        if(withQty && q) extra = `<div class="cfo-hint" style="margin:0">${q.toLocaleString('ru-RU')} шт</div>`;
+        else if(p != null) extra = `<div class="cfo-hint" style="margin:0">${p}%</div>`;
+        return tdMoney(n, extra);
+      }).join('');
+      let totExtra = '';
+      if(withQty && qsum) totExtra = `<div class="cfo-hint" style="margin:0">${qsum.toLocaleString('ru-RU')} шт</div>`;
+      else if(k === 'cogs' || k === 'ads' || k === 'net') {
+        const real = yearOf(id => pnlRaw('real', id));
+        if(real) totExtra = `<div class="cfo-hint" style="margin:0">${(sum / real * 100).toFixed(1)}%</div>`;
+      }
+      return `<tr><td>${escapeHtml(r.name)}</td>${tds}${tdMoney(sum, totExtra, true)}</tr>`;
+    };
+    const lines = pnlOpexLines();
+    const opexRows = lines.map(l => {
+      let sum = 0;
+      const tds = ids.map(id => {
+        const n = cfoNum((l.by || {})[id]);
+        sum += n;
+        return `<td><input class="cfo-inp cfo-num" style="width:96px" type="number" step="1" value="${n || ''}" onchange="onPnlOpex('${l.id}','${id}',this.value)"></td>`;
+      }).join('');
+      return `<tr>
+        <td><input class="cfo-inp" style="width:180px" data-pnl-name="${l.id}" value="${escapeHtml(l.name || '')}" placeholder="Название расхода" onchange="onPnlOpexName('${l.id}',this.value)"></td>
+        ${tds}
+        <td class="pnl-tot" style="text-align:right"><b>${money(sum)}</b></td>
+        <td><button class="cfo-del" onclick="removePnlOpex('${l.id}')">✕</button></td>
+      </tr>`;
+    }).join('');
+    const opexTds = ids.map(id => `<td style="text-align:right"><b>${money(pnlUserOpexAt(id))}</b></td>`).join('');
+    const opTds = ids.map(id => `<td style="text-align:right"><b>${money(pnlOpAt(id))}</b></td>`).join('');
+    const netTds = ids.map(id => `<td style="text-align:right"><b>${money(pnlNetAt(id))}</b></td>`).join('');
+    const taxTds = ids.map(id => tdMoney(pnlRaw('tax', id))).join('') + tdMoney(yearOf(id => pnlRaw('tax', id)), '', true);
+    root.innerHTML = `
+      ${toolbar}
+      <div class="cfo-health">
+        <div class="cfo-hcard"><div class="hl">Продажи ${escapeHtml(year)}</div><div class="hv">${money(ySales)}</div></div>
+        <div class="cfo-hcard"><div class="hl">Операционные ${escapeHtml(year)}</div><div class="hv">${money(yOpex)}</div></div>
+        <div class="cfo-hcard"><div class="hl">Опер. прибыль ${escapeHtml(year)}</div><div class="hv">${money(yOp)}</div></div>
+        <div class="cfo-hcard"><div class="hl">Чистая прибыль ${escapeHtml(year)}</div><div class="hv">${money(yNet)}</div></div>
+      </div>
+      ${drawPnlChart()}
+      <div class="cfo-scroll">
+        <table class="cfo-table pnl-year" style="min-width:980px">
+          <thead><tr><th>Статья</th>${head}<th></th></tr></thead>
+          <tbody>
+            ${ro('sales', true)}
+            ${ro('real', true)}
+            ${ro('direct')}
+            ${ro('cogs')}
+            ${ro('ads')}
+            ${ro('storage')}
+            ${ro('accept')}
+            ${ro('commission')}
+            ${ro('logistics')}
+            ${ro('fines')}
+            ${ro('hold')}
+            ${ro('extra')}
+          </tbody>
+          <tbody class="pnl-opex">
+            <tr><td colspan="${ids.length+3}"><div class="pnl-opex-head">Операционные расходы<button class="action-btn" onclick="addPnlOpex()">+ Добавить строку</button></div></td></tr>
+            ${opexRows}
+            <tr><td><b>Итого операционные</b></td>${opexTds}<td class="pnl-tot" style="text-align:right"><b>${money(yOpex)}</b></td><td></td></tr>
+          </tbody>
+          <tbody>
+            <tr><td><b>Операционная прибыль</b></td>${opTds}<td class="pnl-tot" style="text-align:right"><b>${money(yOp)}</b></td></tr>
+            <tr><td>Налог</td>${taxTds}</tr>
+            <tr><td><b>Чистая прибыль</b></td>${netTds}<td class="pnl-tot" style="text-align:right"><b>${money(yNet)}</b></td></tr>
+          </tbody>
+        </table>
+      </div>
+      ${hint}`;
+    return;
+  }
+
   const month = base.months[PNL_MONTH] || base.months[0];
   const colIds = month.cols;
   const cols = colIds.map(id => base.cols.find(c => c.id === id));
@@ -13185,7 +13410,6 @@ function drawPnl() {
   const fileOpex = colIds.map(id => (row('opex') && row('opex').v[idx(id)]) || 0);
   const userOpex = colIds.map(id => lines.reduce((s, l) => s + cfoNum((l.by || {})[id]), 0));
   const val = (k, i) => (row(k) && row(k).v[idx(colIds[i])]) || 0;
-  const money = n => fmtMoney(n);
   const head = cols.map(c => `<th>${escapeHtml(c.short)}</th>`).join('');
   const ro = (k, withQty) => {
     const r = row(k);
@@ -13212,19 +13436,18 @@ function drawPnl() {
   const calcRow = (name, nums, strong) => `<tr><td>${strong ? '<b>'+name+'</b>' : name}</td>${nums.map(n => `<td style="text-align:right">${strong ? '<b>'+money(n)+'</b>' : money(n)}</td>`).join('')}</tr>`;
   const op = colIds.map((_, i) => val('op', i) - (userOpex[i] - fileOpex[i]));
   const net = colIds.map((_, i) => val('net', i) - (userOpex[i] - fileOpex[i]));
-  const months = base.months.map((m, i) => `<option value="${i}" ${i===PNL_MONTH?'selected':''}>${escapeHtml(m.label)}</option>`).join('');
-  const viewTitle = PNL_VIEW_LABEL ? escapeHtml(PNL_VIEW_LABEL) : 'ОПИУ';
+  const yIds = pnlMonthsChrono().map(m => m.id);
+  const yNet = yIds.reduce((s, id) => s + pnlNetAt(id), 0);
   root.innerHTML = `
-    <div class="cfo-actions">
-      <label style="font-size:13px">Месяц <select class="cfo-inp" onchange="setPnlMonth(this.value)">${months}</select></label>
-      <span class="cfo-hint" style="margin:0">${viewTitle}</span>
-    </div>
+    ${toolbar}
     <div class="cfo-health">
       <div class="cfo-hcard"><div class="hl">Сумма продаж</div><div class="hv">${money(val('sales',0))}</div></div>
       <div class="cfo-hcard"><div class="hl">Операционные</div><div class="hv">${money(userOpex[0])}</div></div>
       <div class="cfo-hcard"><div class="hl">Операционная прибыль</div><div class="hv">${money(op[0])}</div></div>
       <div class="cfo-hcard"><div class="hl">Чистая прибыль</div><div class="hv">${money(net[0])}</div></div>
+      <div class="cfo-hcard"><div class="hl">Чистая ${escapeHtml(year)}</div><div class="hv">${money(yNet)}</div></div>
     </div>
+    ${drawPnlChart()}
     <div class="cfo-scroll">
       <table class="cfo-table" style="min-width:720px">
         <thead><tr><th>Статья</th>${head}<th></th></tr></thead>
@@ -13254,7 +13477,7 @@ function drawPnl() {
         </tbody>
       </table>
     </div>
-    <div class="cfo-hint">Продажи, прямые расходы и налог — из файла. Строки в рамке — операционные расходы: добавляй свои, называй как угодно, меняй суммы — прибыль пересчитается. Первая строка — то, что уже было в отчёте. Налог оставлен как в файле.</div>`;
+    ${hint}`;
 }
 
 function setPnlStatus(msg, ok) {
@@ -14558,7 +14781,6 @@ function drawCfoSituation() {
     ['Leverage банков', h.leverage_bank_months != null ? h.leverage_bank_months + ' мес ЧП' : '—', null, null, CFO_TIPS.leverage],
     ['Долг / активы', h.debt_to_assets != null ? Math.round(h.debt_to_assets * 100) + '%' : '—', null, null, CFO_TIPS.debt_assets],
     ['Current ratio', t.current_ratio != null ? t.current_ratio : '—', (h.floors||{}).current_ratio, 'floor', CFO_TIPS.current_ratio],
-    ['Кэш vs пол', fmtMoney(t.cash), (h.floors||{}).cash, 'floor', CFO_TIPS.cash],
   ];
   healthEl.innerHTML = items.map(([l,v,f,kind,tip]) => {
     const st = (f && f.status) || '';
