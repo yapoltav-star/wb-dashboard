@@ -10579,6 +10579,485 @@ async def save_finance_cost(request: dict):
     return {"status": "ok", "entry": entry}
 
 
+# ---------- Финансы: ОПИУ (WB + Ozon кабинеты) ----------
+PNL_STORE_KEY = "pnl_store"
+
+PNL_ROW_MAP = {
+    "сумма продаж": "sales",
+    "реализация": "real",
+    "прямые расходы": "direct",
+    "себестоимость продаж": "cogs",
+    "реклама / дрр": "ads",
+    "реклама": "ads",
+    "хранение": "storage",
+    "плат. приёмка": "accept",
+    "платная приёмка": "accept",
+    "комиссия": "commission",
+    "логистика": "logistics",
+    "штрафы": "fines",
+    "удержания": "hold",
+    "доплаты": "extra",
+    "операционные расходы": "opex",
+    "операционная прибыль": "op",
+    "налог": "tax",
+    "чистая прибыль / маржинальность": "net",
+    "чистая прибыль": "net",
+}
+
+PNL_ROW_ORDER = [
+    "sales", "real", "direct", "cogs", "ads", "storage", "accept",
+    "commission", "logistics", "fines", "hold", "extra", "opex", "op", "tax", "net",
+]
+
+PNL_ROW_NAMES = {
+    "sales": "Сумма продаж",
+    "real": "Реализация",
+    "direct": "Прямые расходы",
+    "cogs": "Себестоимость продаж",
+    "ads": "Реклама / ДРР",
+    "storage": "Хранение",
+    "accept": "Плат. приёмка",
+    "commission": "Комиссия",
+    "logistics": "Логистика",
+    "fines": "Штрафы",
+    "hold": "Удержания",
+    "extra": "Доплаты",
+    "opex": "Операционные расходы",
+    "op": "Операционная прибыль",
+    "tax": "Налог",
+    "net": "Чистая прибыль / Маржинальность",
+}
+
+
+def _parse_pnl_cell(v):
+    """Ячейка opiy.xlsx: '11 538 261 ₽ / 3 724 шт.' или '5 148 990 ₽ / 20.22 %'."""
+    if v is None or v == "":
+        return 0.0, None, None
+    if isinstance(v, (int, float)):
+        return float(v), None, None
+    s = str(v).replace("\xa0", " ").replace("\u202f", " ").strip()
+    money = qty = pct = None
+    m = re.search(r"(-?\d[\d\s]*(?:[.,]\d+)?)\s*₽", s)
+    if m:
+        money = float(m.group(1).replace(" ", "").replace(",", "."))
+    else:
+        m2 = re.match(r"^-?\d[\d\s]*(?:[.,]\d+)?$", s)
+        if m2:
+            money = float(s.replace(" ", "").replace(",", "."))
+    q = re.search(r"/\s*(-?\d[\d\s]*)\s*шт", s, re.I)
+    if q:
+        qty = int(q.group(1).replace(" ", ""))
+    p = re.search(r"/\s*(-?\d[\d\s]*(?:[.,]\d+)?)\s*%", s)
+    if p:
+        pct = float(p.group(1).replace(" ", "").replace(",", "."))
+    return (money if money is not None else 0.0), qty, pct
+
+
+def parse_pnl_opiy_excel(content: bytes) -> dict:
+    """Парсит Excel ОПИУ (лист PnL): статья × месяцы/недели — как выгрузка MPSTATS/opiy."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(content), data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    headers = []
+    for c in range(2, (ws.max_column or 0) + 1):
+        h = ws.cell(1, c).value
+        if h is None or str(h).strip() == "":
+            break
+        headers.append(str(h).strip())
+    if not headers:
+        raise ValueError("В файле нет колонок периода (ожидаю строку «Статья» + месяцы/недели)")
+
+    cols = []
+    for i, h in enumerate(headers):
+        week = h.lower().startswith("неделя")
+        short = "Месяц"
+        if week:
+            m = re.search(r"\(([^)]+)\)", h)
+            short = (m.group(1).replace("-", "–") if m else h)
+        cols.append({"id": f"c{i}", "label": h, "short": short, "week": week})
+
+    months = []
+    i = 0
+    while i < len(cols):
+        if cols[i]["week"]:
+            i += 1
+            continue
+        group = [cols[i]["id"]]
+        j = i + 1
+        while j < len(cols) and cols[j]["week"]:
+            group.append(cols[j]["id"])
+            j += 1
+        months.append({"id": cols[i]["id"], "label": cols[i]["label"], "cols": group})
+        i = j
+    if not months:
+        raise ValueError("Не нашёл месячные колонки в шапке")
+
+    by_k = {}
+    for r in range(2, (ws.max_row or 0) + 1):
+        name = ws.cell(r, 1).value
+        if not name:
+            continue
+        key = PNL_ROW_MAP.get(str(name).strip().lower())
+        if not key:
+            continue
+        vs, qs, ps = [], [], []
+        for ci in range(len(headers)):
+            money, qty, pct = _parse_pnl_cell(ws.cell(r, ci + 2).value)
+            vs.append(round(money, 2))
+            qs.append(qty)
+            ps.append(pct)
+        by_k[key] = {
+            "k": key,
+            "name": PNL_ROW_NAMES.get(key, str(name).strip()),
+            "v": vs,
+            "q": qs,
+            "p": ps,
+        }
+
+    missing = [k for k in ("sales", "real", "net") if k not in by_k]
+    if missing:
+        raise ValueError("В файле нет строк: " + ", ".join(PNL_ROW_NAMES.get(k, k) for k in missing))
+
+    n = len(headers)
+    rows = []
+    for k in PNL_ROW_ORDER:
+        if k in by_k:
+            rows.append(by_k[k])
+        else:
+            rows.append({
+                "k": k,
+                "name": PNL_ROW_NAMES[k],
+                "v": [0.0] * n,
+                "q": [None] * n,
+                "p": [None] * n,
+            })
+    return {"cols": cols, "months": months, "rows": rows}
+
+
+def _empty_pnl_store() -> dict:
+    return {"cabinets": [], "active_id": None}
+
+
+def _pnl_store() -> dict:
+    raw = get_setting_json(PNL_STORE_KEY, None)
+    if not isinstance(raw, dict):
+        return _empty_pnl_store()
+    cabs = raw.get("cabinets")
+    if not isinstance(cabs, list):
+        cabs = []
+    clean = []
+    for c in cabs:
+        if not isinstance(c, dict) or not c.get("id"):
+            continue
+        data = c.get("data")
+        if not isinstance(data, dict) or not data.get("cols") or not data.get("rows"):
+            continue
+        clean.append({
+            "id": str(c["id"]),
+            "label": str(c.get("label") or c["id"]),
+            "channel": str(c.get("channel") or ("ozon" if str(c["id"]).startswith("ozon") else "wb")),
+            "filename": str(c.get("filename") or "") or None,
+            "uploaded_at": str(c.get("uploaded_at") or "") or None,
+            "data": data,
+        })
+    active = raw.get("active_id")
+    if active and not any(c["id"] == active for c in clean):
+        active = clean[0]["id"] if clean else None
+    if not active and clean:
+        active = clean[0]["id"]
+    return {"cabinets": clean, "active_id": active}
+
+
+def _save_pnl_store(store: dict) -> bool:
+    return save_setting_value(PNL_STORE_KEY, {
+        "cabinets": store.get("cabinets") or [],
+        "active_id": store.get("active_id"),
+    })
+
+
+# Фиксированные кабинеты Ozon (2 компании)
+PNL_OZON_PRESETS = {
+    "ozon_pvs": {"label": "PVS", "channel": "ozon"},
+    "ozon_dataon": {"label": "Dataon", "channel": "ozon"},
+}
+
+
+def _next_ozon_cabinet_id(cabinets: list) -> str:
+    used = set()
+    for c in cabinets:
+        m = re.match(r"^ozon_(\d+)$", str(c.get("id") or ""))
+        if m:
+            used.add(int(m.group(1)))
+    n = 1
+    while n in used:
+        n += 1
+    return f"ozon_{n}"
+
+
+def _normalize_pnl_cabinet_id(cid: str) -> str:
+    """pvs / dataon / ozon_pvs → стабильный id."""
+    raw = (cid or "").strip().lower().replace(" ", "_")
+    aliases = {
+        "pvs": "ozon_pvs",
+        "ozon-pvs": "ozon_pvs",
+        "ozon_pvs": "ozon_pvs",
+        "dataon": "ozon_dataon",
+        "data_on": "ozon_dataon",
+        "ozon-dataon": "ozon_dataon",
+        "ozon_dataon": "ozon_dataon",
+    }
+    return aliases.get(raw, cid.strip() if cid else "")
+
+
+def _pnl_cabinet_meta(c: dict) -> dict:
+    data = c.get("data") or {}
+    months = data.get("months") or []
+    return {
+        "id": c["id"],
+        "label": c.get("label") or c["id"],
+        "channel": c.get("channel") or "ozon",
+        "filename": c.get("filename"),
+        "uploaded_at": c.get("uploaded_at"),
+        "months": len(months),
+        "latest_month": months[0]["label"] if months else None,
+    }
+
+
+def _sum_pnl_datasets(items: list, label: str = "Итого") -> dict:
+    """Складывает несколько ОПИУ по label колонки (месяц/неделя)."""
+    if not items:
+        return {"cols": [], "months": [], "rows": []}
+    if len(items) == 1:
+        return items[0]
+    label_order = []
+    seen = set()
+    for d in items:
+        for col in d.get("cols") or []:
+            lb = col.get("label")
+            if lb and lb not in seen:
+                seen.add(lb)
+                label_order.append(lb)
+    cols = []
+    for i, lb in enumerate(label_order):
+        week = str(lb).lower().startswith("неделя")
+        short = "Месяц"
+        if week:
+            m = re.search(r"\(([^)]+)\)", str(lb))
+            short = (m.group(1).replace("-", "–") if m else lb)
+        cols.append({"id": f"c{i}", "label": lb, "short": short, "week": week})
+    col_idx = {c["label"]: i for i, c in enumerate(cols)}
+    n = len(cols)
+    by_k = {}
+    for k in PNL_ROW_ORDER:
+        by_k[k] = {
+            "k": k,
+            "name": PNL_ROW_NAMES[k],
+            "v": [0.0] * n,
+            "q": [None] * n,
+            "p": [None] * n,
+        }
+    for d in items:
+        idx_by_label = {c["label"]: i for i, c in enumerate(d.get("cols") or [])}
+        rows_by_k = {r["k"]: r for r in (d.get("rows") or []) if r.get("k")}
+        for k, out in by_k.items():
+            src = rows_by_k.get(k)
+            if not src:
+                continue
+            for lb, oi in col_idx.items():
+                si = idx_by_label.get(lb)
+                if si is None:
+                    continue
+                vs = src.get("v") or []
+                qs = src.get("q") or []
+                if si < len(vs):
+                    out["v"][oi] = round(out["v"][oi] + float(vs[si] or 0), 2)
+                if si < len(qs) and qs[si] is not None:
+                    out["q"][oi] = int(out["q"][oi] or 0) + int(qs[si])
+    # пересчёт % от реализации
+    real = by_k["real"]["v"]
+    for k in ("cogs", "ads", "storage", "commission", "logistics", "net"):
+        for i in range(n):
+            if real[i]:
+                by_k[k]["p"][i] = round(by_k[k]["v"][i] / real[i] * 100, 2)
+            else:
+                by_k[k]["p"][i] = None
+    months = []
+    i = 0
+    while i < n:
+        if cols[i]["week"]:
+            i += 1
+            continue
+        group = [cols[i]["id"]]
+        j = i + 1
+        while j < n and cols[j]["week"]:
+            group.append(cols[j]["id"])
+            j += 1
+        months.append({"id": cols[i]["id"], "label": cols[i]["label"], "cols": group})
+        i = j
+    return {"cols": cols, "months": months, "rows": [by_k[k] for k in PNL_ROW_ORDER], "label": label}
+
+
+@app.get("/api/finance/pnl")
+def get_finance_pnl(view: str = None):
+    """ОПИУ: кабинеты WB/Ozon. view= cabinet id | ozon_all | all."""
+    store = _pnl_store()
+    cabinets = store.get("cabinets") or []
+    meta = [_pnl_cabinet_meta(c) for c in cabinets]
+    view_id = (view or store.get("active_id") or "").strip() or None
+    data = None
+    view_label = None
+    if view_id == "ozon_all":
+        oz = [c["data"] for c in cabinets if c.get("channel") == "ozon"]
+        data = _sum_pnl_datasets(oz, "PVS + Dataon") if oz else None
+        view_label = "PVS + Dataon"
+    elif view_id == "all":
+        all_d = [c["data"] for c in cabinets]
+        data = _sum_pnl_datasets(all_d, "WB + PVS + Dataon") if all_d else None
+        view_label = "WB + PVS + Dataon"
+    else:
+        if not view_id and cabinets:
+            view_id = cabinets[0]["id"]
+        cab = next((c for c in cabinets if c["id"] == view_id), None)
+        if cab:
+            data = cab.get("data")
+            view_label = cab.get("label")
+    return {
+        "cabinets": meta,
+        "active_id": store.get("active_id"),
+        "view": view_id,
+        "view_label": view_label,
+        "data": data,
+        "has_data": bool(data and (data.get("cols") or data.get("rows"))),
+        "presets": [
+            {"id": k, "label": v["label"], "channel": v["channel"]}
+            for k, v in PNL_OZON_PRESETS.items()
+        ],
+    }
+
+
+@app.post("/api/finance/pnl/upload")
+async def upload_finance_pnl(
+    file: UploadFile = File(...),
+    cabinet_id: str = Form(None),
+    label: str = Form(None),
+    channel: str = Form(None),
+):
+    """Загрузка opiy.xlsx. cabinet_id: wb | ozon_pvs | ozon_dataon | ozon_new."""
+    content = await file.read()
+    try:
+        data = parse_pnl_opiy_excel(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    store = _pnl_store()
+    cabinets = list(store.get("cabinets") or [])
+    raw_cid = (cabinet_id or "").strip() or "ozon_pvs"
+    cid = _normalize_pnl_cabinet_id(raw_cid) or raw_cid
+    ch = (channel or "").strip().lower()
+    fname = file.filename or "opiy.xlsx"
+    now = datetime.now(timezone.utc).isoformat()
+
+    def _upsert(entry: dict):
+        nonlocal cabinets
+        existing = next((c for c in cabinets if c["id"] == entry["id"]), None)
+        if existing:
+            cabinets = [entry if c["id"] == entry["id"] else c for c in cabinets]
+        elif entry["id"] == "wb":
+            cabinets.insert(0, entry)
+        else:
+            # PVS перед Dataon
+            order = {"wb": 0, "ozon_pvs": 1, "ozon_dataon": 2}
+            cabinets.append(entry)
+            cabinets.sort(key=lambda c: (order.get(c["id"], 50), c.get("label") or c["id"]))
+
+    if cid in ("ozon_new", "new", "ozon"):
+        # по умолчанию — первый незаполненный пресет PVS/Dataon
+        filled = {c["id"] for c in cabinets}
+        for preset_id in ("ozon_pvs", "ozon_dataon"):
+            if preset_id not in filled:
+                cid = preset_id
+                break
+        else:
+            cid = _next_ozon_cabinet_id(cabinets)
+
+    if cid == "wb" or ch == "wb":
+        cid = "wb"
+        _upsert({
+            "id": "wb",
+            "label": (label or "").strip() or "WB",
+            "channel": "wb",
+            "filename": fname,
+            "uploaded_at": now,
+            "data": data,
+        })
+    else:
+        preset = PNL_OZON_PRESETS.get(cid)
+        if preset:
+            lbl = (label or "").strip() or preset["label"]
+            ch = "ozon"
+        elif cid.startswith("ozon_") or ch == "ozon":
+            lbl = (label or "").strip() or cid.replace("ozon_", "Ozon ").upper()
+            ch = "ozon"
+        else:
+            # неизвестный id → как новый ozon_N
+            cid = _next_ozon_cabinet_id(cabinets)
+            lbl = (label or "").strip() or f"Ozon #{cid.split('_')[-1]}"
+            ch = "ozon"
+        _upsert({
+            "id": cid,
+            "label": lbl,
+            "channel": ch,
+            "filename": fname,
+            "uploaded_at": now,
+            "data": data,
+        })
+
+    store["cabinets"] = cabinets
+    store["active_id"] = cid
+    if not _save_pnl_store(store):
+        raise HTTPException(status_code=500, detail="Не удалось сохранить ОПИУ")
+    meta = next(_pnl_cabinet_meta(c) for c in cabinets if c["id"] == cid)
+    return {
+        "status": "ok",
+        "cabinet": meta,
+        "cabinets": [_pnl_cabinet_meta(c) for c in cabinets],
+        "active_id": cid,
+        "data": data,
+        "presets": [
+            {"id": k, "label": v["label"], "channel": v["channel"]}
+            for k, v in PNL_OZON_PRESETS.items()
+        ],
+    }
+
+
+@app.post("/api/finance/pnl/active")
+def set_finance_pnl_active(request: dict):
+    cid = str((request or {}).get("id") or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="нужен id")
+    store = _pnl_store()
+    if cid not in ("ozon_all", "all") and not any(c["id"] == cid for c in store["cabinets"]):
+        raise HTTPException(status_code=404, detail="кабинет не найден")
+    if cid not in ("ozon_all", "all"):
+        store["active_id"] = cid
+        _save_pnl_store(store)
+    return get_finance_pnl(view=cid)
+
+
+@app.delete("/api/finance/pnl/{cabinet_id}")
+def delete_finance_pnl(cabinet_id: str):
+    store = _pnl_store()
+    before = len(store["cabinets"])
+    store["cabinets"] = [c for c in store["cabinets"] if c["id"] != cabinet_id]
+    if len(store["cabinets"]) == before:
+        raise HTTPException(status_code=404, detail="кабинет не найден")
+    if store.get("active_id") == cabinet_id:
+        store["active_id"] = store["cabinets"][0]["id"] if store["cabinets"] else None
+    _save_pnl_store(store)
+    return {"status": "ok", "cabinets": [_pnl_cabinet_meta(c) for c in store["cabinets"]], "active_id": store.get("active_id")}
+
+
 # ---------- Финансы: CFO баланс / кредиты ----------
 CFO_SNAPSHOT_KEY = "cfo_snapshot"
 
