@@ -6813,6 +6813,74 @@ def _comp_metric_int(row: dict, *keys) -> int:
     return 0
 
 
+def _latest_competitor_views(nm_ids: list[int]) -> dict[int, int]:
+    """Показы по nm_id из последнего загруженного «Сравнения карточек»."""
+    ids = []
+    seen = set()
+    for n in nm_ids or []:
+        try:
+            nid = int(n)
+        except (TypeError, ValueError):
+            continue
+        if nid < 1 or nid in seen:
+            continue
+        seen.add(nid)
+        ids.append(nid)
+    if not ids:
+        return {}
+    try:
+        sess_resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/competitor_sessions"
+            f"?select=id,period_end,period_begin,uploaded_at&order=period_end.desc.nullslast&order=uploaded_at.desc",
+            headers=sb_headers(),
+            timeout=20,
+        )
+        sessions = sess_resp.json() if sess_resp.is_success else []
+        if not isinstance(sessions, list) or not sessions:
+            return {}
+        sid_rank = {}
+        for i, s in enumerate(sessions):
+            try:
+                sid_rank[int(s.get("id"))] = i
+            except (TypeError, ValueError):
+                continue
+        if not sid_rank:
+            return {}
+        # батчами — PostgREST in.() ограничен по длине URL
+        out: dict[int, tuple[int, int]] = {}  # nm -> (rank, views)
+        for i in range(0, len(ids), 80):
+            chunk = ids[i:i + 80]
+            ids_csv = ",".join(str(n) for n in chunk)
+            met_resp = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/competitor_metrics"
+                f"?nm_id=in.({ids_csv})&select=session_id,nm_id,views&limit=5000",
+                headers=sb_headers(),
+                timeout=30,
+            )
+            rows = met_resp.json() if met_resp.is_success else []
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    nm = int(row.get("nm_id"))
+                    sid = int(row.get("session_id"))
+                except (TypeError, ValueError):
+                    continue
+                rank = sid_rank.get(sid)
+                if rank is None:
+                    continue
+                views = _comp_metric_int(row, "views")
+                prev = out.get(nm)
+                if prev is None or rank < prev[0]:
+                    out[nm] = (rank, views)
+        return {nm: v for nm, (_r, v) in out.items()}
+    except Exception as e:
+        logger.warning(f"latest competitor views: {e}")
+        return {}
+
+
 @app.get("/api/competitor-brand-weeks")
 def competitor_brand_weeks(brand: str = ""):
     """Показы и заказы бренда по неделям из загруженных «Сравнений карточек»."""
@@ -12837,6 +12905,149 @@ def _wb_search_next_host():
         return host
 
 
+def _wb_search_headers() -> dict:
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+        "Origin": "https://www.wildberries.ru",
+        "Referer": "https://www.wildberries.ru/",
+    }
+
+
+def fetch_wb_search_catalog(query: str, dest: int, max_pages: int = 1) -> dict:
+    """Клиентская выдача WB по запросу: товары по порядку + total/error."""
+    query = (query or "").strip()
+    max_pages = max(1, min(int(max_pages or 1), 5))
+    if not query:
+        return {"products": [], "total": None, "error": "bad input"}
+    last_total = None
+    last_err = None
+    products = []
+    try:
+        with httpx.Client(timeout=30, headers=_wb_search_headers(), follow_redirects=True) as client:
+            for page in range(1, max_pages + 1):
+                page_ok = False
+                page_products = []
+                for attempt in range(5):
+                    base = _wb_search_next_host()
+                    _wb_search_throttle(0.85 + 0.15 * attempt)
+                    try:
+                        resp = client.get(
+                            base,
+                            params={
+                                "appType": 1,
+                                "curr": "rub",
+                                "dest": dest,
+                                "query": query,
+                                "resultset": "catalog",
+                                "sort": "popular",
+                                "spp": 30,
+                                "page": page,
+                            },
+                        )
+                    except Exception as e:
+                        last_err = str(e)[:120]
+                        time.sleep(0.8 * (attempt + 1))
+                        continue
+                    if resp.status_code == 429:
+                        last_err = "429"
+                        time.sleep(2.0 * (attempt + 1))
+                        continue
+                    if not resp.is_success:
+                        last_err = f"http {resp.status_code}"
+                        time.sleep(0.5 * (attempt + 1))
+                        continue
+                    try:
+                        data = resp.json()
+                    except Exception as e:
+                        last_err = f"json {e}"
+                        time.sleep(0.4)
+                        continue
+                    page_products = data.get("products") or (data.get("data") or {}).get("products") or []
+                    last_total = data.get("total")
+                    if last_total is None:
+                        last_total = (data.get("data") or {}).get("total")
+                    page_ok = True
+                    last_err = None
+                    break
+                if not page_ok:
+                    break
+                if not isinstance(page_products, list):
+                    page_products = []
+                products.extend(page_products)
+                if len(page_products) < 100:
+                    break
+        return {"products": products, "total": last_total, "error": last_err}
+    except Exception as e:
+        logger.exception(f"fetch_wb_search_catalog: {e}")
+        return {"products": products, "total": last_total, "error": str(e)[:160]}
+
+
+def find_own_in_wb_search(query: str, dest: int, limit: int = 100) -> dict:
+    """Топ выдачи по ключу: доли брендов + наши карточки."""
+    query = (query or "").strip()
+    limit = max(10, min(int(limit or 100), 500))
+    pages = max(1, min((limit + 99) // 100, 5))
+    cat = fetch_wb_search_catalog(query, dest, max_pages=pages)
+    own = _own_nm_vendor_map()
+    hits = []
+    brand_counts: dict[str, int] = {}
+    checked = 0
+    own_brand_names = set()
+    for p in (cat.get("products") or [])[:limit]:
+        checked += 1
+        if not isinstance(p, dict):
+            continue
+        pid = p.get("id") or p.get("nmId") or p.get("nmID")
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            pid = None
+        brand = str(p.get("brand") or "").strip() or "без бренда"
+        brand_counts[brand] = brand_counts.get(brand, 0) + 1
+        if pid is None or pid not in own:
+            continue
+        own_brand_names.add(brand)
+        hits.append({
+            "position": checked,
+            "nm_id": pid,
+            "vendor_code": own.get(pid) or "",
+            "brand": brand,
+            "name": p.get("name") or "",
+            "thumb": wb_product_thumb_url(pid),
+            "url": f"https://www.wildberries.ru/catalog/{pid}/detail.aspx",
+        })
+    own_brand_names.update({
+        b for b in brand_counts
+        if str(b).strip().upper() == "PVS"
+    })
+    brands = []
+    for brand, cnt in sorted(brand_counts.items(), key=lambda kv: (-kv[1], kv[0].lower())):
+        pct = round(cnt * 100.0 / checked, 1) if checked else 0
+        brands.append({
+            "brand": brand,
+            "count": cnt,
+            "pct": pct,
+            "is_own": brand in own_brand_names,
+        })
+    return {
+        "query": query,
+        "dest": dest,
+        "limit": limit,
+        "checked": checked,
+        "total": cat.get("total"),
+        "ours_count": len(hits),
+        "ours": hits,
+        "brands": brands,
+        "brand_count": len(brands),
+        "error": cat.get("error"),
+    }
+
+
 def find_nm_in_wb_search(nm_id: int, query: str, dest: int, max_pages: int = 3):
     """Ищет nm_id в клиентской выдаче WB по запросу. Позиция с 1, None = не в топ max_pages*100."""
     query = (query or "").strip()
@@ -12962,6 +13173,28 @@ def get_search_keywords():
         "default_city": "moscow",
         "default_dest": -1257786,
     }
+
+
+@app.post("/api/search-own-in-query")
+def search_own_in_query(request: dict):
+    """Топ-100 по ключу: доли брендов в выдаче. Body: {query, dest?, limit?}"""
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    query = str(request.get("query") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query required")
+    try:
+        dest = int(request.get("dest") if request.get("dest") is not None else -1257786)
+    except (TypeError, ValueError):
+        dest = -1257786
+    try:
+        limit = int(request.get("limit") if request.get("limit") is not None else 100)
+    except (TypeError, ValueError):
+        limit = 100
+    data = find_own_in_wb_search(query, dest, limit=limit)
+    city_name = next((c["name"] for c in WB_SEARCH_CITIES if c["dest"] == dest), str(dest))
+    data["city"] = city_name
+    return data
 
 
 @app.post("/api/search-positions")
@@ -13934,7 +14167,12 @@ def shelf_share_history(dest: int = -1257786):
             **_shelf_share_delta(this, prev),
         }
         items.append(row)
+    views_map = _latest_competitor_views([r["nm_id"] for r in items])
+    for r in items:
+        v = views_map.get(int(r["nm_id"]))
+        r["views"] = int(v) if v is not None else None
     items.sort(key=lambda r: (
+        -(int(r.get("views") or 0)),
         -float((r.get("this_week") or {}).get("mine_pct") or -1),
         -float((r.get("prev_week") or {}).get("mine_pct") or -1),
         str(r.get("brand") or ""),

@@ -1723,7 +1723,8 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
         </div>
       </div>
     </div>
-    <div id="posStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Клиентский поиск WB · закреплённые сверху · тяни строки за ⋮⋮ для ручного порядка</div>
+    <div id="posStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Клиентский поиск WB · кликни ключ — доли брендов в топ-100 · тяни строки за ⋮⋮</div>
+    <div id="posPresencePanel" style="display:none;margin-top:12px"></div>
   </div>
 
   <div id="posRoot" style="overflow:auto">
@@ -10582,6 +10583,9 @@ let POS_PINNED = JSON.parse(localStorage.getItem('pos_pinned') || '[]'); // quer
 let POS_ORDER = JSON.parse(localStorage.getItem('pos_order') || '[]'); // queryLower[] manual
 let POS_GENDER = localStorage.getItem('pos_gender') || 'all'; // all | men | women
 let POS_DRAG_KEY = null;
+let POS_PRESENCE = {}; // dest|queryLower -> payload
+let POS_PRESENCE_KEY = null;
+let POS_PRESENCE_LOADING = false;
 
 // маркеры пола в ключе — нейтральные (умные часы, apple watch, детские без пола) остаются везде
 const POS_FEMALE_RE = /женск|для женщин|женщин|девушк|девоч|девочк|для девоч|леди|ladies|woman|women|female/i;
@@ -10664,6 +10668,7 @@ async function loadPosKeywords() {
 function onPosCityChange() {
   const sel = document.getElementById('posCity');
   if(sel) localStorage.setItem('pos_dest', sel.value);
+  closePosPresence();
 }
 
 function updatePosArtChip() {
@@ -10851,6 +10856,116 @@ function fmtSok(n) {
   return Number(n).toFixed(2);
 }
 
+function posPresenceCacheKey(query, dest) {
+  return `b2|${dest}|${String(query||'').toLowerCase()}`;
+}
+
+function posDest() {
+  return Number((document.getElementById('posCity')||{}).value || -1257786);
+}
+
+function posCityName() {
+  const dest = posDest();
+  const c = (POS_CITIES || []).find(x => Number(x.dest) === dest);
+  return (c && c.name) || String(dest);
+}
+
+function drawPosPresencePanel(query, payload, loading, err) {
+  const el = document.getElementById('posPresencePanel');
+  if(!el) return;
+  el.style.display = '';
+  const q = String(query || '');
+  const city = (payload && payload.city) || posCityName();
+  if(loading) {
+    el.innerHTML = `<div style="border:1px solid var(--wb-border);border-radius:10px;padding:12px 14px;background:var(--wb-bg)">
+      <div style="font-size:13px;font-weight:600">«${escapeHtml(q)}»</div>
+      <div style="font-size:12px;color:var(--wb-muted);margin-top:4px">Считаю доли брендов в топ-100 · ${escapeHtml(city)}…</div>
+    </div>`;
+    return;
+  }
+  if(err) {
+    el.innerHTML = `<div style="border:1px solid var(--wb-border);border-radius:10px;padding:12px 14px;background:var(--wb-bg)">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline">
+        <div style="font-size:13px;font-weight:600">«${escapeHtml(q)}»</div>
+        <button type="button" class="filter-btn" onclick="closePosPresence()" style="font-size:11px">Закрыть</button>
+      </div>
+      <div style="font-size:12px;color:var(--red);margin-top:6px">${escapeHtml(err)}</div>
+    </div>`;
+    return;
+  }
+  const ours = (payload && payload.ours) || [];
+  const n = payload && payload.ours_count != null ? payload.ours_count : ours.length;
+  const checked = Number(payload && payload.checked) || 0;
+  const brands = (payload && payload.brands) || [];
+  const ownPct = checked ? Math.round(n * 1000 / checked) / 10 : 0;
+  const maxPct = brands.reduce((m, b) => Math.max(m, Number(b.pct) || 0), 0) || 1;
+  const brandRows = brands.map(b => {
+    const pct = Number(b.pct) || 0;
+    const w = Math.max(2, Math.round(pct / maxPct * 100));
+    const own = !!b.is_own;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0">
+      <div style="width:140px;flex-shrink:0;font-size:12px;font-weight:${own?'700':'500'};color:${own?'var(--wb-purple)':'inherit'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(b.brand)}">${escapeHtml(b.brand)}${own?' · наш':''}</div>
+      <div style="flex:1;height:8px;background:#EEEAE6;border-radius:4px;overflow:hidden">
+        <div style="width:${w}%;height:100%;background:${own?'var(--wb-purple)':'#4A4540'};border-radius:4px"></div>
+      </div>
+      <div style="width:86px;flex-shrink:0;text-align:right;font-size:12px;font-variant-numeric:tabular-nums">${pct.toLocaleString('ru-RU')}% · ${b.count}</div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div style="border:1px solid var(--wb-border);border-radius:10px;padding:12px 14px;background:var(--wb-bg)">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;flex-wrap:wrap">
+      <div>
+        <div style="font-size:13px;font-weight:600">«${escapeHtml(q)}»</div>
+        <div style="font-size:12px;color:var(--wb-muted);margin-top:2px">${escapeHtml(city)} · топ-${checked || 100} · брендов ${brands.length} · наших карточек ${n}${checked ? ` (${ownPct}%)` : ''}</div>
+      </div>
+      <button type="button" class="filter-btn" onclick="closePosPresence()" style="font-size:11px">Закрыть</button>
+    </div>
+    ${brandRows
+      ? `<div style="margin-top:10px;max-height:360px;overflow:auto">${brandRows}</div>`
+      : '<div style="font-size:12px;color:var(--wb-muted);margin-top:8px">В топ-100 нет карточек</div>'}
+  </div>`;
+}
+
+function closePosPresence() {
+  POS_PRESENCE_KEY = null;
+  const el = document.getElementById('posPresencePanel');
+  if(el) { el.style.display = 'none'; el.innerHTML = ''; }
+}
+
+async function inspectPosKeyword(query) {
+  query = String(query || '').trim();
+  if(!query || POS_PRESENCE_LOADING) return;
+  const dest = posDest();
+  const cacheKey = posPresenceCacheKey(query, dest);
+  POS_PRESENCE_KEY = cacheKey;
+  if(POS_PRESENCE[cacheKey] && !POS_PRESENCE[cacheKey].error) {
+    drawPosPresencePanel(query, POS_PRESENCE[cacheKey], false, null);
+    return;
+  }
+  POS_PRESENCE_LOADING = true;
+  drawPosPresencePanel(query, null, true, null);
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/search-own-in-query`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query, dest, limit: 100}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+    if(d.error && !((d.brands || []).length || (d.ours || []).length)) {
+      const label = String(d.error) === '429' ? 'лимит WB, подожди и нажми ещё раз' : `WB: ${d.error}`;
+      POS_PRESENCE[cacheKey] = d;
+      if(POS_PRESENCE_KEY === cacheKey) drawPosPresencePanel(query, d, false, label);
+      return;
+    }
+    POS_PRESENCE[cacheKey] = d;
+    if(POS_PRESENCE_KEY === cacheKey) drawPosPresencePanel(query, d, false, null);
+  } catch(e) {
+    if(POS_PRESENCE_KEY === cacheKey) drawPosPresencePanel(query, null, false, e.message || 'ошибка');
+  } finally {
+    POS_PRESENCE_LOADING = false;
+  }
+}
+
 function drawPosTable() {
   const root = document.getElementById('posRoot');
   const manBtn = document.getElementById('posSortManualBtn');
@@ -10887,7 +11002,6 @@ function drawPosTable() {
         ${th('cr','CR')}
         ${th('sok','СОК')}
         ${th('rating','Рейтинг')}
-        ${th('orders','Заказы')}
       </tr></thead>
       <tbody id="posTbody">
         ${rows.map((k,i) => {
@@ -10901,14 +11015,15 @@ function drawPosTable() {
             <td style="color:var(--wb-faint);cursor:grab;text-align:center" title="Тяни для ручного порядка">⋮⋮</td>
             <td style="font-variant-numeric:tabular-nums">${fmtPos(res)}</td>
             <td style="text-align:center;cursor:pointer" onclick="togglePosPin('${safeQ}')" title="${pinned?'Открепить':'Закрепить'}">${pinned?'📌':'○'}</td>
-            <td>${escapeHtml(k.query||'')}</td>
+            <td><button type="button" onclick="inspectPosKeyword('${safeQ}')"
+              style="border:0;background:none;padding:0;font:inherit;color:var(--wb-purple);cursor:pointer;text-align:left"
+              title="Доли брендов в топ-100 по этому ключу">${escapeHtml(k.query||'')}</button></td>
             <td style="text-align:right;font-variant-numeric:tabular-nums">${fmtNum(k.freq)}</td>
             <td style="text-align:right">${fmtPct(k.cart_cr)}</td>
             <td style="text-align:right">${fmtPct(k.from_cart_cr)}</td>
             <td style="text-align:right">${fmtPct(k.cr)}</td>
             <td style="text-align:right">${fmtSok(k.sok)}</td>
             <td style="text-align:right;font-weight:600">${fmtSok(k.rating)}</td>
-            <td style="text-align:right;color:var(--wb-muted)">${k.orders||0}</td>
           </tr>`;
         }).join('')}
       </tbody>
@@ -11464,6 +11579,7 @@ var SHELF_SENT_LOADED = false;
 var SHELF_SHARE_WOW = null;
 var SHELF_SHARE_SCAN = {running: false, done: 0, total: 0, error: ''};
 var SHELF_SHARE_LIVE = {data: null, shares: null};
+var SHELF_SHARE_SORT = localStorage.getItem('shelf_share_sort') || 'views'; // views | share
 let SHELF_CACHE = {}; // nm_id -> {items, competitor, loaded_at, error}
 let SHELF_LOADING = false;
 let SHELF_SUGGEST_ADDED = JSON.parse(localStorage.getItem('shelf_suggest_added') || '{}'); // comp_nm -> [{nm_id, vendor_code, thumb?}]
@@ -12186,12 +12302,38 @@ async function startShelfShareScan() {
   renderShelfShareWow(SHELF_SHARE_LIVE.data, SHELF_SHARE_LIVE.shares);
 }
 
+function shelfShareCompetitorViews(row) {
+  if(row && row.views != null && row.views !== '') {
+    const n = Number(row.views);
+    if(!Number.isNaN(n)) return n;
+  }
+  const nm = Number(row && row.nm_id);
+  if(!nm) return null;
+  const fromComp = (typeof COMP_ALL_METRICS !== 'undefined' ? COMP_ALL_METRICS : []).find(m => Number(m.nm_id) === nm);
+  if(fromComp && fromComp.views != null && fromComp.views !== '') {
+    const n = Number(fromComp.views);
+    if(!Number.isNaN(n)) return n;
+  }
+  const fromWho = (typeof WHO_SHELF_COMPS !== 'undefined' ? WHO_SHELF_COMPS : []).find(m => Number(m.nm_id) === nm);
+  if(fromWho && fromWho.views != null && fromWho.views !== '') {
+    const n = Number(fromWho.views);
+    if(!Number.isNaN(n)) return n;
+  }
+  return null;
+}
+
+function setShelfShareSort(mode) {
+  SHELF_SHARE_SORT = (mode === 'share') ? 'share' : 'views';
+  try { localStorage.setItem('shelf_share_sort', SHELF_SHARE_SORT); } catch(e) {}
+  renderShelfShareWow(SHELF_SHARE_LIVE.data, SHELF_SHARE_LIVE.shares);
+}
+
 function renderShelfShareWow(liveData, liveShares) {
   const el = document.getElementById('shelfShareWow');
   if(!el) return;
   const hist = SHELF_SHARE_WOW || {};
   const byNm = {};
-  (hist.items || []).forEach(it => { if(it && it.nm_id) byNm[Number(it.nm_id)] = it; });
+  (hist.items || []).forEach(it => { if(it && it.nm_id) byNm[Number(it.nm_id)] = {...it}; });
 
   const liveNm = Number((liveData && (liveData.nm_id || (liveData.competitor || {}).nm_id)) || SHELF_ACTIVE || 0);
   if(liveNm && liveShares) {
@@ -12202,6 +12344,7 @@ function renderShelfShareWow(liveData, liveShares) {
       prev_week: null,
       delta_pp: null,
       delta_pct: null,
+      views: null,
     };
     cur.this_week = shelfShareLiveSnap(liveShares);
     const prev = cur.prev_week;
@@ -12217,7 +12360,7 @@ function renderShelfShareWow(liveData, liveShares) {
     const nid = Number(c.nm_id);
     if(!nid) return;
     if(!byNm[nid]) {
-      byNm[nid] = {nm_id: nid, brand: c.brand || '', name: c.name || '', thumb: c.thumb || '', this_week: null, prev_week: null, delta_pp: null, delta_pct: null};
+      byNm[nid] = {nm_id: nid, brand: c.brand || '', name: c.name || '', thumb: c.thumb || '', this_week: null, prev_week: null, delta_pp: null, delta_pct: null, views: null};
       return;
     }
     if(!byNm[nid].brand && c.brand) byNm[nid].brand = c.brand;
@@ -12225,10 +12368,29 @@ function renderShelfShareWow(liveData, liveShares) {
     if(!byNm[nid].thumb && c.thumb) byNm[nid].thumb = c.thumb;
   });
 
+  Object.values(byNm).forEach(r => {
+    const v = shelfShareCompetitorViews(r);
+    r._views = v;
+    if(v != null) r.views = v;
+  });
+
+  const sortMode = SHELF_SHARE_SORT === 'share' ? 'share' : 'views';
   const rows = Object.values(byNm).sort((a, b) => {
-    const ta = (a.this_week && a.this_week.mine_pct != null) ? a.this_week.mine_pct : -1;
-    const tb = (b.this_week && b.this_week.mine_pct != null) ? b.this_week.mine_pct : -1;
-    if(tb !== ta) return tb - ta;
+    if(sortMode === 'views') {
+      const va = a._views != null ? a._views : -1;
+      const vb = b._views != null ? b._views : -1;
+      if(vb !== va) return vb - va;
+      const ta = (a.this_week && a.this_week.mine_pct != null) ? a.this_week.mine_pct : -1;
+      const tb = (b.this_week && b.this_week.mine_pct != null) ? b.this_week.mine_pct : -1;
+      if(tb !== ta) return tb - ta;
+    } else {
+      const ta = (a.this_week && a.this_week.mine_pct != null) ? a.this_week.mine_pct : -1;
+      const tb = (b.this_week && b.this_week.mine_pct != null) ? b.this_week.mine_pct : -1;
+      if(tb !== ta) return tb - ta;
+      const va = a._views != null ? a._views : -1;
+      const vb = b._views != null ? b._views : -1;
+      if(vb !== va) return vb - va;
+    }
     return String(a.brand || '').localeCompare(String(b.brand || ''), 'ru');
   });
 
@@ -12264,6 +12426,13 @@ function renderShelfShareWow(liveData, liveShares) {
     return;
   }
 
+  const sortTh = (mode, label, width) => {
+    const on = sortMode === mode;
+    const arrow = on ? ' ↓' : '';
+    return `<th style="width:${width};cursor:pointer;user-select:none;${on?'color:var(--wb-purple)':''}"
+      onclick="setShelfShareSort('${mode}')" title="Сортировать по ${label.toLowerCase()}">${label}${arrow}</th>`;
+  };
+
   el.innerHTML = `<div style="padding:16px 20px 24px;border-top:1px solid var(--wb-border)">
     <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
       <div>
@@ -12271,6 +12440,7 @@ function renderShelfShareWow(liveData, liveShares) {
         <div style="font-size:12px;color:var(--wb-muted);margin-top:2px">
           ${escapeHtml(weekLabel)} vs ${escapeHtml(prevLabel)}${cityName ? ' · ' + escapeHtml(cityName) : ''}
           · ${escapeHtml(scanTxt)}
+          · сортировка: ${sortMode === 'views' ? 'показы' : 'доля'}
         </div>
       </div>
       <div style="font-size:12px;color:var(--wb-muted);text-align:right">
@@ -12284,7 +12454,8 @@ function renderShelfShareWow(liveData, liveShares) {
         <thead><tr>
           <th style="width:56px">Фото</th>
           <th>Конкурент</th>
-          <th style="width:160px">Эта неделя</th>
+          ${sortTh('views', 'Показы', '110px')}
+          ${sortTh('share', 'Эта неделя', '160px')}
           <th style="width:160px">Прошлая неделя</th>
           <th style="width:120px">Динамика</th>
         </tr></thead>
@@ -12292,6 +12463,9 @@ function renderShelfShareWow(liveData, liveShares) {
           ${rows.map(r => {
             const on = Number(r.nm_id) === liveNm;
             const pending = scan.running && !(r.this_week && r.this_week.mine_pct != null);
+            const viewsHtml = r._views != null
+              ? `<b style="font-variant-numeric:tabular-nums">${fmt(r._views)}</b>`
+              : '<span style="color:var(--wb-faint)">—</span>';
             return `<tr style="${on?'background:rgba(155,81,224,.07)':''}">
               <td><a href="${wbCatalogUrl(r.nm_id)}" target="_blank" rel="noopener" title="Открыть на WB">
                 <img src="${wbThumbUrl(r.nm_id)}" alt="" width="40" height="40" loading="lazy"
@@ -12302,6 +12476,7 @@ function renderShelfShareWow(liveData, liveShares) {
                 <div style="font-weight:600">${escapeHtml(r.brand || 'Конкурент')}</div>
                 <div style="font-size:11px;color:var(--wb-muted)">${r.nm_id}${r.name ? ' · ' + escapeHtml(r.name) : ''}</div>
               </td>
+              <td style="font-variant-numeric:tabular-nums">${viewsHtml}</td>
               <td>${pending ? '<span style="color:var(--wb-faint)">замеряю…</span>' : shelfShareSnapHtml(r.this_week)}</td>
               <td>${shelfShareSnapHtml(r.prev_week)}</td>
               <td>${shelfShareDeltaHtml(r)}</td>

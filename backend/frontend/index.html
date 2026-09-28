@@ -1723,7 +1723,8 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
         </div>
       </div>
     </div>
-    <div id="posStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Клиентский поиск WB · закреплённые сверху · тяни строки за ⋮⋮ для ручного порядка</div>
+    <div id="posStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Клиентский поиск WB · кликни ключ — доли брендов в топ-100 · тяни строки за ⋮⋮</div>
+    <div id="posPresencePanel" style="display:none;margin-top:12px"></div>
   </div>
 
   <div id="posRoot" style="overflow:auto">
@@ -10582,6 +10583,9 @@ let POS_PINNED = JSON.parse(localStorage.getItem('pos_pinned') || '[]'); // quer
 let POS_ORDER = JSON.parse(localStorage.getItem('pos_order') || '[]'); // queryLower[] manual
 let POS_GENDER = localStorage.getItem('pos_gender') || 'all'; // all | men | women
 let POS_DRAG_KEY = null;
+let POS_PRESENCE = {}; // dest|queryLower -> payload
+let POS_PRESENCE_KEY = null;
+let POS_PRESENCE_LOADING = false;
 
 // маркеры пола в ключе — нейтральные (умные часы, apple watch, детские без пола) остаются везде
 const POS_FEMALE_RE = /женск|для женщин|женщин|девушк|девоч|девочк|для девоч|леди|ladies|woman|women|female/i;
@@ -10664,6 +10668,7 @@ async function loadPosKeywords() {
 function onPosCityChange() {
   const sel = document.getElementById('posCity');
   if(sel) localStorage.setItem('pos_dest', sel.value);
+  closePosPresence();
 }
 
 function updatePosArtChip() {
@@ -10851,6 +10856,116 @@ function fmtSok(n) {
   return Number(n).toFixed(2);
 }
 
+function posPresenceCacheKey(query, dest) {
+  return `b2|${dest}|${String(query||'').toLowerCase()}`;
+}
+
+function posDest() {
+  return Number((document.getElementById('posCity')||{}).value || -1257786);
+}
+
+function posCityName() {
+  const dest = posDest();
+  const c = (POS_CITIES || []).find(x => Number(x.dest) === dest);
+  return (c && c.name) || String(dest);
+}
+
+function drawPosPresencePanel(query, payload, loading, err) {
+  const el = document.getElementById('posPresencePanel');
+  if(!el) return;
+  el.style.display = '';
+  const q = String(query || '');
+  const city = (payload && payload.city) || posCityName();
+  if(loading) {
+    el.innerHTML = `<div style="border:1px solid var(--wb-border);border-radius:10px;padding:12px 14px;background:var(--wb-bg)">
+      <div style="font-size:13px;font-weight:600">«${escapeHtml(q)}»</div>
+      <div style="font-size:12px;color:var(--wb-muted);margin-top:4px">Считаю доли брендов в топ-100 · ${escapeHtml(city)}…</div>
+    </div>`;
+    return;
+  }
+  if(err) {
+    el.innerHTML = `<div style="border:1px solid var(--wb-border);border-radius:10px;padding:12px 14px;background:var(--wb-bg)">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline">
+        <div style="font-size:13px;font-weight:600">«${escapeHtml(q)}»</div>
+        <button type="button" class="filter-btn" onclick="closePosPresence()" style="font-size:11px">Закрыть</button>
+      </div>
+      <div style="font-size:12px;color:var(--red);margin-top:6px">${escapeHtml(err)}</div>
+    </div>`;
+    return;
+  }
+  const ours = (payload && payload.ours) || [];
+  const n = payload && payload.ours_count != null ? payload.ours_count : ours.length;
+  const checked = Number(payload && payload.checked) || 0;
+  const brands = (payload && payload.brands) || [];
+  const ownPct = checked ? Math.round(n * 1000 / checked) / 10 : 0;
+  const maxPct = brands.reduce((m, b) => Math.max(m, Number(b.pct) || 0), 0) || 1;
+  const brandRows = brands.map(b => {
+    const pct = Number(b.pct) || 0;
+    const w = Math.max(2, Math.round(pct / maxPct * 100));
+    const own = !!b.is_own;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0">
+      <div style="width:140px;flex-shrink:0;font-size:12px;font-weight:${own?'700':'500'};color:${own?'var(--wb-purple)':'inherit'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(b.brand)}">${escapeHtml(b.brand)}${own?' · наш':''}</div>
+      <div style="flex:1;height:8px;background:#EEEAE6;border-radius:4px;overflow:hidden">
+        <div style="width:${w}%;height:100%;background:${own?'var(--wb-purple)':'#4A4540'};border-radius:4px"></div>
+      </div>
+      <div style="width:86px;flex-shrink:0;text-align:right;font-size:12px;font-variant-numeric:tabular-nums">${pct.toLocaleString('ru-RU')}% · ${b.count}</div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div style="border:1px solid var(--wb-border);border-radius:10px;padding:12px 14px;background:var(--wb-bg)">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;flex-wrap:wrap">
+      <div>
+        <div style="font-size:13px;font-weight:600">«${escapeHtml(q)}»</div>
+        <div style="font-size:12px;color:var(--wb-muted);margin-top:2px">${escapeHtml(city)} · топ-${checked || 100} · брендов ${brands.length} · наших карточек ${n}${checked ? ` (${ownPct}%)` : ''}</div>
+      </div>
+      <button type="button" class="filter-btn" onclick="closePosPresence()" style="font-size:11px">Закрыть</button>
+    </div>
+    ${brandRows
+      ? `<div style="margin-top:10px;max-height:360px;overflow:auto">${brandRows}</div>`
+      : '<div style="font-size:12px;color:var(--wb-muted);margin-top:8px">В топ-100 нет карточек</div>'}
+  </div>`;
+}
+
+function closePosPresence() {
+  POS_PRESENCE_KEY = null;
+  const el = document.getElementById('posPresencePanel');
+  if(el) { el.style.display = 'none'; el.innerHTML = ''; }
+}
+
+async function inspectPosKeyword(query) {
+  query = String(query || '').trim();
+  if(!query || POS_PRESENCE_LOADING) return;
+  const dest = posDest();
+  const cacheKey = posPresenceCacheKey(query, dest);
+  POS_PRESENCE_KEY = cacheKey;
+  if(POS_PRESENCE[cacheKey] && !POS_PRESENCE[cacheKey].error) {
+    drawPosPresencePanel(query, POS_PRESENCE[cacheKey], false, null);
+    return;
+  }
+  POS_PRESENCE_LOADING = true;
+  drawPosPresencePanel(query, null, true, null);
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/search-own-in-query`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query, dest, limit: 100}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+    if(d.error && !((d.brands || []).length || (d.ours || []).length)) {
+      const label = String(d.error) === '429' ? 'лимит WB, подожди и нажми ещё раз' : `WB: ${d.error}`;
+      POS_PRESENCE[cacheKey] = d;
+      if(POS_PRESENCE_KEY === cacheKey) drawPosPresencePanel(query, d, false, label);
+      return;
+    }
+    POS_PRESENCE[cacheKey] = d;
+    if(POS_PRESENCE_KEY === cacheKey) drawPosPresencePanel(query, d, false, null);
+  } catch(e) {
+    if(POS_PRESENCE_KEY === cacheKey) drawPosPresencePanel(query, null, false, e.message || 'ошибка');
+  } finally {
+    POS_PRESENCE_LOADING = false;
+  }
+}
+
 function drawPosTable() {
   const root = document.getElementById('posRoot');
   const manBtn = document.getElementById('posSortManualBtn');
@@ -10887,7 +11002,6 @@ function drawPosTable() {
         ${th('cr','CR')}
         ${th('sok','СОК')}
         ${th('rating','Рейтинг')}
-        ${th('orders','Заказы')}
       </tr></thead>
       <tbody id="posTbody">
         ${rows.map((k,i) => {
@@ -10901,14 +11015,15 @@ function drawPosTable() {
             <td style="color:var(--wb-faint);cursor:grab;text-align:center" title="Тяни для ручного порядка">⋮⋮</td>
             <td style="font-variant-numeric:tabular-nums">${fmtPos(res)}</td>
             <td style="text-align:center;cursor:pointer" onclick="togglePosPin('${safeQ}')" title="${pinned?'Открепить':'Закрепить'}">${pinned?'📌':'○'}</td>
-            <td>${escapeHtml(k.query||'')}</td>
+            <td><button type="button" onclick="inspectPosKeyword('${safeQ}')"
+              style="border:0;background:none;padding:0;font:inherit;color:var(--wb-purple);cursor:pointer;text-align:left"
+              title="Доли брендов в топ-100 по этому ключу">${escapeHtml(k.query||'')}</button></td>
             <td style="text-align:right;font-variant-numeric:tabular-nums">${fmtNum(k.freq)}</td>
             <td style="text-align:right">${fmtPct(k.cart_cr)}</td>
             <td style="text-align:right">${fmtPct(k.from_cart_cr)}</td>
             <td style="text-align:right">${fmtPct(k.cr)}</td>
             <td style="text-align:right">${fmtSok(k.sok)}</td>
             <td style="text-align:right;font-weight:600">${fmtSok(k.rating)}</td>
-            <td style="text-align:right;color:var(--wb-muted)">${k.orders||0}</td>
           </tr>`;
         }).join('')}
       </tbody>
