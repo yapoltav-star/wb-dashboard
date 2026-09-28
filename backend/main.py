@@ -619,6 +619,10 @@ def sync_stock():
         logger.info("Stock report empty on first download, retrying once after 15s")
         time.sleep(15)
         items = download_stock_report(task_id)
+    if not items:
+        # Пустой отчёт (обычно 429) затёр бы FBW-остатки нулями — оставляем прошлый срез
+        logger.warning("Stock report empty after retry, keeping previous stock snapshot")
+        return
     totals, warehouses = process_stock_items(items)
 
     # FBS / Маркетплейс — отдельные колонки складов (не входят в quantity_warehouses_full WB)
@@ -10653,18 +10657,56 @@ def _parse_pnl_cell(v):
     return (money if money is not None else 0.0), qty, pct
 
 
+def _is_pnl_total_header(h) -> bool:
+    s = str(h or "").strip().lower()
+    return s.startswith("итого") or s in ("год", "всего", "total", "year")
+
+
+def _pick_pnl_sheet(wb):
+    """Лист самого ОПИУ, не разбивка операционных и не первый попавшийся."""
+    names = list(wb.sheetnames or [])
+    if not names:
+        raise ValueError("В файле нет листов")
+    best, best_score = names[0], -1
+    for n in names:
+        ws = wb[n]
+        low = n.lower().replace(" ", "")
+        col1 = " ".join(
+            str(ws.cell(r, 1).value or "").lower()
+            for r in range(1, min(40, (ws.max_row or 1) + 1))
+        )
+        score = 0
+        if any(x in low for x in ("pnl", "опиу", "opiy", "p&l")):
+            score += 10
+        if "сумма продаж" in col1:
+            score += 8
+        if "реализация" in col1:
+            score += 6
+        if "чистая прибыль" in col1:
+            score += 4
+        if any(x in low for x in ("детализац", "разбивк", "opex", "расходы")):
+            score -= 8
+        if score > best_score:
+            best, best_score = n, score
+    return wb[best]
+
+
 def parse_pnl_opiy_excel(content: bytes) -> dict:
     """Парсит Excel ОПИУ (лист PnL): статья × месяцы/недели — как выгрузка MPSTATS/opiy."""
     from openpyxl import load_workbook
 
     wb = load_workbook(io.BytesIO(content), data_only=True)
-    ws = wb[wb.sheetnames[0]]
+    ws = _pick_pnl_sheet(wb)
     headers = []
+    header_cols = []
     for c in range(2, (ws.max_column or 0) + 1):
         h = ws.cell(1, c).value
         if h is None or str(h).strip() == "":
             break
+        if _is_pnl_total_header(h):
+            continue
         headers.append(str(h).strip())
+        header_cols.append(c)
     if not headers:
         raise ValueError("В файле нет колонок периода (ожидаю строку «Статья» + месяцы/недели)")
 
@@ -10699,11 +10741,11 @@ def parse_pnl_opiy_excel(content: bytes) -> dict:
         if not name:
             continue
         key = PNL_ROW_MAP.get(str(name).strip().lower())
-        if not key:
+        if not key or key in by_k:
             continue
         vs, qs, ps = [], [], []
-        for ci in range(len(headers)):
-            money, qty, pct = _parse_pnl_cell(ws.cell(r, ci + 2).value)
+        for c in header_cols:
+            money, qty, pct = _parse_pnl_cell(ws.cell(r, c).value)
             vs.append(round(money, 2))
             qs.append(qty)
             ps.append(pct)
@@ -10736,7 +10778,7 @@ def parse_pnl_opiy_excel(content: bytes) -> dict:
 
 
 def _empty_pnl_store() -> dict:
-    return {"cabinets": [], "active_id": None}
+    return {"cabinets": [], "active_id": None, "selected_ids": []}
 
 
 def _pnl_store() -> dict:
@@ -10753,34 +10795,56 @@ def _pnl_store() -> dict:
         data = c.get("data")
         if not isinstance(data, dict) or not data.get("cols") or not data.get("rows"):
             continue
+        cid = _normalize_pnl_cabinet_id(str(c["id"])) or str(c["id"])
+        preset = PNL_FILE_PRESETS.get(cid, {})
         clean.append({
-            "id": str(c["id"]),
-            "label": str(c.get("label") or c["id"]),
-            "channel": str(c.get("channel") or ("ozon" if str(c["id"]).startswith("ozon") else "wb")),
+            "id": cid,
+            "label": str(c.get("label") or preset.get("label") or cid),
+            "channel": str(c.get("channel") or preset.get("channel") or ("ozon" if cid.startswith("ozon") or cid == "dataon" else "wb")),
             "filename": str(c.get("filename") or "") or None,
             "uploaded_at": str(c.get("uploaded_at") or "") or None,
             "data": data,
         })
+    # если один id дважды после нормализации — последний побеждает
+    by_id = {}
+    for c in clean:
+        by_id[c["id"]] = c
+    clean = list(by_id.values())
     active = raw.get("active_id")
+    if active:
+        active = _normalize_pnl_cabinet_id(str(active)) or active
     if active and not any(c["id"] == active for c in clean):
         active = clean[0]["id"] if clean else None
     if not active and clean:
         active = clean[0]["id"]
-    return {"cabinets": clean, "active_id": active}
+    selected = raw.get("selected_ids")
+    if not isinstance(selected, list):
+        selected = [c["id"] for c in clean]
+    else:
+        selected = [_normalize_pnl_cabinet_id(str(x)) or str(x) for x in selected]
+        selected = [x for x in selected if any(c["id"] == x for c in clean)]
+        if not selected and clean:
+            selected = [c["id"] for c in clean]
+    return {"cabinets": clean, "active_id": active, "selected_ids": selected}
 
 
 def _save_pnl_store(store: dict) -> bool:
     return save_setting_value(PNL_STORE_KEY, {
         "cabinets": store.get("cabinets") or [],
         "active_id": store.get("active_id"),
+        "selected_ids": store.get("selected_ids") or [],
     })
 
 
 # Фиксированные кабинеты Ozon (2 компании)
-PNL_OZON_PRESETS = {
-    "ozon_pvs": {"label": "PVS", "channel": "ozon"},
-    "ozon_dataon": {"label": "Dataon", "channel": "ozon"},
+PNL_FILE_PRESETS = {
+    "ozon": {"label": "Ozon", "channel": "ozon"},
+    "dataon": {"label": "Dataon", "channel": "ozon"},
+    "ozon_pvs": {"label": "Ozon PVS", "channel": "ozon"},
+    "wb_pvs": {"label": "Wildberries PVS", "channel": "wb"},
+    "wb": {"label": "Wildberries", "channel": "wb"},
 }
+PNL_OZON_PRESETS = PNL_FILE_PRESETS
 
 
 def _next_ozon_cabinet_id(cabinets: list) -> str:
@@ -10796,18 +10860,44 @@ def _next_ozon_cabinet_id(cabinets: list) -> str:
 
 
 def _normalize_pnl_cabinet_id(cid: str) -> str:
-    """pvs / dataon / ozon_pvs → стабильный id."""
-    raw = (cid or "").strip().lower().replace(" ", "_")
+    """Имя файла / слот → стабильный id."""
+    raw = (cid or "").strip().lower().replace(" ", "_").replace("-", "_")
     aliases = {
+        "ozon": "ozon",
+        "azon": "ozon",
+        "озон": "ozon",
         "pvs": "ozon_pvs",
-        "ozon-pvs": "ozon_pvs",
         "ozon_pvs": "ozon_pvs",
-        "dataon": "ozon_dataon",
-        "data_on": "ozon_dataon",
-        "ozon-dataon": "ozon_dataon",
-        "ozon_dataon": "ozon_dataon",
+        "azon_pvs": "ozon_pvs",
+        "dataon": "dataon",
+        "data_on": "dataon",
+        "ozon_dataon": "dataon",
+        "azon_dataon": "dataon",
+        "wb": "wb",
+        "wildberries": "wb",
+        "wb_pvs": "wb_pvs",
+        "wildberries_pvs": "wb_pvs",
+        "wb.pvs": "wb_pvs",
     }
     return aliases.get(raw, cid.strip() if cid else "")
+
+
+def _guess_pnl_file(filename: str) -> tuple:
+    """(id, label, channel) из имени файла."""
+    n = (filename or "").lower().replace(" ", "")
+    if "dataon" in n or "датаон" in n:
+        return "dataon", "Dataon", "ozon"
+    if "pvs" in n and any(x in n for x in ("wb", "wild", "вб", "вайлд")):
+        return "wb_pvs", "Wildberries PVS", "wb"
+    if "pvs" in n and any(x in n for x in ("ozon", "azon", "озон")):
+        return "ozon_pvs", "Ozon PVS", "ozon"
+    if "pvs" in n:
+        return "ozon_pvs", "Ozon PVS", "ozon"
+    if any(x in n for x in ("ozon", "azon", "озон")):
+        return "ozon", "Ozon", "ozon"
+    if any(x in n for x in ("wb", "wild", "вб", "вайлд")):
+        return "wb", "Wildberries", "wb"
+    return "", "", ""
 
 
 def _pnl_cabinet_meta(c: dict) -> dict:
@@ -10898,40 +10988,52 @@ def _sum_pnl_datasets(items: list, label: str = "Итого") -> dict:
     return {"cols": cols, "months": months, "rows": [by_k[k] for k in PNL_ROW_ORDER], "label": label}
 
 
+def _pnl_resolve_selected(store: dict, selected: str = None, view: str = None) -> list:
+    cabinets = store.get("cabinets") or []
+    ids = []
+    raw = (selected or "").strip()
+    if raw:
+        ids = [_normalize_pnl_cabinet_id(x) or x for x in raw.split(",") if x.strip()]
+        ids = [x.strip() for x in ids if x.strip()]
+    elif view in ("ozon_all", "all"):
+        if view == "all":
+            ids = [c["id"] for c in cabinets]
+        else:
+            ids = [c["id"] for c in cabinets if c.get("channel") == "ozon"]
+    elif view:
+        ids = [_normalize_pnl_cabinet_id(view) or view]
+    else:
+        ids = list(store.get("selected_ids") or [c["id"] for c in cabinets])
+    have = {c["id"] for c in cabinets}
+    return [i for i in ids if i in have]
+
+
 @app.get("/api/finance/pnl")
-def get_finance_pnl(view: str = None):
-    """ОПИУ: кабинеты WB/Ozon. view= cabinet id | ozon_all | all."""
+def get_finance_pnl(view: str = None, selected: str = None):
+    """ОПИУ: файлы. selected=id,id — сумма отмеченных."""
     store = _pnl_store()
     cabinets = store.get("cabinets") or []
     meta = [_pnl_cabinet_meta(c) for c in cabinets]
-    view_id = (view or store.get("active_id") or "").strip() or None
+    ids = _pnl_resolve_selected(store, selected, view)
+    picked = [c for c in cabinets if c["id"] in ids]
+    labels = [c.get("label") or c["id"] for c in picked]
     data = None
-    view_label = None
-    if view_id == "ozon_all":
-        oz = [c["data"] for c in cabinets if c.get("channel") == "ozon"]
-        data = _sum_pnl_datasets(oz, "PVS + Dataon") if oz else None
-        view_label = "PVS + Dataon"
-    elif view_id == "all":
-        all_d = [c["data"] for c in cabinets]
-        data = _sum_pnl_datasets(all_d, "WB + PVS + Dataon") if all_d else None
-        view_label = "WB + PVS + Dataon"
-    else:
-        if not view_id and cabinets:
-            view_id = cabinets[0]["id"]
-        cab = next((c for c in cabinets if c["id"] == view_id), None)
-        if cab:
-            data = cab.get("data")
-            view_label = cab.get("label")
+    if len(picked) == 1:
+        data = picked[0].get("data")
+    elif picked:
+        data = _sum_pnl_datasets([c.get("data") for c in picked], " + ".join(labels))
+    view_label = " + ".join(labels) if labels else None
     return {
         "cabinets": meta,
         "active_id": store.get("active_id"),
-        "view": view_id,
+        "selected_ids": ids,
+        "view": ",".join(ids) if ids else None,
         "view_label": view_label,
         "data": data,
         "has_data": bool(data and (data.get("cols") or data.get("rows"))),
         "presets": [
             {"id": k, "label": v["label"], "channel": v["channel"]}
-            for k, v in PNL_OZON_PRESETS.items()
+            for k, v in PNL_FILE_PRESETS.items()
         ],
     }
 
@@ -10952,10 +11054,11 @@ async def upload_finance_pnl(
 
     store = _pnl_store()
     cabinets = list(store.get("cabinets") or [])
-    raw_cid = (cabinet_id or "").strip() or "ozon_pvs"
-    cid = _normalize_pnl_cabinet_id(raw_cid) or raw_cid
-    ch = (channel or "").strip().lower()
     fname = file.filename or "opiy.xlsx"
+    guessed_id, guessed_label, guessed_ch = _guess_pnl_file(fname)
+    raw_cid = (cabinet_id or "").strip() or guessed_id
+    cid = _normalize_pnl_cabinet_id(raw_cid) or raw_cid or guessed_id
+    ch = (channel or "").strip().lower() or guessed_ch
     now = datetime.now(timezone.utc).isoformat()
 
     def _upsert(entry: dict):
@@ -10967,54 +11070,46 @@ async def upload_finance_pnl(
             cabinets.insert(0, entry)
         else:
             # PVS перед Dataon
-            order = {"wb": 0, "ozon_pvs": 1, "ozon_dataon": 2}
+            order = {"wb": 0, "wb_pvs": 1, "ozon": 2, "ozon_pvs": 3, "dataon": 4}
             cabinets.append(entry)
             cabinets.sort(key=lambda c: (order.get(c["id"], 50), c.get("label") or c["id"]))
 
-    if cid in ("ozon_new", "new", "ozon"):
-        # по умолчанию — первый незаполненный пресет PVS/Dataon
-        filled = {c["id"] for c in cabinets}
-        for preset_id in ("ozon_pvs", "ozon_dataon"):
-            if preset_id not in filled:
-                cid = preset_id
-                break
-        else:
-            cid = _next_ozon_cabinet_id(cabinets)
+    if cid in ("ozon_new", "new"):
+        cid = guessed_id or "ozon"
 
-    if cid == "wb" or ch == "wb":
-        cid = "wb"
-        _upsert({
-            "id": "wb",
-            "label": (label or "").strip() or "WB",
-            "channel": "wb",
-            "filename": fname,
-            "uploaded_at": now,
-            "data": data,
-        })
+    preset = PNL_FILE_PRESETS.get(cid)
+    if cid in ("wb", "wb_pvs") or ch == "wb":
+        if cid not in ("wb", "wb_pvs"):
+            cid = "wb_pvs" if "pvs" in fname.lower() else "wb"
+        preset = PNL_FILE_PRESETS.get(cid) or {"label": "Wildberries", "channel": "wb"}
+        lbl = (label or "").strip() or guessed_label or preset["label"]
+        ch = "wb"
+    elif preset:
+        lbl = (label or "").strip() or guessed_label or preset["label"]
+        ch = preset.get("channel") or ch or "ozon"
+    elif cid.startswith("ozon_") or ch == "ozon":
+        lbl = (label or "").strip() or guessed_label or cid.replace("_", " ")
+        ch = "ozon"
     else:
-        preset = PNL_OZON_PRESETS.get(cid)
-        if preset:
-            lbl = (label or "").strip() or preset["label"]
-            ch = "ozon"
-        elif cid.startswith("ozon_") or ch == "ozon":
-            lbl = (label or "").strip() or cid.replace("ozon_", "Ozon ").upper()
-            ch = "ozon"
-        else:
-            # неизвестный id → как новый ozon_N
-            cid = _next_ozon_cabinet_id(cabinets)
-            lbl = (label or "").strip() or f"Ozon #{cid.split('_')[-1]}"
-            ch = "ozon"
-        _upsert({
-            "id": cid,
-            "label": lbl,
-            "channel": ch,
-            "filename": fname,
-            "uploaded_at": now,
-            "data": data,
-        })
+        cid = guessed_id or _next_ozon_cabinet_id(cabinets)
+        preset = PNL_FILE_PRESETS.get(cid)
+        lbl = (label or "").strip() or guessed_label or (preset["label"] if preset else fname)
+        ch = guessed_ch or (preset["channel"] if preset else "ozon")
+    _upsert({
+        "id": cid,
+        "label": lbl,
+        "channel": ch,
+        "filename": fname,
+        "uploaded_at": now,
+        "data": data,
+    })
 
     store["cabinets"] = cabinets
     store["active_id"] = cid
+    selected = list(store.get("selected_ids") or [])
+    if cid not in selected:
+        selected.append(cid)
+    store["selected_ids"] = selected
     if not _save_pnl_store(store):
         raise HTTPException(status_code=500, detail="Не удалось сохранить ОПИУ")
     meta = next(_pnl_cabinet_meta(c) for c in cabinets if c["id"] == cid)
@@ -11023,12 +11118,30 @@ async def upload_finance_pnl(
         "cabinet": meta,
         "cabinets": [_pnl_cabinet_meta(c) for c in cabinets],
         "active_id": cid,
+        "selected_ids": selected,
         "data": data,
         "presets": [
             {"id": k, "label": v["label"], "channel": v["channel"]}
             for k, v in PNL_OZON_PRESETS.items()
         ],
     }
+
+
+@app.post("/api/finance/pnl/selected")
+def set_finance_pnl_selected(request: dict):
+    ids = (request or {}).get("ids") if isinstance(request, dict) else None
+    if not isinstance(ids, list):
+        raise HTTPException(status_code=400, detail="нужен ids: []")
+    store = _pnl_store()
+    have = {c["id"] for c in store.get("cabinets") or []}
+    clean = []
+    for raw in ids:
+        cid = _normalize_pnl_cabinet_id(str(raw or "")) or str(raw or "").strip()
+        if cid in have and cid not in clean:
+            clean.append(cid)
+    store["selected_ids"] = clean
+    _save_pnl_store(store)
+    return get_finance_pnl(selected=",".join(clean))
 
 
 @app.post("/api/finance/pnl/active")
@@ -11048,14 +11161,21 @@ def set_finance_pnl_active(request: dict):
 @app.delete("/api/finance/pnl/{cabinet_id}")
 def delete_finance_pnl(cabinet_id: str):
     store = _pnl_store()
+    cid = _normalize_pnl_cabinet_id(cabinet_id) or cabinet_id
     before = len(store["cabinets"])
-    store["cabinets"] = [c for c in store["cabinets"] if c["id"] != cabinet_id]
+    store["cabinets"] = [c for c in store["cabinets"] if c["id"] != cid]
     if len(store["cabinets"]) == before:
         raise HTTPException(status_code=404, detail="кабинет не найден")
-    if store.get("active_id") == cabinet_id:
+    if store.get("active_id") == cid:
         store["active_id"] = store["cabinets"][0]["id"] if store["cabinets"] else None
+    store["selected_ids"] = [x for x in (store.get("selected_ids") or []) if x != cid]
     _save_pnl_store(store)
-    return {"status": "ok", "cabinets": [_pnl_cabinet_meta(c) for c in store["cabinets"]], "active_id": store.get("active_id")}
+    return {
+        "status": "ok",
+        "cabinets": [_pnl_cabinet_meta(c) for c in store["cabinets"]],
+        "active_id": store.get("active_id"),
+        "selected_ids": store.get("selected_ids") or [],
+    }
 
 
 # ---------- Финансы: CFO баланс / кредиты ----------
@@ -12967,20 +13087,159 @@ def fetch_wb_card_brief(nm_id: int, dest: int = -1257786):
         return None
 
 
-def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
-    """Полка «Смотрите также» у карточки (клиентский recom.wb.ru)."""
-    limit = max(1, min(int(limit or 15), 30))
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-        ),
-        "Accept": "*/*",
-        "Origin": "https://www.wildberries.ru",
-        "Referer": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
+def _wb_shelf_headers(nm_id: int) -> dict:
+    h = dict(_wb_site_headers())
+    h["Accept"] = "*/*"
+    h["Accept-Language"] = "ru-RU,ru;q=0.9"
+    h["Referer"] = f"https://www.wildberries.ru/catalog/{int(nm_id)}/detail.aspx"
+    return h
+
+
+def _shelf_item_from_product(p: dict, position: int) -> dict | None:
+    if not isinstance(p, dict):
+        return None
+    pid = p.get("id") or p.get("nmId") or p.get("nmID")
+    if not pid:
+        return None
+    price_info = _parse_client_product(p)
+    client_price = price_info.get("client_price")
+    sale_price = price_info.get("client_basic")
+    return {
+        "position": position,
+        "nm_id": pid,
+        "brand": p.get("brand") or "",
+        "name": p.get("name") or "",
+        "supplier": p.get("supplier") or "",
+        "rating": p.get("reviewRating") or p.get("rating"),
+        "feedbacks": p.get("feedbacks"),
+        "thumb": wb_product_thumb_url(pid),
+        "url": f"https://www.wildberries.ru/catalog/{pid}/detail.aspx",
+        "client_price": client_price,
+        "sale_price": sale_price,
+        "spp": _calc_spp(sale_price, client_price),
     }
-    # query=<nm> даёт полку see-also для этой карточки
-    # spp не передаём — иначе WB подставит виртуальную скидку
+
+
+def _shelf_items_ordered(products: list, limit: int, order_ids: list | None = None) -> list:
+    by_id = {}
+    seq = []
+    for p in products or []:
+        if not isinstance(p, dict):
+            continue
+        pid = p.get("id") or p.get("nmId") or p.get("nmID")
+        if not pid:
+            continue
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            continue
+        if pid not in by_id:
+            seq.append(pid)
+        by_id[pid] = p
+    ids = []
+    seen = set()
+    for raw in (order_ids if order_ids is not None else seq):
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if pid in seen or pid not in by_id:
+            continue
+        seen.add(pid)
+        ids.append(pid)
+        if len(ids) >= limit:
+            break
+    items = []
+    for i, pid in enumerate(ids, 1):
+        it = _shelf_item_from_product(by_id[pid], i)
+        if it:
+            items.append(it)
+    return items
+
+
+def _parse_similar_nm_ids(data, nm_id: int) -> list:
+    raw = data
+    if isinstance(data, dict):
+        raw = (
+            data.get("data")
+            or data.get("nms")
+            or data.get("nmIds")
+            or data.get("nm_ids")
+            or data.get("products")
+            or []
+        )
+    if not isinstance(raw, list):
+        return []
+    out = []
+    seen = set()
+    self_id = int(nm_id)
+    for x in raw:
+        if isinstance(x, dict):
+            x = x.get("id") or x.get("nmId") or x.get("nmID") or x.get("nm_id")
+        try:
+            n = int(x)
+        except (TypeError, ValueError):
+            continue
+        if n < 1 or n == self_id or n in seen:
+            continue
+        seen.add(n)
+        out.append(n)
+    return out
+
+
+def _fetch_similar_nm_ids(nm_id: int, headers: dict) -> list:
+    resp = httpx.get(
+        "https://in-similar.wildberries.ru/",
+        params={"nm": int(nm_id)},
+        headers=headers,
+        timeout=20,
+        follow_redirects=True,
+    )
+    if not resp.is_success:
+        raise RuntimeError(f"http {resp.status_code}")
+    return _parse_similar_nm_ids(resp.json(), nm_id)
+
+
+def _hydrate_shelf_products(nm_ids: list, dest: int, headers: dict) -> list:
+    if not nm_ids:
+        return []
+    ids = ";".join(str(int(n)) for n in nm_ids)
+    params = {"appType": 1, "curr": "rub", "dest": dest, "nm": ids}
+    for url in (
+        "https://card.wb.ru/cards/v4/detail",
+        "https://card.wb.ru/cards/v2/detail",
+    ):
+        try:
+            resp = httpx.get(url, params=params, headers=headers, timeout=25)
+        except Exception:
+            continue
+        if not resp.is_success:
+            continue
+        try:
+            data = resp.json() or {}
+        except Exception:
+            continue
+        products = _card_products_from(data) or data.get("products") or []
+        if isinstance(products, list) and products:
+            return products
+    return []
+
+
+def _wb_shelf_err_text(err) -> str:
+    s = str(err or "").strip()
+    if "403" in s:
+        return "WB закрыл витрину (403)"
+    if "429" in s:
+        return "WB просит подождать (429)"
+    return s or "unknown"
+
+
+def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
+    """Полка у карточки: «Смотрите также» (recom), при 403 — «Похожие»."""
+    limit = max(1, min(int(limit or 15), 30))
+    headers = _wb_shelf_headers(nm_id)
+    last_err = None
+    # query=<nm> — полка see-also. spp не передаём: иначе WB рисует виртуальную скидку.
     url = "https://recom.wb.ru/recom/ru/common/v8/search"
     params = {
         "appType": 1,
@@ -12990,8 +13249,7 @@ def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
         "query": str(nm_id),
         "suppressSpellcheck": "false",
     }
-    last_err = None
-    for attempt in range(4):
+    for attempt in range(2):
         try:
             with httpx.Client(timeout=25, headers=headers, follow_redirects=True) as client:
                 resp = client.get(url, params=params)
@@ -13001,37 +13259,36 @@ def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
                 continue
             if not resp.is_success:
                 last_err = f"http {resp.status_code}"
-                time.sleep(0.5)
+                if resp.status_code in (401, 403, 498):
+                    break
+                time.sleep(0.4)
                 continue
             data = resp.json()
             products = data.get("products") or (data.get("data") or {}).get("products") or []
-            items = []
-            for i, p in enumerate(products[:limit], 1):
-                pid = p.get("id") or p.get("nmId") or p.get("nmID")
-                if not pid:
-                    continue
-                price_info = _parse_client_product(p)
-                client_price = price_info.get("client_price")
-                sale_price = price_info.get("client_basic")
-                items.append({
-                    "position": i,
-                    "nm_id": pid,
-                    "brand": p.get("brand") or "",
-                    "name": p.get("name") or "",
-                    "supplier": p.get("supplier") or "",
-                    "rating": p.get("reviewRating") or p.get("rating"),
-                    "feedbacks": p.get("feedbacks"),
-                    "thumb": wb_product_thumb_url(pid),
-                    "url": f"https://www.wildberries.ru/catalog/{pid}/detail.aspx",
-                    "client_price": client_price,
-                    "sale_price": sale_price,
-                    "spp": _calc_spp(sale_price, client_price),
-                })
-            return {"items": items, "total": len(products), "error": None}
+            items = _shelf_items_ordered(products, limit)
+            if items:
+                return {"items": items, "total": len(products), "error": None, "source": "recom"}
+            last_err = "empty"
+            break
         except Exception as e:
             last_err = str(e)[:160]
-            time.sleep(0.6 * (attempt + 1))
-    return {"items": [], "total": 0, "error": last_err or "unknown"}
+            time.sleep(0.4 * (attempt + 1))
+    try:
+        similar_ids = _fetch_similar_nm_ids(nm_id, headers)
+        take = similar_ids[:limit]
+        products = _hydrate_shelf_products(take, dest, headers)
+        items = _shelf_items_ordered(products, limit, order_ids=take)
+        if items:
+            return {
+                "items": items,
+                "total": len(similar_ids),
+                "error": None,
+                "source": "similar",
+            }
+        last_err = last_err or "empty similar"
+    except Exception as e:
+        last_err = last_err or str(e)[:160]
+    return {"items": [], "total": 0, "error": _wb_shelf_err_text(last_err), "source": None}
 
 
 def _watch_shape(vendor_code: str = "", name: str = "", brand: str = "") -> str:
@@ -13638,6 +13895,7 @@ def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15, top:
         "items": items,
         "shelf_total": shelf.get("total") or 0,
         "error": shelf.get("error"),
+        "source": shelf.get("source"),
         "mine_share": share,
         "share_week": snap,
         **suggest,

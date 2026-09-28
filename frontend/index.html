@@ -259,6 +259,16 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .pnl-tot{background:#FAF8F5;font-weight:600}
 .pnl-m{cursor:pointer}
 .pnl-m:hover{color:var(--wb-purple)}
+.pnl-now{margin:2px 0 12px}
+.pnl-now-k{font-size:11px;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.4px}
+.pnl-now-v{font-size:22px;font-weight:700;line-height:1.2;margin-top:2px}
+.pnl-field{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--wb-muted);font-weight:600}
+.pnl-files{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+.pnl-file{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--wb-border);border-radius:10px;padding:7px 10px;background:var(--wb-surface);font-size:13px}
+.pnl-file.on{border-color:var(--wb-purple);background:var(--wb-purple-light)}
+.pnl-file input{margin:0}
+.pnl-file .pnl-file-del{border:0;background:none;color:var(--wb-muted);cursor:pointer;padding:0 2px;font-size:14px}
+.pnl-file .pnl-file-del:hover{color:var(--red)}
 .cfo-check{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--wb-muted);white-space:nowrap}
 .cfo-scroll{overflow-x:auto}
 .cfo-health{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:14px}
@@ -1945,21 +1955,13 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
     </div>
 
     <div id="finPnlPanel" style="display:none">
-      <div class="cfo-actions" style="flex-wrap:wrap;gap:8px;margin-bottom:10px">
-        <select class="cfo-inp" id="pnlCabinetSelect" onchange="onPnlCabinetChange(this.value)" style="min-width:160px">
-          <option value="">Нет загруженных ОПИУ</option>
-        </select>
-        <select class="cfo-inp" id="pnlUploadTarget" title="Куда загрузить файл" style="min-width:160px">
-          <option value="ozon_pvs">Ozon · PVS</option>
-          <option value="ozon_dataon">Ozon · Dataon</option>
-          <option value="wb">WB</option>
-        </select>
-        <button class="action-btn primary" onclick="document.getElementById('pnlFileInput').click()">⬆ Загрузить opiy.xlsx</button>
-        <input type="file" id="pnlFileInput" accept=".xlsx,.xls" style="display:none" onchange="uploadPnlOpiy(this.files[0])">
-        <button class="action-btn" onclick="deletePnlCabinet()" title="Удалить текущий кабинет">✕ Удалить</button>
+      <div class="cfo-actions" style="flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center">
+        <button class="action-btn primary" onclick="document.getElementById('pnlFileInput').click()">⬆ Загрузить файлы</button>
+        <input type="file" id="pnlFileInput" accept=".xlsx,.xls" multiple style="display:none" onchange="uploadPnlFiles(this.files)">
         <span class="cfo-status" id="pnlStatus"></span>
       </div>
-      <div class="cfo-hint" style="margin-bottom:10px">Два кабинета Ozon: <b>PVS</b> и <b>Dataon</b> — грузи каждый своей выгрузкой <b>opiy.xlsx</b>. Потом можно смотреть по отдельности, сумму Ozon или WB + оба.</div>
+      <div class="cfo-hint" style="margin-bottom:10px">Грузи Excel как есть: Ozon, Dataon, Ozon PVS, Wildberries PVS. Имя файла само подскажет, чей он. Отметь галочками, какие сложить — цифры на экране только по отмеченным.</div>
+      <div class="pnl-files" id="pnlFileList"></div>
       <div id="pnlRoot"></div>
     </div>
   </div>
@@ -11660,7 +11662,8 @@ async function loadShelfFor(nmId, force) {
     if(status) {
       const c = d.competitor || {};
       status.textContent = `${c.brand || ''} ${nmId}` + (c.name ? ` · ${c.name}` : '') +
-        ` · топ-${(d.items||[]).length}` + (d.city ? ` · ${d.city}` : '');
+        ` · топ-${(d.items||[]).length}` + (d.source === 'similar' ? ' · похожие' : '') +
+        (d.city ? ` · ${d.city}` : '');
     }
   } catch(e) {
     if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка: ${escapeHtml(e.message)}</div>`;
@@ -12801,7 +12804,8 @@ async function loadMyShelfFor(nmId, force) {
       const c = d.competitor || {};
       status.textContent = `${(fresh && fresh.vendor_code) || ''} · ${nmId}` +
         (c.name ? ` · ${c.name}` : '') +
-        ` · топ-${(d.items||[]).length}` + (d.city ? ` · ${d.city}` : '');
+        ` · топ-${(d.items||[]).length}` + (d.source === 'similar' ? ' · похожие' : '') +
+        (d.city ? ` · ${d.city}` : '');
     }
   } catch(e) {
     if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка: ${escapeHtml(e.message)}</div>`;
@@ -13110,6 +13114,7 @@ const PNL_BASE = {"cols":[{"id":"c0","label":"Сентябрь 2026","short":"М
 let PNL_MONTH = 0;
 let PNL_LIVE = null;          // активный датасет с API
 let PNL_CABINETS = [];
+let PNL_SELECTED = [];
 let PNL_VIEW = null;
 let PNL_VIEW_LABEL = '';
 let PNL_LOADED = false;
@@ -13118,12 +13123,15 @@ try { PNL_RANGE = localStorage.getItem('wb_pnl_range') || 'year'; } catch(e) {}
 
 function pnlActiveBase() {
   if(PNL_LIVE && PNL_LIVE.cols && PNL_LIVE.rows) return PNL_LIVE;
-  return (typeof PNL_BASE !== 'undefined') ? PNL_BASE : null;
+  return null;
 }
-
+function pnlOpexKey() {
+  const ids = (PNL_SELECTED || []).slice().sort();
+  return 'wb_pnl_opex:' + (ids.join(',') || 'none');
+}
 function pnlOpexLines() {
   try {
-    const raw = localStorage.getItem('wb_pnl_opex');
+    const raw = localStorage.getItem(pnlOpexKey());
     if(raw) {
       const parsed = JSON.parse(raw);
       if(Array.isArray(parsed) && parsed.length) return parsed;
@@ -13135,15 +13143,20 @@ function pnlOpexLines() {
   const by = {};
   if(opex) base.cols.forEach((c, i) => { if(opex.v[i]) by[c.id] = opex.v[i]; });
   const lines = [{id:'base', name:'Операционные', by}];
-  localStorage.setItem('wb_pnl_opex', JSON.stringify(lines));
+  try { localStorage.setItem(pnlOpexKey(), JSON.stringify(lines)); } catch(e) {}
   return lines;
 }
 function savePnlOpex(lines) {
-  localStorage.setItem('wb_pnl_opex', JSON.stringify(lines));
+  try { localStorage.setItem(pnlOpexKey(), JSON.stringify(lines)); } catch(e) {}
   drawPnl();
 }
 function pnlLineSum(line, colIds) {
   return colIds.reduce((s, id) => s + cfoNum((line.by || {})[id]), 0);
+}
+function pnlSourceName() {
+  if(PNL_VIEW_LABEL) return PNL_VIEW_LABEL;
+  const names = (PNL_CABINETS || []).filter(c => (PNL_SELECTED || []).includes(c.id)).map(c => c.label || c.id);
+  return names.length ? names.join(' + ') : 'Нет файлов';
 }
 function setPnlMonth(i) {
   PNL_MONTH = Number(i) || 0;
@@ -13272,7 +13285,7 @@ function onPnlOpexName(id, val) {
   const line = lines.find(l => l.id === id);
   if(!line) return;
   line.name = val;
-  localStorage.setItem('wb_pnl_opex', JSON.stringify(lines));
+  try { localStorage.setItem(pnlOpexKey(), JSON.stringify(lines)); } catch(e) {}
 }
 function addPnlOpex() {
   const lines = pnlOpexLines();
@@ -13291,19 +13304,22 @@ function drawPnl() {
   const root = document.getElementById('pnlRoot');
   const base = pnlActiveBase();
   if(!root || !base) {
-    if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Загрузи Excel <b>opiy.xlsx</b> (Ozon или WB) кнопкой сверху.<br>Каждый кабинет Ozon — отдельный файл.</div>`;
+    if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Загрузи Excel сверху — Ozon, Dataon, Ozon PVS, Wildberries PVS.<br>Потом отметь галочками, какие файлы сложить.</div>`;
     return;
   }
   if(PNL_MONTH >= (base.months || []).length) PNL_MONTH = 0;
   const money = n => fmtMoney(n);
   const year = pnlYearLabel();
   const monthOpts = (base.months || []).map((m, i) => `<option value="${i}" ${i===PNL_MONTH?'selected':''}>${escapeHtml(m.label)}</option>`).join('');
-  const viewTitle = PNL_VIEW_LABEL ? escapeHtml(PNL_VIEW_LABEL) : 'ОПИУ';
-  const toolbar = `<div class="cfo-actions">
+  const source = pnlSourceName();
+  const toolbar = `<div class="pnl-now">
+      <div class="pnl-now-k">Сейчас открыт</div>
+      <div class="pnl-now-v">${escapeHtml(source)}</div>
+    </div>
+    <div class="cfo-actions">
       <button class="filter-btn ${PNL_RANGE==='year'?'on':''}" onclick="setPnlRange('year')">Все месяцы</button>
       <button class="filter-btn ${PNL_RANGE==='month'?'on':''}" onclick="setPnlRange('month')">Недели месяца</button>
       ${PNL_RANGE === 'month' ? `<label style="font-size:13px">Месяц <select class="cfo-inp" onchange="setPnlMonth(this.value)">${monthOpts}</select></label>` : ''}
-      <span class="cfo-hint" style="margin:0">${viewTitle}</span>
     </div>`;
   const hint = `<div class="cfo-hint">Продажи, прямые расходы и налог — из файла. Строки в рамке — операционные расходы. Налог как в файле. В «Все месяцы» колонка «Итого» — сумма года.</div>`;
 
@@ -13362,10 +13378,10 @@ function drawPnl() {
     root.innerHTML = `
       ${toolbar}
       <div class="cfo-health">
-        <div class="cfo-hcard"><div class="hl">Продажи ${escapeHtml(year)}</div><div class="hv">${money(ySales)}</div></div>
-        <div class="cfo-hcard"><div class="hl">Операционные ${escapeHtml(year)}</div><div class="hv">${money(yOpex)}</div></div>
-        <div class="cfo-hcard"><div class="hl">Опер. прибыль ${escapeHtml(year)}</div><div class="hv">${money(yOp)}</div></div>
-        <div class="cfo-hcard"><div class="hl">Чистая прибыль ${escapeHtml(year)}</div><div class="hv">${money(yNet)}</div></div>
+        <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · продажи ${escapeHtml(year)}</div><div class="hv">${money(ySales)}</div></div>
+        <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · операционные</div><div class="hv">${money(yOpex)}</div></div>
+        <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · опер. прибыль</div><div class="hv">${money(yOp)}</div></div>
+        <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · чистая</div><div class="hv">${money(yNet)}</div></div>
       </div>
       ${drawPnlChart()}
       <div class="cfo-scroll">
@@ -13441,10 +13457,10 @@ function drawPnl() {
   root.innerHTML = `
     ${toolbar}
     <div class="cfo-health">
-      <div class="cfo-hcard"><div class="hl">Сумма продаж</div><div class="hv">${money(val('sales',0))}</div></div>
-      <div class="cfo-hcard"><div class="hl">Операционные</div><div class="hv">${money(userOpex[0])}</div></div>
-      <div class="cfo-hcard"><div class="hl">Операционная прибыль</div><div class="hv">${money(op[0])}</div></div>
-      <div class="cfo-hcard"><div class="hl">Чистая прибыль</div><div class="hv">${money(net[0])}</div></div>
+      <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · продажи</div><div class="hv">${money(val('sales',0))}</div></div>
+      <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · операционные</div><div class="hv">${money(userOpex[0])}</div></div>
+      <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · опер. прибыль</div><div class="hv">${money(op[0])}</div></div>
+      <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · чистая</div><div class="hv">${money(net[0])}</div></div>
       <div class="cfo-hcard"><div class="hl">Чистая ${escapeHtml(year)}</div><div class="hv">${money(yNet)}</div></div>
     </div>
     ${drawPnlChart()}
@@ -13487,166 +13503,108 @@ function setPnlStatus(msg, ok) {
   el.className = 'cfo-status' + (ok === true ? ' ok' : ok === false ? ' err' : '');
 }
 
-function renderPnlCabinetSelect() {
-  const sel = document.getElementById('pnlCabinetSelect');
-  const tgt = document.getElementById('pnlUploadTarget');
-  if(!sel) return;
+function renderPnlFileList() {
+  const root = document.getElementById('pnlFileList');
+  if(!root) return;
   const cabs = PNL_CABINETS || [];
-  const byId = {};
-  cabs.forEach(c => { byId[c.id] = c; });
-  const opts = [];
-  const presets = [
-    {id:'ozon_pvs', label:'PVS', channel:'ozon'},
-    {id:'ozon_dataon', label:'Dataon', channel:'ozon'},
-  ];
-  // WB если есть
-  if(byId.wb) {
-    const c = byId.wb;
-    const when = c.uploaded_at ? (' · ' + String(c.uploaded_at).slice(0,10)) : '';
-    opts.push(`<option value="wb" ${PNL_VIEW==='wb'?'selected':''}>WB${when}</option>`);
+  const sel = new Set(PNL_SELECTED || []);
+  if(!cabs.length) {
+    root.innerHTML = '';
+    return;
   }
-  presets.forEach(p => {
-    const c = byId[p.id];
-    if(c) {
-      const when = c.uploaded_at ? (' · ' + String(c.uploaded_at).slice(0,10)) : '';
-      opts.push(`<option value="${p.id}" ${PNL_VIEW===p.id?'selected':''}>Ozon · ${escapeHtml(c.label || p.label)}${when}</option>`);
-    } else {
-      opts.push(`<option value="${p.id}" disabled>Ozon · ${p.label} — не загружен</option>`);
-    }
-  });
-  // прочие кабинеты
-  cabs.forEach(c => {
-    if(c.id === 'wb' || c.id === 'ozon_pvs' || c.id === 'ozon_dataon') return;
-    const mark = c.channel === 'ozon' ? 'Ozon · ' : '';
-    const when = c.uploaded_at ? (' · ' + String(c.uploaded_at).slice(0,10)) : '';
-    opts.push(`<option value="${escapeHtml(c.id)}" ${PNL_VIEW===c.id?'selected':''}>${mark}${escapeHtml(c.label || c.id)}${when}</option>`);
-  });
-  const oz = cabs.filter(c => c.channel === 'ozon');
-  if(oz.length > 1) opts.push(`<option value="ozon_all" ${PNL_VIEW==='ozon_all'?'selected':''}>PVS + Dataon</option>`);
-  if(cabs.length > 1 && cabs.some(c => c.channel === 'wb') && oz.length) {
-    opts.push(`<option value="all" ${PNL_VIEW==='all'?'selected':''}>WB + PVS + Dataon</option>`);
-  }
-  if(!opts.length) opts.push('<option value="">Нет загруженных ОПИУ</option>');
-  sel.innerHTML = opts.join('');
-  if(tgt) {
-    const tOpts = [
-      `<option value="ozon_pvs">Ozon · PVS${byId.ozon_pvs ? ' (обновить)' : ''}</option>`,
-      `<option value="ozon_dataon">Ozon · Dataon${byId.ozon_dataon ? ' (обновить)' : ''}</option>`,
-      `<option value="wb">WB${byId.wb ? ' (обновить)' : ''}</option>`,
-    ];
-    tgt.innerHTML = tOpts.join('');
-  }
+  root.innerHTML = cabs.map(c => {
+    const on = sel.has(c.id);
+    const when = c.uploaded_at ? String(c.uploaded_at).slice(0,10) : '';
+    return `<label class="pnl-file ${on?'on':''}">
+      <input type="checkbox" ${on?'checked':''} onchange="togglePnlFile('${escapeHtml(c.id)}', this.checked)">
+      <span><b>${escapeHtml(c.label || c.id)}</b>${when ? `<div class="cfo-hint" style="margin:0">${when}${c.filename ? ' · ' + escapeHtml(c.filename) : ''}</div>` : ''}</span>
+      <button type="button" class="pnl-file-del" title="Удалить файл" onclick="deletePnlFile('${escapeHtml(c.id)}')">✕</button>
+    </label>`;
+  }).join('');
 }
 
 function applyPnlApiPayload(d) {
   PNL_CABINETS = d.cabinets || [];
-  PNL_VIEW = d.view || d.active_id || null;
+  PNL_SELECTED = Array.isArray(d.selected_ids) ? d.selected_ids.slice() : [];
+  PNL_VIEW = d.view || null;
   PNL_VIEW_LABEL = d.view_label || '';
-  if(d.data && d.data.cols && d.data.rows) {
-    PNL_LIVE = d.data;
-  } else if(!(PNL_CABINETS || []).length) {
-    // нет загрузок — оставляем seed WB
-    PNL_LIVE = null;
-    PNL_VIEW_LABEL = PNL_VIEW_LABEL || 'WB (встроенный)';
-  } else {
-    PNL_LIVE = null;
-  }
+  PNL_LIVE = (d.data && d.data.cols && d.data.rows) ? d.data : null;
   PNL_LOADED = true;
-  renderPnlCabinetSelect();
+  renderPnlFileList();
 }
 
 async function loadPnl(force) {
-  if(PNL_LOADED && !force && PNL_LIVE) { drawPnl(); return; }
+  if(PNL_LOADED && !force) { drawPnl(); return; }
   setPnlStatus('Загрузка…');
   try {
-    const q = PNL_VIEW ? ('?view=' + encodeURIComponent(PNL_VIEW)) : '';
+    const q = (PNL_SELECTED || []).length ? ('?selected=' + encodeURIComponent(PNL_SELECTED.join(','))) : '';
     const r = await fetch(`${RAILWAY_URL}/api/finance/pnl` + q);
     const d = await r.json();
     if(!r.ok) throw new Error(d.detail || d.error || ('HTTP ' + r.status));
     applyPnlApiPayload(d);
-    if(!PNL_LIVE && typeof PNL_BASE !== 'undefined') {
-      PNL_VIEW_LABEL = 'WB (встроенный)';
-      setPnlStatus('Нет загрузок — показан встроенный WB. Залей opiy.xlsx для Ozon.', true);
-    } else {
-      setPnlStatus(PNL_VIEW_LABEL ? ('Открыт: ' + PNL_VIEW_LABEL) : 'ОК', true);
-    }
+    setPnlStatus(PNL_LIVE ? ('Сейчас: ' + pnlSourceName()) : 'Нет отмеченных файлов', true);
     drawPnl();
   } catch(e) {
     setPnlStatus('Ошибка: ' + e, false);
-    if(!PNL_LIVE && typeof PNL_BASE !== 'undefined') drawPnl();
+    drawPnl();
   }
 }
 
-async function onPnlCabinetChange(id) {
-  PNL_VIEW = id || null;
-  setPnlStatus('Переключаю…');
+async function togglePnlFile(id, on) {
+  const next = (PNL_SELECTED || []).filter(x => x !== id);
+  if(on) next.push(id);
+  PNL_SELECTED = next;
+  setPnlStatus('Считаю…');
   try {
-    const r = await fetch(`${RAILWAY_URL}/api/finance/pnl?view=` + encodeURIComponent(id || ''));
+    const r = await fetch(`${RAILWAY_URL}/api/finance/pnl/selected`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ids: next}),
+    });
     const d = await r.json();
     if(!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
     applyPnlApiPayload(d);
-    if(id && id !== 'ozon_all' && id !== 'all') {
-      try {
-        await fetch(`${RAILWAY_URL}/api/finance/pnl/active`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({id}),
-        });
-      } catch(_) {}
-    }
-    setPnlStatus(PNL_VIEW_LABEL ? ('Открыт: ' + PNL_VIEW_LABEL) : 'ОК', true);
     PNL_MONTH = 0;
+    setPnlStatus(PNL_LIVE ? ('Сейчас: ' + pnlSourceName()) : 'Нет отмеченных файлов', true);
     drawPnl();
   } catch(e) {
     setPnlStatus('Ошибка: ' + e, false);
   }
 }
 
-async function uploadPnlOpiy(file) {
-  if(!file) return;
-  const tgt = document.getElementById('pnlUploadTarget');
-  const cabinetId = (tgt && tgt.value) || 'ozon_pvs';
-  const labels = {ozon_pvs: 'PVS', ozon_dataon: 'Dataon', wb: 'WB'};
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('cabinet_id', cabinetId);
-  fd.append('label', labels[cabinetId] || '');
-  if(cabinetId === 'wb') fd.append('channel', 'wb');
-  else fd.append('channel', 'ozon');
-  setPnlStatus('Загружаю ' + file.name + ' → ' + (labels[cabinetId] || cabinetId) + '…');
-  try {
-    const r = await fetch(`${RAILWAY_URL}/api/finance/pnl/upload`, { method: 'POST', body: fd });
-    const d = await r.json();
-    if(!r.ok) throw new Error((d.detail && (typeof d.detail==='string'?d.detail:JSON.stringify(d.detail))) || ('HTTP ' + r.status));
-    PNL_CABINETS = d.cabinets || [];
-    PNL_VIEW = d.active_id;
-    PNL_VIEW_LABEL = (d.cabinet && d.cabinet.label) || d.active_id;
-    PNL_LIVE = d.data;
-    PNL_LOADED = true;
-    PNL_MONTH = 0;
-    renderPnlCabinetSelect();
-    setPnlStatus('Загружено в «' + PNL_VIEW_LABEL + '»: ' + ((d.data.months||[]).length) + ' мес.', true);
-    drawPnl();
-  } catch(e) {
-    setPnlStatus('Ошибка загрузки: ' + e, false);
-  } finally {
-    const inp = document.getElementById('pnlFileInput');
-    if(inp) inp.value = '';
+async function uploadPnlFiles(fileList) {
+  const files = [...(fileList || [])].filter(Boolean);
+  if(!files.length) return;
+  setPnlStatus('Загружаю ' + files.length + ' файл…');
+  let lastErr = null, ok = 0;
+  for(const file of files) {
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await fetch(`${RAILWAY_URL}/api/finance/pnl/upload`, { method: 'POST', body: fd });
+      const d = await r.json();
+      if(!r.ok) throw new Error((d.detail && (typeof d.detail==='string'?d.detail:JSON.stringify(d.detail))) || ('HTTP ' + r.status));
+      ok += 1;
+    } catch(e) {
+      lastErr = file.name + ': ' + e;
+    }
   }
+  const inp = document.getElementById('pnlFileInput');
+  if(inp) inp.value = '';
+  await loadPnl(true);
+  if(lastErr && !ok) setPnlStatus('Ошибка загрузки: ' + lastErr, false);
+  else if(lastErr) setPnlStatus('Загружено ' + ok + ', ошибка: ' + lastErr, false);
+  else setPnlStatus('Загружено файлов: ' + ok + ' · сейчас: ' + pnlSourceName(), true);
 }
 
-async function deletePnlCabinet() {
-  const id = PNL_VIEW;
-  if(!id || id === 'ozon_all' || id === 'all') {
-    setPnlStatus('Выбери конкретный кабинет для удаления', false);
-    return;
-  }
-  if(!confirm('Удалить ОПИУ «' + (PNL_VIEW_LABEL || id) + '»?')) return;
+async function deletePnlFile(id) {
+  const cab = (PNL_CABINETS || []).find(c => c.id === id);
+  if(!confirm('Удалить файл «' + ((cab && cab.label) || id) + '»?')) return;
   try {
     const r = await fetch(`${RAILWAY_URL}/api/finance/pnl/` + encodeURIComponent(id), { method: 'DELETE' });
     const d = await r.json();
     if(!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
-    PNL_VIEW = d.active_id || null;
+    PNL_SELECTED = (d.selected_ids || []).slice();
     await loadPnl(true);
     setPnlStatus('Удалено', true);
   } catch(e) {
