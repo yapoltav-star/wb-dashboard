@@ -54,6 +54,7 @@ CRM_PASSWORD = os.getenv("CRM_PASSWORD") or os.getenv("CRM_WEB_PASSWORD") or ""
 CRM_MANAGER_ALIASES = {
     "afina": ("афина", "афине", "afina"),
     "zaira": ("заира", "заире", "zaira"),
+    "olga": ("ольга", "ольге", "olga"),
     "dilya": ("диля", "диле", "дилия", "dilya"),
 }
 CRM_SHELF_TASKS_KEY = "crm_shelf_boost_sent"
@@ -14224,7 +14225,7 @@ async def crm_shelf_boost_task(request: dict):
     """Создать в Team CRM задачу на менеджера.
 
     Body: {
-      manager: "afina"|"zaira"|"dilya",
+      manager: "afina"|"zaira"|"olga"|"dilya",
       kind?: "shelf"|"cart_warmup",
       own_vendor_code, own_nm_id,
       competitor_nm_id, competitor_brand?, competitor_name?
@@ -14242,7 +14243,7 @@ async def crm_shelf_boost_task(request: dict):
     manager_key = str(request.get("manager") or "").strip().lower()
     aliases = CRM_MANAGER_ALIASES.get(manager_key)
     if not aliases:
-        return {"ok": False, "error": "manager: укажи afina, zaira или dilya"}
+        return {"ok": False, "error": "manager: укажи afina, zaira, olga или dilya"}
 
     kind = str(request.get("kind") or "shelf").strip().lower()
     if kind not in ("shelf", "cart_warmup"):
@@ -14356,7 +14357,7 @@ async def crm_ads_drr_task(request: dict):
 
 @app.get("/api/crm-shelf-boost-sent")
 def crm_shelf_boost_sent(competitor_nm_id: int = 0, scan: bool = False):
-    """Какие задачи с дашборда уже ставили (Афине / Заире / Диле)."""
+    """Какие задачи с дашборда уже ставили (Афине / Заире / Ольге / Диле)."""
     items = _crm_sent_store()
     if CRM_API_URL and (scan or not items):
         try:

@@ -10364,7 +10364,7 @@ function buildCompTopAnalysis(compMetrics) {
             onmouseover="this.style.color='var(--wb-purple)'" onmouseout="this.style.color='inherit'">${escapeHtml(m.brand || '—')}</a>
           <div style="font-size:10px;color:var(--wb-faint)">
             <a href="${wbCatalogUrl(m.nm_id)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${m.nm_id}</a>
-            · ${fmt(m._score)}${compSppOf(m)!=null ? ' · СПП ' + compSppFmt(compSppOf(m)) : ''}
+            · ${fmt(m._score)}
           </div>
         </div>
         <button data-shelf-btn="${m.nm_id}" class="filter-btn" ${on?'disabled':''}
@@ -11775,6 +11775,7 @@ function shelfSuggestItemRow(t, compNm, compBrand, compName, opts) {
   const sentBits = [];
   if(shelfSentOf('afina','shelf', t.nm_id, compNm)) sentBits.push('Афине');
   if(shelfSentOf('zaira','shelf', t.nm_id, compNm)) sentBits.push('Заире');
+  if(shelfSentOf('olga','shelf', t.nm_id, compNm)) sentBits.push('Ольге');
   if(shelfSentOf('dilya','cart_warmup', t.nm_id, compNm)) sentBits.push('Диле');
   if(sentBits.length) metaBits.push('задачи: ' + sentBits.join(', '));
   const removeBtn = opts.removable
@@ -11796,6 +11797,7 @@ function shelfSuggestItemRow(t, compNm, compBrand, compName, opts) {
         style="font-size:11px;color:var(--wb-purple);flex-shrink:0">WB</a>
       ${shelfTaskBtnHtml('afina','shelf','Афине','Задача в CRM: прокачать полки',vcJs,t.nm_id,compNm,compBrand,compName)}
       ${shelfTaskBtnHtml('zaira','shelf','Заире','Задача в CRM: прокачать полки',vcJs,t.nm_id,compNm,compBrand,compName)}
+      ${shelfTaskBtnHtml('olga','shelf','Ольге','Задача в CRM: прокачать полки (раздача)',vcJs,t.nm_id,compNm,compBrand,compName)}
       ${shelfTaskBtnHtml('dilya','cart_warmup','Диле · корзины','Задача Диле: прогрев корзинами',vcJs,t.nm_id,compNm,compBrand,compName)}
     </div>`;
 }
@@ -11928,7 +11930,8 @@ function removeShelfSuggestArticle(nmId) {
 
 async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, competitorBrand, competitorName, btn, kind) {
   kind = kind || 'shelf';
-  const who = manager === 'zaira' ? 'Заире' : (manager === 'dilya' ? 'Диле' : 'Афине');
+  const whoMap = { zaira: 'Заире', olga: 'Ольге', dilya: 'Диле', afina: 'Афине' };
+  const who = whoMap[manager] || 'Афине';
   if(!ownNm || !competitorNm) {
     alert('Нет артикулов для задачи');
     return;
