@@ -9417,6 +9417,7 @@ let DYN_METRIC = 'open_card';
 let COMP_SESSIONS = [];
 let COMP_SELECTED_SESSIONS = new Set();
 let COMP_SELECTED_NMS = new Set(JSON.parse(localStorage.getItem('comp_selected_nms') || '[]').map(Number).filter(Boolean));
+let COMP_KNOWN_NMS = new Set();
 let COMP_ARCHIVED = new Set(JSON.parse(localStorage.getItem('comp_archived_sessions') || '[]'));
 let COMP_ARCHIVE_OPEN = false;
 let COMP_BRAND_FILTER = null;
@@ -9605,6 +9606,7 @@ async function selectAllCompPeriods() {
   const active = COMP_SESSIONS.filter(s => !COMP_ARCHIVED.has(s.id));
   if(!active.length) return;
   COMP_SELECTED_SESSIONS = new Set(active.map(s => s.id));
+  clearBrandFilterIfSessionsMixed();
   buildPeriodButtons();
   await loadAllSelectedSessions();
 }
@@ -9673,13 +9675,35 @@ async function unarchivePeriodGroup(begin, end) {
   await loadAllSelectedSessions();
 }
 
+function nextCompSelectedNms(prevSelected, prevKnown, currentIds) {
+  const current = [...new Set((currentIds || []).map(Number).filter(Boolean))];
+  const currentSet = new Set(current);
+  const selected = new Set([...prevSelected].map(Number).filter(id => currentSet.has(id)));
+  const known = prevKnown instanceof Set ? prevKnown : new Set([...prevKnown].map(Number).filter(Boolean));
+  if(!known.size) {
+    if(!selected.size) current.forEach(id => selected.add(id));
+  } else {
+    current.forEach(id => { if(!known.has(id)) selected.add(id); });
+  }
+  return selected;
+}
+
+function clearBrandFilterIfSessionsMixed() {
+  if(!COMP_BRAND_FILTER) return;
+  const selected = (COMP_SESSIONS || []).filter(s => COMP_SELECTED_SESSIONS.has(s.id));
+  if(selected.some(s => !(s.brands || []).includes(COMP_BRAND_FILTER))) {
+    COMP_BRAND_FILTER = null;
+    buildBrandChips();
+  }
+}
+
 function syncCompSelectedNms() {
   const compIds = COMP_ALL_METRICS
     .filter(m => !COMP_OWN_ARTICLES.find(a => Number(a.nm_id) === Number(m.nm_id)))
     .map(m => Number(m.nm_id))
     .filter(Boolean);
-  COMP_SELECTED_NMS = new Set([...COMP_SELECTED_NMS].filter(id => compIds.includes(id)));
-  if(!COMP_SELECTED_NMS.size && compIds.length) compIds.forEach(id => COMP_SELECTED_NMS.add(id));
+  COMP_SELECTED_NMS = nextCompSelectedNms(COMP_SELECTED_NMS, COMP_KNOWN_NMS, compIds);
+  COMP_KNOWN_NMS = new Set(compIds);
   saveCompSelectedNms();
 }
 
@@ -9742,6 +9766,7 @@ async function togglePeriod(sessionId) {
     COMP_SELECTED_SESSIONS.delete(sessionId);
   } else {
     COMP_SELECTED_SESSIONS.add(sessionId);
+    clearBrandFilterIfSessionsMixed();
   }
   buildPeriodButtons();
   await loadAllSelectedSessions();
@@ -10198,6 +10223,10 @@ function renderCompetitorView() {
   const hiddenCompetitors = allCompetitors.filter(m => !COMP_SELECTED_NMS.has(Number(m.nm_id)));
   const allCompCount = allCompetitors.length;
   const allMetrics = [...ownMetrics, ...compMetrics];
+  const autoMetrics = COMP_ALL_METRICS
+    .filter(m => !COMP_OWN_ARTICLES.find(a => Number(a.nm_id) === Number(m.nm_id)))
+    .filter(m => !COMP_BRAND_FILTER || String(m.brand || '') === COMP_BRAND_FILTER)
+    .map(m => ({...m, is_own: false}));
 
   if(!allMetrics.length && !COMP_BRAND_FILTER) {
     document.getElementById('compRoot').innerHTML = '<div class="empty">Добавь свои артикулы через поиск, отметь конкурентов или загрузи файл</div>';
@@ -10225,7 +10254,7 @@ function renderCompetitorView() {
         </div>
         ${hiddenChips}
       </div>
-      ${buildCompTopAnalysis(compMetrics)}
+      ${buildCompTopAnalysis(autoMetrics)}
       <div style="overflow-x:auto">${allMetrics.length ? buildCompMetricsTable(allMetrics, ownMetrics[0]?.nm_id) : '<div class="empty" style="padding:24px">Нет строк в выбранных отчётах — график бренда выше, если недели нашлись.</div>'}</div>
     </div>`;
   if(COMP_BRAND_FILTER) loadCompBrandWeeks();
@@ -10294,6 +10323,7 @@ function addTopCompetitorsToShelves(kind) {
   if(!fields) return;
   const comps = COMP_ALL_METRICS
     .filter(m => !COMP_OWN_ARTICLES.find(a => Number(a.nm_id) === Number(m.nm_id)))
+    .filter(m => !COMP_BRAND_FILTER || String(m.brand || '') === COMP_BRAND_FILTER)
     .map(m => ({...m, is_own: false}));
   const top = getTopCompetitors(comps, fields, 5);
   top.forEach(m => addToShelfFromComp(m.nm_id, m.brand || '', m.name || ''));
