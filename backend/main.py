@@ -2947,6 +2947,26 @@ def _is_wb_rf_warehouse(name: str) -> bool:
     return bool(NEW_STOCK_WB_RF_RE.search(name or ""))
 
 
+def _wb_rf_qty_from_wh_by_nm(nm_id, stock_wh_by_nm: dict) -> int:
+    """Штуки только на «Склад WB РФ» из stock_warehouses."""
+    try:
+        key = str(int(nm_id))
+    except Exception:
+        return 0
+    w = ((stock_wh_by_nm or {}).get(key) or {}).get("w") or {}
+    if not isinstance(w, dict):
+        return 0
+    total = 0
+    for name, qty in w.items():
+        if not _is_wb_rf_warehouse(str(name)):
+            continue
+        try:
+            total += int(qty or 0)
+        except Exception:
+            pass
+    return total
+
+
 def _is_fbs_warehouse_name(name: str) -> bool:
     n = (name or "").lower()
     return "fbs" in n or "маркетплейс" in n
@@ -7628,6 +7648,9 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 return None
             return round(100.0 * float(num) / float(den), 1)
 
+        # Остаток в темпе продаж — только «Склад WB РФ» (не сумма всех складов WB).
+        wb_rf_products = _new_stock_fbw_qty_by_nm()
+
         # артикулы с заказами в воронке или (запасной) Statistics
         all_nms = set(cur_ord) | set(prev_ord) | set(funnel_cur) | set(funnel_prev)
         articles = []
@@ -7667,15 +7690,11 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 if cart_cr_t is not None and cart_cr_y is not None else None
             )
             st_info = stock_by_nm.get(int(nm)) or {}
-            stock_qty_raw = int(st_info.get("stock") or 0)
             in_way = int(st_info.get("in_way") or 0)
             geo = stock_wh_geo_compare(nm, stock_wh_by_nm, stock_wh_prev_snap, disabled_wh)
-            # остаток для темпа = сумма по включённым складам, если есть детализация
-            nm_slot = (stock_wh_by_nm or {}).get(str(int(nm))) or {}
-            if nm_slot.get("w"):
-                stock_qty = int(geo.get("stock_qty_enabled") or 0)
-            else:
-                stock_qty = stock_qty_raw
+            stock_qty = _wb_rf_qty_from_wh_by_nm(nm, stock_wh_by_nm)
+            if stock_qty <= 0:
+                stock_qty = int(wb_rf_products.get(int(nm)) or 0)
             # дней запаса ≈ остаток / среднесут. заказам в окне
             daily_orders = max(o_t, o_y, 0) / float(period_days or 1)
             days_left = round(stock_qty / daily_orders, 1) if daily_orders > 0 else None
@@ -7809,7 +7828,8 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
         logger.warning(f"enrich pace stock: {e}")
         if need_stock:
             return articles
-    stock_wh_by_nm = _fetch_stock_wh_by_nm() if need_geo else {}
+    stock_wh_by_nm = _fetch_stock_wh_by_nm() if (need_geo or need_stock) else {}
+    wb_rf_products = _new_stock_fbw_qty_by_nm() if need_stock else {}
     disabled_wh = get_disabled_warehouses() if (need_geo or need_stock) else set()
     prev_day = (_msk_now() - timedelta(days=1)).strftime("%Y-%m-%d")
     prev_snap = get_stock_warehouse_snap_for_day(prev_day) if need_geo else None
@@ -7823,12 +7843,15 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
             out.append(item)
             continue
         st_info = stock_by_nm.get(nm) or {}
+        in_way = int(st_info.get("in_way") or 0)
         if need_stock:
-            stock_qty = int(st_info.get("stock") or 0)
-            in_way = int(st_info.get("in_way") or 0)
+            stock_qty = _wb_rf_qty_from_wh_by_nm(nm, stock_wh_by_nm)
+            if stock_qty <= 0:
+                stock_qty = int(wb_rf_products.get(nm) or 0)
         else:
-            stock_qty = int(item.get("stock") if item.get("stock") is not None else (st_info.get("stock") or 0))
-            in_way = int(item.get("in_way") if item.get("in_way") is not None else (st_info.get("in_way") or 0))
+            stock_qty = int(item.get("stock") if item.get("stock") is not None else 0)
+            if item.get("in_way") is not None:
+                in_way = int(item.get("in_way") or 0)
         geo = stock_wh_geo_compare(nm, stock_wh_by_nm, prev_snap, disabled_wh) if need_geo else {
             "wh_live": item.get("wh_live"),
             "wh_live_prev": item.get("wh_live_prev"),
@@ -7837,9 +7860,6 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
             "stock_geo_flag": item.get("stock_geo_flag") or "ok",
             "stock_qty_enabled": None,
         }
-        nm_slot = (stock_wh_by_nm or {}).get(str(nm)) or {}
-        if need_stock and nm_slot.get("w"):
-            stock_qty = int(geo.get("stock_qty_enabled") or 0)
         o_t = int(item.get("orders_today") or 0)
         o_y = int(item.get("orders_yesterday") or 0)
         daily_orders = max(o_t, o_y, 0) / float(period_days or 1)

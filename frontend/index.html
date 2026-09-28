@@ -7403,20 +7403,12 @@ function paceStockHtml(a) {
   const stock = a.stock;
   if(stock == null) return '<span style="color:var(--wb-faint)">—</span>';
   const flag = a.stock_flag || (stock <= 0 ? 'oos' : 'ok');
-  const geo = a.stock_geo_flag || 'ok';
-  let color = flag === 'oos' ? '#B42318' : (flag === 'low' ? '#B54708' : 'var(--wb-text)');
-  if(flag === 'ok' && (geo === 'emptied' || geo === 'narrow')) color = '#B54708';
+  const color = flag === 'oos' ? '#B42318' : (flag === 'low' ? '#B54708' : 'var(--wb-text)');
   const days = a.days_left != null ? ` · ~${Number(a.days_left).toLocaleString('ru-RU', {maximumFractionDigits: 1})}д` : '';
-  const live = a.wh_live != null ? ` · ${a.wh_live} скл.` : '';
-  const livePrev = a.wh_live_prev != null && a.wh_live != null && a.wh_live_prev !== a.wh_live
-    ? ` (было ${a.wh_live_prev})` : '';
-  const emptied = (a.wh_emptied || []).slice(0, 3);
-  const emptiedTip = emptied.length ? `; обнулились: ${emptied.join(', ')}` : '';
-  let tip = flag === 'oos' ? 'Нет на складах WB' : (flag === 'low' ? 'Мало дней запаса' : 'Остаток ок');
-  if(geo === 'emptied') tip = 'Склад(ы) обнулились — срок доставки мог вырасти' + emptiedTip;
-  else if(geo === 'narrow') tip = 'Узкая география складов — доставка дольше в регионах';
-  else if(live) tip += `; живых складов: ${a.wh_live}${a.wh_live_prev!=null?' (вчера '+a.wh_live_prev+')':''}${emptiedTip}`;
-  return `<span style="font-weight:600;color:${color}" title="${escapeHtml(tip)}">${fmt(stock)}${days}${live}${livePrev}</span>`;
+  const tip = flag === 'oos'
+    ? 'Нет на «Склад WB РФ»'
+    : (flag === 'low' ? 'Мало дней запаса на «Склад WB РФ»' : 'Остаток на «Склад WB РФ» и на сколько дней хватит');
+  return `<span style="font-weight:600;color:${color}" title="${escapeHtml(tip)}">${fmt(stock)}${days}</span>`;
 }
 
 function paceCrDeltaHtml(d) {
@@ -8219,7 +8211,7 @@ function drawSalesPace() {
     · Δ = сейчас − база.
     <b>Заказы</b> — как в кабинете WB, колонка «Заказали товаров, шт» (воронка).
     ${PACE_DATA.mode_hint ? (' <span style="color:var(--wb-text)">' + escapeHtml(PACE_DATA.mode_hint) + '</span>.') : ''}
-    <b>Остаток</b> — шт. на WB + дни + живые склады.
+    <b>Остаток</b> — шт. на «Склад WB РФ» и на сколько дней хватит.
     <b>Цена покупателя</b> — цена на сайте (после СПП) сейчас vs день базы; Δ ₽↑ / СПП↓ при падении заказов = подозрение на цену.
     <b>Показы / CPM</b>${showViewsFull
       ? ': срез «до часа» vs вчера до того же часа; колонка «Вчера 0–24ч» — полный день (API).'
