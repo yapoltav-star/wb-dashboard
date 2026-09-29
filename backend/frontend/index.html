@@ -257,6 +257,8 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .pnl-chart-leg span{display:inline-flex;align-items:center;gap:6px}
 .pnl-chart-leg i{width:10px;height:10px;border-radius:2px;display:inline-block}
 .pnl-tot{background:#FAF8F5;font-weight:600}
+.pnl-margin td{font-variant-numeric:tabular-nums}
+.pnl-margin .pnl-pct{font-size:13px}
 .pnl-m{cursor:pointer}
 .pnl-m:hover{color:var(--wb-purple)}
 .pnl-now{margin:2px 0 12px}
@@ -13349,6 +13351,16 @@ function pnlOpAt(colId) {
 function pnlNetAt(colId) {
   return pnlRaw('net', colId) - (pnlUserOpexAt(colId) - pnlRaw('opex', colId));
 }
+function pnlMarginAt(colId) {
+  const real = pnlRaw('real', colId);
+  if(!real) return null;
+  const p = pnlNetAt(colId) / real * 100;
+  return isFinite(p) ? p : null;
+}
+function pnlPct(p) {
+  if(p == null || !isFinite(Number(p))) return '—';
+  return Number(p).toLocaleString('ru-RU', {maximumFractionDigits: 1, minimumFractionDigits: 1}) + '%';
+}
 function pnlYearLabel() {
   const m = pnlMonthsChrono()[0];
   const hit = String((m && m.label) || '').match(/20\d{2}/);
@@ -13379,21 +13391,30 @@ function drawPnlChart() {
     {name: 'Опер. прибыль', color: '#2E90FA', vals: months.map(m => pnlOpAt(m.id))},
     {name: 'Чистая прибыль', color: '#12B76A', vals: months.map(m => pnlNetAt(m.id))},
   ];
-  const W = 920, H = 260, padL = 58, padR = 16, padT = 14, padB = 32;
+  const marginVals = months.map(m => pnlMarginAt(m.id));
+  const W = 920, H = 260, padL = 58, padR = 48, padT = 14, padB = 32;
   const all = series.flatMap(s => s.vals);
   let minV = Math.min(0, ...all), maxV = Math.max(...all, 1);
   const span = maxV - minV || 1;
   minV -= span * 0.06;
   maxV += span * 0.08;
+  const pcts = marginVals.filter(v => v != null && isFinite(v));
+  let minP = Math.min(0, ...pcts, 0), maxP = Math.max(...pcts, 5);
+  const spanP = maxP - minP || 1;
+  minP -= spanP * 0.06;
+  maxP += spanP * 0.08;
   const n = months.length;
   const xAt = i => padL + (n === 1 ? (W - padL - padR) / 2 : i * (W - padL - padR) / (n - 1));
   const yAt = v => padT + (1 - (v - minV) / (maxV - minV)) * (H - padT - padB);
+  const yAtP = v => padT + (1 - (v - minP) / (maxP - minP)) * (H - padT - padB);
   let grid = '';
   for(let t = 0; t <= 4; t++) {
     const v = minV + (maxV - minV) * (t / 4);
+    const p = minP + (maxP - minP) * (t / 4);
     const y = yAt(v);
     grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="#F0EDE8" stroke-width="1"/>`;
     grid += `<text x="${padL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="#A09890">${escapeHtml(pnlChartFmt(v))}</text>`;
+    grid += `<text x="${W - padR + 8}" y="${(y + 4).toFixed(1)}" text-anchor="start" font-size="11" fill="#7A5AF8">${escapeHtml(pnlPct(p))}</text>`;
   }
   const xLabs = months.map((m, i) =>
     `<text x="${xAt(i).toFixed(1)}" y="${H - 10}" text-anchor="middle" font-size="11" fill="#A09890">${escapeHtml(pnlShortMonth(m.label))}</text>`
@@ -13405,11 +13426,17 @@ function drawPnlChart() {
     ).join('');
     return `<polyline fill="none" stroke="${s.color}" stroke-width="2.2" points="${pts.join(' ')}"/>` + dots;
   }).join('');
-  const legend = series.map(s => `<span><i style="background:${s.color}"></i>${escapeHtml(s.name)}</span>`).join('');
+  const mPts = marginVals.map((v, i) => `${xAt(i).toFixed(1)},${yAtP(v == null ? 0 : v).toFixed(1)}`);
+  const mDots = marginVals.map((v, i) =>
+    `<circle cx="${xAt(i).toFixed(1)}" cy="${yAtP(v == null ? 0 : v).toFixed(1)}" r="3.2" fill="#7A5AF8"><title>Маржинальность · ${escapeHtml((months[i] && months[i].label) || '')}: ${pnlPct(v)}</title></circle>`
+  ).join('');
+  const marginLine = `<polyline fill="none" stroke="#7A5AF8" stroke-width="2.4" stroke-dasharray="5 4" points="${mPts.join(' ')}"/>` + mDots;
+  const legend = series.map(s => `<span><i style="background:${s.color}"></i>${escapeHtml(s.name)}</span>`).join('')
+    + `<span><i style="background:#7A5AF8"></i>Маржинальность</span>`;
   return `<div class="pnl-chart-box">
     <div class="pnl-chart-leg">${legend}</div>
-    <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;max-height:280px">${grid}${lines}${xLabs}</svg>
-    <div class="cfo-hint" style="margin-top:2px">По месяцам · клик по месяцу в таблице откроет недели</div>
+    <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;max-height:280px">${grid}${lines}${marginLine}${xLabs}</svg>
+    <div class="cfo-hint" style="margin-top:2px">По месяцам · маржа = чистая ÷ реализация, правая шкала. Клик по месяцу в таблице откроет недели</div>
   </div>`;
 }
 function onPnlOpex(id, colId, val) {
@@ -13461,16 +13488,18 @@ function drawPnl() {
       <button class="filter-btn ${PNL_RANGE==='month'?'on':''}" onclick="setPnlRange('month')">Недели месяца</button>
       ${PNL_RANGE === 'month' ? `<label style="font-size:13px">Месяц <select class="cfo-inp" onchange="setPnlMonth(this.value)">${monthOpts}</select></label>` : ''}
     </div>`;
-  const hint = `<div class="cfo-hint">Продажи, прямые расходы и налог — из файла. Строки в рамке — операционные расходы. Налог как в файле. В «Все месяцы» колонка «Итого» — сумма года.</div>`;
+  const hint = `<div class="cfo-hint">Продажи, прямые расходы и налог — из файла. Строки в рамке — операционные расходы. Налог как в файле. Маржинальность — чистая прибыль ÷ реализация. В «Все месяцы» колонка «Итого» — сумма года.</div>`;
 
   if(PNL_RANGE === 'year') {
     const months = pnlMonthsChrono();
     const ids = months.map(m => m.id);
     const yearOf = fn => ids.reduce((s, id) => s + fn(id), 0);
     const ySales = yearOf(id => pnlRaw('sales', id));
+    const yReal = yearOf(id => pnlRaw('real', id));
     const yOpex = yearOf(pnlUserOpexAt);
     const yOp = yearOf(pnlOpAt);
     const yNet = yearOf(pnlNetAt);
+    const yMargin = yReal ? yNet / yReal * 100 : null;
     const head = months.map(m => `<th class="pnl-m" title="Открыть недели" onclick="openPnlMonth(${m.i})">${escapeHtml(pnlShortMonth(m.label))}</th>`).join('') + `<th class="pnl-tot">Итого ${escapeHtml(year)}</th>`;
     const tdMoney = (n, extra, tot) => `<td style="text-align:right"${tot?' class="pnl-tot"':''}>${money(n)}${extra || ''}</td>`;
     const ro = (k, withQty) => {
@@ -13514,6 +13543,12 @@ function drawPnl() {
     const opexTds = ids.map(id => `<td style="text-align:right"><b>${money(pnlUserOpexAt(id))}</b></td>`).join('');
     const opTds = ids.map(id => `<td style="text-align:right"><b>${money(pnlOpAt(id))}</b></td>`).join('');
     const netTds = ids.map(id => `<td style="text-align:right"><b>${money(pnlNetAt(id))}</b></td>`).join('');
+    const marginTds = ids.map(id => {
+      const p = pnlMarginAt(id);
+      const color = p == null ? '' : (p < 0 ? 'color:var(--red)' : 'color:var(--wb-purple)');
+      return `<td style="text-align:right;${color}"><b class="pnl-pct">${pnlPct(p)}</b></td>`;
+    }).join('');
+    const yMarginColor = yMargin == null ? '' : (yMargin < 0 ? 'color:var(--red)' : 'color:var(--wb-purple)');
     const taxTds = ids.map(id => tdMoney(pnlRaw('tax', id))).join('') + tdMoney(yearOf(id => pnlRaw('tax', id)), '', true);
     root.innerHTML = `
       ${toolbar}
@@ -13522,6 +13557,7 @@ function drawPnl() {
         <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · операционные</div><div class="hv">${money(yOpex)}</div></div>
         <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · опер. прибыль</div><div class="hv">${money(yOp)}</div></div>
         <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · чистая</div><div class="hv">${money(yNet)}</div></div>
+        <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · маржинальность</div><div class="hv">${pnlPct(yMargin)}</div></div>
       </div>
       ${drawPnlChart()}
       <div class="cfo-scroll">
@@ -13550,6 +13586,7 @@ function drawPnl() {
             <tr><td><b>Операционная прибыль</b></td>${opTds}<td class="pnl-tot" style="text-align:right"><b>${money(yOp)}</b></td></tr>
             <tr><td>Налог</td>${taxTds}</tr>
             <tr><td><b>Чистая прибыль</b></td>${netTds}<td class="pnl-tot" style="text-align:right"><b>${money(yNet)}</b></td></tr>
+            <tr class="pnl-margin"><td><b>Маржинальность</b></td>${marginTds}<td class="pnl-tot" style="text-align:right;${yMarginColor}"><b class="pnl-pct">${pnlPct(yMargin)}</b></td></tr>
           </tbody>
         </table>
       </div>
@@ -13594,6 +13631,13 @@ function drawPnl() {
   const net = colIds.map((_, i) => val('net', i) - (userOpex[i] - fileOpex[i]));
   const yIds = pnlMonthsChrono().map(m => m.id);
   const yNet = yIds.reduce((s, id) => s + pnlNetAt(id), 0);
+  const yRealM = yIds.reduce((s, id) => s + pnlRaw('real', id), 0);
+  const yMarginM = yRealM ? yNet / yRealM * 100 : null;
+  const monthMargin = colIds.map(id => pnlMarginAt(id));
+  const marginRow = `<tr class="pnl-margin"><td><b>Маржинальность</b></td>${monthMargin.map(p => {
+    const color = p == null ? '' : (p < 0 ? 'color:var(--red)' : 'color:var(--wb-purple)');
+    return `<td style="text-align:right;${color}"><b class="pnl-pct">${pnlPct(p)}</b></td>`;
+  }).join('')}</tr>`;
   root.innerHTML = `
     ${toolbar}
     <div class="cfo-health">
@@ -13601,7 +13645,8 @@ function drawPnl() {
       <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · операционные</div><div class="hv">${money(userOpex[0])}</div></div>
       <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · опер. прибыль</div><div class="hv">${money(op[0])}</div></div>
       <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · чистая</div><div class="hv">${money(net[0])}</div></div>
-      <div class="cfo-hcard"><div class="hl">Чистая ${escapeHtml(year)}</div><div class="hv">${money(yNet)}</div></div>
+      <div class="cfo-hcard"><div class="hl">${escapeHtml(source)} · маржа</div><div class="hv">${pnlPct(monthMargin[0])}</div></div>
+      <div class="cfo-hcard"><div class="hl">Чистая ${escapeHtml(year)}</div><div class="hv">${money(yNet)}</div><div class="hs">${pnlPct(yMarginM)}</div></div>
     </div>
     ${drawPnlChart()}
     <div class="cfo-scroll">
@@ -13630,6 +13675,7 @@ function drawPnl() {
           ${calcRow('Операционная прибыль', op, true)}
           ${ro('tax')}
           ${calcRow('Чистая прибыль', net, true)}
+          ${marginRow}
         </tbody>
       </table>
     </div>
