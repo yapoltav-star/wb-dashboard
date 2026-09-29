@@ -206,6 +206,13 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 }
 .money-jump{color:inherit;text-decoration:none;border-bottom:1px dashed rgba(212,98,42,.55)}
 .money-jump:hover{color:var(--wb-purple);border-bottom-color:var(--wb-purple)}
+.money-link-bar{display:none;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;margin:0 0 12px;border:1px solid var(--wb-purple);background:var(--wb-purple-light);border-radius:10px;font-size:13px}
+.money-link-bar.on{display:flex}
+.money-link-bar .money-link-sum{color:var(--wb-muted);font-size:12px}
+.money-pay-on td{background:rgba(122,90,248,.10)}
+.money-week-pick{cursor:pointer}
+.money-week-pick:hover td{background:rgba(122,90,248,.06)}
+.money-week-on td{background:rgba(122,90,248,.12);box-shadow:inset 3px 0 0 var(--wb-purple)}
 .money-mark{padding:4px 6px;border:1px solid var(--wb-border);border-radius:6px;font-size:11px;background:#FAFAF8;font-family:inherit;color:var(--wb-text)}
 .money-pay-form{display:grid;grid-template-columns:90px 140px 140px 140px 1fr auto;gap:8px;align-items:end;margin-bottom:12px}
 @media(max-width:900px){.money-pay-form{grid-template-columns:1fr 1fr}}
@@ -219,6 +226,8 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .fin-cost-inp.saving{opacity:.6}
 .fin-cost-inp.ok{border-color:var(--green)}
 .fin-cost-inp.err{border-color:var(--red)}
+.fin-row-warn td{background:#FFF7ED}
+.fin-row-warn .fin-flag{display:inline-block;margin-right:6px;font-size:10px;font-weight:600;color:#B54708;background:#FEF0C7;border-radius:6px;padding:1px 6px}
 .cfo-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
 @media(max-width:900px){.cfo-grid{grid-template-columns:1fr}}
 .cfo-box{background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:12px;padding:14px 16px;margin-bottom:14px}
@@ -1890,9 +1899,9 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
       </div>
       <div class="cards" id="finCards"></div>
       <div class="fin-tabs">
-        <button class="filter-btn on" id="finTabWb" onclick="setFinTab('wb')">Склад WB</button>
+        <button class="filter-btn on" id="finTabWb" onclick="setFinTab('wb')">Склад WB РФ</button>
         <button class="filter-btn" id="finTabOwn" onclick="setFinTab('own')">Наш склад</button>
-        <button class="filter-btn" id="finTabMiss" onclick="setFinTab('miss')">Без себестоимости</button>
+        <button class="filter-btn" id="finTabMiss" onclick="setFinTab('miss')">Дозаполнить</button>
         <button class="filter-btn" id="finTabAll" onclick="setFinTab('all')">Все цены</button>
       </div>
       <div class="search" style="margin-bottom:12px">
@@ -1926,7 +1935,8 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
         <input type="file" id="moneyPaymentsHtmlInput" accept=".html,.htm" style="display:none" onchange="uploadWbMoneyPaymentsHtml(this.files[0])">
         <span class="cfo-status" id="moneyStatus"></span>
       </div>
-      <div class="money-note" id="moneyNote">По каждой неделе суммируем Основной + По выкупам и сверяем с заявкой (№185 = неделя 10.08–16.08.2026). Кликни платёж → прыжок к неделе, и наоборот. Сверху — сколько ВБ ещё должен. Публичный API историю выплат не отдаёт — загрузи HTML «Активные платежи» из кабинета ВБ или добавь заявки вручную.</div>
+      <div class="money-note" id="moneyNote">Кликни выплату, потом тыкни одну или несколько недель отчёта (бывает две) и нажми «Готово» — свяжем заявку с этими отчётами. В неделе уже сложены Основной + По выкупам. Сверху — сколько ВБ ещё должен.</div>
+      <div class="money-link-bar" id="moneyLinkBar"></div>
       <div class="cards" id="moneyCards"></div>
       <div class="cfo-box">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
@@ -13289,6 +13299,7 @@ let FINANCE_DATA = null;
 let FIN_TAB = 'wb';
 let FIN_MODE = 'stock'; // stock | cfo | money
 let MONEY_DATA = null;
+let MONEY_LINK = null; // {paymentId, weeks:[{date_from,date_to}]}
 // скрывать платежи/недели до 2026 (2024–2025 и раньше)
 let MONEY_HIDE_OLD = localStorage.getItem('moneyHideOld') !== '0';
 let CFO_DATA = null;
@@ -14027,14 +14038,17 @@ function drawFinance() {
   const wb = d.wb || {};
   const own = d.own || {};
   if(cards) {
+    const noCost = (wb.articles_without_cost||0) + (own.articles_without_cost||0);
+    const noFam = (wb.articles_family_unclear||0) + (own.articles_family_unclear||0);
     cards.innerHTML = [
-      ['Итого себестоимость', fmtMoney(d.grand_total), 'color:var(--wb-purple)'],
-      ['Склад WB', fmtMoney(wb.total_value)],
-      ['Наш склад', fmtMoney(own.total_value)],
-      ['Шт на WB', fmt(wb.total_qty || 0)],
-      ['Шт у нас', fmt(own.total_qty || 0)],
-      ['Без себестоимости', fmt((wb.articles_without_cost||0) + (own.articles_without_cost||0)), (wb.articles_without_cost||own.articles_without_cost) ? 'color:var(--amber)' : ''],
-    ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
+      ['Итого себестоимость', fmtMoney(d.grand_total), 'color:var(--wb-purple)', ''],
+      ['Склад WB РФ', fmtMoney(wb.total_value), '', ''],
+      ['Наш склад', fmtMoney(own.total_value), '', ''],
+      ['Шт WB РФ', fmt(wb.total_qty || 0), '', ''],
+      ['Шт у нас', fmt(own.total_qty || 0), '', ''],
+      ['Без себестоимости', fmt(noCost), noCost ? 'color:var(--amber)' : '', noCost ? 'setFinTab(\'miss\')' : ''],
+      ['Семья неясна', fmt(noFam), noFam ? 'color:var(--amber)' : '', noFam ? 'setFinTab(\'miss\')' : ''],
+    ].map(([l,v,s,click]) => `<div class="card"${click?` onclick="${click}" style="cursor:pointer"`:''}><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
   }
   drawFinanceTable();
 }
@@ -14076,7 +14090,7 @@ function drawFinanceTable() {
   let showQty = true;
   if(FIN_TAB === 'wb') {
     rows = [...(d.wb && d.wb.rows || [])];
-    title = 'Остатки на складах WB';
+    title = 'Остатки на Склад WB РФ';
   } else if(FIN_TAB === 'own') {
     rows = [...(d.own && d.own.rows || [])];
     title = 'Остатки на нашем складе';
@@ -14096,10 +14110,10 @@ function drawFinanceTable() {
     showQty = false;
   } else {
     const miss = [];
-    (d.wb && d.wb.rows || []).forEach(r => { if(r.cost == null) miss.push({...r, where: 'WB'}); });
-    (d.own && d.own.rows || []).forEach(r => { if(r.cost == null) miss.push({...r, where: 'Наш'}); });
+    (d.wb && d.wb.rows || []).forEach(r => { if(r.cost == null || r.family_unclear) miss.push({...r, where: 'WB РФ'}); });
+    (d.own && d.own.rows || []).forEach(r => { if(r.cost == null || r.family_unclear) miss.push({...r, where: 'Наш'}); });
     rows = miss;
-    title = 'Артикулы без себестоимости — впиши цену';
+    title = 'Дозаполнить: нет себеса или неясная семья';
   }
   if(q) rows = rows.filter(r =>
     String(r.vendor_code||'').toLowerCase().includes(q) ||
@@ -14108,7 +14122,7 @@ function drawFinanceTable() {
   );
 
   if(!rows.length) {
-    root.innerHTML = `<div class="empty">${FIN_TAB === 'miss' ? 'Все артикулы с остатком имеют себестоимость' : 'Нет строк'}</div>`;
+    root.innerHTML = `<div class="empty">${FIN_TAB === 'miss' ? 'Все артикулы с остатком имеют себес и понятную семью' : 'Нет строк'}</div>`;
     return;
   }
 
@@ -14119,13 +14133,19 @@ function drawFinanceTable() {
       ? `<div class="nmid">с ${escapeHtml(String(r.cost_as_of))}${r.cost_default!=null && r.cost_default!==r.cost ? ' · было '+fmtMoney(r.cost_default) : ''}</div>`
       : (r.cost_default!=null && r.cost!=null && r.cost_default!==r.cost ? `<div class="nmid">было ${fmtMoney(r.cost_default)}</div>` : '');
     const nmLine = r.nm_id ? `nm ${r.nm_id}` : '';
-    const extra = [r.name, r.where, nmLine].filter(Boolean).join(' · ');
+    const fam = (r.family || []).filter(x => x && x !== r.vendor_code);
+    const extra = [r.model_name || r.name, r.where, nmLine, fam.length ? ('семья: ' + fam.join(', ')) : ''].filter(Boolean).join(' · ');
+    const flags = [];
+    if(r.cost == null) flags.push('нет себеса');
+    if(r.family_unclear) flags.push('семья?');
+    const warn = flags.length ? ' fin-row-warn' : '';
+    const flagHtml = flags.map(f => `<span class="fin-flag">${escapeHtml(f)}</span>`).join('');
     const valCell = showQty
       ? (r.cost == null || r.qty == null ? '—' : fmtMoney((r.qty||0) * r.cost))
       : '';
-    return `<tr class="${i%2?'wh-even':''}">
+    return `<tr class="${i%2?'wh-even':''}${warn}">
       <td class="mcol-art" style="text-align:left">
-        <div class="art">${escapeHtml(String(r.vendor_code||''))}</div>
+        <div class="art">${flagHtml}${escapeHtml(String(r.vendor_code||''))}</div>
         <div class="nmid">${escapeHtml(extra)}</div>
       </td>
       ${showQty ? `<td>${fmt(r.qty||0)}</td>` : ''}
@@ -14360,6 +14380,125 @@ function focusMoneyPayment(payId) {
   flashMoneyRow(el);
   setMoneyStatus('Выплата №' + payId, true);
 }
+function moneyWeekKey(w) {
+  return String((w && w.date_from) || '').slice(0,10) + '|' + String((w && w.date_to) || '').slice(0,10);
+}
+function moneyFindWeek(df, dt) {
+  const key = moneyWeekKey({date_from: df, date_to: dt});
+  return ((MONEY_DATA && MONEY_DATA.weeks) || []).find(w => moneyWeekKey(w) === key) || null;
+}
+function moneyLinkedWeeksForPay(pid) {
+  const d = MONEY_DATA || {};
+  const id = String(pid || '');
+  const pay = (d.payments || []).find(p => String(p.id || '') === id);
+  const link = (d.payment_links || {})[id] || {};
+  let raw = (pay && Array.isArray(pay.weeks) && pay.weeks.length) ? pay.weeks : [];
+  if(!raw.length && Array.isArray(link.weeks) && link.weeks.length) raw = link.weeks;
+  if(!raw.length && (link.date_from || (pay && pay.report_from))) {
+    raw = [{date_from: link.date_from || (pay && pay.report_from), date_to: link.date_to || (pay && pay.report_to)}];
+  }
+  const out = [];
+  const seen = new Set();
+  (raw || []).forEach(w => {
+    const a = String((w && w.date_from) || '').slice(0,10);
+    const b = String((w && w.date_to) || '').slice(0,10);
+    const k = a + '|' + b;
+    if(a && b && !seen.has(k)) { seen.add(k); out.push({date_from: a, date_to: b}); }
+  });
+  return out;
+}
+function startMoneyLink(pid) {
+  const id = String(pid || '').trim();
+  if(!id) {
+    setMoneyStatus('У выплаты нет номера — сначала укажи № заявки', false);
+    return;
+  }
+  MONEY_LINK = {paymentId: id, weeks: moneyLinkedWeeksForPay(id)};
+  drawWbMoney();
+  flashMoneyRow(document.getElementById(moneyPayDomId(id)));
+  setMoneyStatus('Выплата №' + id + ': отметь отчёты в таблице недель, потом «Готово»', true);
+}
+function onMoneyPayClick(pid) {
+  startMoneyLink(pid);
+}
+function onMoneyWeekClick(df, dt, payNo) {
+  if(MONEY_LINK) {
+    toggleMoneyLinkWeek(df, dt);
+    return;
+  }
+  if(payNo) focusMoneyPayment(payNo);
+}
+function toggleMoneyLinkWeek(df, dt) {
+  if(!MONEY_LINK) return;
+  const a = String(df || '').slice(0,10);
+  const b = String(dt || '').slice(0,10);
+  if(!a || !b) return;
+  const key = a + '|' + b;
+  const i = MONEY_LINK.weeks.findIndex(w => moneyWeekKey(w) === key);
+  if(i >= 0) MONEY_LINK.weeks.splice(i, 1);
+  else MONEY_LINK.weeks.push({date_from: a, date_to: b});
+  drawWbMoney();
+}
+function cancelMoneyLink() {
+  MONEY_LINK = null;
+  drawWbMoney();
+  setMoneyStatus('Связка отменена');
+}
+async function finishMoneyLink() {
+  if(!MONEY_LINK) return;
+  const pid = MONEY_LINK.paymentId;
+  const weeks = (MONEY_LINK.weeks || []).map(w => ({
+    date_from: String(w.date_from || '').slice(0,10),
+    date_to: String(w.date_to || '').slice(0,10),
+  })).filter(w => w.date_from && w.date_to);
+  setMoneyStatus('Связываю выплату №' + pid + '…');
+  try {
+    const body = weeks.length ? {payment_id: pid, weeks} : {payment_id: pid, clear: true};
+    const r = await fetch(`${RAILWAY_URL}/api/wb-money/link-payment`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || j.error || ('HTTP ' + r.status));
+    MONEY_LINK = null;
+    await loadWbMoney(false);
+    setMoneyStatus(weeks.length
+      ? ('Связано: выплата №' + pid + ' · ' + weeks.length + ' отч.')
+      : ('Связь выплаты №' + pid + ' снята'), true);
+  } catch(e) {
+    setMoneyStatus('Ошибка: ' + e.message, false);
+  }
+}
+async function clearMoneyLink() {
+  if(!MONEY_LINK) return;
+  MONEY_LINK.weeks = [];
+  await finishMoneyLink();
+}
+function renderMoneyLinkBar() {
+  const bar = document.getElementById('moneyLinkBar');
+  if(!bar) return;
+  if(!MONEY_LINK) {
+    bar.className = 'money-link-bar';
+    bar.innerHTML = '';
+    return;
+  }
+  const pid = MONEY_LINK.paymentId;
+  const pay = ((MONEY_DATA && MONEY_DATA.payments) || []).find(p => String(p.id || '') === String(pid));
+  const weeks = MONEY_LINK.weeks || [];
+  const weekSum = weeks.reduce((s, w) => s + Number((moneyFindWeek(w.date_from, w.date_to) || {}).week_total || 0), 0);
+  const labels = weeks.map(w => moneyFmtDate(w.date_from) + '–' + moneyFmtDate(w.date_to)).join(', ') || 'ничего не отмечено';
+  bar.className = 'money-link-bar on';
+  bar.innerHTML = `
+    <div>
+      <b>Связать выплату №${escapeHtml(pid)}</b>${pay && pay.amount != null ? ' · ' + fmtMoney(pay.amount) : ''}
+      <div class="money-link-sum">Отчёты: ${escapeHtml(labels)}${weeks.length ? ' · к оплате ' + fmtMoney(weekSum) : ''}</div>
+    </div>
+    <button class="action-btn primary" onclick="finishMoneyLink()">Готово</button>
+    <button class="action-btn" onclick="cancelMoneyLink()">Отмена</button>
+    <button class="action-btn" onclick="clearMoneyLink()">Сбросить связь</button>
+  `;
+}
 
 function moneyFmtDate(s) {
   if(!s) return '—';
@@ -14576,6 +14715,7 @@ function drawWbMoney() {
   if(note) {
     note.textContent = d.payment_history_note || note.textContent;
   }
+  renderMoneyLinkBar();
   if(cards) {
     const balCur = bal.current != null ? bal.current : null;
     const balWd = bal.for_withdraw != null ? bal.for_withdraw : null;
@@ -14632,9 +14772,10 @@ function drawWbMoney() {
             return `<a class="money-jump" href="#" onclick="event.preventDefault();event.stopPropagation();focusMoneyWeek('${escapeHtml(a)}','${escapeHtml(b)}');">${moneyFmtDate(a)} – ${moneyFmtDate(b)}</a>`;
           }).join(' + ');
         }
-        const rowClick = (rf && rt)
-          ? ` class="money-row-link" id="${moneyPayDomId(pid)}" onclick="focusMoneyWeek('${escapeHtml(String(rf).slice(0,10))}','${escapeHtml(String(rt).slice(0,10))}')"`
-          : (pid ? ` id="${moneyPayDomId(pid)}"` : '');
+        const payOn = !!(MONEY_LINK && MONEY_LINK.paymentId === pid);
+        const rowClick = pid
+          ? ` class="money-row-link${payOn?' money-pay-on':''}" id="${moneyPayDomId(pid)}" onclick="onMoneyPayClick('${escapeHtml(pid)}')"`
+          : '';
         return `<tr${rowClick}>
         <td>${escapeHtml(pid || '—')}</td>
         <td>${fmtMoney(p.amount)}</td>
@@ -14730,9 +14871,13 @@ function drawWbMoney() {
         const df = String(w.date_from || '').slice(0,10);
         const dt = String(w.date_to || '').slice(0,10);
         const rowId = moneyWeekDomId(df, dt);
-        const rowClick = payNo
-          ? ` class="money-row-link" id="${rowId}" onclick="focusMoneyPayment('${escapeHtml(String(payNo))}')"`
-          : ` id="${rowId}"`;
+        const weekSel = !!(MONEY_LINK && (MONEY_LINK.weeks || []).some(x => moneyWeekKey(x) === moneyWeekKey({date_from: df, date_to: dt})));
+        const rowCls = [
+          (MONEY_LINK || payNo) ? 'money-row-link' : '',
+          MONEY_LINK ? 'money-week-pick' : '',
+          weekSel ? 'money-week-on' : '',
+        ].filter(Boolean).join(' ');
+        const rowClick = ` class="${rowCls}" id="${rowId}" onclick="onMoneyWeekClick('${escapeHtml(df)}','${escapeHtml(dt)}','${escapeHtml(String(payNo || ''))}')"`;
         return `<tr${rowClick}>
           <td>
             <div style="font-weight:600">${moneyFmtDate(w.date_from)} – ${moneyFmtDate(w.date_to)}</div>

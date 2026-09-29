@@ -10458,7 +10458,9 @@ def get_finance():
                     return e
         return {}
 
-    # WB остатки — vendor_code в stock_totals часто пустой, матчим через ratings/nm_id
+    # WB остатки — только «Склад WB РФ», не сумма сгоревших FBW.
+    stock_wh_by_nm = _fetch_stock_wh_by_nm()
+    wb_rf_products = _new_stock_fbw_qty_by_nm()
     wb_rows = []
     try:
         st = httpx.get(
@@ -10468,13 +10470,15 @@ def get_finance():
         if st.is_success:
             for r in st.json() or []:
                 nm_id = r.get("nm_id")
-                qty = int(r.get("quantity_warehouses_full") or 0)
-                if qty <= 0:
-                    continue
                 try:
                     nm_int = int(nm_id) if nm_id is not None else None
                 except Exception:
                     nm_int = None
+                qty = _wb_rf_qty_from_wh_by_nm(nm_int, stock_wh_by_nm) if nm_int is not None else 0
+                if qty <= 0 and nm_int is not None:
+                    qty = int(wb_rf_products.get(nm_int) or 0)
+                if qty <= 0:
+                    continue
                 stock_vc = _norm_vendor_key(r.get("vendor_code"))
                 if stock_vc and nm_int is not None and stock_vc == str(nm_int):
                     stock_vc = ""
@@ -10490,6 +10494,7 @@ def get_finance():
                     seller = _norm_vendor_key(cm.get("vendor_code")) or ""
                 cost = cm.get("cost")
                 value = round(qty * cost, 2) if cost is not None else None
+                sku_unclear = (not seller) or seller.isdigit()
                 wb_rows.append({
                     "vendor_code": seller or (str(nm_id) if nm_id else ""),
                     "nm_id": nm_id,
@@ -10499,6 +10504,8 @@ def get_finance():
                     "cost_default": cm.get("default"),
                     "cost_as_of": cm.get("as_of"),
                     "value": value,
+                    "no_cost": cost is None,
+                    "family_unclear": sku_unclear,
                     "in_way": int(r.get("in_way_to_client") or 0) + int(r.get("in_way_from_client") or 0),
                 })
     except Exception as e:
@@ -10526,20 +10533,30 @@ def get_finance():
         cm = resolve_cost(vc, None)
         cost = cm.get("cost")
         value = round(qty * cost, 2) if cost is not None else None
+        name = str(r.get("name") or "").strip()
+        model_name = str(r.get("model_name") or name or "").strip()
+        family = [str(x) for x in (r.get("family") or []) if x]
+        family_unclear = (not name) or (not model_name) or model_name == vc
         own_rows.append({
             "vendor_code": vc,
-            "name": r.get("name") or "",
+            "name": name,
+            "model_name": model_name,
+            "model_root": r.get("model_root"),
+            "family": family,
             "qty": qty,
             "cost": cost,
             "cost_default": cm.get("default"),
             "cost_as_of": cm.get("as_of"),
             "value": value,
+            "no_cost": cost is None,
+            "family_unclear": family_unclear,
             "family_stock": r.get("family_stock"),
         })
 
     def summarize(rows):
         with_cost = [x for x in rows if x.get("value") is not None]
         without = [x for x in rows if x.get("value") is None]
+        unclear = [x for x in rows if x.get("family_unclear")]
         return {
             "total_value": round(sum(x["value"] for x in with_cost), 2),
             "total_qty": sum(x["qty"] for x in rows),
@@ -10547,6 +10564,7 @@ def get_finance():
             "qty_without_cost": sum(x["qty"] for x in without),
             "articles": len(rows),
             "articles_without_cost": len(without),
+            "articles_family_unclear": len(unclear),
         }
 
     wb_sum = summarize(wb_rows)
@@ -12524,9 +12542,8 @@ def get_wb_money(date_from: str = None, date_to: str = None, refresh: bool = Fal
         "api_error": api_err,
         **enriched,
         "payment_history_note": (
-            "Историю платежей из кабинета API не отдаёт — добавь заявки вручную "
-            "(сумма + статус), отчёты сверятся автоматически. "
-            "Или загрузи Excel «Еженедельный отчет» с колонкой «Итого к оплате»."
+            "Кликни выплату, отметь одну или несколько недель отчёта и нажми «Готово» — так свяжешь заявку с отчётами. "
+            "Историю платежей API не отдаёт: добавь заявки вручную или загрузи HTML «Активные платежи»."
         ),
     }
 
@@ -12738,6 +12755,18 @@ async def link_wb_money_payment(request: dict):
     })
     if not weeks:
         raise HTTPException(status_code=400, detail="нужны date_from и date_to (YYYY-MM-DD) или weeks: []")
+    taken = {(w["date_from"], w["date_to"]) for w in weeks}
+    for other_pid, other in list(links.items()):
+        if str(other_pid) == pid:
+            continue
+        kept = [
+            w for w in _normalize_week_link(other)
+            if (w["date_from"], w["date_to"]) not in taken
+        ]
+        if not kept:
+            links.pop(other_pid, None)
+        elif len(kept) != len(_normalize_week_link(other)):
+            links[other_pid] = _compact_week_link(kept)
     links[pid] = _compact_week_link(weeks)
     store["payment_links"] = links
     _save_money_store(store)
