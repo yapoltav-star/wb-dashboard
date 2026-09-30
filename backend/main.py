@@ -174,6 +174,12 @@ def sync_all(full: bool = False):
         )
         if st.is_success:
             nm_to_vendor = {r["nm_id"]: r["vendor_code"] for r in st.json() if r.get("nm_id") and r.get("vendor_code")}
+        try:
+            cards = _nm_vendor_cards_map()
+            if cards:
+                nm_to_vendor.update(cards)
+        except Exception:
+            pass
         # stock_totals часто без vendor_code — добираем из ratings
         rt = httpx.get(
             f"{SUPABASE_URL}/rest/v1/ratings_official?select=nm_id,article&nm_id=not.is.null&article=not.is.null&limit=5000",
@@ -469,6 +475,67 @@ def fetch_all_card_skus() -> list:
     return out
 
 
+NM_VENDOR_CARDS_KEY = "nm_vendor_from_cards"
+NM_VENDOR_CARDS_CACHE = {"map": {}, "ts": 0.0}
+
+
+def fetch_nm_vendor_from_cards(force: bool = False) -> dict:
+    """nm_id → актуальный vendorCode из карточек Content API (после замен модели)."""
+    cached = NM_VENDOR_CARDS_CACHE.get("map") or {}
+    ts = float(NM_VENDOR_CARDS_CACHE.get("ts") or 0)
+    if not force and cached and ts and (time.time() - ts) < 10 * 60:
+        return cached
+    if not WB_TOKEN:
+        return {}
+    out = {}
+    cursor = {"limit": 100}
+    for _ in range(200):
+        try:
+            resp = httpx.post(
+                f"{WB_CONTENT_URL}/content/v2/get/cards/list",
+                headers=wb_headers(),
+                json={
+                    "settings": {
+                        "sort": {"ascending": True},
+                        "filter": {"withPhoto": -1},
+                        "cursor": cursor,
+                    }
+                },
+                timeout=40,
+            )
+        except Exception as e:
+            logger.error(f"cards/list vendor codes: {e}")
+            break
+        if not resp.is_success:
+            logger.error(f"cards/list vendor codes {resp.status_code}: {resp.text[:200]}")
+            break
+        payload = resp.json() or {}
+        cards = payload.get("cards") or []
+        if not cards:
+            break
+        for c in cards:
+            nm = c.get("nmID") or c.get("nmId")
+            vc = (c.get("vendorCode") or "").strip()
+            if not nm or not vc or vc == str(nm):
+                continue
+            try:
+                out[int(nm)] = vc.replace("\u041e", "O").replace("\u043e", "o")
+            except (TypeError, ValueError):
+                continue
+        curs = payload.get("cursor") or {}
+        updated = curs.get("updatedAt")
+        nm_cur = curs.get("nmID") or curs.get("nmId")
+        if len(cards) < 100 or not updated or nm_cur is None:
+            break
+        cursor = {"limit": 100, "updatedAt": updated, "nmID": nm_cur}
+        time.sleep(0.35)
+    if out:
+        NM_VENDOR_CARDS_CACHE["map"] = dict(out)
+        NM_VENDOR_CARDS_CACHE["ts"] = time.time()
+    logger.info(f"Content API vendor codes: {len(out)}")
+    return out
+
+
 def fetch_fbs_stocks() -> dict:
     """
     Остатки FBS (система Маркетплейс) по складам продавца.
@@ -625,6 +692,17 @@ def sync_stock():
         logger.warning("Stock report empty after retry, keeping previous stock snapshot")
         return
     totals, warehouses = process_stock_items(items)
+    vmap = {}
+    try:
+        vmap = fetch_nm_vendor_from_cards() or {}
+        if vmap:
+            try:
+                save_setting_value(NM_VENDOR_CARDS_KEY, {str(k): v for k, v in vmap.items()})
+            except Exception as e:
+                logger.warning(f"save vendor cards map: {e}")
+    except Exception as e:
+        logger.warning(f"overlay vendor from cards: {e}")
+        vmap = {}
 
     # FBS / Маркетплейс — отдельные колонки складов (не входят в quantity_warehouses_full WB)
     fbs = {}
@@ -640,7 +718,7 @@ def sync_stock():
             for nm, qty in by_nm.items():
                 if int(nm) in have or int(qty) <= 0:
                     continue
-                vc = next(
+                vc = vmap.get(int(nm)) or next(
                     (s.get("vendor_code") for s in (fbs.get("samples") or []) if s.get("nm_id") == nm),
                     "",
                 )
@@ -659,6 +737,15 @@ def sync_stock():
             logger.warning(f"FBS stocks skipped: {fbs.get('error')}")
     except Exception as e:
         logger.error(f"FBS stocks merge error: {e}")
+
+    if vmap:
+        for t in totals:
+            try:
+                nm = int(t.get("nm_id"))
+            except (TypeError, ValueError):
+                continue
+            if nm in vmap:
+                t["vendor_code"] = vmap[nm]
 
     saved = upsert_stock(totals, warehouses)
     try:
@@ -4578,6 +4665,175 @@ def save_setting_value(key: str, value) -> bool:
     except Exception as e:
         logger.error(f"save_setting_value({key}) error: {e}")
         return False
+
+
+def _nm_vendor_cards_map() -> dict:
+    """Актуальные артикулы продавца с карточек WB (settings + память)."""
+    cached = NM_VENDOR_CARDS_CACHE.get("map") or {}
+    if cached:
+        return cached
+    raw = get_setting_json(NM_VENDOR_CARDS_KEY, {}) or {}
+    m = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            try:
+                nm = int(k)
+            except (TypeError, ValueError):
+                continue
+            art = str(v or "").strip().replace("\u041e", "O").replace("\u043e", "o")
+            if art and art != str(nm):
+                m[nm] = art
+    if m:
+        NM_VENDOR_CARDS_CACHE["map"] = m
+    return m
+
+
+def _apply_card_vendor_map(rows: list, vmap: dict, nm_key: str = "nm_id", vc_key: str = "vendor_code") -> int:
+    n = 0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            nm = int(row.get(nm_key))
+        except (TypeError, ValueError):
+            continue
+        vc = vmap.get(nm)
+        if vc:
+            row[vc_key] = vc
+            n += 1
+    return n
+
+
+def sync_vendor_codes_from_wb_cards(force: bool = True) -> dict:
+    """Перезаписывает артикулы продавца актуальным vendorCode карточки WB."""
+    vmap = fetch_nm_vendor_from_cards(force=force)
+    if not vmap:
+        return {"status": "empty", "cards": 0, "stock_changed": 0, "changed": []}
+    try:
+        save_setting_value(NM_VENDOR_CARDS_KEY, {str(k): v for k, v in vmap.items()})
+    except Exception as e:
+        logger.warning(f"save vendor cards map: {e}")
+
+    changed = []
+    stock_old, ratings_old = {}, {}
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&limit=5000",
+            headers=sb_headers(),
+            timeout=20,
+        )
+        if r.is_success:
+            for row in r.json() or []:
+                try:
+                    stock_old[int(row.get("nm_id"))] = str(row.get("vendor_code") or "").strip()
+                except (TypeError, ValueError):
+                    continue
+    except Exception as e:
+        logger.warning(f"sync vendor load stock: {e}")
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?select=nm_id,article&nm_id=not.is.null&limit=5000",
+            headers=sb_headers(),
+            timeout=20,
+        )
+        if r.is_success:
+            for row in r.json() or []:
+                try:
+                    ratings_old[int(row.get("nm_id"))] = str(row.get("article") or "").strip()
+                except (TypeError, ValueError):
+                    continue
+    except Exception as e:
+        logger.warning(f"sync vendor load ratings: {e}")
+
+    hdr_min = {**sb_headers(), "Prefer": "return=minimal"}
+    try:
+        for nm, vc in vmap.items():
+            old_s = (stock_old.get(nm) or "").strip()
+            old_r = (ratings_old.get(nm) or "").strip()
+            if old_s == vc and old_r == vc:
+                continue
+            old = old_r or old_s
+            changed.append({"nm_id": nm, "old": old, "new": vc})
+            if old_s != vc and nm in stock_old:
+                resp = httpx.patch(
+                    f"{SUPABASE_URL}/rest/v1/stock_totals?nm_id=eq.{nm}",
+                    json={"vendor_code": vc},
+                    headers=hdr_min,
+                    timeout=15,
+                )
+                if not resp.is_success:
+                    logger.warning(f"stock_totals vendor patch {nm}: {resp.status_code} {resp.text[:160]}")
+            if old_r != vc and nm in ratings_old:
+                resp = httpx.patch(
+                    f"{SUPABASE_URL}/rest/v1/ratings_official?nm_id=eq.{nm}",
+                    json={"article": vc},
+                    headers=hdr_min,
+                    timeout=15,
+                )
+                if not resp.is_success:
+                    logger.warning(f"ratings vendor patch {nm}: {resp.status_code} {resp.text[:160]}")
+            resp = httpx.patch(
+                f"{SUPABASE_URL}/rest/v1/feedbacks?nm_id=eq.{nm}",
+                json={"article": vc},
+                headers=hdr_min,
+                timeout=30,
+            )
+            if not resp.is_success:
+                logger.warning(f"feedbacks vendor patch {nm}: {resp.status_code} {resp.text[:160]}")
+    except Exception as e:
+        logger.warning(f"sync vendor patch: {e}")
+
+    old_to_new = {row["old"]: row["new"] for row in changed if row.get("old") and row.get("new")}
+    if old_to_new:
+        try:
+            r = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/groups_config?select=name,articles,sort_order",
+                headers=sb_headers(),
+                timeout=15,
+            )
+            if r.is_success:
+                for g in r.json() or []:
+                    arts = list(g.get("articles") or [])
+                    new_arts = [old_to_new.get(a, a) for a in arts]
+                    if new_arts == arts:
+                        continue
+                    name = g.get("name")
+                    if not name:
+                        continue
+                    from urllib.parse import quote
+                    httpx.patch(
+                        f"{SUPABASE_URL}/rest/v1/groups_config?name=eq.{quote(str(name))}",
+                        json={"articles": new_arts},
+                        headers=hdr_min,
+                        timeout=15,
+                    )
+        except Exception as e:
+            logger.warning(f"sync vendor groups: {e}")
+
+    try:
+        _apply_card_vendor_map(SPP_CACHE.get("articles") or [], vmap)
+    except NameError:
+        pass
+    except Exception as e:
+        logger.warning(f"sync vendor spp: {e}")
+    try:
+        _apply_card_vendor_map(WB_PRODUCTS_CACHE.get("products") or [], vmap)
+    except NameError:
+        pass
+    except Exception as e:
+        logger.warning(f"sync vendor products: {e}")
+    try:
+        _invalidate_dash_cache()
+    except Exception:
+        pass
+    logger.info(f"vendor codes from cards: {len(vmap)} cards, {len(changed)} stock_totals changed")
+    return {
+        "status": "ok",
+        "cards": len(vmap),
+        "stock_changed": len(changed),
+        "changed": changed[:80],
+    }
+
 
 def parse_wb_dt(s: str):
     """WB отдаёт даты в orders/sales без таймзоны (например '2026-06-10T10:00:00').
@@ -8699,6 +8955,10 @@ def sync_spp_prices(notify: bool = False):
                 "cashback_rub": cashback_rub,
             })
         attach_price_deltas(articles, prev_map)
+        try:
+            _apply_card_vendor_map(articles, _nm_vendor_cards_map())
+        except Exception as e:
+            logger.warning(f"spp overlay vendor cards: {e}")
         articles.sort(key=lambda x: (-(x.get("spp") or -1), str(x.get("vendor_code") or "")))
         SPP_CACHE["articles"] = articles
         SPP_CACHE["updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
@@ -9577,9 +9837,9 @@ def build_wb_products_catalog(sales_by_nm: dict | None = None) -> dict:
         if not channels and stock > 0:
             channels = ["FBW"]
         vc = (
-            (p.get("vendor_code") or "").strip()
+            (vc_map.get(nm) or "").strip()
             or (t.get("vendor_code") or "").strip()
-            or (vc_map.get(nm) or "").strip()
+            or (p.get("vendor_code") or "").strip()
             or str(nm)
         )
         if vc == str(nm) and vc_map.get(nm):
@@ -9642,6 +9902,10 @@ def refresh_wb_products_catalog(sync_sources: bool = False):
                 sync_stock()
             except Exception as e:
                 logger.error(f"wb-products sync_stock: {e}")
+            try:
+                sync_vendor_codes_from_wb_cards(force=False)
+            except Exception as e:
+                logger.error(f"wb-products sync vendor cards: {e}")
             if not SPP_CACHE.get("articles") and not SPP_CACHE.get("syncing"):
                 try:
                     sync_spp_prices()
@@ -9717,6 +9981,17 @@ def sync_wb_products():
         daemon=True,
     ).start()
     return {"status": "started"}
+
+
+@app.post("/api/sync-vendor-codes")
+def trigger_vendor_codes_sync():
+    """Подтянуть актуальные артикулы продавца из карточек WB (после замен 039/040 и т.п.)."""
+    import threading
+    threading.Thread(target=sync_vendor_codes_from_wb_cards, daemon=True).start()
+    return {"status": "started"}
+
+
+threading.Thread(target=sync_vendor_codes_from_wb_cards, daemon=True).start()
 
 
 @app.post("/api/sync-supply")
@@ -9903,6 +10178,13 @@ def dashboard_data():
             except Exception as e:
                 logger.error(f"dashboard-data parallel error: {e}")
 
+    try:
+        vmap = _nm_vendor_cards_map()
+        if vmap:
+            _apply_card_vendor_map(result.get("stock_totals") or [], vmap)
+    except Exception as e:
+        logger.warning(f"dashboard-data vendor overlay: {e}")
+
     logger.info(f"dashboard-data built in {time.time() - t0:.2f}s")
     with _DASH_CACHE_LOCK:
         _DASH_CACHE["ts"] = time.time()
@@ -9993,8 +10275,26 @@ def _norm_vendor_key(v):
 
 
 def build_nm_to_vendor_map() -> dict:
-    """nm_id → артикул продавца (033_…). stock_totals часто без vendor_code — берём из рейтингов/отзывов."""
+    """nm_id → артикул продавца. Сначала живые карточки WB, потом остатки, рейтинги, отзывы."""
     m = {}
+    cards = _nm_vendor_cards_map()
+    if cards:
+        m.update(cards)
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&limit=5000",
+            headers=sb_headers(), timeout=15,
+        )
+        if r.is_success:
+            for row in r.json() or []:
+                nm, art = row.get("nm_id"), _norm_vendor_key(row.get("vendor_code"))
+                if nm is None or not art or art == str(nm):
+                    continue
+                nm = int(nm)
+                if nm not in m:
+                    m[nm] = art
+    except Exception as e:
+        logger.warning(f"build_nm_to_vendor_map stock: {e}")
     try:
         r = httpx.get(
             f"{SUPABASE_URL}/rest/v1/ratings_official?select=nm_id,article&nm_id=not.is.null&article=not.is.null&limit=5000",
@@ -10003,8 +10303,11 @@ def build_nm_to_vendor_map() -> dict:
         if r.is_success:
             for row in r.json() or []:
                 nm, art = row.get("nm_id"), _norm_vendor_key(row.get("article"))
-                if nm is not None and art and art != str(nm):
-                    m[int(nm)] = art
+                if nm is None or not art or art == str(nm):
+                    continue
+                nm = int(nm)
+                if nm not in m:
+                    m[nm] = art
     except Exception as e:
         logger.warning(f"build_nm_to_vendor_map ratings: {e}")
     try:
@@ -10022,21 +10325,6 @@ def build_nm_to_vendor_map() -> dict:
                     m[nm] = art
     except Exception as e:
         logger.warning(f"build_nm_to_vendor_map feedbacks: {e}")
-    try:
-        r = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&limit=5000",
-            headers=sb_headers(), timeout=15,
-        )
-        if r.is_success:
-            for row in r.json() or []:
-                nm, art = row.get("nm_id"), _norm_vendor_key(row.get("vendor_code"))
-                if nm is None or not art or art == str(nm):
-                    continue
-                nm = int(nm)
-                if nm not in m:
-                    m[nm] = art
-    except Exception as e:
-        logger.warning(f"build_nm_to_vendor_map stock: {e}")
     return m
 
 def _parse_header_date(v):
