@@ -1,0 +1,637 @@
+{
+  "periodNote": "По загруженным SKU-отчётам (тот же срез, что на скринах дашбордов)",
+  "wb": {
+    "label": "Wildberries",
+    "summary": {
+      "skus": 266,
+      "rev": 25612061.0,
+      "profit": 5955152.63,
+      "qty": 7130,
+      "ordersSum": 49105445.0,
+      "ordersQty": 9563,
+      "margin": 23.25,
+      "ppu": 835.22,
+      "buyout": 70.34
+    },
+    "top": [
+      {
+        "sku": "042_s11_middle_gold_o",
+        "rev": 1930455.0,
+        "profit": 524789.1,
+        "qty": 552.0,
+        "ppu": 950.7,
+        "buyout": 69.52,
+        "sharePr": 8.8
+      },
+      {
+        "sku": "045_lk_watch_6pro_black_o",
+        "rev": 1540228.0,
+        "profit": 415018.16,
+        "qty": 331.0,
+        "ppu": 1253.83,
+        "buyout": 73.56,
+        "sharePr": 6.96
+      },
+      {
+        "sku": "046_lk11_promax_gold_o",
+        "rev": 1295015.0,
+        "profit": 373519.76,
+        "qty": 235.0,
+        "ppu": 1589.45,
+        "buyout": 71.21,
+        "sharePr": 6.26
+      },
+      {
+        "sku": "046_lk11_promax_grey_o",
+        "rev": 1153004.0,
+        "profit": 312359.8,
+        "qty": 205.0,
+        "ppu": 1523.71,
+        "buyout": 72.7,
+        "sharePr": 5.24
+      },
+      {
+        "sku": "034_s11_gold_o",
+        "rev": 1248224.0,
+        "profit": 262388.94,
+        "qty": 352.0,
+        "ppu": 745.42,
+        "buyout": 73.03,
+        "sharePr": 4.4
+      },
+      {
+        "sku": "035_hk11_black_o",
+        "rev": 1131643.0,
+        "profit": 251273.27,
+        "qty": 334.0,
+        "ppu": 752.32,
+        "buyout": 72.61,
+        "sharePr": 4.21
+      },
+      {
+        "sku": "040_hk11_mini_grey_o",
+        "rev": 939222.0,
+        "profit": 250748.23,
+        "qty": 263.0,
+        "ppu": 953.42,
+        "buyout": 74.5,
+        "sharePr": 4.2
+      },
+      {
+        "sku": "042_s11_middle_black_o",
+        "rev": 893632.0,
+        "profit": 250666.85,
+        "qty": 267.0,
+        "ppu": 938.83,
+        "buyout": 66.25,
+        "sharePr": 4.2
+      },
+      {
+        "sku": "042_s11_middle_grey_o",
+        "rev": 1201178.0,
+        "profit": 242709.64,
+        "qty": 361.0,
+        "ppu": 672.33,
+        "buyout": 74.74,
+        "sharePr": 4.07
+      },
+      {
+        "sku": "039_dt10_mini_grey_o",
+        "rev": 643034.0,
+        "profit": 200151.13,
+        "qty": 178.0,
+        "ppu": 1124.44,
+        "buyout": 69.26,
+        "sharePr": 3.36
+      },
+      {
+        "sku": "045_lk_watch_6pro_grey_o",
+        "rev": 846739.0,
+        "profit": 196660.52,
+        "qty": 178.0,
+        "ppu": 1104.83,
+        "buyout": 79.82,
+        "sharePr": 3.3
+      },
+      {
+        "sku": "039_dt10_mini_gold_o",
+        "rev": 816829.0,
+        "profit": 194615.62,
+        "qty": 228.0,
+        "ppu": 853.58,
+        "buyout": 72.38,
+        "sharePr": 3.26
+      }
+    ]
+  },
+  "oz": {
+    "label": "Ozon",
+    "summary": {
+      "skus": 48,
+      "rev": 7504362.18,
+      "profit": 3048258.67,
+      "qty": 2578,
+      "ordersSum": 23391940.0,
+      "ordersQty": 4291,
+      "margin": 40.62,
+      "ppu": 1182.41,
+      "buyout": 76.96
+    },
+    "top": [
+      {
+        "sku": "046_LK11_Promax_gold_O",
+        "rev": 824770.37,
+        "profit": 373319.93,
+        "qty": 214.0,
+        "ppu": 1744.49,
+        "buyout": 78.39,
+        "sharePr": 12.24
+      },
+      {
+        "sku": "042_S11_middle_grey_O",
+        "rev": 692770.33,
+        "profit": 343120.34,
+        "qty": 256.0,
+        "ppu": 1340.31,
+        "buyout": 78.29,
+        "sharePr": 11.25
+      },
+      {
+        "sku": "034_S11_gold_O",
+        "rev": 834439.1,
+        "profit": 336137.91,
+        "qty": 280.0,
+        "ppu": 1200.49,
+        "buyout": 76.71,
+        "sharePr": 11.02
+      },
+      {
+        "sku": "046_LK11_Promax_grey_O",
+        "rev": 706474.51,
+        "profit": 308684.11,
+        "qty": 184.0,
+        "ppu": 1677.63,
+        "buyout": 82.14,
+        "sharePr": 10.12
+      },
+      {
+        "sku": "046_LK11_Promax_black_O",
+        "rev": 465864.35,
+        "profit": 195335.53,
+        "qty": 123.0,
+        "ppu": 1588.09,
+        "buyout": 79.35,
+        "sharePr": 6.4
+      },
+      {
+        "sku": "034_S11_grey_O",
+        "rev": 427065.85,
+        "profit": 189811.45,
+        "qty": 141.0,
+        "ppu": 1346.18,
+        "buyout": 69.12,
+        "sharePr": 6.22
+      },
+      {
+        "sku": "034_S11_black_O",
+        "rev": 476279.43,
+        "profit": 175170.53,
+        "qty": 163.0,
+        "ppu": 1074.67,
+        "buyout": 73.09,
+        "sharePr": 5.74
+      },
+      {
+        "sku": "042_S11_middle_black_O",
+        "rev": 387081.57,
+        "profit": 173713.68,
+        "qty": 143.0,
+        "ppu": 1214.78,
+        "buyout": 84.12,
+        "sharePr": 5.7
+      },
+      {
+        "sku": "040_HK11_mini_gold_O",
+        "rev": 498562.22,
+        "profit": 163163.01,
+        "qty": 168.0,
+        "ppu": 971.21,
+        "buyout": 65.37,
+        "sharePr": 5.35
+      },
+      {
+        "sku": "10_vx_nova",
+        "rev": 462941.0,
+        "profit": 158333.58,
+        "qty": 134.0,
+        "ppu": 1181.59,
+        "buyout": 70.9,
+        "sharePr": 5.19
+      },
+      {
+        "sku": "039_LK11_mini_grey_O",
+        "rev": 379009.91,
+        "profit": 150770.59,
+        "qty": 102.0,
+        "ppu": 1478.14,
+        "buyout": 85.0,
+        "sharePr": 4.94
+      },
+      {
+        "sku": "039_LK11_mini_gold_O",
+        "rev": 356286.57,
+        "profit": 123601.17,
+        "qty": 99.0,
+        "ppu": 1248.5,
+        "buyout": 75.57,
+        "sharePr": 4.05
+      }
+    ]
+  },
+  "common": [
+    {
+      "sku": "046_lk11_promax_gold_o",
+      "wb": {
+        "rev": 1295015.0,
+        "profit": 373519.76,
+        "qty": 235.0,
+        "ppu": 1589.45,
+        "buyout": 71.21
+      },
+      "oz": {
+        "rev": 824770.37,
+        "profit": 373319.93,
+        "qty": 214.0,
+        "ppu": 1744.49,
+        "buyout": 78.39
+      },
+      "ppuDelta": 155.04,
+      "totalProfit": 746839.69
+    },
+    {
+      "sku": "046_lk11_promax_grey_o",
+      "wb": {
+        "rev": 1153004.0,
+        "profit": 312359.8,
+        "qty": 205.0,
+        "ppu": 1523.71,
+        "buyout": 72.7
+      },
+      "oz": {
+        "rev": 706474.51,
+        "profit": 308684.11,
+        "qty": 184.0,
+        "ppu": 1677.63,
+        "buyout": 82.14
+      },
+      "ppuDelta": 153.92,
+      "totalProfit": 621043.91
+    },
+    {
+      "sku": "042_s11_middle_gold_o",
+      "wb": {
+        "rev": 1930455.0,
+        "profit": 524789.1,
+        "qty": 552.0,
+        "ppu": 950.7,
+        "buyout": 69.52
+      },
+      "oz": {
+        "rev": 228256.28,
+        "profit": 88284.41,
+        "qty": 91.0,
+        "ppu": 970.16,
+        "buyout": 63.19
+      },
+      "ppuDelta": 19.46,
+      "totalProfit": 613073.51
+    },
+    {
+      "sku": "034_s11_gold_o",
+      "wb": {
+        "rev": 1248224.0,
+        "profit": 262388.94,
+        "qty": 352.0,
+        "ppu": 745.42,
+        "buyout": 73.03
+      },
+      "oz": {
+        "rev": 834439.1,
+        "profit": 336137.91,
+        "qty": 280.0,
+        "ppu": 1200.49,
+        "buyout": 76.71
+      },
+      "ppuDelta": 455.07,
+      "totalProfit": 598526.85
+    },
+    {
+      "sku": "042_s11_middle_grey_o",
+      "wb": {
+        "rev": 1201178.0,
+        "profit": 242709.64,
+        "qty": 361.0,
+        "ppu": 672.33,
+        "buyout": 74.74
+      },
+      "oz": {
+        "rev": 692770.33,
+        "profit": 343120.34,
+        "qty": 256.0,
+        "ppu": 1340.31,
+        "buyout": 78.29
+      },
+      "ppuDelta": 667.98,
+      "totalProfit": 585829.98
+    },
+    {
+      "sku": "042_s11_middle_black_o",
+      "wb": {
+        "rev": 893632.0,
+        "profit": 250666.85,
+        "qty": 267.0,
+        "ppu": 938.83,
+        "buyout": 66.25
+      },
+      "oz": {
+        "rev": 387081.57,
+        "profit": 173713.68,
+        "qty": 143.0,
+        "ppu": 1214.78,
+        "buyout": 84.12
+      },
+      "ppuDelta": 275.95,
+      "totalProfit": 424380.53
+    },
+    {
+      "sku": "046_lk11_promax_black_o",
+      "wb": {
+        "rev": 660176.0,
+        "profit": 174240.33,
+        "qty": 117.0,
+        "ppu": 1489.23,
+        "buyout": 76.47
+      },
+      "oz": {
+        "rev": 465864.35,
+        "profit": 195335.53,
+        "qty": 123.0,
+        "ppu": 1588.09,
+        "buyout": 79.35
+      },
+      "ppuDelta": 98.86,
+      "totalProfit": 369575.86
+    },
+    {
+      "sku": "034_s11_black_o",
+      "wb": {
+        "rev": 513426.0,
+        "profit": 150304.78,
+        "qty": 145.0,
+        "ppu": 1036.58,
+        "buyout": 74.36
+      },
+      "oz": {
+        "rev": 476279.43,
+        "profit": 175170.53,
+        "qty": 163.0,
+        "ppu": 1074.67,
+        "buyout": 73.09
+      },
+      "ppuDelta": 38.09,
+      "totalProfit": 325475.31
+    },
+    {
+      "sku": "044_lk_gt5pro_black_o",
+      "wb": {
+        "rev": 647216.0,
+        "profit": 190254.85,
+        "qty": 150.0,
+        "ppu": 1268.37,
+        "buyout": 66.37
+      },
+      "oz": {
+        "rev": 354018.5,
+        "profit": 121092.46,
+        "qty": 94.0,
+        "ppu": 1288.22,
+        "buyout": 75.81
+      },
+      "ppuDelta": 19.85,
+      "totalProfit": 311347.31
+    },
+    {
+      "sku": "040_hk11_mini_gold_o",
+      "wb": {
+        "rev": 595655.0,
+        "profit": 110896.61,
+        "qty": 165.0,
+        "ppu": 672.1,
+        "buyout": 63.22
+      },
+      "oz": {
+        "rev": 498562.22,
+        "profit": 163163.01,
+        "qty": 168.0,
+        "ppu": 971.21,
+        "buyout": 65.37
+      },
+      "ppuDelta": 299.11,
+      "totalProfit": 274059.62
+    },
+    {
+      "sku": "034_s11_grey_o",
+      "wb": {
+        "rev": 588897.0,
+        "profit": 82380.29,
+        "qty": 167.0,
+        "ppu": 493.3,
+        "buyout": 72.29
+      },
+      "oz": {
+        "rev": 427065.85,
+        "profit": 189811.45,
+        "qty": 141.0,
+        "ppu": 1346.18,
+        "buyout": 69.12
+      },
+      "ppuDelta": 852.88,
+      "totalProfit": 272191.74
+    },
+    {
+      "sku": "041_х10_grey_o",
+      "wb": {
+        "rev": 463940.0,
+        "profit": 48508.21,
+        "qty": 130.0,
+        "ppu": 373.14,
+        "buyout": 70.27
+      },
+      "oz": {
+        "rev": 208051.78,
+        "profit": 56789.38,
+        "qty": 72.0,
+        "ppu": 788.74,
+        "buyout": 67.92
+      },
+      "ppuDelta": 415.6,
+      "totalProfit": 105297.59
+    },
+    {
+      "sku": "014_ultra_черные_o",
+      "wb": {
+        "rev": 45170.0,
+        "profit": 5701.25,
+        "qty": 19.0,
+        "ppu": 300.07,
+        "buyout": 76.0
+      },
+      "oz": {
+        "rev": 30541.37,
+        "profit": 12778.06,
+        "qty": 17.0,
+        "ppu": 751.65,
+        "buyout": 80.95
+      },
+      "ppuDelta": 451.58,
+      "totalProfit": 18479.31
+    }
+  ],
+  "combinedTop": [
+    {
+      "sku": "046_lk11_promax_gold_o",
+      "wbProfit": 373519.76,
+      "ozProfit": 373319.93,
+      "wbRev": 1295015.0,
+      "ozRev": 824770.37,
+      "totalProfit": 746839.69
+    },
+    {
+      "sku": "046_lk11_promax_grey_o",
+      "wbProfit": 312359.8,
+      "ozProfit": 308684.11,
+      "wbRev": 1153004.0,
+      "ozRev": 706474.51,
+      "totalProfit": 621043.9099999999
+    },
+    {
+      "sku": "042_s11_middle_gold_o",
+      "wbProfit": 524789.1,
+      "ozProfit": 88284.41,
+      "wbRev": 1930455.0,
+      "ozRev": 228256.28,
+      "totalProfit": 613073.51
+    },
+    {
+      "sku": "034_s11_gold_o",
+      "wbProfit": 262388.94,
+      "ozProfit": 336137.91,
+      "wbRev": 1248224.0,
+      "ozRev": 834439.1,
+      "totalProfit": 598526.85
+    },
+    {
+      "sku": "042_s11_middle_grey_o",
+      "wbProfit": 242709.64,
+      "ozProfit": 343120.34,
+      "wbRev": 1201178.0,
+      "ozRev": 692770.33,
+      "totalProfit": 585829.98
+    },
+    {
+      "sku": "042_s11_middle_black_o",
+      "wbProfit": 250666.85,
+      "ozProfit": 173713.68,
+      "wbRev": 893632.0,
+      "ozRev": 387081.57,
+      "totalProfit": 424380.53
+    },
+    {
+      "sku": "045_lk_watch_6pro_black_o",
+      "wbProfit": 415018.16,
+      "ozProfit": 0,
+      "wbRev": 1540228.0,
+      "ozRev": 0,
+      "totalProfit": 415018.16
+    },
+    {
+      "sku": "046_lk11_promax_black_o",
+      "wbProfit": 174240.33,
+      "ozProfit": 195335.53,
+      "wbRev": 660176.0,
+      "ozRev": 465864.35,
+      "totalProfit": 369575.86
+    },
+    {
+      "sku": "034_s11_black_o",
+      "wbProfit": 150304.78,
+      "ozProfit": 175170.53,
+      "wbRev": 513426.0,
+      "ozRev": 476279.43,
+      "totalProfit": 325475.31
+    },
+    {
+      "sku": "044_lk_gt5pro_black_o",
+      "wbProfit": 190254.85,
+      "ozProfit": 121092.46,
+      "wbRev": 647216.0,
+      "ozRev": 354018.5,
+      "totalProfit": 311347.31
+    },
+    {
+      "sku": "040_hk11_mini_gold_o",
+      "wbProfit": 110896.61,
+      "ozProfit": 163163.01,
+      "wbRev": 595655.0,
+      "ozRev": 498562.22,
+      "totalProfit": 274059.62
+    },
+    {
+      "sku": "034_s11_grey_o",
+      "wbProfit": 82380.29,
+      "ozProfit": 189811.45,
+      "wbRev": 588897.0,
+      "ozRev": 427065.85,
+      "totalProfit": 272191.74
+    },
+    {
+      "sku": "035_hk11_black_o",
+      "wbProfit": 251273.27,
+      "ozProfit": 0,
+      "wbRev": 1131643.0,
+      "ozRev": 0,
+      "totalProfit": 251273.27
+    },
+    {
+      "sku": "040_hk11_mini_grey_o",
+      "wbProfit": 250748.23,
+      "ozProfit": 0,
+      "wbRev": 939222.0,
+      "ozRev": 0,
+      "totalProfit": 250748.23
+    },
+    {
+      "sku": "039_dt10_mini_grey_o",
+      "wbProfit": 200151.13,
+      "ozProfit": 0,
+      "wbRev": 643034.0,
+      "ozRev": 0,
+      "totalProfit": 200151.13
+    }
+  ],
+  "abcWb": {
+    "СССС": 133,
+    "СССВ": 67,
+    "ВВАА": 20,
+    "ССАА": 20,
+    "СССА": 8,
+    "ССАВ": 5,
+    "АААА": 3,
+    "СВАВ": 3
+  },
+  "overlap": {
+    "common": 13,
+    "onlyWb": 253,
+    "onlyOz": 35
+  }
+}

@@ -2,8 +2,12 @@ import httpx
 import os
 import io
 import json
+import html
+import gzip
+import base64
 import time
 import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone, date
@@ -14,12 +18,14 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import pandas as pd
 from pathlib import Path
+from site_auth import register_site_auth
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+register_site_auth(app)
 
 WB_TOKEN = os.getenv("WB_TOKEN", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
@@ -28,11 +34,38 @@ WB_FEEDBACKS_URL = "https://feedbacks-api.wildberries.ru"
 WB_ANALYTICS_URL = "https://seller-analytics-api.wildberries.ru"
 WB_STATISTICS_URL = "https://statistics-api.wildberries.ru"
 WB_SUPPLIES_URL = "https://supplies-api.wildberries.ru"
+WB_COMMON_URL = "https://common-api.wildberries.ru"
 WB_PROMOTION_URL = "https://advert-api.wildberries.ru"
 WB_CALENDAR_URL = "https://dp-calendar-api.wildberries.ru"
 WB_CONTENT_URL = "https://content-api.wildberries.ru"
 WB_PRICES_URL = "https://discounts-prices-api.wildberries.ru"
 WB_MARKETPLACE_URL = "https://marketplace-api.wildberries.ru"
+WB_CHAT_URL = "https://buyer-chat-api.wildberries.ru"
+WB_FINANCE_URL = "https://finance-api.wildberries.ru"
+WB_CHAT_AUTOREPLY_KEY = "wb_chat_autoreply"
+WB_CHAT_DEFAULT_TEXT = "Здравствуйте! Сообщение получено, ответим в ближайшее время."
+WB_CHAT_REPLIED_KEEP = 2500
+_WB_CHAT_LOCK = threading.Lock()
+_WB_CHAT_RUNNING = False
+
+# Team CRM — задачи «прокачать полки» / прогрев корзинами
+CRM_API_URL = (os.getenv("CRM_API_URL") or os.getenv("TEAM_CRM_URL") or "").rstrip("/")
+CRM_PASSWORD = os.getenv("CRM_PASSWORD") or os.getenv("CRM_WEB_PASSWORD") or ""
+CRM_MANAGER_ALIASES = {
+    "afina": ("афина", "афине", "afina"),
+    "zaira": ("заира", "заире", "zaira"),
+    "olga": ("ольга", "ольге", "olga"),
+    "dilya": ("диля", "диле", "дилия", "dilya"),
+}
+CRM_SHELF_TASKS_KEY = "crm_shelf_boost_sent"
+_CRM_SENT_MARKER_RE = re.compile(r"\[dash:(shelf-boost|cart-warmup|high-drr):(\d+):(\d+)\]")
+_CRM_MARKER_KIND = {
+    "shelf-boost": "shelf",
+    "cart-warmup": "cart_warmup",
+    "high-drr": "high_drr",
+}
+SHELF_SHARE_HISTORY_KEY = "shelf_share_weekly"
+_SHELF_SHARE_LOCK = threading.Lock()
 
 # Спец-строки в ответе WB warehouse_remains, которые на самом деле не склады,
 # а агрегаты — переносим их в отдельные поля stock_totals вместо списка складов.
@@ -141,6 +174,12 @@ def sync_all(full: bool = False):
         )
         if st.is_success:
             nm_to_vendor = {r["nm_id"]: r["vendor_code"] for r in st.json() if r.get("nm_id") and r.get("vendor_code")}
+        try:
+            cards = _nm_vendor_cards_map()
+            if cards:
+                nm_to_vendor.update(cards)
+        except Exception:
+            pass
         # stock_totals часто без vendor_code — добираем из ratings
         rt = httpx.get(
             f"{SUPABASE_URL}/rest/v1/ratings_official?select=nm_id,article&nm_id=not.is.null&article=not.is.null&limit=5000",
@@ -436,6 +475,67 @@ def fetch_all_card_skus() -> list:
     return out
 
 
+NM_VENDOR_CARDS_KEY = "nm_vendor_from_cards"
+NM_VENDOR_CARDS_CACHE = {"map": {}, "ts": 0.0}
+
+
+def fetch_nm_vendor_from_cards(force: bool = False) -> dict:
+    """nm_id → актуальный vendorCode из карточек Content API (после замен модели)."""
+    cached = NM_VENDOR_CARDS_CACHE.get("map") or {}
+    ts = float(NM_VENDOR_CARDS_CACHE.get("ts") or 0)
+    if not force and cached and ts and (time.time() - ts) < 10 * 60:
+        return cached
+    if not WB_TOKEN:
+        return {}
+    out = {}
+    cursor = {"limit": 100}
+    for _ in range(200):
+        try:
+            resp = httpx.post(
+                f"{WB_CONTENT_URL}/content/v2/get/cards/list",
+                headers=wb_headers(),
+                json={
+                    "settings": {
+                        "sort": {"ascending": True},
+                        "filter": {"withPhoto": -1},
+                        "cursor": cursor,
+                    }
+                },
+                timeout=40,
+            )
+        except Exception as e:
+            logger.error(f"cards/list vendor codes: {e}")
+            break
+        if not resp.is_success:
+            logger.error(f"cards/list vendor codes {resp.status_code}: {resp.text[:200]}")
+            break
+        payload = resp.json() or {}
+        cards = payload.get("cards") or []
+        if not cards:
+            break
+        for c in cards:
+            nm = c.get("nmID") or c.get("nmId")
+            vc = (c.get("vendorCode") or "").strip()
+            if not nm or not vc or vc == str(nm):
+                continue
+            try:
+                out[int(nm)] = vc.replace("\u041e", "O").replace("\u043e", "o")
+            except (TypeError, ValueError):
+                continue
+        curs = payload.get("cursor") or {}
+        updated = curs.get("updatedAt")
+        nm_cur = curs.get("nmID") or curs.get("nmId")
+        if len(cards) < 100 or not updated or nm_cur is None:
+            break
+        cursor = {"limit": 100, "updatedAt": updated, "nmID": nm_cur}
+        time.sleep(0.35)
+    if out:
+        NM_VENDOR_CARDS_CACHE["map"] = dict(out)
+        NM_VENDOR_CARDS_CACHE["ts"] = time.time()
+    logger.info(f"Content API vendor codes: {len(out)}")
+    return out
+
+
 def fetch_fbs_stocks() -> dict:
     """
     Остатки FBS (система Маркетплейс) по складам продавца.
@@ -587,7 +687,22 @@ def sync_stock():
         logger.info("Stock report empty on first download, retrying once after 15s")
         time.sleep(15)
         items = download_stock_report(task_id)
+    if not items:
+        # Пустой отчёт (обычно 429) затёр бы FBW-остатки нулями — оставляем прошлый срез
+        logger.warning("Stock report empty after retry, keeping previous stock snapshot")
+        return
     totals, warehouses = process_stock_items(items)
+    vmap = {}
+    try:
+        vmap = fetch_nm_vendor_from_cards() or {}
+        if vmap:
+            try:
+                save_setting_value(NM_VENDOR_CARDS_KEY, {str(k): v for k, v in vmap.items()})
+            except Exception as e:
+                logger.warning(f"save vendor cards map: {e}")
+    except Exception as e:
+        logger.warning(f"overlay vendor from cards: {e}")
+        vmap = {}
 
     # FBS / Маркетплейс — отдельные колонки складов (не входят в quantity_warehouses_full WB)
     fbs = {}
@@ -603,7 +718,7 @@ def sync_stock():
             for nm, qty in by_nm.items():
                 if int(nm) in have or int(qty) <= 0:
                     continue
-                vc = next(
+                vc = vmap.get(int(nm)) or next(
                     (s.get("vendor_code") for s in (fbs.get("samples") or []) if s.get("nm_id") == nm),
                     "",
                 )
@@ -623,7 +738,20 @@ def sync_stock():
     except Exception as e:
         logger.error(f"FBS stocks merge error: {e}")
 
+    if vmap:
+        for t in totals:
+            try:
+                nm = int(t.get("nm_id"))
+            except (TypeError, ValueError):
+                continue
+            if nm in vmap:
+                t["vendor_code"] = vmap[nm]
+
     saved = upsert_stock(totals, warehouses)
+    try:
+        save_stock_warehouse_snapshot_from_rows(warehouses)
+    except Exception as e:
+        logger.error(f"stock warehouse snapshot error: {e}")
     httpx.post(
         f"{SUPABASE_URL}/rest/v1/settings",
         json={"key": "last_stock_sync", "value": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
@@ -635,12 +763,221 @@ def sync_stock():
         f"fbs_nms: {len((fbs or {}).get('by_nm') or {})}"
     )
 
+
+# ---------- Снимки остатков по складам (для сравнения географии) ----------
+STOCK_WH_SNAPS_KEY = "stock_warehouse_snaps"
+STOCK_WH_SNAPS_KEEP_DAYS = 7
+# Если живых складов меньше — считаем географию узкой (срок доставки бьёт по конверсии)
+STOCK_WH_NARROW_LIVE = 2
+# Склады, отключённые в «Рекомендациях поставок» (общие для всех устройств)
+SUPPLY_WH_DISABLED_KEY = "supply_wh_disabled"
+
+
+def get_disabled_warehouses() -> set:
+    """Имена складов, снятых галкой в матрице поставок — не участвуют в расчётах темпа."""
+    raw = get_setting_raw(SUPPLY_WH_DISABLED_KEY, None)
+    if raw is None:
+        # fallback: json path
+        raw = get_setting_json(SUPPLY_WH_DISABLED_KEY, None)
+    return set(_normalize_disabled_warehouses(raw if raw is not None else []))
+
+
+def _normalize_disabled_warehouses(value) -> list:
+    """Приводит value из API/settings к чистому list[str]."""
+    import json as _json
+    raw = value
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = _json.loads(raw)
+            if isinstance(raw, str):
+                raw = _json.loads(raw)
+        except Exception:
+            return [raw.strip()] if raw.strip() else []
+    if not isinstance(raw, list):
+        return []
+    out, seen = [], set()
+    for x in raw:
+        n = str(x).strip()
+        if n and n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def _save_disabled_warehouses(names: list) -> bool:
+    clean = _normalize_disabled_warehouses(names)
+    return save_setting_value(SUPPLY_WH_DISABLED_KEY, clean)
+
+
+def _invalidate_dash_cache():
+    try:
+        with _DASH_CACHE_LOCK:
+            _DASH_CACHE["ts"] = 0.0
+            _DASH_CACHE["data"] = None
+    except Exception:
+        pass
+
+
+def _filter_wh_map(wh_map: dict, disabled: set) -> dict:
+    """Оставляет только включённые склады (qty > 0)."""
+    if not wh_map:
+        return {}
+    if not disabled:
+        return {str(k): int(v or 0) for k, v in wh_map.items() if int(v or 0) > 0}
+    out = {}
+    for name, qty in wh_map.items():
+        n = str(name).strip()
+        q = int(qty or 0)
+        if q > 0 and n not in disabled:
+            out[n] = q
+    return out
+
+
+def _stock_wh_by_nm_from_rows(warehouses: list) -> dict:
+    """nm_id(str) -> {t: total, w: {warehouse_name: qty}} — только qty > 0."""
+    by_nm = {}
+    for row in warehouses or []:
+        nm = row.get("nm_id")
+        if nm is None:
+            continue
+        name = (row.get("warehouse_name") or "").strip()
+        qty = int(row.get("quantity") or 0)
+        if not name or qty <= 0:
+            continue
+        key = str(int(nm))
+        slot = by_nm.setdefault(key, {"t": 0, "w": {}})
+        slot["w"][name] = slot["w"].get(name, 0) + qty
+        slot["t"] = sum(slot["w"].values())
+    return by_nm
+
+
+def _fetch_stock_wh_by_nm() -> dict:
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_warehouses?select=nm_id,warehouse_name,quantity",
+            headers=sb_headers(),
+            timeout=30,
+        )
+        rows = r.json() if r.is_success else []
+        return _stock_wh_by_nm_from_rows(rows if isinstance(rows, list) else [])
+    except Exception as e:
+        logger.error(f"fetch stock_warehouses for snapshot: {e}")
+        return {}
+
+
+def _save_stock_wh_snaps(snaps: list) -> bool:
+    import json as _json
+    body = {
+        "key": STOCK_WH_SNAPS_KEY,
+        "value": _json.dumps(snaps, ensure_ascii=False),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        resp = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/settings?on_conflict=key",
+            json=body,
+            headers=sb_headers(),
+            timeout=60,
+        )
+        return resp.is_success
+    except Exception as e:
+        logger.error(f"save stock_warehouse_snaps: {e}")
+        return False
+
+
+def save_stock_warehouse_snapshot_from_rows(warehouses: list = None) -> dict:
+    """Пишет дневной снимок остатков по складам (перезаписывает сегодняшний)."""
+    by_nm = _stock_wh_by_nm_from_rows(warehouses) if warehouses is not None else _fetch_stock_wh_by_nm()
+    return save_stock_warehouse_snapshot_by_nm(by_nm)
+
+
+def save_stock_warehouse_snapshot_by_nm(by_nm: dict) -> dict:
+    now = _msk_now()
+    day = now.strftime("%Y-%m-%d")
+    hour_key = now.strftime("%Y-%m-%dT%H")
+    payload = {
+        "day": day,
+        "hour_key": hour_key,
+        "as_of": now.strftime("%Y-%m-%d %H:%M"),
+        "by_nm": by_nm or {},
+        "nm_count": len(by_nm or {}),
+    }
+    snaps = get_setting_json(STOCK_WH_SNAPS_KEY, []) or []
+    if not isinstance(snaps, list):
+        snaps = []
+    snaps = [s for s in snaps if isinstance(s, dict) and s.get("day") != day]
+    snaps.append(payload)
+    cutoff = (now - timedelta(days=STOCK_WH_SNAPS_KEEP_DAYS)).strftime("%Y-%m-%d")
+    snaps = [s for s in snaps if (s.get("day") or "") >= cutoff]
+    snaps.sort(key=lambda s: s.get("day") or "")
+    ok = _save_stock_wh_snaps(snaps)
+    logger.info(
+        f"stock WH snapshot day={day}: nms={len(by_nm or {})}, kept_days={len(snaps)}, saved={ok}"
+    )
+    return payload
+
+
+def get_stock_warehouse_snap_for_day(day: str):
+    """Последний снимок за календарный день YYYY-MM-DD (или None)."""
+    snaps = get_setting_json(STOCK_WH_SNAPS_KEY, []) or []
+    if not isinstance(snaps, list):
+        return None
+    day = str(day or "")[:10]
+    best = None
+    for s in snaps:
+        if not isinstance(s, dict):
+            continue
+        if (s.get("day") or "")[:10] != day:
+            continue
+        if best is None or (s.get("hour_key") or "") >= (best.get("hour_key") or ""):
+            best = s
+    return best
+
+
+def stock_wh_geo_compare(nm_id, cur_by_nm: dict, prev_snap: dict, disabled: set = None) -> dict:
+    """Сравнивает текущую географию складов с вчерашним снимком (без отключённых складов)."""
+    disabled = disabled if disabled is not None else set()
+    key = str(int(nm_id))
+    cur = (cur_by_nm or {}).get(key) or {}
+    cur_w = _filter_wh_map(cur.get("w") or {}, disabled)
+    prev = ((prev_snap or {}).get("by_nm") or {}).get(key) or {}
+    prev_w = _filter_wh_map(prev.get("w") or {}, disabled)
+    cur_live = sorted([n for n, q in cur_w.items() if int(q or 0) > 0])
+    prev_live = sorted([n for n, q in prev_w.items() if int(q or 0) > 0])
+    emptied = [n for n in prev_live if n not in cur_w or int(cur_w.get(n) or 0) <= 0]
+    added = [n for n in cur_live if n not in prev_w]
+    live_now = len(cur_live)
+    live_prev = len(prev_live)
+    total = sum(cur_w.values())
+    geo_flag = "ok"
+    if live_now <= 0:
+        geo_flag = "oos"
+    elif emptied and live_now < live_prev:
+        geo_flag = "emptied"
+    elif live_now <= STOCK_WH_NARROW_LIVE and total > 0:
+        geo_flag = "narrow"
+    return {
+        "wh_live": live_now,
+        "wh_live_prev": live_prev if prev_w or prev.get("t") is not None else None,
+        "wh_emptied": emptied[:8],
+        "wh_added": added[:8],
+        "wh_names": cur_live[:12],
+        "stock_qty_enabled": total,
+        "stock_geo_flag": geo_flag,
+        "wh_snap_prev_as_of": (prev_snap or {}).get("as_of"),
+    }
+
+
 # ---------- Остатки нашего склада (Google Sheets) ----------
 OWN_WAREHOUSE_SHEET_ID = os.getenv(
     "OWN_WAREHOUSE_SHEET_ID",
     "1Lhoy4s_KX0pWndsd3Y5oCOjTFCtfEfVUM4AgtBv4Crc",
 )
-OWN_WAREHOUSE_GID = os.getenv("OWN_WAREHOUSE_GID", "1829622647")
+# Вкладка «Остатки на складе» (если на Railway задан старый OWN_WAREHOUSE_GID — обнови)
+OWN_WAREHOUSE_GID = os.getenv("OWN_WAREHOUSE_GID", "787686207")
+OWN_WAREHOUSE_GID_FALLBACKS = ("787686207", "0")
 OWN_WAREHOUSE_CACHE = {
     "title": None,
     "as_of": None,
@@ -651,6 +988,39 @@ OWN_WAREHOUSE_CACHE = {
 }
 
 OWN_WH_SHIPMENTS_KEY = "own_wh_shipments"
+OWN_WH_RECEIPTS_KEY = "own_wh_receipts"
+OWN_WH_ARCHIVE_KEY = "own_wh_archive"
+OWN_WH_SKU_ALIASES_KEY = "own_wh_sku_aliases"  # {alias_sku: canonical_vendor_code}
+OWN_WH_STOCK_SNAPSHOT_KEY = "own_wh_stock_snapshot"  # общий снимок для WB+Ozon
+OWN_WH_DOCS_KEEP = 200
+OWN_WH_ARCHIVE_KEEP = 60
+OWN_WH_CHANNELS = ("fbw", "fbs", "ozon_fbo", "ozon_fbs")
+# Жёсткие семьи склада: LK11 Pro Max = только 046; 038 = S11 middle.
+# Ручной model_map в settings перекрывает эти дефолты.
+OWN_WH_MODEL_DEFAULTS = {
+    "046_LK11_Promax_black_O": "046_LK11_Promax_black_O",
+    "046_LK11_Promax_grey_O": "046_LK11_Promax_grey_O",
+    "046_LK11_Promax_gold_O": "046_LK11_Promax_gold_O",
+    "046_LK11_Promax_black_0": "046_LK11_Promax_black_O",  # опечатка в приёмках
+    "038_LK11_gold_O": "031_LK11_gold_O",              # S11 Pro золото
+    "038_LK11_black_O": "038_LK11_black_O",            # S11 middle чёрный (корень)
+    "038_LK11_orahge_O": "038_LK11_orahge_O",          # S11 middle оранжевый
+    "038_S11grey_3bras_O": "031_LK11_grey_O",          # S11 middle серебро
+}
+OWN_WH_MODEL_NAME_OVERRIDES = {
+    "046_LK11_Promax_black_O": "LK11 Pro Max (Черный)",
+    "046_LK11_Promax_grey_O": "LK11 Pro Max (Серебро)",
+    "046_LK11_Promax_gold_O": "LK11 Pro Max (Золото)",
+    "038_LK11_black_O": "S11 middle (Черный)",
+    "038_LK11_orahge_O": "S11 middle (Оранжевый)",
+}
+OWN_WH_SKU_ALIAS_DEFAULTS = {
+    "046_LK11_Promax_black_0": "046_LK11_Promax_black_O",
+}
+_RU_MONTHS_SHORT = (
+    "", "янв", "фев", "мар", "апр", "май", "июн",
+    "июл", "авг", "сен", "окт", "ноя", "дек",
+)
 
 
 def _own_wh_shipments() -> list:
@@ -658,12 +1028,79 @@ def _own_wh_shipments() -> list:
     return raw if isinstance(raw, list) else []
 
 
-def _own_wh_deduction_map() -> dict:
-    """Суммарные списания по артикулу из загруженных отгрузок."""
+def _own_wh_receipts() -> list:
+    raw = get_setting_json(OWN_WH_RECEIPTS_KEY, []) or []
+    return raw if isinstance(raw, list) else []
+
+
+def _own_wh_archives() -> list:
+    raw = get_setting_json(OWN_WH_ARCHIVE_KEY, []) or []
+    return raw if isinstance(raw, list) else []
+
+
+def _own_wh_sku_aliases() -> dict:
+    raw = get_setting_json(OWN_WH_SKU_ALIASES_KEY, {}) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    out = {str(k): str(v) for k, v in OWN_WH_SKU_ALIAS_DEFAULTS.items() if k and v}
+    for k, v in raw.items():
+        ak = str(k or "").strip()
+        cv = str(v or "").strip()
+        if ak and cv:
+            out[ak] = cv
+    return out
+
+
+def _own_wh_canonical_vc(vc: str, aliases: dict | None = None) -> str:
+    """Приводит артикул Ozon/альяс к каноническому (WB / Sheets), чтобы семьи считались одинаково."""
+    vc = str(vc or "").strip()
+    if not vc:
+        return ""
+    aliases = aliases if aliases is not None else _own_wh_sku_aliases()
+    if vc in aliases:
+        return str(aliases[vc]).strip() or vc
+    low = vc.lower()
+    for ak, cv in aliases.items():
+        if str(ak).lower() == low:
+            return str(cv).strip() or vc
+    return vc
+
+
+def _own_wh_normalize_items(items: list) -> list:
+    """Агрегирует qty по каноническому артикулу (алиасы Ozon → WB)."""
+    aliases = _own_wh_sku_aliases()
+    agg = {}
+    for it in items or []:
+        raw_vc = str((it or {}).get("vendor_code") or "").strip()
+        if not raw_vc:
+            continue
+        try:
+            qty = int((it or {}).get("qty") or 0)
+        except Exception:
+            qty = 0
+        if qty <= 0:
+            continue
+        vc = _own_wh_canonical_vc(raw_vc, aliases)
+        if vc not in agg:
+            agg[vc] = {"vendor_code": vc, "qty": 0, "aliases": set()}
+        agg[vc]["qty"] += qty
+        if raw_vc != vc:
+            agg[vc]["aliases"].add(raw_vc)
+    out = []
+    for vc, row in sorted(agg.items(), key=lambda x: (-x[1]["qty"], x[0])):
+        item = {"vendor_code": vc, "qty": row["qty"]}
+        if row["aliases"]:
+            item["source_skus"] = sorted(row["aliases"])
+        out.append(item)
+    return out
+
+
+def _own_wh_qty_map_from_docs(docs: list) -> dict:
     out = {}
-    for sh in _own_wh_shipments():
+    aliases = _own_wh_sku_aliases()
+    for sh in docs or []:
         for it in sh.get("items") or []:
-            vc = str(it.get("vendor_code") or "").strip()
+            vc = _own_wh_canonical_vc(str(it.get("vendor_code") or "").strip(), aliases)
             if not vc:
                 continue
             try:
@@ -676,11 +1113,224 @@ def _own_wh_deduction_map() -> dict:
     return out
 
 
+def _persist_own_wh_snapshot():
+    """Пишет общий снимок остатков (WB+Ozon читают одно и то же)."""
+    by_vendor = OWN_WAREHOUSE_CACHE.get("by_vendor") or {}
+    slim = {}
+    for vc, meta in by_vendor.items():
+        if not vc or not isinstance(meta, dict):
+            continue
+        slim[str(vc)] = {
+            "stock": int(meta.get("stock") or 0),
+            "family_stock": int(meta.get("family_stock") or 0),
+            "family": list(meta.get("family") or [vc]),
+            "root": meta.get("root") or vc,
+            "model_name": meta.get("model_name") or "",
+        }
+    snap = {
+        "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
+        "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
+        "title": OWN_WAREHOUSE_CACHE.get("title"),
+        "by_vendor": slim,
+        "shared": True,
+        "marketplaces": ["wb", "ozon"],
+    }
+    save_setting_value(OWN_WH_STOCK_SNAPSHOT_KEY, snap)
+    OWN_WAREHOUSE_CACHE["stock_snapshot"] = snap
+    return snap
+
+
+def _own_wh_archive_active(
+    reason: str = "friday",
+    note: str = "",
+    include_shipments: bool = True,
+    include_receipts: bool = True,
+) -> dict | None:
+    """Переносит активные поступления/отгрузки в архив по дате (для аудита)."""
+    ships = _own_wh_shipments() if include_shipments else []
+    receipts = _own_wh_receipts() if include_receipts else []
+    if not ships and not receipts:
+        return None
+    created_at, created_iso = _own_wh_now_stamp()
+    ship_qty = sum(int(s.get("total_qty") or 0) for s in ships)
+    recv_qty = sum(int(s.get("total_qty") or 0) for s in receipts)
+    entry = {
+        "id": f"arch_{int(time.time())}",
+        "archived_at": created_at,
+        "archived_at_iso": created_iso,
+        "reason": reason,
+        "note": str(note or "").strip(),
+        "sheet_as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
+        "shipments": ships,
+        "receipts": receipts,
+        "shipments_qty": ship_qty,
+        "receipts_qty": recv_qty,
+        "shipments_files": len(ships),
+        "receipts_files": len(receipts),
+    }
+    archive = _own_wh_archives()
+    archive.insert(0, entry)
+    archive = archive[:OWN_WH_ARCHIVE_KEEP]
+    if not save_setting_value(OWN_WH_ARCHIVE_KEY, archive):
+        raise RuntimeError("Не удалось сохранить архив в settings")
+    OWN_WAREHOUSE_CACHE["archives"] = archive
+    return entry
+
+
+def _own_wh_deduction_map() -> dict:
+    """Суммарные списания по артикулу из загруженных отгрузок."""
+    return _own_wh_qty_map_from_docs(_own_wh_shipments())
+
+
+def _own_wh_receipt_map() -> dict:
+    """Суммарные поступления по артикулу."""
+    return _own_wh_qty_map_from_docs(_own_wh_receipts())
+
+
 def _apply_own_wh_deductions(personal_sheet: dict) -> dict:
-    ded = _own_wh_deduction_map()
+    """Остаток = Sheets + поступления − отгрузки (оба списка — оверлеи до правки таблицы)."""
+    received = _own_wh_receipt_map()
+    shipped = _own_wh_deduction_map()
     out = {str(k): int(v or 0) for k, v in (personal_sheet or {}).items()}
-    for vc, qty in ded.items():
-        out[vc] = max(0, int(out.get(vc, 0)) - int(qty))
+    all_vc = set(out) | set(received) | set(shipped)
+    for vc in all_vc:
+        base = int(out.get(vc, 0))
+        out[vc] = max(0, base + int(received.get(vc, 0)) - int(shipped.get(vc, 0)))
+    return out
+
+
+def _own_wh_parse_doc_dt(doc: dict):
+    """Парсит дату документа → datetime (MSK-naive, для недель)."""
+    if not doc:
+        return None
+    iso = str(doc.get("created_at_iso") or "").strip()
+    if iso:
+        try:
+            s = iso.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is not None:
+                # к «настенному» Мск ±3 без zoneinfo
+                dt = (dt.astimezone(timezone.utc) + timedelta(hours=3)).replace(tzinfo=None)
+            return dt
+        except Exception:
+            pass
+    raw = str(doc.get("created_at") or "").strip()
+    if raw:
+        for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(raw, fmt)
+            except Exception:
+                continue
+    return None
+
+
+def _own_wh_week_bounds(dt: datetime):
+    d = dt.date() if hasattr(dt, "date") else dt
+    start = d - timedelta(days=d.weekday())  # понедельник
+    end = start + timedelta(days=6)
+    iso_year, iso_week, _ = start.isocalendar()
+    key = f"{iso_year}-W{iso_week:02d}"
+    if start.year == end.year:
+        label = f"{start.day} {_RU_MONTHS_SHORT[start.month]} – {end.day} {_RU_MONTHS_SHORT[end.month]} {end.year}"
+    else:
+        label = (
+            f"{start.day} {_RU_MONTHS_SHORT[start.month]} {start.year} – "
+            f"{end.day} {_RU_MONTHS_SHORT[end.month]} {end.year}"
+        )
+    return key, start.isoformat(), end.isoformat(), label
+
+
+def _own_wh_weekly_ledger(shipments: list = None, receipts: list = None) -> list:
+    """Учёт по календарным неделям: приход / WB / FBS."""
+    shipments = shipments if shipments is not None else _own_wh_shipments()
+    receipts = receipts if receipts is not None else _own_wh_receipts()
+    weeks = {}
+
+    def ensure(key, start, end, label):
+        if key not in weeks:
+            weeks[key] = {
+                "week_key": key,
+                "week_start": start,
+                "week_end": end,
+                "label": label,
+                "receipts_qty": 0,
+                "receipts_files": 0,
+                "fbw_qty": 0,
+                "fbw_files": 0,
+                "fbs_qty": 0,
+                "fbs_files": 0,
+                "ozon_fbo_qty": 0,
+                "ozon_fbo_files": 0,
+                "ozon_fbs_qty": 0,
+                "ozon_fbs_files": 0,
+                "docs": [],
+            }
+        return weeks[key]
+
+    for rec in receipts or []:
+        dt = _own_wh_parse_doc_dt(rec) or datetime.now()
+        key, start, end, label = _own_wh_week_bounds(dt)
+        w = ensure(key, start, end, label)
+        qty = int(rec.get("total_qty") or 0)
+        w["receipts_qty"] += qty
+        w["receipts_files"] += 1
+        w["docs"].append({
+            "id": rec.get("id"),
+            "doc_type": "receipt",
+            "channel": "in",
+            "filename": rec.get("filename") or rec.get("note") or "поступление",
+            "note": rec.get("note") or "",
+            "total_qty": qty,
+            "articles": rec.get("articles") or 0,
+            "created_at": rec.get("created_at"),
+            "created_at_iso": rec.get("created_at_iso"),
+            "kind": rec.get("kind") or "receipt",
+        })
+
+    for sh in shipments or []:
+        dt = _own_wh_parse_doc_dt(sh) or datetime.now()
+        key, start, end, label = _own_wh_week_bounds(dt)
+        w = ensure(key, start, end, label)
+        ch = _own_wh_shipment_channel(sh)
+        qty = int(sh.get("total_qty") or 0)
+        if ch == "fbs":
+            w["fbs_qty"] += qty
+            w["fbs_files"] += 1
+        elif ch == "ozon_fbo":
+            w["ozon_fbo_qty"] += qty
+            w["ozon_fbo_files"] += 1
+        elif ch == "ozon_fbs":
+            w["ozon_fbs_qty"] += qty
+            w["ozon_fbs_files"] += 1
+        else:
+            w["fbw_qty"] += qty
+            w["fbw_files"] += 1
+        w["docs"].append({
+            "id": sh.get("id"),
+            "doc_type": "shipment",
+            "channel": ch,
+            "filename": sh.get("filename") or "файл",
+            "note": sh.get("note") or "",
+            "total_qty": qty,
+            "articles": sh.get("articles") or 0,
+            "created_at": sh.get("created_at"),
+            "created_at_iso": sh.get("created_at_iso"),
+            "kind": sh.get("kind"),
+        })
+
+    out = []
+    for key in sorted(weeks.keys(), reverse=True):
+        w = weeks[key]
+        w["net_qty"] = (
+            int(w["receipts_qty"])
+            - int(w["fbw_qty"]) - int(w["fbs_qty"])
+            - int(w["ozon_fbo_qty"]) - int(w["ozon_fbs_qty"])
+        )
+        w["docs"].sort(
+            key=lambda d: str(d.get("created_at_iso") or d.get("created_at") or ""),
+            reverse=True,
+        )
+        out.append(w)
     return out
 
 
@@ -693,31 +1343,67 @@ def _parse_int_cell(v):
     except Exception:
         return None
 
+def _download_own_warehouse_csv() -> str:
+    """Скачивает CSV вкладки остатков. export → gviz; при 400 пробует запасные gid."""
+    if not OWN_WAREHOUSE_SHEET_ID:
+        raise RuntimeError("OWN_WAREHOUSE_SHEET_ID не задан — вкладка «Наш склад» опциональна")
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; wb-dashboard/1.0)"}
+    gids = []
+    for g in (OWN_WAREHOUSE_GID, *OWN_WAREHOUSE_GID_FALLBACKS):
+        g = str(g or "").strip()
+        if g and g not in gids:
+            gids.append(g)
+    last_err = None
+    for gid in gids:
+        urls = [
+            f"https://docs.google.com/spreadsheets/d/{OWN_WAREHOUSE_SHEET_ID}/export?format=csv&gid={gid}",
+            f"https://docs.google.com/spreadsheets/d/{OWN_WAREHOUSE_SHEET_ID}/gviz/tq?tqx=out:csv&gid={gid}",
+        ]
+        for url in urls:
+            try:
+                resp = httpx.get(url, timeout=30, follow_redirects=True, headers=headers)
+            except Exception as e:
+                last_err = e
+                continue
+            if not resp.is_success:
+                last_err = RuntimeError(f"Google Sheets HTTP {resp.status_code} (gid={gid})")
+                continue
+            text = resp.text or ""
+            if not text.strip() or text.lstrip().startswith("<!"):
+                last_err = RuntimeError("Таблица недоступна (нужен доступ «все у кого есть ссылка»)")
+                continue
+            # похоже на вкладку остатков
+            low = text[:2000].lower()
+            if "артикул" in low or "остатк" in low or "наименование" in low:
+                return text
+            last_err = RuntimeError(f"Не похоже на лист остатков (gid={gid})")
+    raise RuntimeError(str(last_err) if last_err else "Не удалось скачать Google Sheets")
+
+
 def fetch_own_warehouse_stock() -> dict:
     """Тянет CSV из Google Sheets «Остатки на складе».
     Берём только 1-ю таблицу (до ИТОГО / «Принято на склад»), без блоков принято/обмен.
-    Строим семьи артикулов: пустые строки-артикулы под основным (044→037) делят остаток."""
-    if not OWN_WAREHOUSE_SHEET_ID:
-        raise RuntimeError("OWN_WAREHOUSE_SHEET_ID не задан — вкладка «Наш склад» опциональна")
+    Строим семьи артикулов: пустые строки-артикулы под основным (044→037) делят остаток.
+    Строки без артикула продавца (есть только наименование) — тоже в списке как «товар без продаж»."""
     import csv as _csv
     import re as _re
-    gid = OWN_WAREHOUSE_GID or "0"
-    url = (
-        f"https://docs.google.com/spreadsheets/d/{OWN_WAREHOUSE_SHEET_ID}"
-        f"/export?format=csv&gid={gid}"
-    )
-    resp = httpx.get(url, timeout=30, follow_redirects=True)
-    if not resp.is_success:
-        raise RuntimeError(f"Google Sheets HTTP {resp.status_code}")
-    text = resp.text
-    if not text.strip() or text.lstrip().startswith("<!"):
-        raise RuntimeError("Таблица недоступна (нужен доступ «все у кого есть ссылка»)")
 
+    text = _download_own_warehouse_csv()
     rows_raw = list(_csv.reader(io.StringIO(text)))
     if len(rows_raw) < 2:
         raise RuntimeError("Пустая таблица")
 
-    title = (rows_raw[0][0] if rows_raw[0] else "").strip()
+    # Иногда gviz склеивает заголовок в одну строку — ищем строку с «артикул»
+    header_idx = 1
+    for i, r in enumerate(rows_raw[:5]):
+        joined = " ".join(str(c).lower() for c in r)
+        if "артикул" in joined and ("наименован" in joined or "остатк" in joined or "на складе" in joined):
+            header_idx = i
+            break
+    title_row = rows_raw[0] if header_idx > 0 else rows_raw[header_idx]
+    title = (title_row[0] if title_row else "").strip()
+    if "артикул" in title.lower():
+        title = "Остатки на складе"
     as_of = None
     m = _re.search(r"(\d{1,2})[./](\d{1,2})[./](\d{2,4})", title)
     if m:
@@ -725,8 +1411,15 @@ def fetch_own_warehouse_stock() -> dict:
         if len(y) == 2:
             y = "20" + y
         as_of = f"{int(d):02d}.{int(mo):02d}.{y}"
+    if not as_of:
+        m2 = _re.search(r"(\d{1,2})[./](\d{1,2})[./](\d{2,4})", " ".join(str(c) for c in rows_raw[0]))
+        if m2:
+            d, mo, y = m2.group(1), m2.group(2), m2.group(3)
+            if len(y) == 2:
+                y = "20" + y
+            as_of = f"{int(d):02d}.{int(mo):02d}.{y}"
 
-    header = [str(h).strip().lower() for h in rows_raw[1]]
+    header = [str(h).strip().lower() for h in rows_raw[header_idx]]
 
     def find_col(*needles):
         for i, h in enumerate(header):
@@ -737,10 +1430,15 @@ def fetch_own_warehouse_stock() -> dict:
 
     col_vc = find_col("артикул продавца", "артикул")
     col_name = find_col("наименование", "название")
-    col_stock = find_col("остататки на складе", "остатки на складе")
-    col_note = find_col("примечание")
+    col_stock = find_col(
+        "остататки на складе",
+        "остатки на складе",
+        "остаток на складе",
+        "остатки",
+    )
+    col_note = find_col("примечание", "комплект")
     if col_stock is None and len(header) > 11:
-        col_stock = 11
+        col_stock = 12 if len(header) > 12 else 11
     if col_vc is None:
         col_vc = 1
     if col_name is None:
@@ -748,7 +1446,7 @@ def fetch_own_warehouse_stock() -> dict:
 
     # ── Только 1-я таблица ──
     raw_rows = []
-    for r in rows_raw[2:]:
+    for r in rows_raw[header_idx + 1:]:
         if not r or not any(str(c).strip() for c in r):
             continue
         pn = str(r[0]).strip() if r else ""
@@ -768,12 +1466,16 @@ def fetch_own_warehouse_stock() -> dict:
         stock = _parse_int_cell(stock_raw)
         if not vc and not name:
             continue
+        # служебная строка-заголовок второй таблицы
+        if not vc and name.lower() in ("наименование", "название"):
+            break
         raw_rows.append({
             "vendor_code": vc or None,
             "name": name or None,
             "stock": stock if stock is not None else 0,
             "note": note or None,
             "has_stock_cell": bool(stock_raw),
+            "no_sales": not bool(vc),
         })
 
     # Личный остаток по артикулу (сумма, если vc повторяется)
@@ -867,6 +1569,7 @@ def fetch_own_warehouse_stock() -> dict:
     out = []
     seen_vc = set()
     shipped_map = _own_wh_deduction_map()
+    received_map = _own_wh_receipt_map()
     for row in raw_rows:
         vc = row["vendor_code"]
         if vc and vc in seen_vc and not row["name"] and not row["has_stock_cell"]:
@@ -875,18 +1578,24 @@ def fetch_own_warehouse_stock() -> dict:
             seen_vc.add(vc)
         meta = by_vendor.get(vc, {}) if vc else {}
         sheet_qty = personal_sheet.get(vc, row["stock"] or 0) if vc else (row["stock"] or 0)
+        no_sales = bool(row.get("no_sales")) or not bool(vc)
+        display_name = row["name"]
+        if no_sales and not display_name:
+            display_name = "товар без продаж"
         out.append({
             "vendor_code": vc,
-            "name": row["name"],
-            "model_name": meta.get("model_name") or row["name"],
+            "name": display_name,
+            "model_name": meta.get("model_name") or display_name,
             "model_root": meta.get("root"),
             "model_manual": bool(vc and vc in model_map),
-            "stock": meta.get("stock", row["stock"] or 0),
+            "stock": meta.get("stock", row["stock"] or 0) if vc else (row["stock"] or 0),
             "stock_sheet": sheet_qty,
             "shipped": shipped_map.get(vc, 0) if vc else 0,
-            "family_stock": meta.get("family_stock", row["stock"] or 0),
+            "received": received_map.get(vc, 0) if vc else 0,
+            "family_stock": meta.get("family_stock", row["stock"] or 0) if vc else (row["stock"] or 0),
             "family": meta.get("family", [vc] if vc else []),
             "note": row["note"],
+            "no_sales": no_sales,
         })
 
     return {
@@ -901,15 +1610,30 @@ def fetch_own_warehouse_stock() -> dict:
         "name_by_vc": name_by_vc,
         "auto_by_vendor": auto_by_vendor,
         "shipments": _own_wh_shipments(),
+        "receipts": _own_wh_receipts(),
+        "weekly_ledger": _own_wh_weekly_ledger(),
         "updated_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
         "error": None,
     }
 
 
+def _own_wh_effective_model_map(model_map: dict = None) -> dict:
+    """Дефолты Pro Max/038 + ручные привязки из settings (ручные важнее)."""
+    saved = model_map if model_map is not None else (get_setting_json("own_wh_model_map", {}) or {})
+    if not isinstance(saved, dict):
+        saved = {}
+    out = {str(k): str(v) for k, v in OWN_WH_MODEL_DEFAULTS.items() if k and v}
+    for k, v in saved.items():
+        if k and v:
+            out[str(k)] = str(v)
+    return out
+
+
 def _apply_own_wh_model_map(auto_by_vendor: dict, personal: dict, name_by_vc: dict, model_map: dict):
     """Пересобирает семьи с учётом ручных привязок артикул → корень модели.
     model_map: {vendor_code: root_vendor_code}. Если root == vendor — отдельно."""
-    model_map = {str(k): str(v) for k, v in (model_map or {}).items() if k and v}
+    saved_map = {str(k): str(v) for k, v in (model_map or {}).items() if k and v}
+    model_map = _own_wh_effective_model_map(saved_map)
 
     all_vcs = set(auto_by_vendor.keys()) | set(personal.keys()) | set(model_map.keys())
     # эффективный корень
@@ -944,10 +1668,17 @@ def _apply_own_wh_model_map(auto_by_vendor: dict, personal: dict, name_by_vc: di
     for root, members in sorted(groups.items(), key=lambda x: x[0]):
         members = sorted(members)
         fam_stock = sum(personal.get(m, 0) for m in members)
-        model_name = name_by_vc.get(root) or (auto_by_vendor.get(root) or {}).get("model_name")
+        model_name = (
+            OWN_WH_MODEL_NAME_OVERRIDES.get(root)
+            or name_by_vc.get(root)
+            or (auto_by_vendor.get(root) or {}).get("model_name")
+        )
         if not model_name:
             # любое имя из членов
             for m in members:
+                if OWN_WH_MODEL_NAME_OVERRIDES.get(m):
+                    model_name = OWN_WH_MODEL_NAME_OVERRIDES[m]
+                    break
                 if name_by_vc.get(m):
                     model_name = name_by_vc[m]
                     break
@@ -966,7 +1697,7 @@ def _apply_own_wh_model_map(auto_by_vendor: dict, personal: dict, name_by_vc: di
                 "family": members,
                 "root": root,
                 "model_name": model_name,
-                "manual": m in model_map,
+                "manual": m in saved_map or m in OWN_WH_MODEL_DEFAULTS,
             }
     models.sort(key=lambda x: (x["name"] or "").lower())
     return by_vendor, models
@@ -990,7 +1721,12 @@ def _rebuild_own_wh_from_cache():
     OWN_WAREHOUSE_CACHE["models"] = models
     OWN_WAREHOUSE_CACHE["model_map"] = model_map
     OWN_WAREHOUSE_CACHE["shipments"] = _own_wh_shipments()
+    OWN_WAREHOUSE_CACHE["receipts"] = _own_wh_receipts()
+    OWN_WAREHOUSE_CACHE["weekly_ledger"] = _own_wh_weekly_ledger(
+        OWN_WAREHOUSE_CACHE["shipments"], OWN_WAREHOUSE_CACHE["receipts"]
+    )
     shipped_map = _own_wh_deduction_map()
+    received_map = _own_wh_receipt_map()
     # обновить поля в rows
     rows = OWN_WAREHOUSE_CACHE.get("rows") or []
     new_rows = []
@@ -1006,10 +1742,15 @@ def _rebuild_own_wh_from_cache():
             "stock": meta.get("stock", row.get("stock") or 0),
             "stock_sheet": sheet_qty,
             "shipped": shipped_map.get(vc, 0) if vc else 0,
+            "received": received_map.get(vc, 0) if vc else 0,
             "family_stock": meta.get("family_stock", row.get("stock") or 0),
             "family": meta.get("family", [vc] if vc else []),
         })
     OWN_WAREHOUSE_CACHE["rows"] = new_rows
+    try:
+        _persist_own_wh_snapshot()
+    except Exception as e:
+        logger.warning(f"own-wh snapshot persist: {e}")
     return True
 
 
@@ -1019,6 +1760,12 @@ def refresh_own_warehouse_stock():
     try:
         data = fetch_own_warehouse_stock()
         OWN_WAREHOUSE_CACHE.update(data)
+        OWN_WAREHOUSE_CACHE["archives"] = _own_wh_archives()
+        OWN_WAREHOUSE_CACHE["sku_aliases"] = _own_wh_sku_aliases()
+        try:
+            _persist_own_wh_snapshot()
+        except Exception as e:
+            logger.warning(f"own-wh snapshot persist: {e}")
         OWN_WAREHOUSE_CACHE["syncing"] = False
         logger.info(f"own-warehouse: {len(data['rows'])} rows, as_of={data.get('as_of')}")
     except Exception as e:
@@ -1028,7 +1775,7 @@ def refresh_own_warehouse_stock():
 
 @app.get("/api/own-warehouse-stock")
 def get_own_warehouse_stock(refresh: bool = False):
-    """Остатки нашего склада из Google Sheets."""
+    """Остатки нашего склада (один физический склад для WB и Ozon)."""
     if refresh or not OWN_WAREHOUSE_CACHE.get("rows"):
         if OWN_WAREHOUSE_CACHE.get("syncing"):
             return {**OWN_WAREHOUSE_CACHE, "syncing": True}
@@ -1037,6 +1784,14 @@ def get_own_warehouse_stock(refresh: bool = False):
         # подтянуть актуальные ручные привязки моделей
         if not _rebuild_own_wh_from_cache():
             refresh_own_warehouse_stock()
+    archives = OWN_WAREHOUSE_CACHE.get("archives")
+    if archives is None:
+        archives = _own_wh_archives()
+        OWN_WAREHOUSE_CACHE["archives"] = archives
+    aliases = OWN_WAREHOUSE_CACHE.get("sku_aliases")
+    if aliases is None:
+        aliases = _own_wh_sku_aliases()
+        OWN_WAREHOUSE_CACHE["sku_aliases"] = aliases
     return {
         "title": OWN_WAREHOUSE_CACHE.get("title"),
         "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
@@ -1045,9 +1800,29 @@ def get_own_warehouse_stock(refresh: bool = False):
         "models": OWN_WAREHOUSE_CACHE.get("models") or [],
         "model_map": OWN_WAREHOUSE_CACHE.get("model_map") or {},
         "shipments": OWN_WAREHOUSE_CACHE.get("shipments") or _own_wh_shipments(),
+        "receipts": OWN_WAREHOUSE_CACHE.get("receipts") or _own_wh_receipts(),
+        "weekly_ledger": OWN_WAREHOUSE_CACHE.get("weekly_ledger") or _own_wh_weekly_ledger(),
         "channel_summaries": _own_wh_channel_summaries(
             OWN_WAREHOUSE_CACHE.get("shipments") or _own_wh_shipments()
         ),
+        "archives": [
+            {
+                "id": a.get("id"),
+                "archived_at": a.get("archived_at"),
+                "archived_at_iso": a.get("archived_at_iso"),
+                "reason": a.get("reason"),
+                "note": a.get("note"),
+                "sheet_as_of": a.get("sheet_as_of"),
+                "shipments_qty": a.get("shipments_qty"),
+                "receipts_qty": a.get("receipts_qty"),
+                "shipments_files": a.get("shipments_files"),
+                "receipts_files": a.get("receipts_files"),
+            }
+            for a in (archives or [])[:30]
+        ],
+        "sku_aliases": aliases,
+        "shared_stock": True,
+        "marketplaces": ["wb", "ozon"],
         "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
         "error": OWN_WAREHOUSE_CACHE.get("error"),
         "syncing": OWN_WAREHOUSE_CACHE.get("syncing", False),
@@ -1096,11 +1871,65 @@ def sync_own_warehouse():
     return {"status": "started"}
 
 
+_BARCODE_VENDOR_CACHE = {"ts": 0.0, "map": {}}
+_BARCODE_VENDOR_TTL = 3600
+
+
+def _normalize_barcode(bc: str) -> str:
+    s = str(bc or "").strip()
+    if s.endswith(".0"):
+        head = s[:-2]
+        if head.isdigit():
+            s = head
+    return s
+
+
+def _barcode_vendor_map(force: bool = False) -> dict[str, dict]:
+    """Баркод → {vendor_code, nm_id} из Content API."""
+    now = time.time()
+    cached = _BARCODE_VENDOR_CACHE.get("map") or {}
+    if not force and cached and now - float(_BARCODE_VENDOR_CACHE.get("ts") or 0) < _BARCODE_VENDOR_TTL:
+        return cached
+    mp: dict[str, dict] = {}
+    for row in fetch_all_card_skus():
+        bc = _normalize_barcode(row.get("sku"))
+        vc = (row.get("vendor_code") or "").strip()
+        if not bc or not vc:
+            continue
+        mp[bc] = {"vendor_code": vc, "nm_id": row.get("nm_id")}
+    _BARCODE_VENDOR_CACHE["ts"] = now
+    _BARCODE_VENDOR_CACHE["map"] = mp
+    return mp
+
+
+def _resolve_barcode_items(agg_by_bc: dict) -> tuple[list, list]:
+    bc_map = _barcode_vendor_map()
+    by_vc: dict[str, int] = {}
+    unmapped = []
+    for bc, qty in (agg_by_bc or {}).items():
+        bc_n = _normalize_barcode(bc)
+        try:
+            q = int(qty or 0)
+        except (TypeError, ValueError):
+            q = 0
+        if not bc_n or q <= 0:
+            continue
+        meta = bc_map.get(bc_n)
+        vc = (meta or {}).get("vendor_code") if meta else None
+        if not vc:
+            unmapped.append({"barcode": bc_n, "qty": q})
+            continue
+        by_vc[vc] = by_vc.get(vc, 0) + q
+    items = [{"vendor_code": vc, "qty": q} for vc, q in sorted(by_vc.items(), key=lambda x: -x[1])]
+    return items, unmapped
+
+
 def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
     """
-    Два формата отгрузки со своего склада:
-    1) shk-excel: колонки «Артикул поставщика» + «Количество»
-    2) WB-GI лист подбора: «Артикул продавца» (1 строка = 1 шт)
+    Форматы отгрузки / поступления со своего склада:
+    1) shk-excel: «Артикул поставщика» + «Количество» (или «Количество, шт»)
+    2) WB template: только «Баркод» + «Количество» → маппим в артикулы через Content API
+    3) WB-GI лист подбора: «Артикул продавца» (1 строка = 1 шт)
     """
     import io as _io
     try:
@@ -1123,12 +1952,21 @@ def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
         for i in range(min(12, len(df_raw))):
             vals = [str(v).strip().lower() if v is not None and str(v) != "nan" else "" for v in list(df_raw.iloc[i].values)]
             joined = " | ".join(vals)
+            has_vendor_col = any(
+                "артикул поставщика" in v or v == "артикул продавца"
+                for v in vals
+            )
             # shk / поставка: артикул + количество
             # также Ozon Excel поставок: «Артикул» + «Количество»/«Кол-во»
             def _is_vc_header(v: str) -> bool:
                 if "артикул поставщика" in v or v == "артикул продавца":
                     return True
-                if v.startswith("артикул") and "wb" not in v and "баркод" not in v and "номер" not in v:
+                if (
+                    v.startswith("артикул")
+                    and "wildberries" not in v
+                    and "баркод" not in v
+                    and "номер" not in v
+                ):
                     return True
                 return False
 
@@ -1148,10 +1986,15 @@ def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
                 break
             # лист подбора WB-GI
             if "артикул продавца" in joined and ("стикер" in joined or "баркод" in joined):
-                vc_i = next((j for j, v in enumerate(vals) if "артикул продавца" in v), None)
+                vc_i = next((j for j, v in enumerate(vals) if v == "артикул продавца"), None)
                 if vc_i is not None:
                     header_row, col_vc, col_qty, kind = i, vc_i, None, "picking"
                     break
+            # новый шаблон WB: только баркод + количество
+            bc_i = next((j for j, v in enumerate(vals) if v in ("баркод", "barcode", "штрихкод")), None)
+            if bc_i is not None and qty_i is not None and not has_vendor_col:
+                header_row, col_vc, col_qty, kind = i, bc_i, qty_i, "barcode"
+                break
             # fallback: shk headers slightly different
             if ("артикул поставщика" in joined or "артикул" in joined) and (
                 "количество" in joined or "кол-во" in joined or "кол во" in joined
@@ -1166,38 +2009,289 @@ def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
             continue
 
         agg = {}
+        unmapped_barcodes = []
         for i in range(header_row + 1, len(df_raw)):
             row = list(df_raw.iloc[i].values)
             if col_vc >= len(row):
                 continue
-            vc = str(row[col_vc] or "").strip()
-            if not vc or vc.lower() in ("nan", "none", "итого"):
+            raw_key = str(row[col_vc] or "").strip()
+            if not raw_key or raw_key.lower() in ("nan", "none", "итого"):
                 continue
             if kind == "picking":
                 qty = 1
+                vc = raw_key
+            elif kind == "barcode":
+                qty = _parse_int_cell(row[col_qty] if col_qty is not None and col_qty < len(row) else None) or 0
+                if qty <= 0:
+                    continue
+                agg[_normalize_barcode(raw_key)] = agg.get(_normalize_barcode(raw_key), 0) + qty
+                continue
             else:
+                vc = raw_key
                 qty = _parse_int_cell(row[col_qty] if col_qty is not None and col_qty < len(row) else None) or 0
             if qty <= 0:
                 continue
             agg[vc] = agg.get(vc, 0) + qty
 
-        items = [{"vendor_code": vc, "qty": q} for vc, q in sorted(agg.items(), key=lambda x: -x[1])]
+        if kind == "barcode":
+            items, unmapped_barcodes = _resolve_barcode_items(agg)
+        else:
+            items = [{"vendor_code": vc, "qty": q} for vc, q in sorted(agg.items(), key=lambda x: -x[1])]
+
         cand = {
             "kind": kind,
             "sheet": sheet,
             "items": items,
             "total_qty": sum(i["qty"] for i in items),
             "articles": len(items),
+            "unmapped_barcodes": unmapped_barcodes[:50],
         }
         if best is None or cand["total_qty"] > best["total_qty"]:
             best = cand
 
     if not best or not best["items"]:
+        hint = (
+            "Не нашёл артикулы в файле. Ожидаю shk-excel "
+            "(Артикул поставщика/Артикул + Количество), шаблон WB (Баркод + Количество), "
+            "Excel поставок Ozon или лист подбора WB-GI (Артикул продавца)."
+        )
+        unmapped = (best or {}).get("unmapped_barcodes") or []
+        if unmapped:
+            sample = ", ".join(f"{u['barcode']}×{u['qty']}" for u in unmapped[:5])
+            hint += f" Не сопоставлены баркоды ({len(unmapped)}): {sample}."
+        return {"error": hint}
+    best["filename"] = filename or ""
+    return best
+
+
+def _own_wh_join_offer_id(parts: list) -> str:
+    """Склеивает артикул Ozon, который в PDF рвётся на строки (046_LK11_Promax_g + rey_O)."""
+    return "".join(str(p or "").strip() for p in parts if str(p or "").strip())
+
+
+def _parse_ozon_picking_words(pages_words: list) -> dict:
+    """Лист подбора Ozon FBS из слов с координатами.
+    pages_words: [ [(x0, y0, x1, y1, text), ...], ... ]
+    Колонки: № | Товар | Артикул | Кол-во. Артикул часто в 1–2 строки."""
+    items_agg = {}
+    meta = {"date": None, "warehouse": None, "shipments": None, "pages": 0}
+    date_re = re.compile(r"(\d{1,2}[./]\d{1,2}[./]\d{2,4})")
+
+    for words in pages_words or []:
+        if not words:
+            continue
+        meta["pages"] += 1
+        texts = [(float(w[0]), float(w[1]), str(w[4] or "").strip()) for w in words if len(w) >= 5]
+        texts = [t for t in texts if t[2]]
+        if not texts:
+            continue
+
+        flat = " ".join(t[2] for t in texts)
+        if meta["date"] is None:
+            m = date_re.search(flat)
+            if m:
+                meta["date"] = m.group(1)
+        if meta["warehouse"] is None:
+            wm = re.search(r"Склад:\s*(.+?)(?:\s+Служба|\s+№|$)", flat)
+            if wm:
+                meta["warehouse"] = wm.group(1).strip()
+        if meta["shipments"] is None:
+            sm = re.search(r"отправлений:\s*(\d+)", flat, re.I)
+            if sm:
+                meta["shipments"] = int(sm.group(1))
+
+        art_h = next((t for t in texts if t[2].lower() in ("артикул", "артикул продавца", "offer_id")), None)
+        if not art_h:
+            continue
+        qty_cands = [
+            t for t in texts
+            if t[2].lower() in ("кол-во", "количество", "qty") and abs(t[1] - art_h[1]) < 10
+        ]
+        qty_h = next((t for t in qty_cands if t[2].lower() == "кол-во"), None) or (qty_cands[0] if qty_cands else None)
+        if not qty_h:
+            continue
+        article_x = art_h[0]
+        qty_x = qty_h[0]
+        header_y = min(art_h[1], qty_h[1])
+        left_max = min(70.0, article_x * 0.22)
+
+        below = [t for t in texts if t[1] > header_y + 4]
+        anchors = sorted(
+            ((t[1], int(t[2])) for t in below if t[0] < left_max and t[2].isdigit() and 1 <= int(t[2]) <= 9999),
+            key=lambda x: x[0],
+        )
+        if not anchors:
+            continue
+
+        for i, (ay, _n) in enumerate(anchors):
+            y0 = (anchors[i - 1][0] + ay) / 2 if i else header_y
+            y1 = (ay + anchors[i + 1][0]) / 2 if i + 1 < len(anchors) else 1e9
+            row = [t for t in below if y0 < t[1] <= y1]
+            art_parts = [t[2] for t in sorted(row, key=lambda t: (t[1], t[0])) if article_x - 12 <= t[0] < qty_x - 12]
+            qty_parts = [t[2] for t in row if t[0] >= qty_x - 12]
+            vc = _own_wh_join_offer_id(art_parts)
+            qty = None
+            for p in qty_parts:
+                q = _parse_int_cell(p)
+                if q is not None and q > 0:
+                    qty = q
+                    break
+            if not vc or not qty:
+                continue
+            if vc.lower() in ("артикул", "товар", "кол-во", "количество"):
+                continue
+            items_agg[vc] = items_agg.get(vc, 0) + qty
+
+    items = [{"vendor_code": vc, "qty": q} for vc, q in sorted(items_agg.items(), key=lambda x: -x[1])]
+    return {
+        "kind": "ozon_picking",
+        "channel": "ozon_fbs",
+        "items": items,
+        "total_qty": sum(i["qty"] for i in items),
+        "articles": len(items),
+        "date": meta["date"],
+        "warehouse": meta["warehouse"],
+        "shipments_count": meta["shipments"],
+        "pages": meta["pages"],
+    }
+
+
+def parse_own_wh_ozon_picking_pdf(content: bytes, filename: str = "") -> dict:
+    """PDF «Лист подбора» Ozon FBS (FPDF): № / Товар / Артикул / Кол-во."""
+    if not content:
+        return {"error": "Пустой PDF"}
+    try:
+        import fitz
+    except ImportError:
+        return {"error": "Сервер не умеет читать PDF (нужен pymupdf). Попроси обновить деплой."}
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+    except Exception as e:
+        return {"error": f"Не удалось открыть PDF: {e}"}
+    pages = []
+    head_text = ""
+    try:
+        for page in doc:
+            words = page.get_text("words") or []
+            pages.append([(w[0], w[1], w[2], w[3], w[4]) for w in words])
+            if not head_text:
+                head_text = page.get_text("text") or ""
+    finally:
+        doc.close()
+
+    parsed = _parse_ozon_picking_words(pages)
+    parsed["filename"] = filename or ""
+    low = (head_text + " " + (filename or "")).lower()
+    looks_ozon = (
+        "ozon" in low
+        or "озон" in low
+        or "лист подбора" in low
+        or "отправлений" in low
+        or parsed.get("items")
+    )
+    if not parsed.get("items"):
         return {
             "error": (
-                "Не нашёл артикулы в файле. Ожидаю shk-excel "
-                "(Артикул поставщика/Артикул + Количество), Excel поставок Ozon "
-                "или лист подбора WB-GI (Артикул продавца)."
+                "Не нашёл таблицу «Артикул / Кол-во» в PDF. "
+                "Ожидаю лист подбора Ozon (FBS): колонки №, Товар, Артикул, Кол-во."
+            )
+        }
+    if not looks_ozon:
+        parsed["kind"] = "ozon_picking"
+    return parsed
+
+
+def parse_own_wh_shipment_file(content: bytes, filename: str = "") -> dict:
+    """Excel отгрузки WB/Ozon или PDF листа подбора Ozon."""
+    name = (filename or "").lower()
+    if name.endswith(".pdf") or (content[:5] == b"%PDF-"):
+        return parse_own_wh_ozon_picking_pdf(content, filename)
+    return parse_own_wh_shipment_excel(content, filename)
+
+
+def _own_wh_looks_like_vendor_code(vc: str) -> bool:
+    """Грубая проверка: артикул продавца, не число/дата/заголовок."""
+    s = str(vc or "").strip()
+    if not s or len(s) < 2 or len(s) > 80:
+        return False
+    low = s.lower()
+    if low in ("nan", "none", "итого", "артикул", "количество", "qty", "sku", "offer_id"):
+        return False
+    if low.startswith("артикул") or low.startswith("количество"):
+        return False
+    # чистое число без букв — скорее qty/nm, не наш vendor_code
+    if re.fullmatch(r"\d+([.,]\d+)?", s):
+        return False
+    return True
+
+
+def parse_own_wh_receipt_excel(content: bytes, filename: str = "") -> dict:
+    """Поступление / приёмка.
+    1) Как отгрузка: заголовки «Артикул…» + «Количество»
+    2) Простой файл «Приемка …xlsx»: без шапки, колонка A = артикул, B = кол-во
+    """
+    # Сначала пробуем общий парсер с заголовками
+    headed = parse_own_wh_shipment_excel(content, filename)
+    if not headed.get("error") and headed.get("items"):
+        headed["kind"] = "receipt"
+        return headed
+
+    import io as _io
+    try:
+        xl = pd.ExcelFile(_io.BytesIO(content))
+    except Exception as e:
+        return {"error": f"Не удалось прочитать Excel: {e}"}
+
+    best = None
+    for sheet in xl.sheet_names:
+        try:
+            df_raw = pd.read_excel(xl, sheet_name=sheet, header=None, dtype=object)
+        except Exception:
+            continue
+        if df_raw is None or df_raw.empty or df_raw.shape[1] < 2:
+            continue
+
+        agg = {}
+        for i in range(len(df_raw)):
+            row = list(df_raw.iloc[i].values)
+            if len(row) < 2:
+                continue
+            # ищем первую «артикулоподобную» ячейку и ближайшее число справа
+            vc = None
+            qty = None
+            for j, cell in enumerate(row):
+                s = str(cell or "").strip()
+                if not s or s.lower() in ("nan", "none"):
+                    continue
+                if _own_wh_looks_like_vendor_code(s):
+                    vc = s
+                    for k in range(j + 1, len(row)):
+                        q = _parse_int_cell(row[k])
+                        if q is not None and q > 0:
+                            qty = q
+                            break
+                    break
+            if not vc or not qty:
+                continue
+            agg[vc] = agg.get(vc, 0) + qty
+
+        items = [{"vendor_code": vc, "qty": q} for vc, q in sorted(agg.items(), key=lambda x: -x[1])]
+        cand = {
+            "kind": "receipt",
+            "sheet": sheet,
+            "items": items,
+            "total_qty": sum(i["qty"] for i in items),
+            "articles": len(items),
+        }
+        if items and (best is None or cand["total_qty"] > best["total_qty"]):
+            best = cand
+
+    if not best or not best["items"]:
+        err = headed.get("error") if isinstance(headed, dict) else None
+        return {
+            "error": err or (
+                "Не нашёл артикулы в приёмке. Ожидаю файл «Артикул + Количество» "
+                "(можно без заголовков, как «Приемка 19.08.xlsx»)."
             )
         }
     best["filename"] = filename or ""
@@ -1205,28 +2299,33 @@ def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
 
 
 def _own_wh_shipment_channel(sh: dict) -> str:
-    """fbw = поставка на склады WB; fbs = отгрузка FBS."""
+    """fbw/fbs = WB; ozon_fbo/ozon_fbs = Ozon. Все списывают один физический склад."""
     ch = str((sh or {}).get("channel") or "").strip().lower()
-    if ch in ("fbw", "fbs"):
+    if ch in OWN_WH_CHANNELS:
         return ch
     kind = str((sh or {}).get("kind") or "")
     # shk-excel и лист подбора WB-GI — это поставки на склады WB
     if kind in ("shk", "picking"):
         return "fbw"
+    if kind == "ozon_picking":
+        return "ozon_fbs"
     return "fbw"
 
 
 def _own_wh_channel_summaries(shipments: list | None = None) -> dict:
-    """Сводки по артикулам: поставки на WB и отгрузки FBS."""
+    """Сводки по артикулам: WB (fbw/fbs) и Ozon (ozon_fbo/ozon_fbs)."""
     shipments = shipments if shipments is not None else _own_wh_shipments()
-    buckets = {"fbw": {}, "fbs": {}}
-    meta = {"fbw": {"files": 0, "total_qty": 0}, "fbs": {"files": 0, "total_qty": 0}}
+    buckets = {ch: {} for ch in OWN_WH_CHANNELS}
+    meta = {ch: {"files": 0, "total_qty": 0} for ch in OWN_WH_CHANNELS}
+    aliases = _own_wh_sku_aliases()
     for sh in shipments:
         ch = _own_wh_shipment_channel(sh)
+        if ch not in meta:
+            ch = "fbw"
         meta[ch]["files"] += 1
         meta[ch]["total_qty"] += int(sh.get("total_qty") or 0)
         for it in sh.get("items") or []:
-            vc = str(it.get("vendor_code") or "").strip()
+            vc = _own_wh_canonical_vc(str(it.get("vendor_code") or "").strip(), aliases)
             if not vc:
                 continue
             try:
@@ -1237,7 +2336,7 @@ def _own_wh_channel_summaries(shipments: list | None = None) -> dict:
                 continue
             buckets[ch][vc] = buckets[ch].get(vc, 0) + qty
     out = {}
-    for ch in ("fbw", "fbs"):
+    for ch in OWN_WH_CHANNELS:
         items = [
             {"vendor_code": vc, "qty": q}
             for vc, q in sorted(buckets[ch].items(), key=lambda x: (-x[1], x[0]))
@@ -1254,17 +2353,64 @@ def _save_own_wh_shipments(shipments: list) -> bool:
     return save_setting_value(OWN_WH_SHIPMENTS_KEY, shipments)
 
 
+def _save_own_wh_receipts(receipts: list) -> bool:
+    return save_setting_value(OWN_WH_RECEIPTS_KEY, receipts)
+
+
+def _own_wh_now_stamp():
+    """Мск-метка + ISO (UTC) для недель и истории."""
+    utc = datetime.now(timezone.utc)
+    msk = utc + timedelta(hours=3)
+    return msk.strftime("%d.%m.%Y %H:%M"), utc.isoformat()
+
+
+def _own_wh_response_payload() -> dict:
+    ships = OWN_WAREHOUSE_CACHE.get("shipments") or _own_wh_shipments()
+    receipts = OWN_WAREHOUSE_CACHE.get("receipts") or _own_wh_receipts()
+    archives = OWN_WAREHOUSE_CACHE.get("archives")
+    if archives is None:
+        archives = _own_wh_archives()
+    return {
+        "shipments": ships[:40],
+        "receipts": receipts[:40],
+        "weekly_ledger": _own_wh_weekly_ledger(ships, receipts),
+        "channel_summaries": _own_wh_channel_summaries(ships),
+        "archives": [
+            {
+                "id": a.get("id"),
+                "archived_at": a.get("archived_at"),
+                "archived_at_iso": a.get("archived_at_iso"),
+                "reason": a.get("reason"),
+                "note": a.get("note"),
+                "sheet_as_of": a.get("sheet_as_of"),
+                "shipments_qty": a.get("shipments_qty"),
+                "receipts_qty": a.get("receipts_qty"),
+                "shipments_files": a.get("shipments_files"),
+                "receipts_files": a.get("receipts_files"),
+            }
+            for a in (archives or [])[:30]
+        ],
+        "sku_aliases": OWN_WAREHOUSE_CACHE.get("sku_aliases") or _own_wh_sku_aliases(),
+        "shared_stock": True,
+        "marketplaces": ["wb", "ozon"],
+        "rows": OWN_WAREHOUSE_CACHE.get("rows") or [],
+        "by_vendor": OWN_WAREHOUSE_CACHE.get("by_vendor") or {},
+        "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
+        "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
+    }
+
+
 @app.post("/api/own-warehouse-upload-shipment")
 async def own_warehouse_upload_shipment(
     files: list[UploadFile] = File(...),
     channel: str = Form("auto"),
 ):
-    """Загрузка Excel отгрузки → списание с «Наш склад» (поверх Google Sheets).
-    channel: auto|fbw|fbs — поставка на склады WB или отгрузка FBS."""
+    """Загрузка Excel отгрузки → списание с общего склада (WB или Ozon).
+    channel: auto|fbw|fbs|ozon_fbo|ozon_fbs"""
     if not files:
         raise HTTPException(status_code=400, detail="files required")
     ch_req = str(channel or "auto").strip().lower()
-    if ch_req not in ("auto", "fbw", "fbs"):
+    if ch_req not in ("auto",) + OWN_WH_CHANNELS:
         ch_req = "auto"
 
     if not OWN_WAREHOUSE_CACHE.get("rows") and not OWN_WAREHOUSE_CACHE.get("personal_sheet"):
@@ -1276,18 +2422,28 @@ async def own_warehouse_upload_shipment(
     shipments = _own_wh_shipments()
     applied = []
     errors = []
+    created_at, created_iso = _own_wh_now_stamp()
     for f in files:
         try:
             content = await f.read()
         except Exception as e:
             errors.append({"filename": f.filename, "error": str(e)})
             continue
-        parsed = parse_own_wh_shipment_excel(content, f.filename or "")
+        parsed = parse_own_wh_shipment_file(content, f.filename or "")
         if parsed.get("error"):
             errors.append({"filename": f.filename, "error": parsed["error"]})
             continue
-        if ch_req in ("fbw", "fbs"):
+        items = _own_wh_normalize_items(parsed.get("items") or [])
+        if not items:
+            errors.append({"filename": f.filename, "error": "нет артикулов после нормализации"})
+            continue
+        total_qty = sum(int(it["qty"]) for it in items)
+        if ch_req in OWN_WH_CHANNELS:
             ch = ch_req
+        elif parsed.get("channel") in OWN_WH_CHANNELS:
+            ch = parsed["channel"]
+        elif parsed.get("kind") == "ozon_picking":
+            ch = "ozon_fbs"
         else:
             ch = "fbw" if parsed.get("kind") in ("shk", "picking") else "fbw"
         sid = f"sh_{int(time.time())}_{len(shipments)}_{len(applied)}"
@@ -1296,15 +2452,20 @@ async def own_warehouse_upload_shipment(
             "filename": f.filename or parsed.get("filename") or "",
             "kind": parsed.get("kind"),
             "channel": ch,
-            "created_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
-            "items": parsed["items"],
-            "total_qty": parsed["total_qty"],
-            "articles": parsed["articles"],
+            "marketplace": "ozon" if ch.startswith("ozon") else "wb",
+            "created_at": created_at,
+            "created_at_iso": created_iso,
+            "items": items,
+            "total_qty": total_qty,
+            "articles": len(items),
+            "unmapped_barcodes": parsed.get("unmapped_barcodes") or [],
+            "doc_date": parsed.get("date"),
+            "warehouse": parsed.get("warehouse"),
         }
         shipments.insert(0, entry)
         applied.append(entry)
 
-    shipments = shipments[:100]
+    shipments = shipments[:OWN_WH_DOCS_KEEP]
     if applied and not _save_own_wh_shipments(shipments):
         raise HTTPException(status_code=500, detail="Не удалось сохранить списания в settings")
 
@@ -1312,7 +2473,7 @@ async def own_warehouse_upload_shipment(
     if not _rebuild_own_wh_from_cache():
         refresh_own_warehouse_stock()
 
-    summaries = _own_wh_channel_summaries(shipments)
+    payload = _own_wh_response_payload()
     return {
         "status": "ok",
         "applied": [
@@ -1321,28 +2482,189 @@ async def own_warehouse_upload_shipment(
                 "filename": a["filename"],
                 "kind": a["kind"],
                 "channel": a.get("channel"),
+                "marketplace": a.get("marketplace"),
                 "total_qty": a["total_qty"],
                 "articles": a["articles"],
                 "items": a["items"][:40],
+                "unmapped_barcodes": (a.get("unmapped_barcodes") or [])[:20],
             }
             for a in applied
         ],
         "errors": errors,
-        "shipments": shipments[:30],
-        "channel_summaries": summaries,
-        "rows": OWN_WAREHOUSE_CACHE.get("rows") or [],
-        "by_vendor": OWN_WAREHOUSE_CACHE.get("by_vendor") or {},
-        "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
-        "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
-        "note": "Списано в остатках сайта. Google Sheets сам не меняется — когда поправишь таблицу, нажми «Сбросить списания».",
+        **payload,
+        "note": "Списано с общего склада (WB+Ozon). Google Sheets сам не меняется — в пятницу после пересчёта нажми «Инвентаризация».",
+    }
+
+
+@app.post("/api/own-warehouse-upload-receipt")
+async def own_warehouse_upload_receipt(
+    files: list[UploadFile] = File(...),
+    note: str = Form(""),
+):
+    """Поступление товара (Excel: Артикул + Количество) — приход на «Наш склад»."""
+    file_list = files
+    if not file_list:
+        raise HTTPException(status_code=400, detail="files required")
+
+    if not OWN_WAREHOUSE_CACHE.get("rows") and not OWN_WAREHOUSE_CACHE.get("personal_sheet"):
+        try:
+            refresh_own_warehouse_stock()
+        except Exception:
+            pass
+
+    receipts = _own_wh_receipts()
+    applied = []
+    errors = []
+    created_at, created_iso = _own_wh_now_stamp()
+    note_s = str(note or "").strip()
+    for f in file_list:
+        try:
+            content = await f.read()
+        except Exception as e:
+            errors.append({"filename": f.filename, "error": str(e)})
+            continue
+        parsed = parse_own_wh_receipt_excel(content, f.filename or "")
+        if parsed.get("error"):
+            errors.append({"filename": f.filename, "error": parsed["error"]})
+            continue
+        items = _own_wh_normalize_items(parsed.get("items") or [])
+        if not items:
+            errors.append({"filename": f.filename, "error": "нет артикулов после нормализации"})
+            continue
+        total_qty = sum(int(it["qty"]) for it in items)
+        rid = f"rc_{int(time.time())}_{len(receipts)}_{len(applied)}"
+        entry = {
+            "id": rid,
+            "filename": f.filename or parsed.get("filename") or "",
+            "kind": "receipt",
+            "note": note_s,
+            "created_at": created_at,
+            "created_at_iso": created_iso,
+            "items": items,
+            "total_qty": total_qty,
+            "articles": len(items),
+            "unmapped_barcodes": parsed.get("unmapped_barcodes") or [],
+        }
+        receipts.insert(0, entry)
+        applied.append(entry)
+
+    receipts = receipts[:OWN_WH_DOCS_KEEP]
+    if applied and not _save_own_wh_receipts(receipts):
+        raise HTTPException(status_code=500, detail="Не удалось сохранить поступления")
+
+    OWN_WAREHOUSE_CACHE["receipts"] = receipts
+    if not _rebuild_own_wh_from_cache():
+        refresh_own_warehouse_stock()
+
+    return {
+        "status": "ok",
+        "applied": [
+            {
+                "id": a["id"],
+                "filename": a["filename"],
+                "total_qty": a["total_qty"],
+                "articles": a["articles"],
+                "items": a["items"][:40],
+                "unmapped_barcodes": (a.get("unmapped_barcodes") or [])[:20],
+            }
+            for a in applied
+        ],
+        "errors": errors,
+        **_own_wh_response_payload(),
+        "note": "Поступление учтено на сайте (+). Google Sheets сам не меняется — когда внесёшь приход в таблицу, сбрось поступления.",
+    }
+
+
+@app.post("/api/own-warehouse-add-receipt")
+async def own_warehouse_add_receipt(request: dict):
+    """Ручное поступление: {items:[{vendor_code,qty}], note?} или text: 'артикул qty' по строкам."""
+    if not OWN_WAREHOUSE_CACHE.get("rows") and not OWN_WAREHOUSE_CACHE.get("personal_sheet"):
+        try:
+            refresh_own_warehouse_stock()
+        except Exception:
+            pass
+
+    items_in = request.get("items") or []
+    text = str(request.get("text") or "").strip()
+    note = str(request.get("note") or "").strip()
+    agg = {}
+    if items_in:
+        for it in items_in:
+            vc = str((it or {}).get("vendor_code") or "").strip()
+            try:
+                qty = int((it or {}).get("qty") or 0)
+            except Exception:
+                qty = 0
+            if vc and qty > 0:
+                agg[vc] = agg.get(vc, 0) + qty
+    elif text:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.replace("\t", " ").replace(";", " ").split()
+            if len(parts) < 2:
+                continue
+            vc = parts[0].strip()
+            try:
+                qty = int(float(parts[-1].replace(",", ".")))
+            except Exception:
+                continue
+            if vc and qty > 0:
+                agg[vc] = agg.get(vc, 0) + qty
+    else:
+        raise HTTPException(status_code=400, detail="items или text required")
+
+    if not agg:
+        raise HTTPException(status_code=400, detail="Не удалось разобрать артикулы")
+
+    items = _own_wh_normalize_items(
+        [{"vendor_code": vc, "qty": q} for vc, q in agg.items()]
+    )
+    created_at, created_iso = _own_wh_now_stamp()
+    receipts = _own_wh_receipts()
+    rid = f"rc_{int(time.time())}_{len(receipts)}_m"
+    entry = {
+        "id": rid,
+        "filename": note or "ручное поступление",
+        "kind": "manual",
+        "note": note,
+        "created_at": created_at,
+        "created_at_iso": created_iso,
+        "items": items,
+        "total_qty": sum(i["qty"] for i in items),
+        "articles": len(items),
+    }
+    receipts.insert(0, entry)
+    receipts = receipts[:OWN_WH_DOCS_KEEP]
+    if not _save_own_wh_receipts(receipts):
+        raise HTTPException(status_code=500, detail="Не удалось сохранить")
+    OWN_WAREHOUSE_CACHE["receipts"] = receipts
+    if not _rebuild_own_wh_from_cache():
+        refresh_own_warehouse_stock()
+    return {
+        "status": "ok",
+        "applied": [entry],
+        **_own_wh_response_payload(),
     }
 
 
 @app.post("/api/own-warehouse-undo-shipment")
 async def own_warehouse_undo_shipment(request: dict):
-    """Отменить одно списание по id или все (all=true)."""
+    """Отменить одно списание по id или все (all=true).
+    all=true + archive=true (по умолчанию) — сначала в архив."""
     shipments = _own_wh_shipments()
     if request.get("all"):
+        if request.get("archive", True) and shipments:
+            try:
+                _own_wh_archive_active(
+                    reason=str(request.get("reason") or "clear_shipments"),
+                    note=str(request.get("note") or "Сброс списаний"),
+                    include_shipments=True,
+                    include_receipts=False,
+                )
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
         shipments = []
     else:
         sid = str(request.get("id") or "").strip()
@@ -1354,13 +2676,1928 @@ async def own_warehouse_undo_shipment(request: dict):
     OWN_WAREHOUSE_CACHE["shipments"] = shipments
     if not _rebuild_own_wh_from_cache():
         refresh_own_warehouse_stock()
+    return {"status": "ok", **_own_wh_response_payload()}
+
+
+@app.post("/api/own-warehouse-undo-receipt")
+async def own_warehouse_undo_receipt(request: dict):
+    """Отменить одно поступление по id или все (all=true)."""
+    receipts = _own_wh_receipts()
+    if request.get("all"):
+        if request.get("archive", True) and receipts:
+            try:
+                _own_wh_archive_active(
+                    reason=str(request.get("reason") or "clear_receipts"),
+                    note=str(request.get("note") or "Сброс поступлений"),
+                    include_shipments=False,
+                    include_receipts=True,
+                )
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+        receipts = []
+    else:
+        rid = str(request.get("id") or "").strip()
+        if not rid:
+            raise HTTPException(status_code=400, detail="id required (или all=true)")
+        receipts = [s for s in receipts if str(s.get("id")) != rid]
+    if not _save_own_wh_receipts(receipts):
+        raise HTTPException(status_code=500, detail="Не удалось сохранить")
+    OWN_WAREHOUSE_CACHE["receipts"] = receipts
+    if not _rebuild_own_wh_from_cache():
+        refresh_own_warehouse_stock()
+    return {"status": "ok", **_own_wh_response_payload()}
+
+
+@app.post("/api/own-warehouse-friday-reset")
+async def own_warehouse_friday_reset(request: dict = None):
+    """Пятничная инвентаризация: подтянуть Sheets → архивировать оверлеи → очистить активные.
+    Сотрудник сначала правит реальные остатки в Google Sheets, потом жмёт эту кнопку."""
+    request = request or {}
+    note = str(request.get("note") or "").strip()
+    refresh_sheets = request.get("refresh_sheets", True)
+
+    if refresh_sheets:
+        try:
+            refresh_own_warehouse_stock()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Не удалось обновить Sheets: {e}")
+
+    ships = _own_wh_shipments()
+    receipts = _own_wh_receipts()
+    archived = None
+    if ships or receipts:
+        try:
+            archived = _own_wh_archive_active(reason="friday", note=note or "Пятничная инвентаризация")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    if not _save_own_wh_shipments([]):
+        raise HTTPException(status_code=500, detail="Не удалось очистить списания")
+    if not _save_own_wh_receipts([]):
+        raise HTTPException(status_code=500, detail="Не удалось очистить поступления")
+
+    OWN_WAREHOUSE_CACHE["shipments"] = []
+    OWN_WAREHOUSE_CACHE["receipts"] = []
+    OWN_WAREHOUSE_CACHE["archives"] = _own_wh_archives()
+    if not _rebuild_own_wh_from_cache():
+        refresh_own_warehouse_stock()
+
     return {
         "status": "ok",
-        "shipments": shipments[:30],
-        "channel_summaries": _own_wh_channel_summaries(shipments),
-        "rows": OWN_WAREHOUSE_CACHE.get("rows") or [],
-        "by_vendor": OWN_WAREHOUSE_CACHE.get("by_vendor") or {},
+        "archived": {
+            "id": (archived or {}).get("id"),
+            "archived_at": (archived or {}).get("archived_at"),
+            "shipments_qty": (archived or {}).get("shipments_qty", 0),
+            "receipts_qty": (archived or {}).get("receipts_qty", 0),
+            "shipments_files": (archived or {}).get("shipments_files", 0),
+            "receipts_files": (archived or {}).get("receipts_files", 0),
+        } if archived else None,
+        "note": "База = Google Sheets. Активные отгрузки/поступления ушли в архив.",
+        **_own_wh_response_payload(),
     }
+
+
+@app.get("/api/own-warehouse-archive")
+def own_warehouse_archive_list():
+    """Список архивов инвентаризаций / сбросов (без полного состава файлов)."""
+    archives = _own_wh_archives()
+    return {
+        "archives": [
+            {
+                "id": a.get("id"),
+                "archived_at": a.get("archived_at"),
+                "archived_at_iso": a.get("archived_at_iso"),
+                "reason": a.get("reason"),
+                "note": a.get("note"),
+                "sheet_as_of": a.get("sheet_as_of"),
+                "shipments_qty": a.get("shipments_qty"),
+                "receipts_qty": a.get("receipts_qty"),
+                "shipments_files": a.get("shipments_files"),
+                "receipts_files": a.get("receipts_files"),
+            }
+            for a in archives
+        ]
+    }
+
+
+@app.get("/api/own-warehouse-archive/{archive_id}")
+def own_warehouse_archive_detail(archive_id: str):
+    """Полный архив за дату (файлы отгрузок/поступлений для аудита)."""
+    aid = str(archive_id or "").strip()
+    for a in _own_wh_archives():
+        if str(a.get("id")) == aid:
+            return a
+    raise HTTPException(status_code=404, detail="archive not found")
+
+
+@app.post("/api/own-warehouse-sku-aliases")
+async def own_warehouse_sku_aliases(request: dict):
+    """Сохранить карту алиасов Ozon/других SKU → канонический артикул WB.
+    body: {aliases: {ozon_sku: wb_vendor_code}} или text: 'ozon_sku = wb_article' по строкам.
+    replace=true — заменить целиком, иначе merge."""
+    aliases = _own_wh_sku_aliases()
+    if request.get("replace"):
+        aliases = {}
+    incoming = request.get("aliases")
+    if isinstance(incoming, dict):
+        for k, v in incoming.items():
+            ak = str(k or "").strip()
+            cv = str(v or "").strip()
+            if not ak:
+                continue
+            if not cv:
+                aliases.pop(ak, None)
+            else:
+                aliases[ak] = cv
+    text = str(request.get("text") or "").strip()
+    if text:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                left, right = line.split("=", 1)
+            elif "\t" in line:
+                left, right = line.split("\t", 1)
+            else:
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                left, right = parts[0], parts[1]
+            ak = left.strip()
+            cv = right.strip()
+            if ak and cv:
+                aliases[ak] = cv
+    if not save_setting_value(OWN_WH_SKU_ALIASES_KEY, aliases):
+        raise HTTPException(status_code=500, detail="Не удалось сохранить алиасы")
+    OWN_WAREHOUSE_CACHE["sku_aliases"] = aliases
+    if not _rebuild_own_wh_from_cache():
+        refresh_own_warehouse_stock()
+    return {"status": "ok", "sku_aliases": aliases, **_own_wh_response_payload()}
+
+
+# ---------- Новые остатки: срок доставки как на витрине WB (по городам) ----------
+# Ячейка = остаток на складе, с которого WB везёт в город, + часы витрины (time1+time2).
+# >40ч жёлтый, >60ч красный. Это не отчёт warehouse_remains и не MKeeper.
+NEW_STOCK_WARN_H = 40
+NEW_STOCK_BAD_H = 60
+NEW_STOCK_LAYOUT_KEY = "new_stock_layout"
+NEW_STOCK_CACHE = {"payload": None, "syncing": False, "error": None, "updated_at": None}
+NEW_STOCK_CITIES = [
+    {"id": "nsk", "name": "Новосибирск", "group": "Сибирь и ДВ", "dest": -364763, "lat": 55.0302, "lon": 82.9204},
+    {"id": "krs", "name": "Красноярск", "group": "Сибирь и ДВ", "dest": 12356481, "lat": 56.0106, "lon": 92.8526},
+    {"id": "irk", "name": "Иркутск", "group": "Сибирь и ДВ", "dest": -5827722, "lat": 52.2864, "lon": 104.2807},
+    {"id": "omsk", "name": "Омск", "group": "Сибирь и ДВ", "dest": -3902444, "lat": 54.9885, "lon": 73.3242},
+    {"id": "krd", "name": "Краснодар", "group": "Юг и СК", "dest": 12358062, "lat": 45.0355, "lon": 38.9753},
+    {"id": "rnd", "name": "Ростов-на-Дону", "group": "Юг и СК", "dest": -2228364, "lat": 47.2221, "lon": 39.7203},
+    {"id": "vlg", "name": "Волгоград", "group": "Юг и СК", "dest": -4039473, "lat": 48.7080, "lon": 44.5133},
+    {"id": "msk", "name": "Москва", "group": "Центр", "dest": -1257786, "lat": 55.7558, "lon": 37.6173},
+    {"id": "vrn", "name": "Воронеж", "group": "Центр", "dest": 12358283, "lat": 51.6720, "lon": 39.1843},
+    {"id": "ryz", "name": "Рязань", "group": "Центр", "dest": -5817683, "lat": 54.6269, "lon": 39.6916},
+    {"id": "spb", "name": "Санкт-Петербург", "group": "Северо-Запад", "dest": -1198055, "lat": 59.9343, "lon": 30.3351},
+    {"id": "vld", "name": "Вологда", "group": "Северо-Запад", "dest": 123586880, "lat": 59.2205, "lon": 39.8915},
+    {"id": "arh", "name": "Архангельск", "group": "Северо-Запад", "dest": 123589924, "lat": 64.5393, "lon": 40.5187},
+    {"id": "ekb", "name": "Екатеринбург", "group": "Урал", "dest": -5818883, "lat": 56.8389, "lon": 60.6057},
+    {"id": "chel", "name": "Челябинск", "group": "Урал", "dest": -1581743, "lat": 55.1644, "lon": 61.4368},
+    {"id": "tmn", "name": "Тюмень", "group": "Урал", "dest": 12358475, "lat": 57.1522, "lon": 65.5272},
+    {"id": "kzn", "name": "Казань", "group": "Волга", "dest": -2133462, "lat": 55.7963, "lon": 49.1088},
+    {"id": "nnv", "name": "Нижний Новгород", "group": "Волга", "dest": 12358579, "lat": 56.2965, "lon": 43.9361},
+    {"id": "smr", "name": "Самара", "group": "Волга", "dest": -283781, "lat": 53.1959, "lon": 50.1002},
+    {"id": "prm", "name": "Пермь", "group": "Волга", "dest": 12358361, "lat": 58.0105, "lon": 56.2502},
+]
+NEW_STOCK_GROUPS = [
+    {"id": "sib", "name": "Сибирь и ДВ", "city_ids": ["nsk", "krs", "irk", "omsk"]},
+    {"id": "south", "name": "Юг и СК", "city_ids": ["krd", "rnd", "vlg"]},
+    {"id": "center", "name": "Центр", "city_ids": ["msk", "vrn", "ryz"]},
+    {"id": "nw", "name": "Северо-Запад", "city_ids": ["spb", "vld", "arh"]},
+    {"id": "ural", "name": "Урал", "city_ids": ["ekb", "chel", "tmn"]},
+    {"id": "volga", "name": "Волга", "city_ids": ["kzn", "nnv", "smr", "prm"]},
+]
+# type=128 в stores-data — самовывоз (CC Ковшовой 2с1 и т.п.). Не считаем сроком доставки.
+NEW_STOCK_PICKUP_TYPES = {128}
+NEW_STOCK_PICKUP_RE = re.compile(r"самовывоз|ковшов", re.I)
+# Живой FBW после пожаров — только кластер «Склад WB РФ». Коледино/Электросталь/Шушары не считаем.
+NEW_STOCK_WB_RF_RE = re.compile(r"(?:склад\s+)?(?:wb|вб)[\s\-]*рф", re.I)
+NEW_STOCK_STORES_URL = "https://static-basket-01.wbbasket.ru/vol0/data/stores-data.json"
+NEW_STOCK_STORES_CACHE = {"by_id": {}, "loaded_at": 0.0}
+# Запасной FBS, только если витрина по dest пустая. Штуки/часы города — с клиентского WB.
+NEW_STOCK_FBS_HUBS = {
+    "msk": {
+        "label": "FBS Москва / СЦ Внуково",
+        "store_re": re.compile(r"внуков|москв", re.I),
+        "stock_re": re.compile(r"внуков|москв", re.I),
+    },
+    "kzn": {
+        "label": "FBS Казань / СЦ Столбище",
+        "store_re": re.compile(r"казан", re.I),
+        "stock_re": re.compile(r"казан", re.I),
+    },
+    "ufa": {
+        "label": "FBS Уфа / СЦ Зубово",
+        "store_re": re.compile(r"уфа|зубов", re.I),
+        "stock_re": re.compile(r"уфа|зубов", re.I),
+    },
+    "krd": {
+        "label": "FBS Краснодар / СЦ Тахтамукай",
+        "store_re": re.compile(r"краснодар|тахтамукай", re.I),
+        "stock_re": re.compile(r"краснодар|тахтамукай|ффиточка", re.I),
+    },
+    "tmn": {
+        "label": "FBS Тюмень / СЦ Харьковская",
+        "store_re": re.compile(r"тюмен", re.I),
+        "stock_re": re.compile(r"тюмен", re.I),
+    },
+}
+NEW_STOCK_GROUP_HUBS = {
+    "center": ["msk"],
+    "nw": ["msk"],
+    "volga": ["kzn", "ufa", "msk"],
+    "south": ["krd", "msk"],
+    "ural": ["ufa", "tmn", "kzn", "msk"],
+    "sib": ["tmn", "ufa", "msk"],
+}
+NEW_STOCK_SELLER_STORE_TYPES = {2, 10, 14, 74, 78}
+
+
+def _new_stock_hours(product: dict):
+    """Клиентский срок витрины, часы: time1 + time2."""
+    if not isinstance(product, dict):
+        return None
+    t1, t2 = product.get("time1"), product.get("time2")
+    if t1 is None and t2 is None:
+        sizes = product.get("sizes") or []
+        if sizes and isinstance(sizes[0], dict):
+            t1 = sizes[0].get("time1")
+            t2 = sizes[0].get("time2")
+    if t1 is None and t2 is None:
+        return None
+    try:
+        return int(t1 or 0) + int(t2 or 0)
+    except Exception:
+        return None
+
+
+def _new_stock_stock_hours(item: dict):
+    if not isinstance(item, dict):
+        return None
+    if item.get("time1") is None and item.get("time2") is None:
+        return None
+    try:
+        return int(item.get("time1") or 0) + int(item.get("time2") or 0)
+    except Exception:
+        return None
+
+
+def _new_stock_stock_rows(product: dict) -> list:
+    """Склады в ответе витрины для этого dest: (wh_id, qty, hours).
+
+    Только stocks[]. Не берём sizes[].qty / totalQuantity — это часто сумма по стране,
+    и тогда все города рисуются одним FBS/WB РФ числом.
+    """
+    rows = []
+    if not isinstance(product, dict):
+        return rows
+    blobs = []
+    for sz in product.get("sizes") or []:
+        if isinstance(sz, dict):
+            blobs.append(sz.get("stocks") or [])
+    if product.get("stocks"):
+        blobs.append(product.get("stocks"))
+    for stocks in blobs:
+        if not isinstance(stocks, list):
+            continue
+        for st in stocks:
+            if not isinstance(st, dict):
+                continue
+            wid = _new_stock_wh_int(st.get("wh") or st.get("whId") or st.get("warehouseId"))
+            try:
+                q = int(st.get("qty") if st.get("qty") is not None else st.get("quantity") or 0)
+            except Exception:
+                q = 0
+            if q > 0:
+                rows.append((wid, q, _new_stock_stock_hours(st)))
+    return rows
+
+
+def _new_stock_store_is_pickup(wid, stores: dict) -> bool:
+    if not stores or wid is None:
+        return False
+    meta = stores.get(wid)
+    meta = meta if isinstance(meta, dict) else {}
+    name = str(meta.get("name") or "")
+    return meta.get("type") in NEW_STOCK_PICKUP_TYPES or bool(NEW_STOCK_PICKUP_RE.search(name))
+
+
+def _new_stock_pick_stock(product: dict, stores: dict | None = None, skip_pickup: bool = False):
+    """Один склад, с которого WB везёт в этот dest.
+
+    Как у партнёрки: Москва 15, Нижний 1, СПб 50, Казань 1 — не сумма и не totalQuantity.
+    Берём product.wh; если это ПВЗ — склад из stocks с тем же сроком.
+    """
+    rows = _new_stock_stock_rows(product)
+    if skip_pickup:
+        rows = [(w, q, h) for w, q, h in rows if not _new_stock_store_is_pickup(w, stores or {})]
+    assigned = _new_stock_wh_int(_new_stock_wh(product))
+    hours = _new_stock_hours(product)
+    if assigned is not None:
+        hit = [(w, q, h) for w, q, h in rows if w == assigned]
+        if hit:
+            return hit[0]
+    if hours is not None:
+        hit = [(w, q, h) for w, q, h in rows if h == hours]
+        if hit:
+            return hit[0]
+    if len(rows) == 1:
+        return rows[0]
+    return None
+
+
+def _new_stock_qty(product: dict, stores: dict | None = None, skip_pickup: bool = False) -> int:
+    """Остаток склада отгрузки в этот dest. Не сумма по стране."""
+    picked = _new_stock_pick_stock(product, stores=stores, skip_pickup=skip_pickup)
+    return int(picked[1]) if picked else 0
+
+
+def _new_stock_wh(product: dict):
+    if not isinstance(product, dict):
+        return None
+    wh = product.get("wh")
+    if wh:
+        return wh
+    for sz in product.get("sizes") or []:
+        if not isinstance(sz, dict):
+            continue
+        if sz.get("wh"):
+            return sz.get("wh")
+        for st in sz.get("stocks") or []:
+            if st and st.get("wh"):
+                return st.get("wh")
+    return None
+
+
+def _fbs_wh_is_ignored(name: str) -> bool:
+    """Самовывоз / CC Ковшовой — не склад отгрузки."""
+    return bool(NEW_STOCK_PICKUP_RE.search(name or ""))
+
+
+def _is_wb_rf_warehouse(name: str) -> bool:
+    """Единственный учитываемый склад WB: «Склад WB РФ»."""
+    return bool(NEW_STOCK_WB_RF_RE.search(name or ""))
+
+
+def _wb_rf_qty_from_wh_by_nm(nm_id, stock_wh_by_nm: dict) -> int:
+    """Штуки только на «Склад WB РФ» из stock_warehouses."""
+    try:
+        key = str(int(nm_id))
+    except Exception:
+        return 0
+    w = ((stock_wh_by_nm or {}).get(key) or {}).get("w") or {}
+    if not isinstance(w, dict):
+        return 0
+    total = 0
+    for name, qty in w.items():
+        if not _is_wb_rf_warehouse(str(name)):
+            continue
+        try:
+            total += int(qty or 0)
+        except Exception:
+            pass
+    return total
+
+
+def _is_fbs_warehouse_name(name: str) -> bool:
+    n = (name or "").lower()
+    return "fbs" in n or "маркетплейс" in n
+
+
+def _is_countable_stock_warehouse(name: str) -> bool:
+    """Склад WB РФ или наш FBS. Сгоревшие FBW (Коледино и т.п.) — нет."""
+    if _fbs_wh_is_ignored(name):
+        return False
+    return _is_wb_rf_warehouse(name) or _is_fbs_warehouse_name(name)
+
+
+def _new_stock_city_hubs() -> dict:
+    """city_id → список хабов по приоритету (свой региональный, потом Москва)."""
+    out = {}
+    for g in NEW_STOCK_GROUPS:
+        hubs = list(NEW_STOCK_GROUP_HUBS.get(g.get("id"), ["msk"]))
+        for cid in g.get("city_ids") or []:
+            out[str(cid)] = hubs
+    return out
+
+
+def _new_stock_hub_for_store(name: str, meta: dict):
+    """Какой наш FBS-хаб у витринного склада. Самовывоз и склады WB — None."""
+    if not isinstance(meta, dict):
+        meta = {}
+    if meta.get("type") in NEW_STOCK_PICKUP_TYPES:
+        return None
+    if meta.get("is_wb"):
+        return None
+    n = name or meta.get("name") or ""
+    if _fbs_wh_is_ignored(n):
+        return None
+    for hid, hub in NEW_STOCK_FBS_HUBS.items():
+        if hub["store_re"].search(n):
+            return hid
+    return None
+
+
+def _fbs_hub_qty(fbs_obj, hub_id: str) -> int:
+    hub = NEW_STOCK_FBS_HUBS.get(hub_id) or {}
+    stock_re = hub.get("stock_re")
+    if not isinstance(fbs_obj, dict) or not stock_re:
+        return 0
+    total = 0
+    for w in fbs_obj.get("warehouses") or []:
+        if not isinstance(w, dict):
+            continue
+        name = str(w.get("name") or "")
+        if _fbs_wh_is_ignored(name) or not stock_re.search(name):
+            continue
+        try:
+            total += int(w.get("qty") or 0)
+        except Exception:
+            pass
+    return total
+
+
+def _fbs_pick_hub(fbs_obj, city_id: str, city_hubs: dict):
+    for hid in city_hubs.get(str(city_id) or "") or ["msk"]:
+        if _fbs_hub_qty(fbs_obj, hid) > 0:
+            return hid
+    return None
+
+
+def _new_stock_load_stores() -> dict:
+    """id склада витрины → {name, type, is_wb}. Падаем мягко, если CDN недоступен."""
+    now = time.time()
+    cached = NEW_STOCK_STORES_CACHE.get("by_id") or {}
+    ts = float(NEW_STOCK_STORES_CACHE.get("loaded_at") or 0)
+    if cached and now - ts < 12 * 3600:
+        return cached
+    try:
+        resp = httpx.get(NEW_STOCK_STORES_URL, timeout=25)
+        if not resp.is_success:
+            return cached
+        arr = resp.json() or []
+        by_id = {}
+        for s in arr if isinstance(arr, list) else []:
+            if not isinstance(s, dict) or s.get("id") is None:
+                continue
+            try:
+                sid = int(s["id"])
+            except Exception:
+                continue
+            by_id[sid] = {
+                "name": str(s.get("name") or ""),
+                "type": s.get("type"),
+                "is_wb": bool(s.get("isWb")),
+            }
+        NEW_STOCK_STORES_CACHE["by_id"] = by_id
+        NEW_STOCK_STORES_CACHE["loaded_at"] = now
+        return by_id
+    except Exception as e:
+        logger.warning(f"new-stock stores-data: {e}")
+        return cached
+
+
+def _new_stock_wh_int(wh):
+    if wh is None or wh == "":
+        return None
+    try:
+        return int(wh)
+    except Exception:
+        return None
+
+
+def _new_stock_parse_cell(product: dict, stores: dict) -> dict:
+    """Ячейка витрины: самовывоз отбрасываем, наш FBS-хаб помечаем."""
+    hours = _new_stock_hours(product)
+    qty = _new_stock_qty(product, stores=stores)
+    wh = _new_stock_wh(product)
+    wh_i = _new_stock_wh_int(wh)
+    meta = stores.get(wh_i) if (stores and wh_i is not None) else None
+    meta = meta if isinstance(meta, dict) else {}
+    name = str(meta.get("name") or "")
+    pickup = meta.get("type") in NEW_STOCK_PICKUP_TYPES or bool(NEW_STOCK_PICKUP_RE.search(name))
+    hub = None if pickup else _new_stock_hub_for_store(name, meta)
+    known_store = bool(name) or meta.get("type") is not None
+    is_fbw = (not pickup) and (hub is None) and known_store and (
+        bool(meta.get("is_wb")) or meta.get("type") not in NEW_STOCK_SELLER_STORE_TYPES
+    )
+    if pickup:
+        picked = _new_stock_pick_stock(product, stores=stores, skip_pickup=True)
+        alt_wh, alt_qty, _alt_h = picked if picked else (None, 0, None)
+        meta2 = stores.get(alt_wh) if (stores and alt_wh is not None) else None
+        meta2 = meta2 if isinstance(meta2, dict) else {}
+        name2 = str(meta2.get("name") or "")
+        alt_hub = _new_stock_hub_for_store(name2, meta2)
+        known2 = bool(name2) or meta2.get("type") is not None
+        alt_fbw = (alt_hub is None) and known2 and (
+            bool(meta2.get("is_wb")) or meta2.get("type") not in NEW_STOCK_SELLER_STORE_TYPES
+        )
+        return {
+            "qty": alt_qty,
+            "hours": hours if alt_qty else None,
+            "tone": _new_stock_tone(hours if alt_qty else None, alt_qty),
+            "wh": alt_wh or wh,
+            "wh_name": name2 or name or None,
+            "pickup": True,
+            "is_fbw": alt_fbw,
+            "fbs_hub": alt_hub,
+            "source": "pickup",
+        }
+    return {
+        "qty": qty,
+        "hours": hours,
+        "tone": _new_stock_tone(hours, qty),
+        "wh": wh,
+        "wh_name": name or None,
+        "pickup": False,
+        "is_fbw": is_fbw,
+        "fbs_hub": hub,
+        "source": "fbs_hub" if hub else ("fbw" if is_fbw else "storefront"),
+    }
+
+
+def _new_stock_median_hours(vals) -> int | None:
+    nums = [int(v) for v in (vals or []) if v is not None]
+    if not nums:
+        return None
+    nums.sort()
+    n = len(nums)
+    if n % 2:
+        return nums[n // 2]
+    return int(round((nums[n // 2 - 1] + nums[n // 2]) / 2))
+
+
+def _new_stock_city_fbs_hours(by_nm: dict) -> dict:
+    """хаб → город → медиана часов, где витрина уже выбрала этот наш FBS."""
+    buckets = {}
+    for row in (by_nm or {}).values():
+        for cid, cell in ((row or {}).get("cities") or {}).items():
+            if not isinstance(cell, dict) or cell.get("pickup"):
+                continue
+            hub = cell.get("fbs_hub")
+            if not hub or cell.get("hours") is None:
+                continue
+            buckets.setdefault(hub, {}).setdefault(cid, []).append(int(cell["hours"]))
+    out = {}
+    for hub, cities in buckets.items():
+        got = {cid: h for cid, vals in cities.items() if (h := _new_stock_median_hours(vals)) is not None}
+        if got:
+            out[hub] = got
+    return out
+
+
+def _new_stock_hub_hours(city_fbs_h: dict, hub_id: str, city_id: str):
+    if not isinstance(city_fbs_h, dict):
+        return None
+    inner = city_fbs_h.get(hub_id)
+    if not isinstance(inner, dict):
+        # старый плоский кэш {city: hours} = только Москва
+        if hub_id == "msk" and city_id in city_fbs_h and not isinstance(city_fbs_h.get(city_id), dict):
+            try:
+                return int(city_fbs_h[city_id])
+            except Exception:
+                return None
+        return None
+    if city_id not in inner:
+        return None
+    try:
+        return int(inner[city_id])
+    except Exception:
+        return None
+
+
+def _new_stock_city_fbw_hours(by_nm: dict) -> dict:
+    """Город → медиана часов, где витрина везёт со склада WB (не наш FBS и не самовывоз)."""
+    buckets = {}
+    for row in (by_nm or {}).values():
+        for cid, cell in ((row or {}).get("cities") or {}).items():
+            if not isinstance(cell, dict) or cell.get("pickup") or cell.get("fbs_hub"):
+                continue
+            if cell.get("hours") is None:
+                continue
+            if cell.get("is_fbw") or cell.get("source") in ("fbw", "storefront"):
+                buckets.setdefault(cid, []).append(int(cell["hours"]))
+    return {cid: h for cid, vals in buckets.items() if (h := _new_stock_median_hours(vals)) is not None}
+
+
+def _new_stock_fbw_qty_by_nm() -> dict:
+    """nm_id → штуки только на «Склад WB РФ». Сгоревшие склады WB не суммируем."""
+    out = {}
+    for p in WB_PRODUCTS_CACHE.get("products") or []:
+        if not isinstance(p, dict):
+            continue
+        try:
+            nm = int(p.get("nm_id"))
+        except Exception:
+            continue
+        total = 0
+        for w in p.get("warehouses") or []:
+            if not isinstance(w, dict):
+                continue
+            name = str(w.get("name") or "")
+            if not _is_wb_rf_warehouse(name):
+                continue
+            try:
+                total += int(w.get("qty") or 0)
+            except Exception:
+                pass
+        if total > 0:
+            out[nm] = total
+    return out
+
+
+def _new_stock_apply_fbs_peers(by_nm: dict, city_fbs_h: dict, city_fbw_h: dict | None = None) -> None:
+    """Самовывоз: сначала срок склада WB по городу, иначе ближайший наш FBS."""
+    city_hubs = _new_stock_city_hubs()
+    city_fbw_h = city_fbw_h if isinstance(city_fbw_h, dict) else {}
+    for row in (by_nm or {}).values():
+        for cid, cell in ((row or {}).get("cities") or {}).items():
+            if not isinstance(cell, dict) or not cell.get("pickup"):
+                continue
+            fbw_h = city_fbw_h.get(cid)
+            if fbw_h is not None:
+                try:
+                    fbw_h = int(fbw_h)
+                except Exception:
+                    fbw_h = None
+            if fbw_h is not None:
+                cell["hours"] = fbw_h
+                cell["source"] = "fbw_peer"
+                cell["is_fbw"] = True
+                cell["tone"] = _new_stock_tone(fbw_h, int(cell.get("qty") or 0))
+                continue
+            peer = None
+            hid = None
+            for cand in city_hubs.get(str(cid), ["msk"]):
+                peer = _new_stock_hub_hours(city_fbs_h, cand, cid)
+                if peer is not None:
+                    hid = cand
+                    break
+            if peer is None:
+                continue
+            cell["hours"] = peer
+            cell["fbs_hub"] = hid
+            cell["source"] = "fbs_hub_peer"
+            cell["tone"] = _new_stock_tone(peer, int(cell.get("qty") or 0))
+
+
+def _new_stock_tone(hours, qty: int) -> str:
+    if not qty:
+        return "oos"
+    if hours is None:
+        return "ok"
+    if hours > NEW_STOCK_BAD_H:
+        return "bad"
+    if hours > NEW_STOCK_WARN_H:
+        return "warn"
+    return "ok"
+
+
+def _wb_site_headers() -> dict:
+    h = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Origin": "https://www.wildberries.ru",
+        "Referer": "https://www.wildberries.ru/",
+    }
+    cookie = (os.getenv("WB_SITE_COOKIE") or "").strip()
+    if cookie:
+        h["Cookie"] = cookie
+    return h
+
+
+def _new_stock_has_cookie() -> bool:
+    return bool((os.getenv("WB_SITE_COOKIE") or "").strip())
+
+
+def _resolve_wb_dest(city: dict) -> int:
+    """Актуальный dest по координатам; при сбое — запасной из NEW_STOCK_CITIES."""
+    fallback = int(city.get("dest") or 0)
+    lat, lon, name = city.get("lat"), city.get("lon"), city.get("name") or ""
+    if lat is None or lon is None:
+        return fallback
+    try:
+        resp = httpx.get(
+            "https://user-geo-data.wildberries.ru/get-geo-info",
+            params={"latitude": lat, "longitude": lon, "address": name},
+            headers={"User-Agent": _wb_site_headers()["User-Agent"]},
+            timeout=12,
+        )
+        if not resp.is_success:
+            return fallback
+        data = resp.json() or {}
+        xinfo = str(data.get("xinfo") or data.get("xInfo") or "")
+        m = re.search(r"dest=([^&]+)", xinfo)
+        if m:
+            return int(m.group(1))
+        if data.get("dest") is not None:
+            return int(data["dest"])
+    except Exception as e:
+        logger.warning(f"new-stock geo {name}: {e}")
+    return fallback
+
+
+def _new_stock_articles() -> list:
+    raw = (os.getenv("NEW_STOCK_ARTICLES_JSON") or "").strip()
+    if raw:
+        try:
+            arr = json.loads(raw)
+        except Exception:
+            arr = []
+        out = []
+        for it in arr if isinstance(arr, list) else []:
+            try:
+                nm = int((it or {}).get("nm_id") or (it or {}).get("nmId"))
+            except Exception:
+                continue
+            vc = str((it or {}).get("vendor_code") or (it or {}).get("vendorCode") or nm)
+            out.append({"nm_id": nm, "vendor_code": vc, "stock_seller": None, "sales_7d": 0})
+        if out:
+            return out[:80]
+    products = WB_PRODUCTS_CACHE.get("products") or []
+    if not products:
+        try:
+            get_wb_products(refresh=False)
+            products = WB_PRODUCTS_CACHE.get("products") or []
+        except Exception:
+            products = []
+    out = []
+    for p in products or []:
+        try:
+            nm = int(p.get("nm_id"))
+        except Exception:
+            continue
+        stock = int(p.get("stock") or 0)
+        s7 = int(p.get("sales_7d") or 0)
+        if stock <= 0 and s7 <= 0:
+            continue
+        out.append({
+            "nm_id": nm,
+            "vendor_code": str(p.get("vendor_code") or nm),
+            "name": p.get("name") or "",
+            "stock_seller": stock,
+            "sales_7d": s7,
+        })
+    out.sort(key=lambda x: (-int(x.get("sales_7d") or 0), -int(x.get("stock_seller") or 0), str(x.get("vendor_code"))))
+    return out[:80]
+
+
+def _card_products_from(data) -> list:
+    if not isinstance(data, dict):
+        return []
+    products = (data.get("data") or {}).get("products") or data.get("products") or []
+    return products if isinstance(products, list) else []
+
+
+def _card_has_dest_shelf(p: dict) -> bool:
+    if not isinstance(p, dict):
+        return False
+    return bool(_new_stock_stock_rows(p)) or _new_stock_hours(p) is not None
+
+
+def _fetch_card_detail(nm_ids: list, dest: int) -> dict:
+    """card.wb.ru v4, затем v2. При 403 — ещё раз с cookie, если она задана."""
+    if not nm_ids:
+        return {"products": [], "status": 0, "error": None}
+    ids = ";".join(str(int(n)) for n in nm_ids)
+    params = {"appType": 1, "curr": "rub", "dest": dest, "nm": ids}
+    last_status = 0
+    last_err = None
+    headers = _wb_site_headers()
+    for url in (
+        "https://card.wb.ru/cards/v4/detail",
+        "https://card.wb.ru/cards/v2/detail",
+    ):
+        for attempt in range(2):
+            try:
+                resp = httpx.get(url, params=params, headers=headers, timeout=25)
+            except Exception as e:
+                last_err = str(e)
+                break
+            last_status = resp.status_code
+            if resp.status_code == 403 and attempt == 0 and _new_stock_has_cookie():
+                time.sleep(0.4)
+                continue
+            if not resp.is_success:
+                last_err = f"HTTP {resp.status_code}"
+                break
+            try:
+                data = resp.json() or {}
+            except Exception as e:
+                last_err = str(e)
+                break
+            products = _card_products_from(data)
+            if products and (any(_card_has_dest_shelf(p) for p in products) or url.endswith("/v2/detail")):
+                return {"products": products, "status": last_status, "error": None}
+            if products:
+                last_err = "нет stocks/срока на витрине"
+            break
+    return {"products": [], "status": last_status, "error": last_err}
+
+
+def sync_new_stock():
+    if NEW_STOCK_CACHE.get("syncing"):
+        return
+    NEW_STOCK_CACHE["syncing"] = True
+    NEW_STOCK_CACHE["error"] = None
+    try:
+        articles = _new_stock_articles()
+        if not articles:
+            NEW_STOCK_CACHE["payload"] = {
+                "articles": [],
+                "cities": [{"id": c["id"], "name": c["name"], "group": c["group"]} for c in NEW_STOCK_CITIES],
+                "groups": NEW_STOCK_GROUPS,
+                "as_of": _msk_now().strftime("%d.%m.%Y %H:%M"),
+                "cookie_set": _new_stock_has_cookie(),
+                "note": "Нет артикулов: обнови «Товары» или задай NEW_STOCK_ARTICLES_JSON.",
+            }
+            NEW_STOCK_CACHE["updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+            return
+        nm_ids = [a["nm_id"] for a in articles]
+        by_nm = {a["nm_id"]: {"nm_id": a["nm_id"], "vendor_code": a["vendor_code"], "name": a.get("name") or "", "sales_7d": a.get("sales_7d") or 0, "stock_seller": a.get("stock_seller"), "cities": {}} for a in articles}
+        cities_out = []
+        blocked = 0
+        dest_fail = 0
+        stores = _new_stock_load_stores()
+        for city in NEW_STOCK_CITIES:
+            dest = _resolve_wb_dest(city)
+            cities_out.append({"id": city["id"], "name": city["name"], "group": city["group"], "dest": dest})
+            products = []
+            for i in range(0, len(nm_ids), 25):
+                got = _fetch_card_detail(nm_ids[i:i + 25], dest)
+                if got.get("status") == 403:
+                    blocked += 1
+                if got.get("error") and not got.get("products"):
+                    dest_fail += 1
+                products.extend(got.get("products") or [])
+                time.sleep(0.35)
+            found = set()
+            for p in products:
+                try:
+                    nm = int(p.get("id") or p.get("nmId") or p.get("nm_id"))
+                except Exception:
+                    continue
+                if nm not in by_nm:
+                    continue
+                by_nm[nm]["cities"][city["id"]] = _new_stock_parse_cell(p, stores)
+                found.add(nm)
+            empty = {"qty": 0, "hours": None, "tone": "oos", "wh": None, "wh_name": None, "pickup": False, "is_fbw": False, "fbs_hub": None, "source": "storefront"}
+            for nm, row in by_nm.items():
+                if city["id"] not in row["cities"]:
+                    row["cities"][city["id"]] = dict(empty)
+            logger.info(f"new-stock {city['name']} dest={dest} found={len(found)}/{len(nm_ids)}")
+        city_fbs_h = _new_stock_city_fbs_hours(by_nm)
+        city_fbw_h = _new_stock_city_fbw_hours(by_nm)
+        _new_stock_apply_fbs_peers(by_nm, city_fbs_h, city_fbw_h)
+
+        rows = list(by_nm.values())
+        rows.sort(key=lambda r: (
+            -max((int(c.get("hours") or 0) for c in (r.get("cities") or {}).values()), default=0),
+            -int(r.get("sales_7d") or 0),
+            str(r.get("vendor_code")),
+        ))
+        err = None
+        has_data = any(
+            (c.get("hours") is not None or int(c.get("qty") or 0) > 0)
+            for r in rows
+            for c in (r.get("cities") or {}).values()
+        )
+        if blocked and not has_data:
+            err = "WB витрина временно закрыла доступ (403). Подожди и нажми «Обновить» — cookie с сайта не используем."
+        elif dest_fail >= len(NEW_STOCK_CITIES) and not has_data:
+            err = "Не удалось прочитать витрину WB. Подожди и нажми «Обновить»."
+        payload = {
+            "articles": rows,
+            "cities": cities_out,
+            "groups": NEW_STOCK_GROUPS,
+            "warn_h": NEW_STOCK_WARN_H,
+            "bad_h": NEW_STOCK_BAD_H,
+            "as_of": _msk_now().strftime("%d.%m.%Y %H:%M"),
+            "cookie_set": _new_stock_has_cookie(),
+            "articles_source": "env" if (os.getenv("NEW_STOCK_ARTICLES_JSON") or "").strip() else "catalog",
+            "city_fbs_hours": city_fbs_h,
+            "city_fbw_hours": city_fbw_h,
+            "note": "Штуки и часы города — только витрина WB по dest. Колонка FBS — отдельный отчёт складов продавца, в города её не подставляем.",
+        }
+        NEW_STOCK_CACHE["payload"] = payload
+        NEW_STOCK_CACHE["error"] = err
+        NEW_STOCK_CACHE["updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+        logger.info(f"new-stock: {len(rows)} arts × {len(cities_out)} cities")
+    except Exception as e:
+        logger.error(f"sync_new_stock: {e}")
+        NEW_STOCK_CACHE["error"] = str(e)
+    finally:
+        NEW_STOCK_CACHE["syncing"] = False
+
+
+def _new_stock_stale(max_age_sec: int = 1800) -> bool:
+    raw = NEW_STOCK_CACHE.get("updated_at")
+    if not raw or not NEW_STOCK_CACHE.get("payload"):
+        return True
+    try:
+        dt = datetime.strptime(str(raw), "%d.%m.%Y %H:%M").replace(tzinfo=timezone.utc)
+    except Exception:
+        return True
+    return (datetime.now(timezone.utc) - dt).total_seconds() > max_age_sec
+
+
+@app.post("/api/sync-new-stock")
+def trigger_new_stock_sync():
+    if NEW_STOCK_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    threading.Thread(target=sync_new_stock, daemon=True, name="new-stock").start()
+    return {"status": "started"}
+
+
+def _new_stock_default_layout() -> dict:
+    return {
+        "hidden": [],
+        "pinned": [],
+        "order": [],
+        "groups": [],
+        "city_order": [],
+        "group_order": [],
+        "city_group": {},
+        "hidden_cities": [],
+        "hidden_fbs": [],
+        "col_w": 56,
+    }
+
+
+def _uniq_str_list(raw) -> list:
+    out, seen = [], set()
+    for item in raw or []:
+        s = str(item or "").strip()
+        if s and s not in seen:
+            out.append(s)
+            seen.add(s)
+    return out
+
+
+def _normalize_new_stock_layout(raw) -> dict:
+    """Общая раскладка для всех: скрытые, закреп, порядок, группы, колонки городов."""
+    src = raw if isinstance(raw, dict) else {}
+    hidden = _uniq_str_list(src.get("hidden"))
+    hidden_set = set(hidden)
+    pinned = [s for s in _uniq_str_list(src.get("pinned")) if s not in hidden_set]
+    order = _uniq_str_list(src.get("order"))
+    groups = []
+    used = set()
+    for g in src.get("groups") or []:
+        if not isinstance(g, dict):
+            continue
+        name = str(g.get("name") or "").strip()
+        gid = str(g.get("id") or "").strip() or f"g_{len(groups)+1}"
+        arts = []
+        for vc in g.get("articles") or []:
+            s = str(vc or "").strip()
+            if s and s not in used:
+                arts.append(s)
+                used.add(s)
+        if name:
+            groups.append({"id": gid, "name": name, "articles": arts})
+    city_group = {}
+    raw_cg = src.get("city_group") or {}
+    if isinstance(raw_cg, dict):
+        for k, v in raw_cg.items():
+            ks, vs = str(k or "").strip(), str(v or "").strip()
+            if ks and vs:
+                city_group[ks] = vs
+    return {
+        "hidden": hidden,
+        "pinned": pinned,
+        "order": order,
+        "groups": groups,
+        "city_order": _uniq_str_list(src.get("city_order")),
+        "group_order": _uniq_str_list(src.get("group_order")),
+        "city_group": city_group,
+        "hidden_cities": _uniq_str_list(src.get("hidden_cities")),
+        "hidden_fbs": _uniq_str_list(src.get("hidden_fbs")),
+        "col_w": _new_stock_col_w(src.get("col_w")),
+    }
+
+
+def _new_stock_col_w(raw) -> int:
+    try:
+        n = int(raw)
+    except Exception:
+        n = 56
+    return max(48, min(110, n))
+
+
+def _fbs_wh_short(name: str) -> str:
+    raw = (name or "").strip()
+    s = re.sub(r"(?i)^маркетплейс\s*\(fbs\)\s*[·•\-\u2013\u2014:]\s*", "", raw)
+    s = re.sub(r"(?i)\s*\(fbs\)\s*$", "", s).strip()
+    short = s or raw
+    low = short.lower()
+    if any(x in low for x in ("dbs", "edbs", "курьер", "мгт")):
+        return "Прочие"
+    return short
+
+
+def _new_stock_collect_fbs(rows) -> dict:
+    """nm_id -> {short_name: qty} из списка складов {name/warehouse_name, qty/quantity}."""
+    by_nm = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        raw_name = (row.get("name") or row.get("warehouse_name") or "").strip()
+        if not raw_name:
+            continue
+        n = raw_name.lower()
+        if "fbs" not in n and "маркетплейс" not in n:
+            continue
+        try:
+            nm = int(row.get("nm_id"))
+            qty = int(row.get("qty") if row.get("qty") is not None else row.get("quantity") or 0)
+        except Exception:
+            continue
+        if qty <= 0:
+            continue
+        short = _fbs_wh_short(raw_name)
+        if _fbs_wh_is_ignored(raw_name) or _fbs_wh_is_ignored(short):
+            continue
+        bucket = by_nm.setdefault(nm, {})
+        bucket[short] = bucket.get(short, 0) + qty
+    return by_nm
+
+
+def _new_stock_fbs_from_products() -> dict:
+    rows = []
+    for p in WB_PRODUCTS_CACHE.get("products") or []:
+        try:
+            nm = int(p.get("nm_id"))
+        except Exception:
+            continue
+        for w in p.get("warehouses") or []:
+            if not isinstance(w, dict):
+                continue
+            rows.append({
+                "nm_id": nm,
+                "name": w.get("name"),
+                "qty": w.get("qty"),
+            })
+    return _new_stock_collect_fbs(rows)
+
+
+def _new_stock_fbs_from_supabase() -> dict:
+    if not SUPABASE_URL:
+        return {}
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_warehouses"
+            "?select=nm_id,warehouse_name,quantity&quantity=gt.0&limit=20000",
+            headers=sb_headers(),
+            timeout=20,
+        )
+        rows = resp.json() if resp.is_success else []
+        if not isinstance(rows, list):
+            rows = []
+    except Exception as e:
+        logger.warning(f"new-stock FBS warehouses: {e}")
+        return {}
+    return _new_stock_collect_fbs(rows)
+
+
+def _new_stock_fbs_bundle() -> tuple:
+    """(map nm-> {total, warehouses}, list of {id,name} колонок)."""
+    by_nm = _new_stock_fbs_from_products()
+    if not by_nm:
+        by_nm = _new_stock_fbs_from_supabase()
+    totals = {}
+    for whs in by_nm.values():
+        for name, qty in whs.items():
+            totals[name] = totals.get(name, 0) + qty
+    fbs_whs = [{"id": n, "name": n} for n, _ in sorted(totals.items(), key=lambda x: (-x[1], x[0].lower()))]
+    fbs_map = {}
+    for nm, whs in by_nm.items():
+        warehouses = [{"name": n, "qty": q} for n, q in sorted(whs.items(), key=lambda x: (-x[1], x[0].lower()))]
+        fbs_map[int(nm)] = {"total": sum(whs.values()), "warehouses": warehouses}
+    return fbs_map, fbs_whs
+
+
+def _attach_new_stock_fbs(payload: dict) -> dict:
+    src = payload if isinstance(payload, dict) else {}
+    fbs_map, fbs_whs = _new_stock_fbs_bundle()
+    fbw_map = _new_stock_fbw_qty_by_nm()
+    articles = []
+    for a in src.get("articles") or []:
+        if not isinstance(a, dict):
+            continue
+        row = dict(a)
+        try:
+            nm = int(row.get("nm_id"))
+        except Exception:
+            nm = None
+        row["fbs"] = fbs_map.get(nm) if nm is not None else None
+        if not row["fbs"]:
+            row["fbs"] = {"total": 0, "warehouses": []}
+        fbw_qty = int(fbw_map.get(nm) or 0) if nm is not None else 0
+        row["fbw_qty"] = fbw_qty
+        cities = {}
+        for cid, cell in (row.get("cities") or {}).items():
+            if not isinstance(cell, dict):
+                continue
+            c = dict(cell)
+            c["fbw_qty"] = fbw_qty
+            storefront_qty = int(c.get("qty") or 0)
+            storefront_hours = c.get("hours")
+            # Только витрина этого dest. FBS-колонки справа от артикула — отдельный отчёт.
+            # Не рисуем FBS Москву/Казань в город: Челябинск 38 шт ≠ FBS Москва 7 шт.
+            if storefront_qty > 0 or storefront_hours is not None:
+                if c.get("fbs_hub"):
+                    hub = NEW_STOCK_FBS_HUBS.get(c.get("fbs_hub"))
+                    if hub:
+                        c["wh_label"] = hub["label"]
+                elif c.get("wh_name"):
+                    c["wh_label"] = c.get("wh_label") or c.get("wh_name")
+                elif not c.get("wh_label"):
+                    c["wh_label"] = "склад витрины WB"
+                c["tone"] = _new_stock_tone(c.get("hours"), storefront_qty)
+            else:
+                c["qty"] = 0
+                c["is_fbw"] = False
+                c["tone"] = "oos"
+            cities[cid] = c
+        row["cities"] = cities
+        articles.append(row)
+    out = dict(src)
+    out["articles"] = articles
+    out["fbs_warehouses"] = fbs_whs
+    return out
+
+
+def _new_stock_layout() -> dict:
+    return _normalize_new_stock_layout(get_setting_json(NEW_STOCK_LAYOUT_KEY, {}))
+
+
+@app.get("/api/new-stock")
+def get_new_stock(refresh: bool = False):
+    if refresh or _new_stock_stale():
+        if not NEW_STOCK_CACHE.get("syncing"):
+            threading.Thread(target=sync_new_stock, daemon=True, name="new-stock").start()
+    payload = _attach_new_stock_fbs(NEW_STOCK_CACHE.get("payload") or {})
+    return {
+        **payload,
+        "layout": _new_stock_layout(),
+        "syncing": NEW_STOCK_CACHE.get("syncing", False),
+        "error": NEW_STOCK_CACHE.get("error") or payload.get("error"),
+        "updated_at": NEW_STOCK_CACHE.get("updated_at"),
+        "cookie_set": _new_stock_has_cookie(),
+    }
+
+
+@app.post("/api/new-stock-layout")
+async def save_new_stock_layout(request: dict):
+    """Общая раскладка «Новые остатки»: скрытые / закреп / порядок / группы — на всех одинаково."""
+    layout = _normalize_new_stock_layout(request or {})
+    if not save_setting_value(NEW_STOCK_LAYOUT_KEY, layout):
+        raise HTTPException(status_code=500, detail="Не удалось сохранить раскладку")
+    return {"status": "ok", "layout": layout}
+
+
+# ---------- План поставок: коэффициенты WB + календарь сдачи в СДЭК ----------
+# WB: GET common-api /api/tariffs/v1/acceptance/coefficients (~14 дней).
+# Приёмка открыта только при coefficient 0 или 1 и allowUnload=true.
+# СДЭК: сколько календарных дней до отгрузки со склада нужно привезти короб на пункт.
+
+_WD_SHORT = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
+
+# weekdays: 0=пн … 6=вс. except — дни без отгрузки (если задан, отгрузка во все остальные).
+# lead_saturday — особый срок для субботней отгрузки (СЦ Истра).
+CDEK_SUPPLY_RULES = [
+    {
+        "id": "krasnodar", "name": "Краснодар",
+        "match": ("краснодар",), "weekdays": (1, 3), "lead_days": 5,
+        "ship_note": "вт, чт", "lead_note": "за 5 дней",
+    },
+    {
+        "id": "samara", "name": "Самара",
+        "match": ("самар",), "except": (6,), "lead_days": 3,
+        "ship_note": "пн–сб", "lead_note": "за 3 дня",
+    },
+    {
+        "id": "podolsk4", "name": "Подольск 4",
+        "match": ("подольск",), "weekdays": (1, 3, 5), "lead_days": 1,
+        "ship_note": "вт, чт, сб", "lead_note": "за 1 день",
+    },
+    {
+        "id": "chashnikovo", "name": "СЦ Чашниково",
+        "match": ("чашник",), "weekdays": (0, 2, 4), "lead_days": 2,
+        "ship_note": "пн, ср, пт", "lead_note": "за 2 дня",
+    },
+    {
+        "id": "novoselki", "name": "Новосёлки",
+        "match": ("новосёлк", "новоселк"), "weekdays": (2, 4, 6), "lead_days": 2,
+        "ship_note": "ср, пт, вс", "lead_note": "за 2 дня",
+    },
+    {
+        "id": "ekb", "name": "СЦ Екатеринбург",
+        "match": ("екатеринбург",), "weekdays": (0, 1, 2, 3, 4), "lead_days": 5,
+        "ship_note": "пн–пт", "lead_note": "за 5 дней",
+    },
+    {
+        "id": "kazan", "name": "Казань",
+        "match": ("казан",), "weekdays": (0, 1, 2, 3, 4, 5, 6), "lead_days": 4,
+        "ship_note": "каждый день", "lead_note": "за 4 дня",
+    },
+    {
+        "id": "nikolskoye", "name": "СЦ Никольское",
+        "match": ("никольск",), "weekdays": (0, 1, 2, 3, 4), "lead_days": 2,
+        "ship_note": "пн–пт", "lead_note": "за 2 дня",
+    },
+    {
+        "id": "radumlya", "name": "СЦ Радумля",
+        "match": ("радумл", "радум"), "weekdays": (0, 2, 4), "lead_days": 2,
+        "ship_note": "пн, ср, пт", "lead_note": "за 2 дня",
+    },
+    {
+        "id": "istra", "name": "СЦ Истра",
+        "match": ("истра",), "weekdays": (1, 3, 5), "lead_days": 1, "lead_saturday": 2,
+        "ship_note": "вт, чт, сб", "lead_note": "за 1 день, сб — за 2",
+    },
+    {
+        "id": "ufa", "name": "СЦ Уфа",
+        "match": ("уфа",), "weekdays": (0, 1, 2, 3, 4, 5, 6), "lead_days": 3,
+        "ship_note": "каждый день", "lead_note": "за 3 дня",
+    },
+    {
+        "id": "chelyabinsk", "name": "СЦ Челябинск",
+        "match": ("челябин",), "except": (0,), "lead_days": 4,
+        "ship_note": "вт–вс", "lead_note": "за 4 дня",
+    },
+]
+
+SUPPLIES_PLAN_CACHE = {"ts": 0.0, "raw": None, "error": None, "url": None}
+PLAN_SUPPLIES_CACHE = {"ts": 0.0, "items": None, "error": None}
+SUPPLIES_PLAN_TTL = 600
+_SUPPLIES_PLAN_LOCK = threading.Lock()
+
+
+def _cdek_is_ship_day(rule: dict, d: date) -> bool:
+    wd = d.weekday()
+    if "except" in rule:
+        return wd not in rule["except"]
+    return wd in rule.get("weekdays", ())
+
+
+def _cdek_lead_days(rule: dict, ship_d: date) -> int:
+    if ship_d.weekday() == 5 and rule.get("lead_saturday") is not None:
+        return int(rule["lead_saturday"])
+    return int(rule["lead_days"])
+
+
+def _cdek_rule_for_name(name: str):
+    low = (name or "").casefold()
+    for rule in CDEK_SUPPLY_RULES:
+        if any(tok in low for tok in rule["match"]):
+            return rule
+    return None
+
+
+def _parse_wb_coef_date(raw) -> date | None:
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _wb_coef_status(coef, allow: bool) -> str:
+    if coef is None:
+        return "none"
+    try:
+        c = float(coef)
+    except (TypeError, ValueError):
+        return "none"
+    if (not allow) or c < 0:
+        return "closed"
+    if c == 0:
+        return "open0"
+    if c == 1:
+        return "open1"
+    return "paid"
+
+
+def _wb_coef_rank(item: dict):
+    allow = bool(item.get("allowUnload"))
+    try:
+        coef = float(item.get("coefficient"))
+    except (TypeError, ValueError):
+        coef = None
+    if allow and coef == 0:
+        return (0, 0.0)
+    if allow and coef == 1:
+        return (1, 1.0)
+    if allow and coef is not None and coef > 0:
+        return (2, coef)
+    return (3, 99.0)
+
+
+def _extract_acceptance_rows(payload):
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("report", "data", "coefficients", "items"):
+            val = payload.get(key)
+            if isinstance(val, list):
+                return val
+    return []
+
+
+def fetch_acceptance_coefficients(force: bool = False):
+    now = time.time()
+    with _SUPPLIES_PLAN_LOCK:
+        if (
+            not force
+            and SUPPLIES_PLAN_CACHE.get("raw") is not None
+            and (now - float(SUPPLIES_PLAN_CACHE.get("ts") or 0)) < SUPPLIES_PLAN_TTL
+        ):
+            return SUPPLIES_PLAN_CACHE["raw"], SUPPLIES_PLAN_CACHE.get("error"), SUPPLIES_PLAN_CACHE.get("url")
+
+    urls = [
+        f"{WB_COMMON_URL}/api/tariffs/v1/acceptance/coefficients",
+        f"{WB_SUPPLIES_URL}/api/v1/acceptance/coefficients",
+        f"{WB_COMMON_URL}/api/v1/tariffs/acceptance/coefficients",
+    ]
+    last_err = None
+    used = None
+    rows = []
+    for url in urls:
+        try:
+            resp = httpx.get(url, headers=wb_headers(), timeout=30)
+            if resp.status_code == 404:
+                last_err = f"{url} 404"
+                continue
+            if not resp.is_success:
+                last_err = f"{url} {resp.status_code} {resp.text[:180]}"
+                continue
+            rows = _extract_acceptance_rows(resp.json())
+            used = url
+            last_err = None if rows else f"{url}: пустой ответ"
+            if rows:
+                break
+        except Exception as e:
+            last_err = f"{url}: {e}"
+    with _SUPPLIES_PLAN_LOCK:
+        SUPPLIES_PLAN_CACHE["ts"] = time.time()
+        SUPPLIES_PLAN_CACHE["raw"] = rows
+        SUPPLIES_PLAN_CACHE["error"] = last_err
+        SUPPLIES_PLAN_CACHE["url"] = used
+    return rows, last_err, used
+
+
+def _index_acceptance_by_warehouse(raw_rows: list) -> dict:
+    """warehouse_id -> {name, is_sc, days: {date: best_cell}}"""
+    out = {}
+    for item in raw_rows or []:
+        if not isinstance(item, dict):
+            continue
+        wid = item.get("warehouseID") or item.get("warehouseId")
+        name = (item.get("warehouseName") or "").strip()
+        if wid is None and not name:
+            continue
+        key = int(wid) if wid is not None else f"n:{name}"
+        slot = out.setdefault(key, {
+            "warehouse_id": int(wid) if wid is not None else None,
+            "name": name,
+            "is_sc": bool(item.get("isSortingCenter")),
+            "days": {},
+        })
+        if name and (not slot["name"] or len(name) > len(slot["name"])):
+            slot["name"] = name
+        if item.get("isSortingCenter"):
+            slot["is_sc"] = True
+        d = _parse_wb_coef_date(item.get("date"))
+        if not d:
+            continue
+        prev = slot["days"].get(d)
+        if prev is None or _wb_coef_rank(item) < _wb_coef_rank(prev):
+            box = item.get("boxTypeName") or ""
+            slot["days"][d] = {
+                **item,
+                "box_types": sorted({*(prev.get("box_types") if prev else []), box} - {""}),
+            }
+        elif prev is not None:
+            box = item.get("boxTypeName") or ""
+            if box and box not in prev.get("box_types", []):
+                prev["box_types"] = sorted([*prev.get("box_types", []), box])
+    return out
+
+
+def _parse_supply_day(raw) -> date | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
+    except (TypeError, ValueError):
+        return _parse_wb_coef_date(raw)
+
+
+def _supply_name_candidates(detail: dict) -> list:
+    names = []
+    for key in (
+        "actualWarehouseName", "warehouseName", "transitWarehouseName",
+        "destinationWarehouseName", "officeName",
+    ):
+        val = str(detail.get(key) or "").strip()
+        if val and val not in names:
+            names.append(val)
+    return names
+
+
+def _rule_from_names(names: list):
+    for n in names or []:
+        rule = _cdek_rule_for_name(n)
+        if rule:
+            return rule, n
+    return None, (names[0] if names else "")
+
+
+def _fetch_one_plan_supply(sid: int, is_pre: bool, ship_d, status):
+    params = {}
+    if is_pre:
+        params["isPreorderID"] = "true"
+    detail = {}
+    try:
+        dresp = httpx.get(
+            f"{WB_SUPPLIES_URL}/api/v1/supplies/{sid}",
+            headers=wb_headers(), params=params, timeout=20,
+        )
+        if dresp.is_success:
+            raw = dresp.json()
+            if isinstance(raw, dict):
+                detail = raw
+    except Exception as e:
+        logger.warning(f"WB supply {sid} details: {e}")
+
+    if ship_d is None:
+        ship_d = _parse_supply_day(detail.get("supplyDate"))
+    qty = detail.get("quantity")
+    try:
+        qty = int(qty or 0)
+    except (TypeError, ValueError):
+        qty = 0
+    if qty <= 0:
+        try:
+            gparams = {"limit": 1000, "offset": 0}
+            if is_pre:
+                gparams["isPreorderID"] = "true"
+            gresp = httpx.get(
+                f"{WB_SUPPLIES_URL}/api/v1/supplies/{sid}/goods",
+                headers=wb_headers(), params=gparams, timeout=20,
+            )
+            if gresp.is_success:
+                qty = sum(int(g.get("quantity") or 0) for g in (gresp.json() or []) if isinstance(g, dict))
+        except Exception:
+            pass
+    names = _supply_name_candidates(detail)
+    rule, name = _rule_from_names(names)
+    wid = detail.get("actualWarehouseID") or detail.get("warehouseID")
+    if not ship_d:
+        return None
+    st = detail.get("statusID", status)
+    try:
+        st = int(st) if st is not None else None
+    except (TypeError, ValueError):
+        st = None
+    return {
+        "id": sid,
+        "preorder": is_pre,
+        "warehouse_id": int(wid) if wid is not None else None,
+        "warehouse_name": name,
+        "names": names,
+        "rule_id": rule["id"] if rule else None,
+        "ship_date": ship_d.isoformat(),
+        "qty": qty,
+        "status_id": st,
+        "need_cdek": st == 2,
+        "at_cdek": st == 3,
+        "status_label": {
+            1: "не запланировано",
+            2: "запланировано",
+            3: "отгрузка разрешена",
+            4: "приёмка",
+            5: "принято",
+            6: "на воротах",
+        }.get(st, ""),
+    }
+
+
+def fetch_plan_supply_items(date_from: date, date_to: date, force: bool = False):
+    """Поставки WB в окне дат: номер, склад, дата отгрузки, штуки."""
+    now = time.time()
+    with _SUPPLIES_PLAN_LOCK:
+        cached = PLAN_SUPPLIES_CACHE.get("items")
+        if (
+            not force
+            and cached is not None
+            and (now - float(PLAN_SUPPLIES_CACHE.get("ts") or 0)) < SUPPLIES_PLAN_TTL
+        ):
+            return cached, PLAN_SUPPLIES_CACHE.get("error")
+
+    items = []
+    err = None
+    try:
+        resp = httpx.post(
+            f"{WB_SUPPLIES_URL}/api/v1/supplies",
+            headers=wb_headers(), params={"limit": 1000, "offset": 0},
+            json={}, timeout=30,
+        )
+        if not resp.is_success:
+            err = f"supplies {resp.status_code} {resp.text[:160]}"
+            logger.error(f"WB supplies list for plan: {err}")
+            with _SUPPLIES_PLAN_LOCK:
+                PLAN_SUPPLIES_CACHE["ts"] = time.time()
+                PLAN_SUPPLIES_CACHE["items"] = []
+                PLAN_SUPPLIES_CACHE["error"] = err
+            return [], err
+        raw = resp.json()
+        if not isinstance(raw, list):
+            err = "supplies: unexpected shape"
+            raw = []
+    except Exception as e:
+        err = str(e)
+        logger.error(f"WB supplies list for plan exception: {e}")
+        with _SUPPLIES_PLAN_LOCK:
+            PLAN_SUPPLIES_CACHE["ts"] = time.time()
+            PLAN_SUPPLIES_CACHE["items"] = []
+            PLAN_SUPPLIES_CACHE["error"] = err
+        return [], err
+
+    todo = []
+    for s in raw or []:
+        if not isinstance(s, dict):
+            continue
+        if s.get("factDate"):
+            continue
+        status = s.get("statusID")
+        if status in (5, 6):
+            continue
+        ship_d = _parse_supply_day(s.get("supplyDate"))
+        if ship_d and (ship_d < date_from - timedelta(days=1) or ship_d > date_to):
+            continue
+        if not ship_d and status not in (1, 2, 3, 4, None):
+            continue
+        sid, is_pre = s.get("supplyID"), False
+        if not sid:
+            sid, is_pre = s.get("preorderID"), True
+        if not sid:
+            continue
+        todo.append((int(sid), bool(is_pre), ship_d, status))
+
+    todo.sort(key=lambda x: (x[2] is None, x[2] or date.max))
+    todo = todo[:120]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futs = [pool.submit(_fetch_one_plan_supply, *t) for t in todo]
+        for fut in as_completed(futs):
+            try:
+                item = fut.result()
+            except Exception as e:
+                logger.warning(f"WB supply details: {e}")
+                continue
+            if not item:
+                continue
+            sd = _parse_supply_day(item.get("ship_date"))
+            if not sd or sd < date_from or sd > date_to:
+                continue
+            items.append(item)
+
+    items.sort(key=lambda x: (x.get("ship_date") or "", x.get("id") or 0))
+    with _SUPPLIES_PLAN_LOCK:
+        PLAN_SUPPLIES_CACHE["ts"] = time.time()
+        PLAN_SUPPLIES_CACHE["items"] = items
+        PLAN_SUPPLIES_CACHE["error"] = err
+    return items, err
+
+
+def _pick_row_for_supply(item: dict, rows: list):
+    names = [n for n in (item.get("names") or []) if n]
+    if item.get("warehouse_name") and item["warehouse_name"] not in names:
+        names.append(item["warehouse_name"])
+    rid = item.get("rule_id")
+    if not rid:
+        rule, _ = _rule_from_names(names)
+        rid = rule["id"] if rule else None
+    if rid:
+        named = [r for r in rows if (r.get("cdek") or {}).get("id") == rid]
+        if named:
+            return named[0]
+    wid = item.get("warehouse_id")
+    if wid:
+        for row in rows:
+            if row.get("warehouse_id") == wid:
+                return row
+    for name in names:
+        low = name.casefold()
+        for row in rows:
+            rname = (row.get("name") or "").casefold()
+            if low and rname and (low in rname or rname in low):
+                return row
+            if _cdek_rule_for_name(name) and row.get("cdek") and _cdek_rule_for_name(name)["id"] == row["cdek"]["id"]:
+                return row
+    return None
+
+
+def _annotate_plan_links(rows: list, items: list, dates: list, today: date):
+    """Связка СДЭК-день → день отгрузки + номера поставок."""
+    date_index = {d.isoformat(): i for i, d in enumerate(dates)}
+    rules_by_id = {r["id"]: r for r in CDEK_SUPPLY_RULES}
+
+    for row in rows:
+        for cell in row.get("cells") or []:
+            cell["is_cdek"] = False
+            cell["cdek_for"] = None
+            cell["cdek_for_label"] = None
+            cell["cdek_qty"] = 0
+            cell["pack_qty"] = 0
+            cell["cdek_pair"] = None
+            cell["supplies"] = []
+            cell["qty"] = 0
+            cell["pack_qty_ship"] = 0
+            cell["pair"] = None
+            cell["bridge"] = False
+            cell["bridge_today"] = False
+            cell["color"] = None
+
+    assigned = []
+    unmatched = []
+    for item in items or []:
+        row = _pick_row_for_supply(item, rows)
+        if row:
+            assigned.append((row, item))
+        else:
+            unmatched.append(item)
+
+    for row, item in assigned:
+        ship_iso = item["ship_date"]
+        cell = next((c for c in row["cells"] if c["date"] == ship_iso), None)
+        if not cell:
+            unmatched.append(item)
+            continue
+        if not any(s["id"] == item["id"] for s in cell["supplies"]):
+            cell["supplies"].append({
+                "id": item["id"],
+                "qty": item.get("qty") or 0,
+                "status_id": item.get("status_id"),
+                "need_cdek": bool(item.get("need_cdek")),
+                "at_cdek": bool(item.get("at_cdek")),
+                "status_label": item.get("status_label") or "",
+            })
+            cell["qty"] = sum(s["qty"] for s in cell["supplies"])
+            cell["pack_qty_ship"] = sum(s["qty"] for s in cell["supplies"] if s.get("need_cdek"))
+
+    for row in rows:
+        rule = rules_by_id.get((row.get("cdek") or {}).get("id"))
+        by_date = {c["date"]: c for c in row.get("cells") or []}
+        for cell in row.get("cells") or []:
+            to_pack = [s for s in (cell.get("supplies") or []) if s.get("need_cdek")]
+            if not to_pack:
+                continue
+            pair = f"{row.get('id')}:{cell['date']}"
+            cell["pair"] = pair
+            pack_qty = sum(s.get("qty") or 0 for s in to_pack)
+            cdek_iso = cell.get("cdek_date")
+            if not cdek_iso and rule:
+                try:
+                    ship_d = date.fromisoformat(cell["date"])
+                    lead = _cdek_lead_days(rule, ship_d)
+                    cdek_d = ship_d - timedelta(days=lead)
+                    cdek_iso = cdek_d.isoformat()
+                    cell["cdek_date"] = cdek_iso
+                    cell["cdek_label"] = f"{cdek_d.day:02d}.{cdek_d.month:02d}"
+                    cell["lead"] = lead
+                    cell["cdek_today"] = cdek_d == today
+                except Exception:
+                    cdek_iso = None
+            if cdek_iso and cdek_iso in by_date:
+                cc = by_date[cdek_iso]
+                cc["is_cdek"] = True
+                cc["cdek_for"] = cell["date"]
+                try:
+                    sd = date.fromisoformat(cell["date"])
+                    cc["cdek_for_label"] = f"{sd.day} {_WD_SHORT[sd.weekday()]}"
+                except Exception:
+                    cc["cdek_for_label"] = cell["date"]
+                cc["cdek_qty"] = pack_qty or (1 if to_pack else 0)
+                cc["pack_qty"] = pack_qty
+                cc["cdek_pair"] = pair
+                today_pair = bool(cdek_iso == today.isoformat() or cell.get("cdek_today"))
+                color = 0 if today_pair else (1 + (abs(hash(pair)) % 5))
+                if today_pair or cc.get("color") is None:
+                    cc["color"] = color
+                if today_pair or cell.get("color") is None:
+                    cell["color"] = color
+                if today_pair and cdek_iso in date_index and cell["date"] in date_index:
+                    i0, i1 = date_index[cdek_iso], date_index[cell["date"]]
+                    lo, hi = (i0, i1) if i0 <= i1 else (i1, i0)
+                    for i in range(lo + 1, hi):
+                        mid = by_date[dates[i].isoformat()]
+                        mid["bridge"] = True
+                        mid["bridge_today"] = True
+                        mid["color"] = 0
+
+    return unmatched
+
+
+def _acceptance_cell(day_item: dict | None) -> dict:
+    if not day_item:
+        return {"status": "none", "coef": None, "allow": False, "box_types": []}
+    allow = bool(day_item.get("allowUnload"))
+    coef = day_item.get("coefficient")
+    try:
+        coef_n = float(coef)
+    except (TypeError, ValueError):
+        coef_n = None
+    return {
+        "status": _wb_coef_status(coef_n, allow),
+        "coef": coef_n,
+        "allow": allow,
+        "box_types": day_item.get("box_types") or [],
+    }
+
+
+def build_supplies_plan(days: int = 21, refresh: bool = False) -> dict:
+    days = max(7, min(int(days or 21), 42))
+    today = _msk_now().date()
+    dates = [today + timedelta(days=i) for i in range(days)]
+    raw, err, used = fetch_acceptance_coefficients(force=refresh)
+    if refresh:
+        with _SUPPLIES_PLAN_LOCK:
+            PLAN_SUPPLIES_CACHE["ts"] = 0.0
+    supply_items, supply_err = fetch_plan_supply_items(today, dates[-1], force=refresh)
+    by_wh = _index_acceptance_by_warehouse(raw)
+
+    date_meta = [{
+        "date": d.isoformat(),
+        "wd": d.weekday(),
+        "wd_short": _WD_SHORT[d.weekday()],
+        "is_today": i == 0,
+        "is_weekend": d.weekday() >= 5,
+        "label": f"{d.day} {_WD_SHORT[d.weekday()]}",
+    } for i, d in enumerate(dates)]
+
+    def cells_for(rule, day_map: dict):
+        out = []
+        for d in dates:
+            ship = bool(rule and _cdek_is_ship_day(rule, d))
+            lead = _cdek_lead_days(rule, d) if ship else None
+            cdek_d = (d - timedelta(days=lead)) if lead is not None else None
+            acc = _acceptance_cell(day_map.get(d) if day_map else None)
+            out.append({
+                "date": d.isoformat(),
+                "ship": ship,
+                "cdek_date": cdek_d.isoformat() if cdek_d else None,
+                "cdek_label": f"{cdek_d.day:02d}.{cdek_d.month:02d}" if cdek_d else None,
+                "cdek_today": bool(cdek_d == today) if cdek_d else False,
+                "cdek_past": bool(cdek_d and cdek_d < today),
+                "lead": lead,
+                **acc,
+            })
+        return out
+
+    matched_keys = set()
+    rows = []
+    for rule in CDEK_SUPPLY_RULES:
+        hits = []
+        for key, info in by_wh.items():
+            if _cdek_rule_for_name(info.get("name") or "") is rule:
+                hits.append((key, info))
+        if hits:
+            hits.sort(key=lambda x: ((x[1].get("name") or ""), x[0] if isinstance(x[0], int) else 0))
+            for key, info in hits:
+                matched_keys.add(key)
+                rows.append({
+                    "id": f"{rule['id']}:{info.get('warehouse_id') or key}",
+                    "name": info.get("name") or rule["name"],
+                    "rule_name": rule["name"],
+                    "warehouse_id": info.get("warehouse_id"),
+                    "is_sc": info.get("is_sc"),
+                    "has_wb": True,
+                    "has_cdek": True,
+                    "cdek": {
+                        "id": rule["id"],
+                        "ship_note": rule["ship_note"],
+                        "lead_note": rule["lead_note"],
+                    },
+                    "cells": cells_for(rule, info.get("days") or {}),
+                })
+        else:
+            rows.append({
+                "id": f"{rule['id']}:local",
+                "name": rule["name"],
+                "rule_name": rule["name"],
+                "warehouse_id": None,
+                "is_sc": rule["name"].casefold().startswith("сц"),
+                "has_wb": False,
+                "has_cdek": True,
+                "cdek": {
+                    "id": rule["id"],
+                    "ship_note": rule["ship_note"],
+                    "lead_note": rule["lead_note"],
+                },
+                "cells": cells_for(rule, {}),
+            })
+
+    extra = []
+    for key, info in by_wh.items():
+        if key in matched_keys:
+            continue
+        extra.append({
+            "id": f"wb:{info.get('warehouse_id') or key}",
+            "name": info.get("name") or "Склад WB",
+            "rule_name": None,
+            "warehouse_id": info.get("warehouse_id"),
+            "is_sc": info.get("is_sc"),
+            "has_wb": True,
+            "has_cdek": False,
+            "cdek": None,
+            "cells": cells_for(None, info.get("days") or {}),
+        })
+    extra.sort(key=lambda r: (r.get("name") or "").casefold())
+
+    all_rows = rows + extra
+    unmatched = _annotate_plan_links(all_rows, supply_items, dates, today) or []
+
+    bring_today = []
+    seen_bring = set()
+    for row in rows:
+        if not row.get("has_cdek"):
+            continue
+        for cell in row["cells"]:
+            if not cell.get("is_cdek"):
+                continue
+            if cell.get("date") != today.isoformat():
+                continue
+            key = (row["name"], cell.get("cdek_for"))
+            if key in seen_bring:
+                continue
+            seen_bring.add(key)
+            nums = []
+            ship_cell = next((c for c in row["cells"] if c["date"] == cell.get("cdek_for")), None)
+            if ship_cell:
+                nums = [s["id"] for s in ship_cell.get("supplies") or []]
+            if not nums and not cell.get("cdek_qty"):
+                continue
+            bring_today.append({
+                "warehouse": row["name"],
+                "ship_date": cell.get("cdek_for"),
+                "ship_label": cell.get("cdek_for_label") or cell.get("cdek_for"),
+                "lead": (ship_cell or {}).get("lead") or cell.get("lead"),
+                "qty": cell.get("cdek_qty") or 0,
+                "supply_ids": nums,
+            })
+
+    return {
+        "today": today.isoformat(),
+        "days": days,
+        "dates": date_meta,
+        "rows": rows,
+        "extra_rows": extra,
+        "bring_today": bring_today,
+        "supplies": {
+            "count": len(supply_items or []),
+            "matched": len(supply_items or []) - len(unmatched),
+            "unmatched": [{
+                "id": u.get("id"),
+                "warehouse_name": u.get("warehouse_name") or "склад не указан",
+                "names": u.get("names") or [],
+                "ship_date": u.get("ship_date"),
+                "qty": u.get("qty") or 0,
+                "status_label": u.get("status_label") or "",
+                "need_cdek": bool(u.get("need_cdek")),
+            } for u in unmatched],
+            "error": supply_err,
+        },
+        "wb": {
+            "ok": not err and bool(raw),
+            "count": len(raw or []),
+            "warehouses": len(by_wh),
+            "url": used,
+            "error": err,
+            "updated_at": datetime.fromtimestamp(
+                SUPPLIES_PLAN_CACHE.get("ts") or time.time(), timezone.utc
+            ).isoformat(),
+        },
+        "rules": [{
+            "id": r["id"], "name": r["name"],
+            "ship_note": r["ship_note"], "lead_note": r["lead_note"],
+        } for r in CDEK_SUPPLY_RULES],
+    }
+
+
+@app.get("/api/supplies-plan")
+def get_supplies_plan(days: int = 21, refresh: bool = False):
+    return build_supplies_plan(days=days, refresh=refresh)
+
 
 # ---------- Рекомендации по поставкам: заказы + продажи по складам (WB Statistics API) ----------
 # Заказано — /api/v1/supplier/orders, Выкупили — /api/v1/supplier/sales (только saleID, начинающиеся
@@ -1439,6 +4676,175 @@ def save_setting_value(key: str, value) -> bool:
     except Exception as e:
         logger.error(f"save_setting_value({key}) error: {e}")
         return False
+
+
+def _nm_vendor_cards_map() -> dict:
+    """Актуальные артикулы продавца с карточек WB (settings + память)."""
+    cached = NM_VENDOR_CARDS_CACHE.get("map") or {}
+    if cached:
+        return cached
+    raw = get_setting_json(NM_VENDOR_CARDS_KEY, {}) or {}
+    m = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            try:
+                nm = int(k)
+            except (TypeError, ValueError):
+                continue
+            art = str(v or "").strip().replace("\u041e", "O").replace("\u043e", "o")
+            if art and art != str(nm):
+                m[nm] = art
+    if m:
+        NM_VENDOR_CARDS_CACHE["map"] = m
+    return m
+
+
+def _apply_card_vendor_map(rows: list, vmap: dict, nm_key: str = "nm_id", vc_key: str = "vendor_code") -> int:
+    n = 0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            nm = int(row.get(nm_key))
+        except (TypeError, ValueError):
+            continue
+        vc = vmap.get(nm)
+        if vc:
+            row[vc_key] = vc
+            n += 1
+    return n
+
+
+def sync_vendor_codes_from_wb_cards(force: bool = True) -> dict:
+    """Перезаписывает артикулы продавца актуальным vendorCode карточки WB."""
+    vmap = fetch_nm_vendor_from_cards(force=force)
+    if not vmap:
+        return {"status": "empty", "cards": 0, "stock_changed": 0, "changed": []}
+    try:
+        save_setting_value(NM_VENDOR_CARDS_KEY, {str(k): v for k, v in vmap.items()})
+    except Exception as e:
+        logger.warning(f"save vendor cards map: {e}")
+
+    changed = []
+    stock_old, ratings_old = {}, {}
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&limit=5000",
+            headers=sb_headers(),
+            timeout=20,
+        )
+        if r.is_success:
+            for row in r.json() or []:
+                try:
+                    stock_old[int(row.get("nm_id"))] = str(row.get("vendor_code") or "").strip()
+                except (TypeError, ValueError):
+                    continue
+    except Exception as e:
+        logger.warning(f"sync vendor load stock: {e}")
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?select=nm_id,article&nm_id=not.is.null&limit=5000",
+            headers=sb_headers(),
+            timeout=20,
+        )
+        if r.is_success:
+            for row in r.json() or []:
+                try:
+                    ratings_old[int(row.get("nm_id"))] = str(row.get("article") or "").strip()
+                except (TypeError, ValueError):
+                    continue
+    except Exception as e:
+        logger.warning(f"sync vendor load ratings: {e}")
+
+    hdr_min = {**sb_headers(), "Prefer": "return=minimal"}
+    try:
+        for nm, vc in vmap.items():
+            old_s = (stock_old.get(nm) or "").strip()
+            old_r = (ratings_old.get(nm) or "").strip()
+            if old_s == vc and old_r == vc:
+                continue
+            old = old_r or old_s
+            changed.append({"nm_id": nm, "old": old, "new": vc})
+            if old_s != vc and nm in stock_old:
+                resp = httpx.patch(
+                    f"{SUPABASE_URL}/rest/v1/stock_totals?nm_id=eq.{nm}",
+                    json={"vendor_code": vc},
+                    headers=hdr_min,
+                    timeout=15,
+                )
+                if not resp.is_success:
+                    logger.warning(f"stock_totals vendor patch {nm}: {resp.status_code} {resp.text[:160]}")
+            if old_r != vc and nm in ratings_old:
+                resp = httpx.patch(
+                    f"{SUPABASE_URL}/rest/v1/ratings_official?nm_id=eq.{nm}",
+                    json={"article": vc},
+                    headers=hdr_min,
+                    timeout=15,
+                )
+                if not resp.is_success:
+                    logger.warning(f"ratings vendor patch {nm}: {resp.status_code} {resp.text[:160]}")
+            resp = httpx.patch(
+                f"{SUPABASE_URL}/rest/v1/feedbacks?nm_id=eq.{nm}",
+                json={"article": vc},
+                headers=hdr_min,
+                timeout=30,
+            )
+            if not resp.is_success:
+                logger.warning(f"feedbacks vendor patch {nm}: {resp.status_code} {resp.text[:160]}")
+    except Exception as e:
+        logger.warning(f"sync vendor patch: {e}")
+
+    old_to_new = {row["old"]: row["new"] for row in changed if row.get("old") and row.get("new")}
+    if old_to_new:
+        try:
+            r = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/groups_config?select=name,articles,sort_order",
+                headers=sb_headers(),
+                timeout=15,
+            )
+            if r.is_success:
+                for g in r.json() or []:
+                    arts = list(g.get("articles") or [])
+                    new_arts = [old_to_new.get(a, a) for a in arts]
+                    if new_arts == arts:
+                        continue
+                    name = g.get("name")
+                    if not name:
+                        continue
+                    from urllib.parse import quote
+                    httpx.patch(
+                        f"{SUPABASE_URL}/rest/v1/groups_config?name=eq.{quote(str(name))}",
+                        json={"articles": new_arts},
+                        headers=hdr_min,
+                        timeout=15,
+                    )
+        except Exception as e:
+            logger.warning(f"sync vendor groups: {e}")
+
+    try:
+        _apply_card_vendor_map(SPP_CACHE.get("articles") or [], vmap)
+    except NameError:
+        pass
+    except Exception as e:
+        logger.warning(f"sync vendor spp: {e}")
+    try:
+        _apply_card_vendor_map(WB_PRODUCTS_CACHE.get("products") or [], vmap)
+    except NameError:
+        pass
+    except Exception as e:
+        logger.warning(f"sync vendor products: {e}")
+    try:
+        _invalidate_dash_cache()
+    except Exception:
+        pass
+    logger.info(f"vendor codes from cards: {len(vmap)} cards, {len(changed)} stock_totals changed")
+    return {
+        "status": "ok",
+        "cards": len(vmap),
+        "stock_changed": len(changed),
+        "changed": changed[:80],
+    }
+
 
 def parse_wb_dt(s: str):
     """WB отдаёт даты в orders/sales без таймзоны (например '2026-06-10T10:00:00').
@@ -2234,8 +5640,8 @@ def get_ads(refresh: bool = False):
 PROMO_CACHE = {"promotions": [], "articles": [], "updated_at": None, "syncing": False, "error": None}
 PROMO_RATE_DELAY = 0.7  # пауза между запросами к Календарю акций (лимит WB: интервал 600 мс)
 
-def fetch_calendar_promotions(start_dt: str, end_dt: str) -> list:
-    """Список акций, доступных для участия, за период [start_dt, end_dt]."""
+def fetch_calendar_promotions(start_dt: str, end_dt: str, all_promo: bool = False) -> list:
+    """Список акций за период [start_dt, end_dt]. all_promo=False — доступные для участия."""
     promotions, offset, limit = [], 0, 1000
     while True:
         try:
@@ -2243,7 +5649,8 @@ def fetch_calendar_promotions(start_dt: str, end_dt: str) -> list:
                 f"{WB_CALENDAR_URL}/api/v1/calendar/promotions",
                 headers=wb_headers(),
                 params={"startDateTime": start_dt, "endDateTime": end_dt,
-                        "allPromo": "false", "limit": limit, "offset": offset},
+                        "allPromo": "true" if all_promo else "false",
+                        "limit": limit, "offset": offset},
                 timeout=30,
             )
         except Exception as e:
@@ -2454,6 +5861,171 @@ def trigger_promotions_sync():
     threading.Thread(target=sync_promotions, daemon=True).start()
     return {"status": "started"}
 
+
+# ---------- Календарь акций (лента как в кабинете WB) ----------
+
+PROMO_CAL_CACHE = {
+    "promotions": [],
+    "updated_at": None,
+    "syncing": False,
+    "error": None,
+    "from": None,
+    "to": None,
+}
+
+
+def _promo_msk_date(iso):
+    """Дата акции по Москве: WB отдаёт UTC, 21:00Z это уже следующий день."""
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        try:
+            from zoneinfo import ZoneInfo
+            dt = dt.astimezone(ZoneInfo("Europe/Moscow"))
+        except Exception:
+            dt = dt.astimezone(timezone(timedelta(hours=3)))
+        return dt.date()
+    except Exception:
+        return None
+
+
+def _promo_cal_status(start_d, end_d, in_total, today):
+    """Участвую / буду участвовать / идёт без нас / доступна / прошла."""
+    in_total = int(in_total or 0)
+    if not start_d or not end_d:
+        return "unknown", "Дата неизвестна"
+    if end_d < today:
+        return ("ended", "Прошла") if in_total <= 0 else ("ended", "Участвовали")
+    if start_d > today:
+        if in_total > 0:
+            days = (start_d - today).days
+            when = "завтра" if days == 1 else f"через {days} дн."
+            return "will", f"Буду участвовать · старт {when}"
+        days = (start_d - today).days
+        when = "завтра" if days == 1 else f"через {days} дн."
+        return "soon", f"Старт {when}"
+    # идёт сейчас
+    left = (end_d - today).days
+    left_s = "последний день" if left <= 0 else f"ещё {left} дн."
+    if in_total > 0:
+        return "in", f"Участвую · {left_s}"
+    return "live", f"Идёт · {left_s}"
+
+
+def build_promo_calendar_items(promos: list, details: dict, today=None) -> list:
+    today = today or _msk_now().date()
+    out = []
+    for p in promos or []:
+        pid = p.get("id")
+        if pid is None:
+            continue
+        d = details.get(pid) or {}
+        start_iso = d.get("startDateTime") or p.get("startDateTime") or ""
+        end_iso = d.get("endDateTime") or p.get("endDateTime") or ""
+        start_d = _promo_msk_date(start_iso)
+        end_d = _promo_msk_date(end_iso)
+        in_total = d.get("inPromoActionTotal")
+        if in_total is None:
+            in_total = p.get("inPromoActionTotal") or 0
+        not_in = d.get("notInPromoActionTotal")
+        if not_in is None:
+            not_in = p.get("notInPromoActionTotal") or 0
+        ranging = d.get("ranging") or []
+        max_boost = max((r.get("boost", 0) or 0 for r in ranging), default=0)
+        max_rate = max((r.get("participationRate", 0) or 0 for r in ranging), default=0)
+        status, status_label = _promo_cal_status(start_d, end_d, in_total, today)
+        days_to_start = (start_d - today).days if start_d else None
+        ptype = d.get("type") or p.get("type") or "regular"
+        out.append({
+            "id": pid,
+            "name": d.get("name") or p.get("name") or f"#{pid}",
+            "type": ptype,
+            "start": start_iso,
+            "end": end_iso,
+            "start_date": start_d.isoformat() if start_d else None,
+            "end_date": end_d.isoformat() if end_d else None,
+            "days_to_start": days_to_start,
+            "status": status,
+            "status_label": status_label,
+            "in_total": int(in_total or 0),
+            "not_in_total": int(not_in or 0),
+            "in_leftovers": d.get("inPromoActionLeftovers"),
+            "participation": d.get("participationPercentage"),
+            "boost": max_boost,
+            "plan_discount": max_rate or None,
+            "advantages": d.get("advantages") or [],
+        })
+    out.sort(key=lambda x: (x.get("start_date") or "9999", x.get("name") or ""))
+    return out
+
+
+def sync_promo_calendar():
+    """Только список акций и детали — без номенклатуры, чтобы календарь открывался быстро."""
+    if not WB_TOKEN:
+        PROMO_CAL_CACHE["error"] = "WB_TOKEN не задан"
+        return
+    if PROMO_CAL_CACHE.get("syncing"):
+        return
+    PROMO_CAL_CACHE["syncing"] = True
+    PROMO_CAL_CACHE["error"] = None
+    try:
+        today = _msk_now().date()
+        start = (today - timedelta(days=14)).strftime("%Y-%m-%dT00:00:00Z")
+        end = (today + timedelta(days=90)).strftime("%Y-%m-%dT23:59:59Z")
+        logger.info(f"promo calendar sync {start} … {end}")
+        promos = fetch_calendar_promotions(start, end, all_promo=False)
+        promo_ids = [p.get("id") for p in promos if p.get("id") is not None]
+        details = fetch_promotions_details(promo_ids) if promo_ids else {}
+        items = build_promo_calendar_items(promos, details, today)
+        PROMO_CAL_CACHE["promotions"] = items
+        PROMO_CAL_CACHE["updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+        PROMO_CAL_CACHE["from"] = (today - timedelta(days=14)).isoformat()
+        PROMO_CAL_CACHE["to"] = (today + timedelta(days=90)).isoformat()
+        logger.info(f"promo calendar: {len(items)} акций")
+    except Exception as e:
+        logger.error(f"sync_promo_calendar: {e}")
+        PROMO_CAL_CACHE["error"] = str(e)
+    finally:
+        PROMO_CAL_CACHE["syncing"] = False
+
+
+def _promo_cal_payload():
+    items = PROMO_CAL_CACHE.get("promotions") or []
+    return {
+        "promotions": items,
+        "updated_at": PROMO_CAL_CACHE.get("updated_at"),
+        "syncing": PROMO_CAL_CACHE.get("syncing", False),
+        "error": PROMO_CAL_CACHE.get("error"),
+        "from": PROMO_CAL_CACHE.get("from"),
+        "to": PROMO_CAL_CACHE.get("to"),
+        "counts": {
+            "all": len(items),
+            "in": sum(1 for x in items if x.get("status") in ("in", "will")),
+            "available": sum(1 for x in items if x.get("status") in ("soon", "live")),
+            "soon": sum(1 for x in items if x.get("status") in ("soon", "will")),
+        },
+    }
+
+
+@app.get("/api/promo-calendar")
+def get_promo_calendar(refresh: int = 0):
+    if refresh and not PROMO_CAL_CACHE.get("syncing"):
+        threading.Thread(target=sync_promo_calendar, daemon=True).start()
+    elif not PROMO_CAL_CACHE.get("updated_at") and not PROMO_CAL_CACHE.get("syncing"):
+        threading.Thread(target=sync_promo_calendar, daemon=True).start()
+    return _promo_cal_payload()
+
+
+@app.post("/api/sync-promo-calendar")
+def trigger_promo_calendar_sync():
+    if PROMO_CAL_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    threading.Thread(target=sync_promo_calendar, daemon=True).start()
+    return {"status": "started"}
+
 def _parse_promo_excel_name(filename: str) -> str:
     """Из имени файла WB: «...для акции_<название>_<дата время>.xlsx»."""
     import re as _re
@@ -2467,10 +6039,74 @@ def _parse_promo_excel_name(filename: str) -> str:
         return m.group(1).strip(" _-")
     return name or "Акция"
 
+PROMO_SESSIONS_KEY = "promo_excel_sessions"
+
+
+def _promo_sessions_payload(raw=None) -> dict:
+    data = raw if isinstance(raw, dict) else {}
+    sessions = data.get("sessions") if isinstance(data.get("sessions"), list) else []
+    # только словари с id
+    clean = []
+    for s in sessions:
+        if isinstance(s, dict) and s.get("id"):
+            clean.append(s)
+    active_id = data.get("active_id")
+    if active_id and not any(s.get("id") == active_id for s in clean):
+        active_id = clean[0]["id"] if clean else None
+    if not active_id and clean:
+        active_id = clean[0]["id"]
+    return {
+        "sessions": clean,
+        "active_id": active_id,
+        "updated_at": data.get("updated_at"),
+    }
+
+
+def _save_promo_sessions(payload: dict) -> bool:
+    """Отдельный таймаут — Excel акций может быть большим."""
+    import json as _json
+    body = {
+        "key": PROMO_SESSIONS_KEY,
+        "value": _json.dumps(payload, ensure_ascii=False),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        resp = httpx.post(
+            f"{SUPABASE_URL}/rest/v1/settings?on_conflict=key",
+            json=body,
+            headers=sb_headers(),
+            timeout=60,
+        )
+        return resp.is_success
+    except Exception as e:
+        logger.error(f"save promo sessions error: {e}")
+        return False
+
+
+@app.get("/api/promo-sessions")
+def get_promo_sessions():
+    """Общие сессии загруженных Excel акций (видны со всех устройств)."""
+    raw = get_setting_json(PROMO_SESSIONS_KEY, {}) or {}
+    return _promo_sessions_payload(raw)
+
+
+@app.put("/api/promo-sessions")
+def put_promo_sessions(request: dict):
+    """Сохранить список сессий акций + активную."""
+    payload = _promo_sessions_payload({
+        "sessions": request.get("sessions") if isinstance(request.get("sessions"), list) else [],
+        "active_id": request.get("active_id"),
+    })
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    if not _save_promo_sessions(payload):
+        return {"error": "Не удалось сохранить акции в базу"}
+    return {"status": "ok", **payload}
+
+
 @app.post("/api/upload-promo-excel")
 async def upload_promo_excel(file: UploadFile = File(...)):
     """Парсит xlsx «Все товары подходящие для акции_…» из Календаря акций WB.
-    Возвращает список артикулов с ценами/участием — фронт сам сортирует и хранит сессии."""
+    Возвращает список артикулов с ценами/участием — фронт сохраняет сессии через /api/promo-sessions."""
     try:
         from openpyxl import load_workbook
         import re as _re
@@ -2950,8 +6586,12 @@ async def upload_competitor_report(file: UploadFile = File(...)):
         return {"error": str(e)}
 
 @app.get("/api/own-articles-all")
-def own_articles_all():
-    """Свои карточки с заказами или выкупами за окно поставок (не весь каталог)."""
+def own_articles_all(shelf_focus: bool = False):
+    """Свои карточки с заказами или выкупами за окно поставок (не весь каталог).
+
+    shelf_focus=1 — только интересные для полок: цена ≥1200₽, не зарядки/кабели/аксессуары,
+    с минимальными продажами. Для мониторинга «слабых полок» и задач по ним.
+    """
     window_days = get_setting_int("sales_window_days", 14)
     by_nm = {}
     try:
@@ -3012,6 +6652,36 @@ def own_articles_all():
         if not a.get("vendor_code"):
             a["vendor_code"] = str(a["nm_id"])
 
+    skipped = []
+    if shelf_focus:
+        price_map, meta_map = _shelf_focus_enrichment([a["nm_id"] for a in active])
+        focused = []
+        for a in active:
+            nm = a["nm_id"]
+            meta = meta_map.get(nm) or {}
+            price = price_map.get(nm)
+            a["price"] = price
+            a["name"] = meta.get("name") or ""
+            a["subject"] = meta.get("subject") or ""
+            reason = _shelf_focus_skip_reason(
+                vendor_code=a.get("vendor_code"),
+                name=a.get("name"),
+                subject=a.get("subject"),
+                price=price,
+                ordered_qty=a.get("ordered_qty") or 0,
+            )
+            if reason:
+                skipped.append({
+                    "nm_id": nm,
+                    "vendor_code": a.get("vendor_code"),
+                    "reason": reason,
+                    "price": price,
+                    "ordered_qty": a.get("ordered_qty") or 0,
+                })
+                continue
+            focused.append(a)
+        active = focused
+
     active.sort(
         key=lambda a: (
             -(a["ordered_qty"] or 0),
@@ -3019,19 +6689,126 @@ def own_articles_all():
             str(a.get("vendor_code") or "").lower(),
         )
     )
+    out_articles = []
+    for a in active:
+        row = {
+            "nm_id": a["nm_id"],
+            "vendor_code": a["vendor_code"],
+            "ordered_qty": a["ordered_qty"],
+            "buyout_qty": a["buyout_qty"],
+        }
+        if shelf_focus:
+            row["price"] = a.get("price")
+            row["name"] = a.get("name") or ""
+            row["subject"] = a.get("subject") or ""
+        out_articles.append(row)
     return {
-        "articles": [
-            {
-                "nm_id": a["nm_id"],
-                "vendor_code": a["vendor_code"],
-                "ordered_qty": a["ordered_qty"],
-                "buyout_qty": a["buyout_qty"],
-            }
-            for a in active
-        ],
-        "count": len(active),
+        "articles": out_articles,
+        "count": len(out_articles),
         "days": window_days,
+        "shelf_focus": bool(shelf_focus),
+        "shelf_focus_min_price": SHELF_FOCUS_MIN_PRICE if shelf_focus else None,
+        "shelf_focus_min_orders": SHELF_FOCUS_MIN_ORDERS if shelf_focus else None,
+        "skipped": skipped[:80] if shelf_focus else [],
+        "skipped_count": len(skipped) if shelf_focus else 0,
     }
+
+
+# Карточки для мониторинга полок: без дешёвых и аксессуаров (зарядки и т.п.)
+SHELF_FOCUS_MIN_PRICE = 1200
+SHELF_FOCUS_MIN_ORDERS = 5
+SHELF_FOCUS_SKIP_RE = re.compile(
+    r"(заряд|charger|кабел|cable|адаптер|adapter|power\s*bank|powerbank|"
+    r"провод|шнур|usb[\s\-]?[ac]|type[\s\-]?c|док[\s\-]?станц)",
+    re.IGNORECASE,
+)
+
+
+def _shelf_focus_skip_reason(
+    vendor_code: str = "",
+    name: str = "",
+    subject: str = "",
+    price=None,
+    ordered_qty: int = 0,
+):
+    """Почему карточку не смотрим в задачах по слабым полкам. None = ок."""
+    blob = " ".join([str(vendor_code or ""), str(name or ""), str(subject or "")])
+    if SHELF_FOCUS_SKIP_RE.search(blob):
+        return "accessory"  # зарядки/кабели/чехлы и т.п.
+    if price is not None:
+        try:
+            if float(price) < SHELF_FOCUS_MIN_PRICE:
+                return "cheap"
+        except (TypeError, ValueError):
+            pass
+    try:
+        if int(ordered_qty or 0) < SHELF_FOCUS_MIN_ORDERS:
+            return "low_sales"
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _shelf_focus_enrichment(nm_ids: list) -> tuple:
+    """Цена + название/предмет для фильтра полок."""
+    price_map = {}
+    meta_map = {}
+    # 1) живой кэш СПП
+    for a in (SPP_CACHE.get("articles") or []):
+        try:
+            nm = int(a.get("nm_id"))
+        except (TypeError, ValueError):
+            continue
+        p = a.get("client_price")
+        if p is None:
+            p = a.get("sale_price")
+        if p is None:
+            p = a.get("price")
+        if p is not None:
+            try:
+                price_map[nm] = float(p)
+            except (TypeError, ValueError):
+                pass
+        meta_map.setdefault(nm, {})
+        if a.get("name"):
+            meta_map[nm]["name"] = a.get("name")
+    # 2) stock_totals — subject_name
+    if nm_ids and SUPABASE_URL and SUPABASE_KEY:
+        try:
+            ids = ",".join(str(int(x)) for x in nm_ids[:500])
+            resp = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/stock_totals",
+                params={"select": "nm_id,subject_name,vendor_code", "nm_id": f"in.({ids})"},
+                headers=sb_headers(),
+                timeout=20,
+            )
+            if resp.is_success:
+                for row in resp.json() or []:
+                    try:
+                        nm = int(row.get("nm_id"))
+                    except (TypeError, ValueError):
+                        continue
+                    meta_map.setdefault(nm, {})
+                    if row.get("subject_name"):
+                        meta_map[nm]["subject"] = row.get("subject_name")
+        except Exception as e:
+            logger.warning(f"shelf focus stock_totals: {e}")
+        # 3) последний снимок цены, если нет в кэше
+        missing = [nm for nm in nm_ids if nm not in price_map]
+        if missing:
+            try:
+                prev = fetch_latest_price_snapshots(missing)
+                for nm, row in (prev or {}).items():
+                    p = _num_or_none(row.get("client_price"))
+                    if p is None:
+                        p = _num_or_none(row.get("sale_price"))
+                    if p is None:
+                        p = _num_or_none(row.get("price"))
+                    if p is not None:
+                        price_map[int(nm)] = float(p)
+            except Exception as e:
+                logger.warning(f"shelf focus snapshots: {e}")
+    return price_map, meta_map
 
 
 @app.get("/api/search-own-articles")
@@ -3310,9 +7087,166 @@ def get_competitor_sessions():
     except Exception:
         return []
 
+
+def _comp_metric_int(row: dict, *keys) -> int:
+    for k in keys:
+        v = (row or {}).get(k)
+        if v is None or v == "":
+            continue
+        try:
+            return int(float(v))
+        except Exception:
+            continue
+    return 0
+
+
+def _latest_competitor_views(nm_ids: list[int]) -> dict[int, int]:
+    """Показы по nm_id из последнего загруженного «Сравнения карточек»."""
+    ids = []
+    seen = set()
+    for n in nm_ids or []:
+        try:
+            nid = int(n)
+        except (TypeError, ValueError):
+            continue
+        if nid < 1 or nid in seen:
+            continue
+        seen.add(nid)
+        ids.append(nid)
+    if not ids:
+        return {}
+    try:
+        sess_resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/competitor_sessions"
+            f"?select=id,period_end,period_begin,uploaded_at&order=period_end.desc.nullslast&order=uploaded_at.desc",
+            headers=sb_headers(),
+            timeout=20,
+        )
+        sessions = sess_resp.json() if sess_resp.is_success else []
+        if not isinstance(sessions, list) or not sessions:
+            return {}
+        sid_rank = {}
+        for i, s in enumerate(sessions):
+            try:
+                sid_rank[int(s.get("id"))] = i
+            except (TypeError, ValueError):
+                continue
+        if not sid_rank:
+            return {}
+        # батчами — PostgREST in.() ограничен по длине URL
+        out: dict[int, tuple[int, int]] = {}  # nm -> (rank, views)
+        for i in range(0, len(ids), 80):
+            chunk = ids[i:i + 80]
+            ids_csv = ",".join(str(n) for n in chunk)
+            met_resp = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/competitor_metrics"
+                f"?nm_id=in.({ids_csv})&select=session_id,nm_id,views&limit=5000",
+                headers=sb_headers(),
+                timeout=30,
+            )
+            rows = met_resp.json() if met_resp.is_success else []
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    nm = int(row.get("nm_id"))
+                    sid = int(row.get("session_id"))
+                except (TypeError, ValueError):
+                    continue
+                rank = sid_rank.get(sid)
+                if rank is None:
+                    continue
+                views = _comp_metric_int(row, "views")
+                prev = out.get(nm)
+                if prev is None or rank < prev[0]:
+                    out[nm] = (rank, views)
+        return {nm: v for nm, (_r, v) in out.items()}
+    except Exception as e:
+        logger.warning(f"latest competitor views: {e}")
+        return {}
+
+
+@app.get("/api/competitor-brand-weeks")
+def competitor_brand_weeks(brand: str = ""):
+    """Показы и заказы бренда по неделям из загруженных «Сравнений карточек»."""
+    brand = (brand or "").strip()
+    if not brand:
+        return {"brand": "", "weeks": []}
+    try:
+        sess_resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/competitor_sessions?select=id,period_begin,period_end&order=period_begin.asc",
+            headers=sb_headers(),
+            timeout=20,
+        )
+        sessions = sess_resp.json() if sess_resp.is_success else []
+        if not isinstance(sessions, list) or not sessions:
+            return {"brand": brand, "weeks": []}
+        met_resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/competitor_metrics",
+            params={
+                "brand": f"eq.{brand}",
+                "select": "session_id,nm_id,views,orders,buyouts,card_opens",
+                "limit": "20000",
+            },
+            headers=sb_headers(),
+            timeout=30,
+        )
+        metrics = met_resp.json() if met_resp.is_success else []
+        if not isinstance(metrics, list):
+            metrics = []
+        by_sid = {}
+        for row in metrics:
+            if not isinstance(row, dict):
+                continue
+            sid = row.get("session_id")
+            if sid is None:
+                continue
+            acc = by_sid.setdefault(sid, {"views": 0, "orders": 0, "buyouts": 0, "card_opens": 0, "nms": set()})
+            acc["views"] += _comp_metric_int(row, "views")
+            acc["orders"] += _comp_metric_int(row, "orders")
+            acc["buyouts"] += _comp_metric_int(row, "buyouts")
+            acc["card_opens"] += _comp_metric_int(row, "card_opens")
+            try:
+                acc["nms"].add(int(row.get("nm_id")))
+            except Exception:
+                pass
+        merged = {}
+        for s in sessions:
+            acc = by_sid.get(s.get("id"))
+            if not acc:
+                continue
+            key = f"{s.get('period_begin') or ''}__{s.get('period_end') or ''}"
+            slot = merged.setdefault(key, {
+                "period_begin": s.get("period_begin"),
+                "period_end": s.get("period_end"),
+                "views": 0,
+                "orders": 0,
+                "buyouts": 0,
+                "card_opens": 0,
+                "articles": 0,
+                "nms": set(),
+            })
+            slot["views"] += acc["views"]
+            slot["orders"] += acc["orders"]
+            slot["buyouts"] += acc["buyouts"]
+            slot["card_opens"] += acc["card_opens"]
+            slot["nms"].update(acc["nms"])
+        weeks = []
+        for slot in merged.values():
+            nms = slot.pop("nms")
+            slot["articles"] = len(nms)
+            weeks.append(slot)
+        weeks.sort(key=lambda w: str(w.get("period_begin") or ""))
+        return {"brand": brand, "weeks": weeks}
+    except Exception as e:
+        logger.warning(f"competitor-brand-weeks: {e}")
+        return {"brand": brand, "weeks": [], "error": str(e)}
+
 @app.get("/api/competitor-data/{session_id}")
 def get_competitor_data(session_id: int):
-    """Метрики и поисковые запросы по сессии."""
+    """Метрики и поисковые запросы по сессии (+ живая цена покупателя / СПП с витрины WB)."""
     try:
         metrics = httpx.get(
             f"{SUPABASE_URL}/rest/v1/competitor_metrics?session_id=eq.{session_id}&select=*",
@@ -3322,12 +7256,64 @@ def get_competitor_data(session_id: int):
             f"{SUPABASE_URL}/rest/v1/competitor_search_queries?session_id=eq.{session_id}&select=*&order=query_count.desc",
             headers=sb_headers(), timeout=15
         )
+        rows = metrics.json() if metrics.is_success else []
+        if isinstance(rows, list) and rows:
+            rows = _enrich_competitor_metrics_prices(rows)
         return {
-            "metrics": metrics.json() if metrics.is_success else [],
+            "metrics": rows,
             "search_queries": queries.json() if queries.is_success else []
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+def _enrich_competitor_metrics_prices(metrics: list) -> list:
+    """Добавляет client_price / sale_price / spp: живая витрина WB, иначе из отчёта (price + median_price)."""
+    if not metrics:
+        return metrics
+    nms = []
+    for m in metrics:
+        try:
+            nms.append(int(m.get("nm_id")))
+        except (TypeError, ValueError):
+            continue
+    live = {}
+    try:
+        live, _src = fetch_client_prices(nms)
+    except Exception as e:
+        logger.warning(f"enrich competitor prices: {e}")
+        live = {}
+
+    out = []
+    for m in metrics:
+        item = dict(m)
+        try:
+            nm = int(item.get("nm_id"))
+        except (TypeError, ValueError):
+            out.append(item)
+            continue
+        info = live.get(nm) or {}
+        live_client = _num_or_none(info.get("client_price"))
+        live_basic = _num_or_none(info.get("client_basic"))
+        report_sale = _num_or_none(item.get("price"))
+        report_buyer = _num_or_none(item.get("median_price"))
+
+        client_price = live_client if live_client is not None else report_buyer
+        sale_price = live_basic if live_basic is not None else report_sale
+        spp_live = _calc_spp(live_basic, live_client)
+        spp_report = _calc_spp(report_sale, report_buyer)
+        spp = spp_live if spp_live is not None else spp_report
+
+        item["client_price"] = client_price
+        item["sale_price"] = sale_price
+        item["spp"] = spp
+        item["spp_live"] = spp_live
+        item["spp_report"] = spp_report
+        item["spp_source"] = (
+            "live" if spp_live is not None else ("report" if spp_report is not None else None)
+        )
+        out.append(item)
+    return out
 
 @app.get("/api/my-article-stats")
 def my_article_stats(begin: str, end: str, nm_ids: str = ""):
@@ -3500,8 +7486,8 @@ def trigger_daily_sync(days: int = 30):
     return {"status": "started", "days": days}
 
 # ---------- Рост продаж: темп к прошлому периоду (день/неделя/2 недели/месяц) ----------
-# Заказы — точно по времени из Statistics API.
-# Воронка: для «день» — почасовые снимки; для недели/месяца — selectedPeriod vs pastPeriod.
+# Заказы = orderCount воронки WB («Заказали товаров, шт» в кабинете).
+# Вчера «до часа» — из почасового снимка той же воронки. Statistics API — запасной источник.
 SALES_PACE_CACHE = {
     "by_period": {},  # period -> payload
     "syncing": False,
@@ -3509,7 +7495,13 @@ SALES_PACE_CACHE = {
     "error": None,
 }
 SALES_PACE_SNAPS_KEY = "sales_pace_funnel_snaps"
+SALES_PACE_HIDDEN_KEY = "sales_pace_hidden"
 SALES_PACE_PERIODS = ("day", "week", "weeks2", "month")
+
+
+def _sales_pace_hidden() -> list:
+    raw = get_setting_json(SALES_PACE_HIDDEN_KEY, [])
+    return _uniq_str_list(raw if isinstance(raw, list) else [])
 
 def _msk_now():
     try:
@@ -3537,6 +7529,16 @@ def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> 
     Для day + date_cur/date_prev — выбранные календарные дни (полные сутки;
     если выбран сегодняшний — до текущего времени)."""
     today0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    time_cut = now.strftime("%H:%M")
+
+    def _range_note(equal_cut: bool) -> str:
+        if equal_cut:
+            return (
+                f"Одинаковое окно часов (оба до {time_cut} МСК) — "
+                "сравниваем «срез к этому моменту», а не полные сутки"
+            )
+        return "Полные календарные периоды (или выбранные дни целиком)"
+
     if period == "day" and date_cur:
         cur_day = _parse_ymd(date_cur)
         if cur_day:
@@ -3545,27 +7547,37 @@ def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> 
                 prev_day = cur_day - timedelta(days=1)
             cur_start = cur_day.replace(hour=0, minute=0, second=0, microsecond=0)
             prev_start = prev_day.replace(hour=0, minute=0, second=0, microsecond=0)
-            if cur_start.date() == today0.date():
+            cur_is_today = cur_start.date() == today0.date()
+            prev_is_today = prev_start.date() == today0.date()
+            if cur_is_today:
                 cur_end = now
-                label_cur = f"{cur_start.strftime('%d.%m.%Y')} до {now.strftime('%H:%M')}"
+                label_cur = f"{cur_start.strftime('%d.%m.%Y')} (сегодня) до {time_cut}"
+                col_cur = f"{cur_start.strftime('%d.%m')} до {time_cut}"
             else:
                 cur_end = cur_start.replace(hour=23, minute=59, second=59)
-                label_cur = cur_start.strftime("%d.%m.%Y")
-            if prev_start.date() == today0.date():
+                label_cur = f"{cur_start.strftime('%d.%m.%Y')} (полные сутки)"
+                col_cur = cur_start.strftime("%d.%m")
+            if prev_is_today:
                 prev_end = now
-                label_prev = f"{prev_start.strftime('%d.%m.%Y')} до {now.strftime('%H:%M')}"
+                label_prev = f"{prev_start.strftime('%d.%m.%Y')} (сегодня) до {time_cut}"
+                col_prev = f"{prev_start.strftime('%d.%m')} до {time_cut}"
             else:
                 prev_end = prev_start.replace(hour=23, minute=59, second=59)
-                label_prev = prev_start.strftime("%d.%m.%Y")
+                label_prev = f"{prev_start.strftime('%d.%m.%Y')} (полные сутки)"
+                col_prev = prev_start.strftime("%d.%m")
+            equal_cut = cur_is_today  # выбран «сегодня» vs предыдущий день
             return {
                 "cur_start": cur_start, "cur_end": cur_end,
                 "prev_start": prev_start, "prev_end": prev_end,
                 "label_cur": label_cur,
                 "label_prev": label_prev,
-                "col_cur": cur_start.strftime("%d.%m"),
-                "col_prev": prev_start.strftime("%d.%m"),
+                "col_cur": col_cur,
+                "col_prev": col_prev,
                 "use_snaps": False,
                 "custom_dates": True,
+                "period_name": "День (выбранный)",
+                "mode_hint": _range_note(equal_cut),
+                "time_cutoff": time_cut if equal_cut else None,
             }
     if period == "day":
         cur_start = today0
@@ -3574,12 +7586,15 @@ def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> 
         return {
             "cur_start": cur_start, "cur_end": now,
             "prev_start": prev_start, "prev_end": prev_end,
-            "label_cur": f"сегодня до {now.strftime('%H:%M')}",
-            "label_prev": f"вчера до {now.strftime('%H:%M')}",
-            "col_cur": "Сегодня",
-            "col_prev": "Вчера",
+            "label_cur": f"сегодня {cur_start.strftime('%d.%m.%Y')} до {time_cut}",
+            "label_prev": f"вчера {prev_start.strftime('%d.%m.%Y')} до {time_cut}",
+            "col_cur": f"Сегодня {cur_start.strftime('%d.%m')}",
+            "col_prev": f"Вчера {prev_start.strftime('%d.%m')}",
             "use_snaps": True,
             "custom_dates": False,
+            "period_name": "День",
+            "mode_hint": _range_note(True),
+            "time_cutoff": time_cut,
         }
     if period == "week":
         # понедельник текущей недели
@@ -3589,12 +7604,15 @@ def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> 
         return {
             "cur_start": cur_start, "cur_end": now,
             "prev_start": prev_start, "prev_end": prev_end,
-            "label_cur": f"эта неделя ({cur_start.strftime('%d.%m')}–{now.strftime('%d.%m %H:%M')})",
-            "label_prev": f"прошлая неделя ({prev_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m %H:%M')})",
-            "col_cur": "Текущий",
-            "col_prev": "Прошлый",
+            "label_cur": f"эта неделя: {cur_start.strftime('%d.%m')} → сейчас ({now.strftime('%d.%m %H:%M')})",
+            "label_prev": f"прошлая неделя: {prev_start.strftime('%d.%m')} → {prev_end.strftime('%d.%m %H:%M')}",
+            "col_cur": f"{cur_start.strftime('%d.%m')}–{now.strftime('%d.%m')}",
+            "col_prev": f"{prev_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m')}",
             "use_snaps": False,
             "custom_dates": False,
+            "period_name": "Неделя (пн → сейчас)",
+            "mode_hint": _range_note(True),
+            "time_cutoff": time_cut,
         }
     if period == "weeks2":
         cur_start = now - timedelta(days=14)
@@ -3603,12 +7621,15 @@ def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> 
         return {
             "cur_start": cur_start, "cur_end": now,
             "prev_start": prev_start, "prev_end": prev_end,
-            "label_cur": f"последние 14 дн. ({cur_start.strftime('%d.%m')}–{now.strftime('%d.%m')})",
-            "label_prev": f"пред. 14 дн. ({prev_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m')})",
-            "col_cur": "Текущий",
-            "col_prev": "Прошлый",
+            "label_cur": f"последние 14 дн.: {cur_start.strftime('%d.%m.%Y')} → {now.strftime('%d.%m.%Y')}",
+            "label_prev": f"предыдущие 14 дн.: {prev_start.strftime('%d.%m.%Y')} → {prev_end.strftime('%d.%m.%Y')}",
+            "col_cur": f"{cur_start.strftime('%d.%m')}–{now.strftime('%d.%m')}",
+            "col_prev": f"{prev_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m')}",
             "use_snaps": False,
             "custom_dates": False,
+            "period_name": "2 недели",
+            "mode_hint": "Два окна по 14 дней подряд (без выравнивания по часам)",
+            "time_cutoff": None,
         }
     # month — с 1-го числа до сейчас vs прошлый месяц до того же дня/времени
     cur_start = today0.replace(day=1)
@@ -3629,12 +7650,15 @@ def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> 
     return {
         "cur_start": cur_start, "cur_end": now,
         "prev_start": prev_month_start, "prev_end": prev_end,
-        "label_cur": f"этот месяц ({cur_start.strftime('%d.%m')}–{now.strftime('%d.%m %H:%M')})",
-        "label_prev": f"прошлый месяц ({prev_month_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m %H:%M')})",
-        "col_cur": "Текущий",
-        "col_prev": "Прошлый",
+        "label_cur": f"этот месяц: {cur_start.strftime('%d.%m.%Y')} → {now.strftime('%d.%m.%Y %H:%M')}",
+        "label_prev": f"прошлый месяц: {prev_month_start.strftime('%d.%m.%Y')} → {prev_end.strftime('%d.%m.%Y %H:%M')}",
+        "col_cur": f"{cur_start.strftime('%d.%m')}–{now.strftime('%d.%m')}",
+        "col_prev": f"{prev_month_start.strftime('%d.%m')}–{prev_end.strftime('%d.%m')}",
         "use_snaps": False,
         "custom_dates": False,
+        "period_name": "Месяц (1-е → сейчас)",
+        "mode_hint": _range_note(True),
+        "time_cutoff": time_cut,
     }
 
 def _funnel_products_range(start_str: str, end_str: str, nm_ids: list = None) -> dict:
@@ -3689,6 +7713,26 @@ def _funnel_products_range(start_str: str, end_str: str, nm_ids: list = None) ->
 def _funnel_products_day(day_str: str, nm_ids: list = None) -> dict:
     return _funnel_products_range(day_str, day_str, nm_ids)
 
+
+def _pace_funnel_orders(funnel_map: dict, nm, fallback: int) -> int:
+    """orderCount воронки, если артикул в ответе; иначе запасной счётчик Statistics."""
+    row = (funnel_map or {}).get(nm)
+    if isinstance(row, dict) and "orders" in row:
+        return int(row.get("orders") or 0)
+    return int(fallback or 0)
+
+
+def _pace_cache_stale(cached: dict, max_age_sec: int = 600) -> bool:
+    """True, если кэш темпа старше max_age_sec (updated_at в UTC)."""
+    raw = (cached or {}).get("updated_at")
+    if not raw:
+        return True
+    try:
+        dt = datetime.strptime(str(raw), "%d.%m.%Y %H:%M").replace(tzinfo=timezone.utc)
+    except Exception:
+        return True
+    return (datetime.now(timezone.utc) - dt).total_seconds() > max_age_sec
+
 def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = None):
     """Считает темп продаж за выбранный период.
     Для day можно передать date_cur / date_prev (YYYY-MM-DD) — сравнение двух дней."""
@@ -3727,10 +7771,13 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 continue
             if o.get("supplierArticle"):
                 vc_from_orders[nm] = o["supplierArticle"]
+            qty = int(o.get("quantity") or 1)
+            if qty <= 0:
+                qty = 1
             if cur_start <= d <= cur_end:
-                cur_ord[nm] = cur_ord.get(nm, 0) + 1
+                cur_ord[nm] = cur_ord.get(nm, 0) + qty
             elif prev_start <= d <= prev_end:
-                prev_ord[nm] = prev_ord.get(nm, 0) + 1
+                prev_ord[nm] = prev_ord.get(nm, 0) + qty
 
         funnel_cur, funnel_prev = {}, {}
         compare_as_of = None
@@ -3851,6 +7898,16 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             nm_to_vendor = {}
             stock_by_nm = {}
 
+        # Текущая география складов + вчерашний снимок (для «обнулился склад»)
+        stock_wh_by_nm = _fetch_stock_wh_by_nm()
+        disabled_wh = get_disabled_warehouses()
+        try:
+            # в снимках храним все склады; отключённые фильтруем при сравнении
+            save_stock_warehouse_snapshot_by_nm(stock_wh_by_nm)
+        except Exception as e:
+            logger.warning(f"sales-pace stock WH snapshot: {e}")
+        stock_wh_prev_snap = get_stock_warehouse_snap_for_day(prev_s)
+
         period_days = {"day": 1, "week": 7, "weeks2": 14, "month": 30}.get(period, 1)
 
         def _cr_pct(num, den):
@@ -3858,14 +7915,18 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 return None
             return round(100.0 * float(num) / float(den), 1)
 
-        # только артикулы с заказами в текущем или прошлом окне
-        all_nms = set(cur_ord) | set(prev_ord)
+        # Остаток в темпе продаж — только «Склад WB РФ» (не сумма всех складов WB).
+        wb_rf_products = _new_stock_fbw_qty_by_nm()
+
+        # артикулы с заказами в воронке или (запасной) Statistics
+        all_nms = set(cur_ord) | set(prev_ord) | set(funnel_cur) | set(funnel_prev)
         articles = []
         for nm in all_nms:
             ft = funnel_cur.get(nm) or {}
             fy = funnel_prev.get(nm) or {}
-            o_t = cur_ord.get(nm, 0)
-            o_y = prev_ord.get(nm, 0)
+            # как в кабинете WB: «Заказали товаров, шт» = orderCount воронки
+            o_t = _pace_funnel_orders(funnel_cur, nm, cur_ord.get(nm, 0))
+            o_y = _pace_funnel_orders(funnel_prev, nm, prev_ord.get(nm, 0)) if funnel_ready else prev_ord.get(nm, 0)
             if o_t <= 0 and o_y <= 0:
                 continue
             opens_t = int(ft.get("opens") or 0)
@@ -3896,8 +7957,11 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 if cart_cr_t is not None and cart_cr_y is not None else None
             )
             st_info = stock_by_nm.get(int(nm)) or {}
-            stock_qty = int(st_info.get("stock") or 0)
             in_way = int(st_info.get("in_way") or 0)
+            geo = stock_wh_geo_compare(nm, stock_wh_by_nm, stock_wh_prev_snap, disabled_wh)
+            stock_qty = _wb_rf_qty_from_wh_by_nm(nm, stock_wh_by_nm)
+            if stock_qty <= 0:
+                stock_qty = int(wb_rf_products.get(int(nm)) or 0)
             # дней запаса ≈ остаток / среднесут. заказам в окне
             daily_orders = max(o_t, o_y, 0) / float(period_days or 1)
             days_left = round(stock_qty / daily_orders, 1) if daily_orders > 0 else None
@@ -3915,7 +7979,11 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 or (cart_cr_delta is not None and cart_cr_delta <= -1)
             )
             orders_down = (o_t - o_y) < 0
-            stock_linked = bool((funnel_down or orders_down) and stock_flag in ("oos", "low"))
+            geo_bad = geo.get("stock_geo_flag") in ("oos", "narrow", "emptied")
+            stock_linked = bool(
+                (funnel_down or orders_down)
+                and (stock_flag in ("oos", "low") or geo_bad)
+            )
             articles.append({
                 "nm_id": nm,
                 "vendor_code": ft.get("vendor_code") or fy.get("vendor_code") or nm_to_vendor.get(nm) or vc_from_orders.get(nm) or str(nm),
@@ -3950,6 +8018,11 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 "in_way": in_way,
                 "days_left": days_left,
                 "stock_flag": stock_flag,
+                "wh_live": geo.get("wh_live"),
+                "wh_live_prev": geo.get("wh_live_prev"),
+                "wh_emptied": geo.get("wh_emptied") or [],
+                "wh_names": geo.get("wh_names") or [],
+                "stock_geo_flag": geo.get("stock_geo_flag") or "ok",
                 "funnel_down": funnel_down,
                 "stock_linked": stock_linked,
                 "funnel_compare_ready": funnel_ready,
@@ -3969,6 +8042,9 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             "col_cur": win.get("col_cur") or ("Сегодня" if period == "day" else "Текущий"),
             "col_prev": win.get("col_prev") or ("Вчера" if period == "day" else "Прошлый"),
             "custom_dates": bool(win.get("custom_dates")),
+            "period_name": win.get("period_name") or period,
+            "mode_hint": win.get("mode_hint") or "",
+            "time_cutoff": win.get("time_cutoff"),
             "date_cur": cur_s,
             "date_prev": prev_s,
             "today": cur_s,
@@ -3977,6 +8053,7 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             "updated_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
             "funnel_ready": funnel_ready,
             "ads_ready": ads_ready,
+            "disabled_warehouses": sorted(disabled_wh),
             "error": None,
         }
         SALES_PACE_CACHE.setdefault("by_period", {})[cache_key] = payload
@@ -3993,10 +8070,12 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
         SALES_PACE_CACHE["syncing_period"] = None
 
 def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
-    """Докидывает текущий остаток/флаги к кэшу темпа (без полного пересчёта WB)."""
+    """Докидывает текущий остаток/флаги/географию складов к кэшу темпа (без полного пересчёта WB)."""
     if not articles:
         return articles
-    if all(isinstance(a, dict) and a.get("stock") is not None for a in articles):
+    need_stock = not all(isinstance(a, dict) and a.get("stock") is not None for a in articles)
+    need_geo = not all(isinstance(a, dict) and a.get("wh_live") is not None for a in articles)
+    if not need_stock and not need_geo:
         return articles
     stock_by_nm = {}
     try:
@@ -4014,7 +8093,13 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
                 }
     except Exception as e:
         logger.warning(f"enrich pace stock: {e}")
-        return articles
+        if need_stock:
+            return articles
+    stock_wh_by_nm = _fetch_stock_wh_by_nm() if (need_geo or need_stock) else {}
+    wb_rf_products = _new_stock_fbw_qty_by_nm() if need_stock else {}
+    disabled_wh = get_disabled_warehouses() if (need_geo or need_stock) else set()
+    prev_day = (_msk_now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    prev_snap = get_stock_warehouse_snap_for_day(prev_day) if need_geo else None
     period_days = {"day": 1, "week": 7, "weeks2": 14, "month": 30}.get(period, 1)
     out = []
     for a in articles:
@@ -4025,8 +8110,23 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
             out.append(item)
             continue
         st_info = stock_by_nm.get(nm) or {}
-        stock_qty = int(st_info.get("stock") or 0)
         in_way = int(st_info.get("in_way") or 0)
+        if need_stock:
+            stock_qty = _wb_rf_qty_from_wh_by_nm(nm, stock_wh_by_nm)
+            if stock_qty <= 0:
+                stock_qty = int(wb_rf_products.get(nm) or 0)
+        else:
+            stock_qty = int(item.get("stock") if item.get("stock") is not None else 0)
+            if item.get("in_way") is not None:
+                in_way = int(item.get("in_way") or 0)
+        geo = stock_wh_geo_compare(nm, stock_wh_by_nm, prev_snap, disabled_wh) if need_geo else {
+            "wh_live": item.get("wh_live"),
+            "wh_live_prev": item.get("wh_live_prev"),
+            "wh_emptied": item.get("wh_emptied") or [],
+            "wh_names": item.get("wh_names") or [],
+            "stock_geo_flag": item.get("stock_geo_flag") or "ok",
+            "stock_qty_enabled": None,
+        }
         o_t = int(item.get("orders_today") or 0)
         o_y = int(item.get("orders_yesterday") or 0)
         daily_orders = max(o_t, o_y, 0) / float(period_days or 1)
@@ -4060,6 +8160,7 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
             or (cr_d is not None and cr_d <= -1)
         )
         orders_down = (item.get("orders_delta") or 0) < 0
+        geo_bad = geo.get("stock_geo_flag") in ("oos", "narrow", "emptied")
         item.update({
             "stock": stock_qty,
             "in_way": in_way,
@@ -4068,9 +8169,186 @@ def _enrich_pace_articles_stock(articles: list, period: str = "day") -> list:
             "cart_cr_today": cr_t,
             "cart_cr_yesterday": cr_y,
             "cart_cr_delta": cr_d,
+            "wh_live": geo.get("wh_live"),
+            "wh_live_prev": geo.get("wh_live_prev"),
+            "wh_emptied": geo.get("wh_emptied") or [],
+            "wh_names": geo.get("wh_names") or [],
+            "stock_geo_flag": geo.get("stock_geo_flag") or "ok",
             "funnel_down": funnel_down,
-            "stock_linked": bool((funnel_down or orders_down) and stock_flag in ("oos", "low")),
+            "stock_linked": bool(
+                (funnel_down or orders_down)
+                and (stock_flag in ("oos", "low") or geo_bad)
+            ),
         })
+        out.append(item)
+    return out
+
+
+def _pace_parse_snap_day(captured_at) -> str:
+    if not captured_at:
+        return ""
+    s = str(captured_at)
+    # 2026-08-11T... or 11.08.2026
+    if len(s) >= 10 and s[4] == "-":
+        return s[:10]
+    return ""
+
+
+def fetch_pace_price_compare(nm_ids: list, date_cur: str = None, date_prev: str = None) -> dict:
+    """Сравнение цены покупателя и СПП: сейчас vs день базы (date_prev).
+
+    Источник: price_snapshots (+ живой SPP_CACHE для «сейчас»).
+    """
+    if not nm_ids or not SUPABASE_URL or not SUPABASE_KEY:
+        return {}
+    ids = []
+    for x in nm_ids:
+        try:
+            ids.append(int(x))
+        except Exception:
+            pass
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return {}
+
+    live = {}
+    for a in (SPP_CACHE.get("articles") or []):
+        try:
+            nm = int(a.get("nm_id"))
+        except Exception:
+            continue
+        live[nm] = a
+
+    since = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
+    by_nm = {}
+    for i in range(0, len(ids), 80):
+        chunk = ids[i:i + 80]
+        try:
+            resp = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/price_snapshots",
+                params={
+                    "select": "nm_id,sale_price,client_price,spp,captured_at",
+                    "nm_id": f"in.({','.join(str(x) for x in chunk)})",
+                    "captured_at": f"gte.{since}",
+                    "order": "captured_at.asc",
+                    "limit": "12000",
+                },
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                },
+                timeout=30,
+            )
+            if not resp.is_success:
+                if resp.status_code == 404:
+                    logger.warning("price_snapshots missing — run supabase/price_snapshots.sql")
+                continue
+            for row in resp.json() or []:
+                try:
+                    nm = int(row.get("nm_id"))
+                except Exception:
+                    continue
+                by_nm.setdefault(nm, []).append(row)
+        except Exception as e:
+            logger.warning(f"fetch_pace_price_compare: {e}")
+
+    msk = _msk_now()
+    cur_day = (date_cur or msk.strftime("%Y-%m-%d"))[:10]
+    prev_day = (date_prev or (msk - timedelta(days=1)).strftime("%Y-%m-%d"))[:10]
+
+    out = {}
+    for nm in ids:
+        snaps = by_nm.get(nm) or []
+        lv = live.get(nm) or {}
+
+        cur_client = _num_or_none(lv.get("client_price"))
+        cur_spp = _num_or_none(lv.get("spp"))
+        cur_sale = _num_or_none(lv.get("sale_price"))
+        if snaps:
+            last = snaps[-1]
+            if cur_client is None:
+                cur_client = _num_or_none(last.get("client_price"))
+            if cur_spp is None:
+                cur_spp = _num_or_none(last.get("spp"))
+            if cur_sale is None:
+                cur_sale = _num_or_none(last.get("sale_price"))
+
+        prev = None
+        for s in reversed(snaps):
+            day = _pace_parse_snap_day(s.get("captured_at"))
+            if day and day <= prev_day:
+                prev = s
+                break
+        # запасной: предпоследний снимок, если база = «вчера», а снимков за вчера нет
+        if prev is None and len(snaps) >= 2:
+            prev = snaps[-2]
+            # не сравнивать с самим собой
+            if prev is snaps[-1]:
+                prev = None
+
+        prev_client = _num_or_none(prev.get("client_price")) if prev else None
+        prev_spp = _num_or_none(prev.get("spp")) if prev else None
+        prev_sale = _num_or_none(prev.get("sale_price")) if prev else None
+
+        client_delta = (
+            round(cur_client - prev_client, 2)
+            if cur_client is not None and prev_client is not None else None
+        )
+        spp_delta = (
+            round(cur_spp - prev_spp, 1)
+            if cur_spp is not None and prev_spp is not None else None
+        )
+        sale_delta = (
+            round(cur_sale - prev_sale, 2)
+            if cur_sale is not None and prev_sale is not None else None
+        )
+        out[nm] = {
+            "client_price": cur_client,
+            "prev_client_price": prev_client,
+            "client_delta": client_delta,
+            "spp": round(cur_spp, 1) if cur_spp is not None else None,
+            "prev_spp": round(prev_spp, 1) if prev_spp is not None else None,
+            "spp_delta": spp_delta,
+            "sale_price": cur_sale,
+            "prev_sale_price": prev_sale,
+            "sale_delta": sale_delta,
+            "price_compare_day": prev_day,
+            "price_as_of": cur_day,
+        }
+    return out
+
+
+def _enrich_pace_articles_prices(articles: list, date_cur: str = None, date_prev: str = None) -> list:
+    """Цена на сайте (для покупателя) и СПП: сейчас vs день сравнения темпа."""
+    if not articles:
+        return articles
+    nms = [a.get("nm_id") for a in articles if a.get("nm_id") is not None]
+    try:
+        price_map = fetch_pace_price_compare(nms, date_cur=date_cur, date_prev=date_prev)
+    except Exception as e:
+        logger.warning(f"enrich pace prices: {e}")
+        return articles
+    if not price_map:
+        return articles
+    out = []
+    for a in articles:
+        item = dict(a)
+        try:
+            nm = int(item.get("nm_id"))
+        except Exception:
+            out.append(item)
+            continue
+        p = price_map.get(nm) or {}
+        item.update(p)
+        # флаг: подорожало для покупателя при падении заказов
+        od = item.get("orders_delta")
+        cd = item.get("client_delta")
+        sd = item.get("spp_delta")
+        price_up = cd is not None and cd >= 30  # +30₽ и выше на сайте
+        spp_down = sd is not None and sd <= -1.0
+        item["price_linked"] = bool(
+            od is not None and od < 0 and (price_up or spp_down)
+        )
         out.append(item)
     return out
 
@@ -4083,7 +8361,7 @@ def get_sales_pace(period: str = "day", refresh: bool = False, date_cur: str = N
     cache_key = _pace_cache_key(period, date_cur, date_prev)
     by = SALES_PACE_CACHE.get("by_period") or {}
     cached = by.get(cache_key)
-    if refresh or not cached:
+    if refresh or not cached or _pace_cache_stale(cached):
         if not SALES_PACE_CACHE.get("syncing"):
             import threading
             threading.Thread(
@@ -4093,6 +8371,11 @@ def get_sales_pace(period: str = "day", refresh: bool = False, date_cur: str = N
             ).start()
     cached = (SALES_PACE_CACHE.get("by_period") or {}).get(cache_key) or {}
     articles = _enrich_pace_articles_stock(cached.get("articles") or [], period)
+    articles = _enrich_pace_articles_prices(
+        articles,
+        date_cur=cached.get("date_cur") or date_cur,
+        date_prev=cached.get("date_prev") or date_prev,
+    )
     return {
         "period": period,
         "cache_key": cache_key,
@@ -4104,6 +8387,9 @@ def get_sales_pace(period: str = "day", refresh: bool = False, date_cur: str = N
         "col_cur": cached.get("col_cur"),
         "col_prev": cached.get("col_prev"),
         "custom_dates": cached.get("custom_dates"),
+        "period_name": cached.get("period_name"),
+        "mode_hint": cached.get("mode_hint"),
+        "time_cutoff": cached.get("time_cutoff"),
         "date_cur": cached.get("date_cur") or date_cur,
         "date_prev": cached.get("date_prev") or date_prev,
         "today": cached.get("today"),
@@ -4114,7 +8400,16 @@ def get_sales_pace(period: str = "day", refresh: bool = False, date_cur: str = N
         "ads_ready": cached.get("ads_ready"),
         "syncing": SALES_PACE_CACHE.get("syncing", False) and SALES_PACE_CACHE.get("syncing_period") == cache_key,
         "error": SALES_PACE_CACHE.get("error") or cached.get("error"),
+        "hidden": _sales_pace_hidden(),
     }
+
+
+@app.post("/api/sales-pace-hidden")
+async def save_sales_pace_hidden(request: dict):
+    hidden = _uniq_str_list((request or {}).get("hidden"))
+    if not save_setting_value(SALES_PACE_HIDDEN_KEY, hidden):
+        raise HTTPException(status_code=500, detail="Не удалось сохранить скрытые артикулы")
+    return {"status": "ok", "hidden": hidden}
 
 @app.post("/api/sync-sales-pace")
 async def trigger_sales_pace_sync(period: str = "day", date_cur: str = None, date_prev: str = None):
@@ -4418,23 +8713,30 @@ def fetch_latest_price_snapshots(nm_ids: list) -> dict:
     return out
 
 def attach_price_deltas(articles: list, prev_map: dict) -> list:
-    """Добавляет prev_* и дельты относительно прошлого снимка."""
+    """Добавляет prev_* и дельты относительно прошлого снимка + пояснение смены цены для клиента."""
     for a in articles:
         nm = a.get("nm_id")
         prev = prev_map.get(int(nm)) if nm is not None else None
         if not prev:
             a["prev_sale_price"] = None
             a["prev_client_price"] = None
+            a["prev_spp"] = None
             a["prev_captured_at"] = None
             a["sale_delta"] = None
             a["client_delta"] = None
+            a["spp_delta"] = None
+            a["client_change_reason"] = None
+            a["client_change_tip"] = None
             continue
         prev_sale = _num_or_none(prev.get("sale_price"))
         prev_client = _num_or_none(prev.get("client_price"))
+        prev_spp = _num_or_none(prev.get("spp"))
         cur_sale = _num_or_none(a.get("sale_price"))
         cur_client = _num_or_none(a.get("client_price"))
+        cur_spp = _num_or_none(a.get("spp"))
         a["prev_sale_price"] = prev_sale
         a["prev_client_price"] = prev_client
+        a["prev_spp"] = round(prev_spp, 1) if prev_spp is not None else None
         a["prev_captured_at"] = _fmt_snap_dt(prev.get("captured_at"))
         a["sale_delta"] = (
             round(cur_sale - prev_sale, 2)
@@ -4444,7 +8746,76 @@ def attach_price_deltas(articles: list, prev_map: dict) -> list:
             round(cur_client - prev_client, 2)
             if cur_client is not None and prev_client is not None else None
         )
+        a["spp_delta"] = (
+            round(cur_spp - prev_spp, 1)
+            if cur_spp is not None and prev_spp is not None else None
+        )
+        reason, tip = _explain_client_price_change(a)
+        a["client_change_reason"] = reason
+        a["client_change_tip"] = tip
     return articles
+
+
+def _explain_client_price_change(a: dict):
+    """Поясняет, почему изменилась цена для клиента: наша цена и/или СПП."""
+    client_delta = a.get("client_delta")
+    if client_delta is None or abs(float(client_delta)) < 0.5:
+        return None, None
+    sale_delta = a.get("sale_delta")
+    spp_delta = a.get("spp_delta")
+    prev_client = a.get("prev_client_price")
+    cur_client = a.get("client_price")
+    prev_at = a.get("prev_captured_at") or ""
+
+    parts = []
+    # что сделали мы с ценой продавца
+    if sale_delta is not None and abs(float(sale_delta)) >= 0.5:
+        sd = float(sale_delta)
+        if sd < 0:
+            parts.append(f"мы снизили цену продавца на {abs(int(round(sd)))} ₽")
+        else:
+            parts.append(f"мы подняли цену продавца на {int(round(sd))} ₽")
+
+    # изменение СПП (скидка WB для покупателя)
+    if spp_delta is not None and abs(float(spp_delta)) >= 0.3:
+        sp = float(spp_delta)
+        prev_spp = a.get("prev_spp")
+        cur_spp = a.get("spp")
+        spp_bit = ""
+        if prev_spp is not None and cur_spp is not None:
+            spp_bit = f" ({prev_spp}% → {cur_spp}%)"
+        if sp > 0:
+            parts.append(f"вырос СПП на {sp:g} п.п.{spp_bit} — WB дал больше скидки")
+        else:
+            parts.append(f"упал СПП на {abs(sp):g} п.п.{spp_bit} — покупателю дороже")
+
+    if not parts:
+        parts.append("причина не по цене продавца и не по СПП — открой график")
+
+    # доминирующая причина для короткого бейджа
+    sale_abs = abs(float(sale_delta)) if sale_delta is not None else 0
+    spp_abs = abs(float(spp_delta)) if spp_delta is not None else 0
+    if sale_abs >= 0.5 and spp_abs < 0.3:
+        reason = "our_price_down" if float(sale_delta) < 0 else "our_price_up"
+    elif spp_abs >= 0.3 and sale_abs < 0.5:
+        reason = "spp_up" if float(spp_delta) > 0 else "spp_down"
+    elif sale_abs >= 0.5 and spp_abs >= 0.3:
+        reason = "both"
+    else:
+        reason = "unknown"
+
+    direction = "снизилась" if float(client_delta) < 0 else "выросла"
+    prev_s = f"{int(round(prev_client))} ₽" if prev_client is not None else "—"
+    cur_s = f"{int(round(cur_client))} ₽" if cur_client is not None else "—"
+    tip = (
+        f"Цена для клиента {direction}: было {prev_s} → стало {cur_s}"
+        + (f" (снимок {prev_at})" if prev_at else "")
+        + ". "
+        + "Причина: "
+        + "; ".join(parts)
+        + "."
+    )
+    return reason, tip
 
 def save_price_snapshots(articles: list) -> int:
     """Пишет снимок цен после sync. Возвращает число строк."""
@@ -4494,7 +8865,50 @@ def save_price_snapshots(articles: list) -> int:
             break
     return saved
 
-def sync_spp_prices():
+def _notify_site_price_changes(articles: list):
+    """В Telegram — только артикулы, у которых сдвинулась цена на сайте."""
+    changed = []
+    for a in articles or []:
+        d = a.get("client_delta")
+        if d is None:
+            continue
+        try:
+            d = float(d)
+        except (TypeError, ValueError):
+            continue
+        if abs(d) < 1:
+            continue
+        changed.append(a)
+    if not changed:
+        return
+    changed.sort(key=lambda x: -abs(float(x.get("client_delta") or 0)))
+    extra = 0
+    if len(changed) > 40:
+        extra = len(changed) - 40
+        changed = changed[:40]
+    now = _msk_now().strftime("%H:%M")
+    lines = [f"<b>Цена на сайте изменилась</b> · {now} МСК", ""]
+    for a in changed:
+        d = float(a.get("client_delta") or 0)
+        prev = a.get("prev_client_price")
+        cur = a.get("client_price")
+        arrow = "↓" if d < 0 else "↑"
+        vc = html.escape(str(a.get("vendor_code") or a.get("nm_id") or "—"))
+        prev_s = f"{int(round(float(prev))):,}".replace(",", " ") if prev is not None else "—"
+        cur_s = f"{int(round(float(cur))):,}".replace(",", " ") if cur is not None else "—"
+        delta_s = f"{int(round(d)):+,}".replace(",", " ")
+        lines.append(f"{arrow} <code>{vc}</code>  {prev_s} → {cur_s} ₽  ({delta_s})")
+    if extra:
+        lines.append(f"\nещё {extra} арт.")
+    try:
+        import telegram_bot
+        n = telegram_bot.notify_allowed("\n".join(lines))
+        logger.info(f"spp price notify: {len(changed) + extra} changed, sent={n}")
+    except Exception as e:
+        logger.warning(f"spp price notify: {e}")
+
+
+def sync_spp_prices(notify: bool = False):
     if SPP_CACHE.get("syncing"):
         return
     SPP_CACHE["syncing"] = True
@@ -4552,6 +8966,10 @@ def sync_spp_prices():
                 "cashback_rub": cashback_rub,
             })
         attach_price_deltas(articles, prev_map)
+        try:
+            _apply_card_vendor_map(articles, _nm_vendor_cards_map())
+        except Exception as e:
+            logger.warning(f"spp overlay vendor cards: {e}")
         articles.sort(key=lambda x: (-(x.get("spp") or -1), str(x.get("vendor_code") or "")))
         SPP_CACHE["articles"] = articles
         SPP_CACHE["updated_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
@@ -4566,6 +8984,8 @@ def sync_spp_prices():
             f"SPP sync: {len(articles)} arts, client_source={source}, "
             f"missing={missing_client}, snapshots={snap_n}"
         )
+        if notify:
+            _notify_site_price_changes(articles)
     except Exception as e:
         logger.error(f"sync_spp_prices error: {e}")
         SPP_CACHE["error"] = str(e)
@@ -4635,6 +9055,402 @@ async def trigger_spp_prices_sync():
     threading.Thread(target=sync_spp_prices, daemon=True).start()
     return {"status": "started"}
 
+
+def _wb_chat_now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _wb_chat_load_state() -> dict:
+    raw = get_setting_json(WB_CHAT_AUTOREPLY_KEY, {}) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    text = str(raw.get("text") or WB_CHAT_DEFAULT_TEXT).strip()[:1000]
+    replied = raw.get("replied_chats")
+    if not isinstance(replied, dict):
+        replied = {}
+    events_next = raw.get("events_next")
+    try:
+        events_next = int(events_next) if events_next not in (None, "", 0, "0") else None
+    except (TypeError, ValueError):
+        events_next = None
+    try:
+        since_ts = int(raw.get("since_ts") or 0)
+    except (TypeError, ValueError):
+        since_ts = 0
+    try:
+        sent_total = int(raw.get("sent_total") or 0)
+    except (TypeError, ValueError):
+        sent_total = 0
+    try:
+        sent_last_run = int(raw.get("sent_last_run") or 0)
+    except (TypeError, ValueError):
+        sent_last_run = 0
+    return {
+        "enabled": bool(raw.get("enabled")),
+        "text": text or WB_CHAT_DEFAULT_TEXT,
+        "once_per_chat": raw.get("once_per_chat", True) is not False,
+        "since_ts": since_ts,
+        "events_next": events_next,
+        "replied_chats": replied,
+        "last_run": raw.get("last_run"),
+        "last_error": str(raw.get("last_error") or ""),
+        "last_result": str(raw.get("last_result") or ""),
+        "sent_total": sent_total,
+        "sent_last_run": sent_last_run,
+    }
+
+
+def _wb_chat_save_state(state: dict) -> bool:
+    payload = dict(state)
+    replied = payload.get("replied_chats") or {}
+    if isinstance(replied, dict) and len(replied) > WB_CHAT_REPLIED_KEEP:
+        items = sorted(
+            replied.items(),
+            key=lambda kv: str((kv[1] or {}).get("at") if isinstance(kv[1], dict) else kv[1] or ""),
+            reverse=True,
+        )
+        payload["replied_chats"] = dict(items[:WB_CHAT_REPLIED_KEEP])
+    return save_setting_value(WB_CHAT_AUTOREPLY_KEY, payload)
+
+
+def _wb_chat_public(state: dict) -> dict:
+    replied = state.get("replied_chats") or {}
+    return {
+        "enabled": bool(state.get("enabled")),
+        "text": state.get("text") or WB_CHAT_DEFAULT_TEXT,
+        "once_per_chat": state.get("once_per_chat", True) is not False,
+        "last_run": state.get("last_run"),
+        "last_error": state.get("last_error") or "",
+        "last_result": state.get("last_result") or "",
+        "sent_total": int(state.get("sent_total") or 0),
+        "sent_last_run": int(state.get("sent_last_run") or 0),
+        "replied_chats": len(replied) if isinstance(replied, dict) else 0,
+        "running": _WB_CHAT_RUNNING,
+        "default_text": WB_CHAT_DEFAULT_TEXT,
+    }
+
+
+def _wb_chat_auth_hint(status_code: int) -> str:
+    if status_code in (401, 403):
+        return (
+            "WB_TOKEN без категории «Чат с покупателями». "
+            "В кабинете WB → Настройки → Доступ к API перевыпусти токен с этой категорией "
+            "и обнови WB_TOKEN в Railway."
+        )
+    if status_code == 402:
+        return "WB API: не оплачен доступ к категории «Чат с покупателями»."
+    return ""
+
+
+def _wb_chat_get(path: str, params: dict = None, timeout: float = 20):
+    return httpx.get(
+        f"{WB_CHAT_URL}{path}",
+        headers=wb_headers(),
+        params=params or {},
+        timeout=timeout,
+    )
+
+
+def _wb_chat_fetch_chats() -> tuple:
+    """→ (chatID → replySign, error)."""
+    try:
+        resp = _wb_chat_get("/api/v1/seller/chats")
+    except Exception as e:
+        return {}, f"чаты: {e}"
+    if not resp.is_success:
+        hint = _wb_chat_auth_hint(resp.status_code)
+        return {}, hint or f"чаты HTTP {resp.status_code}: {resp.text[:180]}"
+    body = resp.json() if resp.content else {}
+    rows = body.get("result") if isinstance(body, dict) else body
+    if not isinstance(rows, list):
+        rows = []
+    signs = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cid = str(row.get("chatID") or "").strip()
+        sign = str(row.get("replySign") or "").strip()
+        if cid and sign:
+            signs[cid] = sign
+    return signs, None
+
+
+def _wb_chat_fetch_events(next_cursor=None) -> tuple:
+    """→ (result_dict, error)."""
+    params = {}
+    if next_cursor:
+        params["next"] = int(next_cursor)
+    try:
+        resp = _wb_chat_get("/api/v1/seller/events", params=params)
+    except Exception as e:
+        return {}, f"события: {e}"
+    if resp.status_code == 400 and next_cursor:
+        try:
+            resp = _wb_chat_get("/api/v1/seller/events")
+        except Exception as e:
+            return {}, f"события: {e}"
+    if not resp.is_success:
+        hint = _wb_chat_auth_hint(resp.status_code)
+        return {}, hint or f"события HTTP {resp.status_code}: {resp.text[:180]}"
+    body = resp.json() if resp.content else {}
+    result = body.get("result") if isinstance(body, dict) else {}
+    if not isinstance(result, dict):
+        result = {}
+    return result, None
+
+
+def _wb_chat_event_ts(ev: dict) -> int:
+    ts = ev.get("addTimestamp")
+    try:
+        return int(ts)
+    except (TypeError, ValueError):
+        pass
+    add_time = ev.get("addTime") or ""
+    if add_time:
+        try:
+            dt = datetime.fromisoformat(str(add_time).replace("Z", "+00:00"))
+            return int(dt.timestamp() * 1000)
+        except (ValueError, TypeError):
+            return 0
+    return 0
+
+
+def _wb_chat_is_client(ev: dict) -> bool:
+    sender = str(ev.get("sender") or "").strip().lower()
+    if sender in ("seller", "wb", "support", "employee"):
+        return False
+    if sender in ("client", "buyer", "customer", "user", "клиент"):
+        return True
+    source = str(ev.get("source") or "").strip().lower()
+    if source in ("seller-public-api", "seller"):
+        return False
+    if ev.get("isNewChat"):
+        return True
+    if source in ("rusite", "site", "android", "ios", "mobile"):
+        return True
+    return False
+
+
+def _wb_chat_send(reply_sign: str, text: str) -> tuple:
+    """→ (ok, error)."""
+    try:
+        resp = httpx.post(
+            f"{WB_CHAT_URL}/api/v1/seller/message",
+            headers={"Authorization": WB_TOKEN},
+            data={"replySign": reply_sign, "message": text},
+            timeout=30,
+        )
+    except Exception as e:
+        return False, str(e)
+    if resp.is_success:
+        return True, None
+    hint = _wb_chat_auth_hint(resp.status_code)
+    return False, hint or f"отправка HTTP {resp.status_code}: {resp.text[:180]}"
+
+
+def sync_wb_chat_autoreply(force: bool = False):
+    """Автоответ на входящие сообщения в чатах WB. Один шаблон, по умолчанию один раз на чат."""
+    global _WB_CHAT_RUNNING
+    if not WB_TOKEN:
+        return {"status": "error", "error": "WB_TOKEN не задан"}
+    with _WB_CHAT_LOCK:
+        if _WB_CHAT_RUNNING:
+            return {"status": "already_running"}
+        _WB_CHAT_RUNNING = True
+    try:
+        state = _wb_chat_load_state()
+        if not state.get("enabled") and not force:
+            return {"status": "disabled"}
+        text = (state.get("text") or WB_CHAT_DEFAULT_TEXT).strip()[:1000]
+        if not text:
+            state["last_run"] = datetime.now(timezone.utc).isoformat()
+            state["last_error"] = "пустой текст автоответа"
+            state["last_result"] = ""
+            state["sent_last_run"] = 0
+            _wb_chat_save_state(state)
+            return {"status": "error", "error": state["last_error"]}
+
+        since_ts = int(state.get("since_ts") or 0)
+        if not since_ts:
+            since_ts = _wb_chat_now_ms()
+            state["since_ts"] = since_ts
+
+        cursor = state.get("events_next") or since_ts
+        events = []
+        last_next = cursor
+        pages = 0
+        err = None
+        while pages < 6:
+            pages += 1
+            result, err = _wb_chat_fetch_events(cursor)
+            if err:
+                break
+            batch = result.get("events") or []
+            if not isinstance(batch, list):
+                batch = []
+            events.extend(ev for ev in batch if isinstance(ev, dict))
+            nxt = result.get("next")
+            total = result.get("totalEvents")
+            try:
+                total = int(total) if total is not None else len(batch)
+            except (TypeError, ValueError):
+                total = len(batch)
+            if nxt not in (None, "", 0, "0"):
+                try:
+                    last_next = int(nxt)
+                    cursor = last_next
+                except (TypeError, ValueError):
+                    pass
+            if total == 0 or not batch:
+                break
+            time.sleep(1.1)
+
+        if err and not events:
+            state["last_run"] = datetime.now(timezone.utc).isoformat()
+            state["last_error"] = err
+            state["last_result"] = ""
+            state["sent_last_run"] = 0
+            _wb_chat_save_state(state)
+            logger.error(f"wb chat autoreply: {err}")
+            return {"status": "error", "error": err}
+
+        if last_next:
+            state["events_next"] = last_next
+
+        latest = {}
+        for ev in events:
+            if str(ev.get("eventType") or "message").lower() not in ("message", ""):
+                continue
+            ts = _wb_chat_event_ts(ev)
+            if ts and ts < since_ts:
+                continue
+            cid = str(ev.get("chatID") or "").strip()
+            if not cid:
+                continue
+            prev = latest.get(cid)
+            if prev is None or ts >= _wb_chat_event_ts(prev):
+                latest[cid] = ev
+
+        need = []
+        replied = state.get("replied_chats") or {}
+        once = state.get("once_per_chat", True) is not False
+        for cid, ev in latest.items():
+            if not _wb_chat_is_client(ev):
+                continue
+            prev = replied.get(cid)
+            if once and prev:
+                continue
+            if isinstance(prev, dict) and prev.get("event_id") and prev.get("event_id") == ev.get("eventID"):
+                continue
+            need.append((cid, ev))
+
+        sent = 0
+        errors = []
+        signs = {}
+        if need:
+            time.sleep(1.1)
+            signs, chat_err = _wb_chat_fetch_chats()
+            if chat_err:
+                errors.append(chat_err)
+
+        for cid, ev in need[:8]:
+            sign = signs.get(cid) or ""
+            if not sign and ev.get("isNewChat"):
+                sign = str(ev.get("replySign") or "").strip()
+            if not sign:
+                errors.append(f"{cid}: нет replySign — чат ещё не появился в списке")
+                continue
+            ok, send_err = _wb_chat_send(sign, text)
+            time.sleep(1.1)
+            if not ok:
+                errors.append(f"{cid}: {send_err}")
+                continue
+            sent += 1
+            replied[cid] = {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "event_id": ev.get("eventID") or "",
+                "client": ev.get("clientName") or "",
+            }
+
+        state["replied_chats"] = replied
+        state["sent_total"] = int(state.get("sent_total") or 0) + sent
+        state["sent_last_run"] = sent
+        state["last_run"] = datetime.now(timezone.utc).isoformat()
+        state["last_error"] = "; ".join(errors[:4]) if errors else ""
+        parts = [f"проверено чатов: {len(latest)}", f"отправленных: {sent}"]
+        if err:
+            parts.append(f"события: {err}")
+        state["last_result"] = ", ".join(parts)
+        _wb_chat_save_state(state)
+        if sent:
+            logger.info(f"wb chat autoreply sent={sent} checked={len(latest)}")
+        return {
+            "status": "ok",
+            "sent": sent,
+            "checked": len(latest),
+            "error": state["last_error"] or None,
+        }
+    except Exception as e:
+        logger.exception("wb chat autoreply failed")
+        try:
+            state = _wb_chat_load_state()
+            state["last_run"] = datetime.now(timezone.utc).isoformat()
+            state["last_error"] = str(e)
+            _wb_chat_save_state(state)
+        except Exception:
+            pass
+        return {"status": "error", "error": str(e)}
+    finally:
+        _WB_CHAT_RUNNING = False
+
+
+@app.get("/api/wb-chat-autoreply")
+def get_wb_chat_autoreply():
+    return _wb_chat_public(_wb_chat_load_state())
+
+
+@app.put("/api/wb-chat-autoreply")
+async def put_wb_chat_autoreply(request: dict):
+    state = _wb_chat_load_state()
+    was_enabled = bool(state.get("enabled"))
+    if "enabled" in request:
+        state["enabled"] = bool(request.get("enabled"))
+    if "text" in request:
+        text = str(request.get("text") or "").strip()[:1000]
+        state["text"] = text or WB_CHAT_DEFAULT_TEXT
+    if "once_per_chat" in request:
+        state["once_per_chat"] = bool(request.get("once_per_chat"))
+    if state["enabled"] and not was_enabled:
+        state["since_ts"] = _wb_chat_now_ms()
+        state["events_next"] = state["since_ts"]
+        state["last_error"] = ""
+        state["last_result"] = "включено — старые чаты не трогаем, отвечаем только на новые"
+    if not _wb_chat_save_state(state):
+        return {"error": "не удалось сохранить настройки"}
+    return _wb_chat_public(state)
+
+
+@app.post("/api/wb-chat-autoreply/run")
+def trigger_wb_chat_autoreply():
+    state = _wb_chat_load_state()
+    if not state.get("enabled"):
+        return {"status": "disabled", "error": "сначала включи автоответы"}
+    if _WB_CHAT_RUNNING:
+        return {"status": "already_running"}
+    threading.Thread(target=sync_wb_chat_autoreply, daemon=True).start()
+    return {"status": "started"}
+
+
+@app.post("/api/wb-chat-autoreply/test")
+def test_wb_chat_access():
+    if not WB_TOKEN:
+        return {"ok": False, "error": "WB_TOKEN не задан"}
+    signs, err = _wb_chat_fetch_chats()
+    if err:
+        return {"ok": False, "error": err, "chats": 0}
+    return {"ok": True, "chats": len(signs), "error": None}
+
+
 scheduler = BackgroundScheduler()
 scheduler.add_job(sync_all, "interval", minutes=30, id="sync")
 scheduler.add_job(sync_stock, "interval", hours=3, id="sync_stock")
@@ -4642,8 +9458,24 @@ scheduler.add_job(sync_supply, "interval", hours=4, id="sync_supply")
 scheduler.add_job(sync_ads, "interval", hours=4, id="sync_ads")
 scheduler.add_job(lambda: sync_article_daily_stats(30), "interval", hours=6, id="sync_daily")
 scheduler.add_job(sync_promotions, "interval", hours=6, id="sync_promotions")
-scheduler.add_job(lambda: sync_sales_pace("day"), "interval", hours=1, id="sync_sales_pace")
-scheduler.add_job(sync_spp_prices, "interval", hours=3, id="sync_spp_prices")
+scheduler.add_job(sync_promo_calendar, "interval", hours=6, id="sync_promo_calendar")
+scheduler.add_job(lambda: sync_sales_pace("day"), "interval", minutes=15, id="sync_sales_pace")
+scheduler.add_job(sync_new_stock, "interval", hours=2, id="sync_new_stock")
+scheduler.add_job(
+    lambda: sync_spp_prices(notify=True),
+    "cron",
+    hour="8,12,18,22",
+    minute=0,
+    timezone="Europe/Moscow",
+    id="sync_spp_prices",
+)
+# Каталог товаров держим тёплым: он живёт только в памяти и обнуляется при редеплое,
+# а без него «что заканчивается» отвечает пустотой.
+scheduler.add_job(
+    lambda: refresh_wb_products_catalog(sync_sources=True),
+    "interval", hours=3, id="sync_wb_products",
+)
+scheduler.add_job(sync_wb_chat_autoreply, "interval", minutes=1, id="wb_chat_autoreply")
 scheduler.start()
 # Разово чистим ошибочные api-рейтинги после деплоя (item-rating ломал склейки).
 threading.Thread(target=sync_ratings_official, daemon=True).start()
@@ -4663,12 +9495,17 @@ def _resolve_frontend_dir():
 
 FRONTEND_DIR = _resolve_frontend_dir()
 logger.info(f"FRONTEND_DIR={FRONTEND_DIR} exists={FRONTEND_DIR.exists()} index={(FRONTEND_DIR / 'index.html').exists()}")
+_HTML_NO_CACHE = {
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "Pragma": "no-cache",
+}
+
 
 @app.get("/")
 def root():
     index = FRONTEND_DIR / "index.html"
     if index.exists():
-        return FileResponse(index, media_type="text/html; charset=utf-8")
+        return FileResponse(index, media_type="text/html; charset=utf-8", headers=_HTML_NO_CACHE)
     tried = [str(p) for p in FRONTEND_CANDIDATES]
     return {"status": "ok", "hint": "frontend/index.html not found", "tried": tried}
 
@@ -4676,7 +9513,7 @@ def root():
 def root_index():
     index = FRONTEND_DIR / "index.html"
     if index.exists():
-        return FileResponse(index, media_type="text/html; charset=utf-8")
+        return FileResponse(index, media_type="text/html; charset=utf-8", headers=_HTML_NO_CACHE)
     return HTMLResponse("<h1>frontend missing</h1>", status_code=404)
 
 if (FRONTEND_DIR / "index.html").exists():
@@ -4788,6 +9625,386 @@ def get_fbs_stocks(limit: int = 15):
         "error": data.get("error"),
     }
 
+
+def _warehouse_channel(name: str) -> str:
+    n = (name or "").lower()
+    if "fbs" in n or "маркетплейс" in n:
+        return "FBS"
+    return "FBW"
+
+
+def _filter_live_warehouses(wh_list: list) -> list:
+    """Оставляем Склад WB РФ и FBS. Коледино / Электросталь / Шушары отбрасываем."""
+    out = []
+    for w in wh_list or []:
+        if not isinstance(w, dict):
+            continue
+        if _is_countable_stock_warehouse(str(w.get("name") or "")):
+            out.append(w)
+    return out
+
+
+WB_PRODUCTS_CACHE = {
+    "products": [],
+    "updated_at": None,
+    "stock_updated_at": None,
+    "prices_updated_at": None,
+    "sales_updated_at": None,
+    "syncing": False,
+    "error": None,
+    "sales_by_nm": {},  # nm -> {yesterday, d7, d28}
+}
+
+
+def _fetch_orders_sales_periods_fast() -> dict:
+    """Только Supabase article_daily_stats (без медленного Statistics API)."""
+    now = _msk_now()
+    today = now.date()
+    yest = today - timedelta(days=1)
+    start_7 = today - timedelta(days=6)
+    start_28 = today - timedelta(days=27)
+    out = {}
+    try:
+        dt_from = start_28.isoformat()
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/article_daily_stats"
+            f"?dt=gte.{dt_from}&select=nm_id,dt,orders&limit=50000",
+            headers=sb_headers(),
+            timeout=30,
+        )
+        rows = resp.json() if resp.is_success else []
+        if not isinstance(rows, list):
+            return out
+        for row in rows:
+            try:
+                nm = int(row.get("nm_id"))
+            except (TypeError, ValueError):
+                continue
+            try:
+                d = datetime.strptime(str(row.get("dt"))[:10], "%Y-%m-%d").date()
+            except Exception:
+                continue
+            qty = int(row.get("orders") or 0)
+            if qty <= 0:
+                continue
+            slot = out.setdefault(nm, {"yesterday": 0, "d7": 0, "d28": 0})
+            if d == yest:
+                slot["yesterday"] += qty
+            if start_7 <= d <= today:
+                slot["d7"] += qty
+            if start_28 <= d <= today:
+                slot["d28"] += qty
+    except Exception as e:
+        logger.error(f"wb-products daily_stats sales: {e}")
+    return out
+
+
+def _fetch_orders_sales_periods() -> dict:
+    """Заказы: сначала daily_stats, иначе Statistics API supplier/orders. Даты по Москве."""
+    out = _fetch_orders_sales_periods_fast()
+    if out:
+        logger.info(f"wb-products sales from daily_stats: {len(out)} nms")
+        return out
+
+    now = _msk_now()
+    today = now.date()
+    yest = today - timedelta(days=1)
+    start_7 = today - timedelta(days=6)
+    start_28 = today - timedelta(days=27)
+    if not WB_TOKEN:
+        return out
+    try:
+        date_from = start_28.strftime("%Y-%m-%dT00:00:00")
+        orders = fetch_supplier_feed("/api/v1/supplier/orders", date_from, max_pages=5)
+        for o in orders or []:
+            nm = o.get("nmId")
+            if not nm:
+                continue
+            try:
+                nm = int(nm)
+            except (TypeError, ValueError):
+                continue
+            d = parse_wb_dt(o.get("date", ""))
+            if d is None:
+                continue
+            day = d.date() if hasattr(d, "date") else d
+            if day < start_28 or day > today:
+                continue
+            slot = out.setdefault(nm, {"yesterday": 0, "d7": 0, "d28": 0})
+            if day == yest:
+                slot["yesterday"] += 1
+            if start_7 <= day <= today:
+                slot["d7"] += 1
+            if start_28 <= day <= today:
+                slot["d28"] += 1
+        logger.info(f"wb-products sales from orders API: {len(out)} nms, rows={len(orders or [])}")
+    except Exception as e:
+        logger.error(f"wb-products orders sales: {e}")
+    return out
+
+
+def build_wb_products_catalog(sales_by_nm: dict | None = None) -> dict:
+    """Каталог товаров: цена покупателя, остаток по складам, канал FBW/FBS, продажи."""
+    totals = []
+    warehouses = []
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code,quantity_warehouses_full,updated_at",
+            headers=sb_headers(),
+            timeout=30,
+        )
+        totals = r.json() if r.is_success else []
+        if not isinstance(totals, list):
+            totals = []
+    except Exception as e:
+        logger.error(f"wb-products stock_totals: {e}")
+        totals = []
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_warehouses?select=nm_id,warehouse_name,quantity,updated_at",
+            headers=sb_headers(),
+            timeout=30,
+        )
+        warehouses = r.json() if r.is_success else []
+        if not isinstance(warehouses, list):
+            warehouses = []
+    except Exception as e:
+        logger.error(f"wb-products stock_warehouses: {e}")
+        warehouses = []
+
+    by_nm_wh = {}  # nm -> {name: qty}
+    stock_updated = None
+    for row in warehouses:
+        nm = row.get("nm_id")
+        if nm is None:
+            continue
+        try:
+            nm = int(nm)
+        except (TypeError, ValueError):
+            continue
+        name = (row.get("warehouse_name") or "").strip()
+        qty = int(row.get("quantity") or 0)
+        if not name or qty <= 0:
+            continue
+        by_nm_wh.setdefault(nm, {})
+        by_nm_wh[nm][name] = by_nm_wh[nm].get(name, 0) + qty
+        ua = row.get("updated_at")
+        if ua and (not stock_updated or str(ua) > str(stock_updated)):
+            stock_updated = ua
+
+    totals_map = {}
+    for row in totals:
+        nm = row.get("nm_id")
+        if nm is None:
+            continue
+        try:
+            nm = int(nm)
+        except (TypeError, ValueError):
+            continue
+        totals_map[nm] = row
+        ua = row.get("updated_at")
+        if ua and (not stock_updated or str(ua) > str(stock_updated)):
+            stock_updated = ua
+
+    price_map = {}
+    for a in (SPP_CACHE.get("articles") or []):
+        try:
+            nm = int(a.get("nm_id"))
+        except (TypeError, ValueError):
+            continue
+        price_map[nm] = a
+
+    if sales_by_nm is None:
+        sales_by_nm = WB_PRODUCTS_CACHE.get("sales_by_nm") or {}
+    # ключи могли прийти строками из JSON-кэша
+    sales_norm = {}
+    for k, v in (sales_by_nm or {}).items():
+        try:
+            sales_norm[int(k)] = v if isinstance(v, dict) else {}
+        except (TypeError, ValueError):
+            continue
+
+    vc_map = {}
+    try:
+        vc_map = build_nm_to_vendor_map() or {}
+    except Exception:
+        vc_map = {}
+
+    nm_ids = set(totals_map.keys()) | set(by_nm_wh.keys()) | set(price_map.keys()) | set(sales_norm.keys())
+    products = []
+    for nm in nm_ids:
+        t = totals_map.get(nm) or {}
+        p = price_map.get(nm) or {}
+        wh_map = by_nm_wh.get(nm) or {}
+        wh_list = _filter_live_warehouses([
+            {"name": name, "qty": qty, "channel": _warehouse_channel(name)}
+            for name, qty in sorted(wh_map.items(), key=lambda x: (-x[1], x[0].lower()))
+        ])
+        stock = sum(w["qty"] for w in wh_list)
+        channels = []
+        for ch in ("FBW", "FBS"):
+            if any(w["channel"] == ch for w in wh_list):
+                channels.append(ch)
+        if not channels and stock > 0:
+            channels = ["FBW"]
+        vc = (
+            (vc_map.get(nm) or "").strip()
+            or (t.get("vendor_code") or "").strip()
+            or (p.get("vendor_code") or "").strip()
+            or str(nm)
+        )
+        if vc == str(nm) and vc_map.get(nm):
+            vc = str(vc_map.get(nm)).strip()
+        client_price = p.get("client_price")
+        sale_price = p.get("sale_price")
+        sales = sales_norm.get(nm) or {}
+        products.append({
+            "nm_id": nm,
+            "vendor_code": vc,
+            "name": (p.get("name") or "").strip() or None,
+            "client_price": client_price,
+            "sale_price": sale_price,
+            "spp": p.get("spp"),
+            "stock": int(stock or 0),
+            "warehouse_count": len(wh_list),
+            "warehouses": wh_list,
+            "channels": channels,
+            "sales_yesterday": int(sales.get("yesterday") or 0),
+            "sales_7d": int(sales.get("d7") or 0),
+            "sales_28d": int(sales.get("d28") or 0),
+            "url": f"https://www.wildberries.ru/catalog/{nm}/detail.aspx",
+        })
+
+    products.sort(key=lambda x: (
+        -(x.get("sales_7d") or 0),
+        -(x.get("stock") or 0),
+        str(x.get("vendor_code") or "").lower(),
+    ))
+    stock_updated_fmt = None
+    if stock_updated:
+        try:
+            from zoneinfo import ZoneInfo
+            dt = datetime.fromisoformat(str(stock_updated).replace("Z", "+00:00"))
+            stock_updated_fmt = dt.astimezone(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y %H:%M")
+        except Exception:
+            stock_updated_fmt = str(stock_updated)[:16]
+
+    return {
+        "products": products,
+        "count": len(products),
+        "with_stock": sum(1 for x in products if (x.get("stock") or 0) > 0),
+        "updated_at": _msk_now().strftime("%d.%m.%Y %H:%M"),
+        "stock_updated_at": stock_updated_fmt,
+        "prices_updated_at": SPP_CACHE.get("updated_at"),
+        "sales_updated_at": WB_PRODUCTS_CACHE.get("sales_updated_at"),
+        "sales_by_nm": sales_norm,
+        "error": None,
+    }
+
+
+def refresh_wb_products_catalog(sync_sources: bool = False):
+    if WB_PRODUCTS_CACHE.get("syncing"):
+        return
+    WB_PRODUCTS_CACHE["syncing"] = True
+    WB_PRODUCTS_CACHE["error"] = None
+    try:
+        if sync_sources:
+            try:
+                sync_stock()
+            except Exception as e:
+                logger.error(f"wb-products sync_stock: {e}")
+            try:
+                sync_vendor_codes_from_wb_cards(force=False)
+            except Exception as e:
+                logger.error(f"wb-products sync vendor cards: {e}")
+            if not SPP_CACHE.get("articles") and not SPP_CACHE.get("syncing"):
+                try:
+                    sync_spp_prices()
+                except Exception as e:
+                    logger.error(f"wb-products sync_spp: {e}")
+            try:
+                # подтянуть дневную статистику (если таблица есть) — для быстрых периодов
+                sync_article_daily_stats(30)
+            except Exception as e:
+                logger.warning(f"wb-products sync_daily: {e}")
+            try:
+                sales = _fetch_orders_sales_periods()
+                WB_PRODUCTS_CACHE["sales_by_nm"] = sales
+                WB_PRODUCTS_CACHE["sales_updated_at"] = _msk_now().strftime("%d.%m.%Y %H:%M")
+            except Exception as e:
+                logger.error(f"wb-products sales: {e}")
+        elif not WB_PRODUCTS_CACHE.get("sales_by_nm"):
+            try:
+                sales = _fetch_orders_sales_periods_fast()
+                WB_PRODUCTS_CACHE["sales_by_nm"] = sales
+                if sales:
+                    WB_PRODUCTS_CACHE["sales_updated_at"] = _msk_now().strftime("%d.%m.%Y %H:%M")
+            except Exception as e:
+                logger.error(f"wb-products sales soft: {e}")
+        data = build_wb_products_catalog(WB_PRODUCTS_CACHE.get("sales_by_nm") or {})
+        WB_PRODUCTS_CACHE.update(data)
+        WB_PRODUCTS_CACHE["syncing"] = False
+    except Exception as e:
+        logger.error(f"wb-products refresh: {e}")
+        WB_PRODUCTS_CACHE["syncing"] = False
+        WB_PRODUCTS_CACHE["error"] = str(e)
+
+
+@app.get("/api/wb-products")
+def get_wb_products(refresh: bool = False):
+    """Товары WB: цена покупателя, остаток (склады), канал FBW/FBS, продажи."""
+    need = refresh or not WB_PRODUCTS_CACHE.get("products")
+    if need and not WB_PRODUCTS_CACHE.get("syncing"):
+        try:
+            # продажи: только быстрый daily_stats; полный orders — через sync-wb-products
+            if not WB_PRODUCTS_CACHE.get("sales_by_nm"):
+                try:
+                    sales = _fetch_orders_sales_periods_fast()
+                    if sales:
+                        WB_PRODUCTS_CACHE["sales_by_nm"] = sales
+                        WB_PRODUCTS_CACHE["sales_updated_at"] = _msk_now().strftime("%d.%m.%Y %H:%M")
+                except Exception:
+                    pass
+            data = build_wb_products_catalog(WB_PRODUCTS_CACHE.get("sales_by_nm") or {})
+            WB_PRODUCTS_CACHE.update({**data, "syncing": False, "error": None})
+        except Exception as e:
+            WB_PRODUCTS_CACHE["error"] = str(e)
+    return {
+        "products": WB_PRODUCTS_CACHE.get("products") or [],
+        "count": WB_PRODUCTS_CACHE.get("count") or len(WB_PRODUCTS_CACHE.get("products") or []),
+        "with_stock": WB_PRODUCTS_CACHE.get("with_stock"),
+        "updated_at": WB_PRODUCTS_CACHE.get("updated_at"),
+        "stock_updated_at": WB_PRODUCTS_CACHE.get("stock_updated_at"),
+        "prices_updated_at": WB_PRODUCTS_CACHE.get("prices_updated_at"),
+        "sales_updated_at": WB_PRODUCTS_CACHE.get("sales_updated_at"),
+        "syncing": WB_PRODUCTS_CACHE.get("syncing", False),
+        "error": WB_PRODUCTS_CACHE.get("error"),
+    }
+
+
+@app.post("/api/sync-wb-products")
+def sync_wb_products():
+    if WB_PRODUCTS_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    threading.Thread(
+        target=refresh_wb_products_catalog,
+        kwargs={"sync_sources": True},
+        daemon=True,
+    ).start()
+    return {"status": "started"}
+
+
+@app.post("/api/sync-vendor-codes")
+def trigger_vendor_codes_sync():
+    """Подтянуть актуальные артикулы продавца из карточек WB (после замен 039/040 и т.п.)."""
+    import threading
+    threading.Thread(target=sync_vendor_codes_from_wb_cards, daemon=True).start()
+    return {"status": "started"}
+
+
+threading.Thread(target=sync_vendor_codes_from_wb_cards, daemon=True).start()
+
+
 @app.post("/api/sync-supply")
 def trigger_supply_sync():
     import threading
@@ -4821,16 +10038,51 @@ async def save_setting(request: dict):
     if not key:
         return {"error": "key required"}
     try:
+        if key == SUPPLY_WH_DISABLED_KEY:
+            value = _normalize_disabled_warehouses(value)
+        # списки/объекты — как JSON-строка (иначе str(list) сломает get_setting_json)
+        if isinstance(value, (list, dict)):
+            import json as _json
+            store_val = _json.dumps(value, ensure_ascii=False)
+        else:
+            store_val = str(value)
         resp = httpx.post(
             f"{SUPABASE_URL}/rest/v1/settings?on_conflict=key",
-            json={"key": key, "value": str(value), "updated_at": datetime.now(timezone.utc).isoformat()},
+            json={"key": key, "value": store_val, "updated_at": datetime.now(timezone.utc).isoformat()},
             headers=sb_headers(), timeout=10
         )
         if not resp.is_success:
             return {"error": f"Supabase error: {resp.status_code} {resp.text[:200]}"}
-        return {"status": "ok"}
+        # сброс кэшей, где настройка влияет на UI/расчёты
+        if key == SUPPLY_WH_DISABLED_KEY:
+            SALES_PACE_CACHE["by_period"] = {}
+            _invalidate_dash_cache()
+        elif key in (
+            "target_coverage_days", "sales_window_days",
+            "last_supply_sync", "last_ads_sync", "last_sync",
+        ):
+            _invalidate_dash_cache()
+        return {"status": "ok", "key": key, "value": value if key == SUPPLY_WH_DISABLED_KEY else store_val}
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/api/supply-wh-disabled")
+def get_supply_wh_disabled():
+    """Актуальный список отключённых складов (без кэша dashboard-data)."""
+    names = sorted(get_disabled_warehouses())
+    return {"status": "ok", "disabled": names}
+
+
+@app.put("/api/supply-wh-disabled")
+async def put_supply_wh_disabled(request: dict):
+    """Сохранить список отключённых складов (общий для всех устройств)."""
+    names = _normalize_disabled_warehouses(request.get("disabled", request.get("value")))
+    if not _save_disabled_warehouses(names):
+        return {"error": "не удалось сохранить в settings"}
+    SALES_PACE_CACHE["by_period"] = {}
+    _invalidate_dash_cache()
+    return {"status": "ok", "disabled": names}
 
 # ---------- Proxy endpoints: фронтенд обращается только к Railway, ----------
 # ---------- никогда напрямую к Supabase (для пользователей у которых ----------
@@ -4887,7 +10139,8 @@ def dashboard_data():
         return ("feedback_stats", r.json() if r.is_success else [])
 
     def load_neg(days: int):
-        r = _dash_rpc("get_negative_counts", {"days_back": days, "max_stars": 3}, 20)
+        # ★1–2 — «жесткий» негатив (совпадает с фильтром NEG_STARS на фронте)
+        r = _dash_rpc("get_negative_counts", {"days_back": days, "max_stars": 2}, 20)
         return ("neg", days, r.json() if r.is_success else [])
 
     def load_settings():
@@ -4935,6 +10188,13 @@ def dashboard_data():
                     result[key] = val
             except Exception as e:
                 logger.error(f"dashboard-data parallel error: {e}")
+
+    try:
+        vmap = _nm_vendor_cards_map()
+        if vmap:
+            _apply_card_vendor_map(result.get("stock_totals") or [], vmap)
+    except Exception as e:
+        logger.warning(f"dashboard-data vendor overlay: {e}")
 
     logger.info(f"dashboard-data built in {time.time() - t0:.2f}s")
     with _DASH_CACHE_LOCK:
@@ -5026,8 +10286,26 @@ def _norm_vendor_key(v):
 
 
 def build_nm_to_vendor_map() -> dict:
-    """nm_id → артикул продавца (033_…). stock_totals часто без vendor_code — берём из рейтингов/отзывов."""
+    """nm_id → артикул продавца. Сначала живые карточки WB, потом остатки, рейтинги, отзывы."""
     m = {}
+    cards = _nm_vendor_cards_map()
+    if cards:
+        m.update(cards)
+    try:
+        r = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&limit=5000",
+            headers=sb_headers(), timeout=15,
+        )
+        if r.is_success:
+            for row in r.json() or []:
+                nm, art = row.get("nm_id"), _norm_vendor_key(row.get("vendor_code"))
+                if nm is None or not art or art == str(nm):
+                    continue
+                nm = int(nm)
+                if nm not in m:
+                    m[nm] = art
+    except Exception as e:
+        logger.warning(f"build_nm_to_vendor_map stock: {e}")
     try:
         r = httpx.get(
             f"{SUPABASE_URL}/rest/v1/ratings_official?select=nm_id,article&nm_id=not.is.null&article=not.is.null&limit=5000",
@@ -5036,8 +10314,11 @@ def build_nm_to_vendor_map() -> dict:
         if r.is_success:
             for row in r.json() or []:
                 nm, art = row.get("nm_id"), _norm_vendor_key(row.get("article"))
-                if nm is not None and art and art != str(nm):
-                    m[int(nm)] = art
+                if nm is None or not art or art == str(nm):
+                    continue
+                nm = int(nm)
+                if nm not in m:
+                    m[nm] = art
     except Exception as e:
         logger.warning(f"build_nm_to_vendor_map ratings: {e}")
     try:
@@ -5055,21 +10336,6 @@ def build_nm_to_vendor_map() -> dict:
                     m[nm] = art
     except Exception as e:
         logger.warning(f"build_nm_to_vendor_map feedbacks: {e}")
-    try:
-        r = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&limit=5000",
-            headers=sb_headers(), timeout=15,
-        )
-        if r.is_success:
-            for row in r.json() or []:
-                nm, art = row.get("nm_id"), _norm_vendor_key(row.get("vendor_code"))
-                if nm is None or not art or art == str(nm):
-                    continue
-                nm = int(nm)
-                if nm not in m:
-                    m[nm] = art
-    except Exception as e:
-        logger.warning(f"build_nm_to_vendor_map stock: {e}")
     return m
 
 def _parse_header_date(v):
@@ -5491,7 +10757,9 @@ def get_finance():
                     return e
         return {}
 
-    # WB остатки — vendor_code в stock_totals часто пустой, матчим через ratings/nm_id
+    # WB остатки — только «Склад WB РФ», не сумма сгоревших FBW.
+    stock_wh_by_nm = _fetch_stock_wh_by_nm()
+    wb_rf_products = _new_stock_fbw_qty_by_nm()
     wb_rows = []
     try:
         st = httpx.get(
@@ -5501,13 +10769,15 @@ def get_finance():
         if st.is_success:
             for r in st.json() or []:
                 nm_id = r.get("nm_id")
-                qty = int(r.get("quantity_warehouses_full") or 0)
-                if qty <= 0:
-                    continue
                 try:
                     nm_int = int(nm_id) if nm_id is not None else None
                 except Exception:
                     nm_int = None
+                qty = _wb_rf_qty_from_wh_by_nm(nm_int, stock_wh_by_nm) if nm_int is not None else 0
+                if qty <= 0 and nm_int is not None:
+                    qty = int(wb_rf_products.get(nm_int) or 0)
+                if qty <= 0:
+                    continue
                 stock_vc = _norm_vendor_key(r.get("vendor_code"))
                 if stock_vc and nm_int is not None and stock_vc == str(nm_int):
                     stock_vc = ""
@@ -5523,6 +10793,7 @@ def get_finance():
                     seller = _norm_vendor_key(cm.get("vendor_code")) or ""
                 cost = cm.get("cost")
                 value = round(qty * cost, 2) if cost is not None else None
+                sku_unclear = (not seller) or seller.isdigit()
                 wb_rows.append({
                     "vendor_code": seller or (str(nm_id) if nm_id else ""),
                     "nm_id": nm_id,
@@ -5532,6 +10803,8 @@ def get_finance():
                     "cost_default": cm.get("default"),
                     "cost_as_of": cm.get("as_of"),
                     "value": value,
+                    "no_cost": cost is None,
+                    "family_unclear": sku_unclear,
                     "in_way": int(r.get("in_way_to_client") or 0) + int(r.get("in_way_from_client") or 0),
                 })
     except Exception as e:
@@ -5559,20 +10832,30 @@ def get_finance():
         cm = resolve_cost(vc, None)
         cost = cm.get("cost")
         value = round(qty * cost, 2) if cost is not None else None
+        name = str(r.get("name") or "").strip()
+        model_name = str(r.get("model_name") or name or "").strip()
+        family = [str(x) for x in (r.get("family") or []) if x]
+        family_unclear = (not name) or (not model_name) or model_name == vc
         own_rows.append({
             "vendor_code": vc,
-            "name": r.get("name") or "",
+            "name": name,
+            "model_name": model_name,
+            "model_root": r.get("model_root"),
+            "family": family,
             "qty": qty,
             "cost": cost,
             "cost_default": cm.get("default"),
             "cost_as_of": cm.get("as_of"),
             "value": value,
+            "no_cost": cost is None,
+            "family_unclear": family_unclear,
             "family_stock": r.get("family_stock"),
         })
 
     def summarize(rows):
         with_cost = [x for x in rows if x.get("value") is not None]
         without = [x for x in rows if x.get("value") is None]
+        unclear = [x for x in rows if x.get("family_unclear")]
         return {
             "total_value": round(sum(x["value"] for x in with_cost), 2),
             "total_qty": sum(x["qty"] for x in rows),
@@ -5580,6 +10863,7 @@ def get_finance():
             "qty_without_cost": sum(x["qty"] for x in without),
             "articles": len(rows),
             "articles_without_cost": len(without),
+            "articles_family_unclear": len(unclear),
         }
 
     wb_sum = summarize(wb_rows)
@@ -5703,6 +10987,601 @@ async def save_finance_cost(request: dict):
         save_setting_value(COST_META_KEY, meta)
 
     return {"status": "ok", "entry": entry}
+
+
+# ---------- Финансы: ОПИУ (WB + Ozon кабинеты) ----------
+PNL_STORE_KEY = "pnl_store"
+
+PNL_ROW_MAP = {
+    "сумма продаж": "sales",
+    "реализация": "real",
+    "прямые расходы": "direct",
+    "себестоимость продаж": "cogs",
+    "реклама / дрр": "ads",
+    "реклама": "ads",
+    "хранение": "storage",
+    "плат. приёмка": "accept",
+    "платная приёмка": "accept",
+    "комиссия": "commission",
+    "логистика": "logistics",
+    "штрафы": "fines",
+    "удержания": "hold",
+    "доплаты": "extra",
+    "операционные расходы": "opex",
+    "операционная прибыль": "op",
+    "налог": "tax",
+    "чистая прибыль / маржинальность": "net",
+    "чистая прибыль": "net",
+}
+
+PNL_ROW_ORDER = [
+    "sales", "real", "direct", "cogs", "ads", "storage", "accept",
+    "commission", "logistics", "fines", "hold", "extra", "opex", "op", "tax", "net",
+]
+
+PNL_ROW_NAMES = {
+    "sales": "Сумма продаж",
+    "real": "Реализация",
+    "direct": "Прямые расходы",
+    "cogs": "Себестоимость продаж",
+    "ads": "Реклама / ДРР",
+    "storage": "Хранение",
+    "accept": "Плат. приёмка",
+    "commission": "Комиссия",
+    "logistics": "Логистика",
+    "fines": "Штрафы",
+    "hold": "Удержания",
+    "extra": "Доплаты",
+    "opex": "Операционные расходы",
+    "op": "Операционная прибыль",
+    "tax": "Налог",
+    "net": "Чистая прибыль / Маржинальность",
+}
+
+
+def _parse_pnl_cell(v):
+    """Ячейка opiy.xlsx: '11 538 261 ₽ / 3 724 шт.' или '5 148 990 ₽ / 20.22 %'."""
+    if v is None or v == "":
+        return 0.0, None, None
+    if isinstance(v, (int, float)):
+        return float(v), None, None
+    s = str(v).replace("\xa0", " ").replace("\u202f", " ").strip()
+    money = qty = pct = None
+    m = re.search(r"(-?\d[\d\s]*(?:[.,]\d+)?)\s*₽", s)
+    if m:
+        money = float(m.group(1).replace(" ", "").replace(",", "."))
+    else:
+        m2 = re.match(r"^-?\d[\d\s]*(?:[.,]\d+)?$", s)
+        if m2:
+            money = float(s.replace(" ", "").replace(",", "."))
+    q = re.search(r"/\s*(-?\d[\d\s]*)\s*шт", s, re.I)
+    if q:
+        qty = int(q.group(1).replace(" ", ""))
+    p = re.search(r"/\s*(-?\d[\d\s]*(?:[.,]\d+)?)\s*%", s)
+    if p:
+        pct = float(p.group(1).replace(" ", "").replace(",", "."))
+    return (money if money is not None else 0.0), qty, pct
+
+
+def _is_pnl_total_header(h) -> bool:
+    s = str(h or "").strip().lower()
+    return s.startswith("итого") or s in ("год", "всего", "total", "year")
+
+
+def _pick_pnl_sheet(wb):
+    """Лист самого ОПИУ, не разбивка операционных и не первый попавшийся."""
+    names = list(wb.sheetnames or [])
+    if not names:
+        raise ValueError("В файле нет листов")
+    best, best_score = names[0], -1
+    for n in names:
+        ws = wb[n]
+        low = n.lower().replace(" ", "")
+        col1 = " ".join(
+            str(ws.cell(r, 1).value or "").lower()
+            for r in range(1, min(40, (ws.max_row or 1) + 1))
+        )
+        score = 0
+        if any(x in low for x in ("pnl", "опиу", "opiy", "p&l")):
+            score += 10
+        if "сумма продаж" in col1:
+            score += 8
+        if "реализация" in col1:
+            score += 6
+        if "чистая прибыль" in col1:
+            score += 4
+        if any(x in low for x in ("детализац", "разбивк", "opex", "расходы")):
+            score -= 8
+        if score > best_score:
+            best, best_score = n, score
+    return wb[best]
+
+
+def parse_pnl_opiy_excel(content: bytes) -> dict:
+    """Парсит Excel ОПИУ (лист PnL): статья × месяцы/недели — как выгрузка MPSTATS/opiy."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(content), data_only=True)
+    ws = _pick_pnl_sheet(wb)
+    headers = []
+    header_cols = []
+    for c in range(2, (ws.max_column or 0) + 1):
+        h = ws.cell(1, c).value
+        if h is None or str(h).strip() == "":
+            break
+        if _is_pnl_total_header(h):
+            continue
+        headers.append(str(h).strip())
+        header_cols.append(c)
+    if not headers:
+        raise ValueError("В файле нет колонок периода (ожидаю строку «Статья» + месяцы/недели)")
+
+    cols = []
+    for i, h in enumerate(headers):
+        week = h.lower().startswith("неделя")
+        short = "Месяц"
+        if week:
+            m = re.search(r"\(([^)]+)\)", h)
+            short = (m.group(1).replace("-", "–") if m else h)
+        cols.append({"id": f"c{i}", "label": h, "short": short, "week": week})
+
+    months = []
+    i = 0
+    while i < len(cols):
+        if cols[i]["week"]:
+            i += 1
+            continue
+        group = [cols[i]["id"]]
+        j = i + 1
+        while j < len(cols) and cols[j]["week"]:
+            group.append(cols[j]["id"])
+            j += 1
+        months.append({"id": cols[i]["id"], "label": cols[i]["label"], "cols": group})
+        i = j
+    if not months:
+        raise ValueError("Не нашёл месячные колонки в шапке")
+
+    by_k = {}
+    for r in range(2, (ws.max_row or 0) + 1):
+        name = ws.cell(r, 1).value
+        if not name:
+            continue
+        key = PNL_ROW_MAP.get(str(name).strip().lower())
+        if not key or key in by_k:
+            continue
+        vs, qs, ps = [], [], []
+        for c in header_cols:
+            money, qty, pct = _parse_pnl_cell(ws.cell(r, c).value)
+            vs.append(round(money, 2))
+            qs.append(qty)
+            ps.append(pct)
+        by_k[key] = {
+            "k": key,
+            "name": PNL_ROW_NAMES.get(key, str(name).strip()),
+            "v": vs,
+            "q": qs,
+            "p": ps,
+        }
+
+    missing = [k for k in ("sales", "real", "net") if k not in by_k]
+    if missing:
+        raise ValueError("В файле нет строк: " + ", ".join(PNL_ROW_NAMES.get(k, k) for k in missing))
+
+    n = len(headers)
+    rows = []
+    for k in PNL_ROW_ORDER:
+        if k in by_k:
+            rows.append(by_k[k])
+        else:
+            rows.append({
+                "k": k,
+                "name": PNL_ROW_NAMES[k],
+                "v": [0.0] * n,
+                "q": [None] * n,
+                "p": [None] * n,
+            })
+    return {"cols": cols, "months": months, "rows": rows}
+
+
+def _empty_pnl_store() -> dict:
+    return {"cabinets": [], "active_id": None, "selected_ids": []}
+
+
+def _pnl_store() -> dict:
+    raw = get_setting_json(PNL_STORE_KEY, None)
+    if not isinstance(raw, dict):
+        return _empty_pnl_store()
+    cabs = raw.get("cabinets")
+    if not isinstance(cabs, list):
+        cabs = []
+    clean = []
+    for c in cabs:
+        if not isinstance(c, dict) or not c.get("id"):
+            continue
+        data = c.get("data")
+        if not isinstance(data, dict) or not data.get("cols") or not data.get("rows"):
+            continue
+        cid = _normalize_pnl_cabinet_id(str(c["id"])) or str(c["id"])
+        preset = PNL_FILE_PRESETS.get(cid, {})
+        clean.append({
+            "id": cid,
+            "label": str(c.get("label") or preset.get("label") or cid),
+            "channel": str(c.get("channel") or preset.get("channel") or ("ozon" if cid.startswith("ozon") or cid == "dataon" else "wb")),
+            "filename": str(c.get("filename") or "") or None,
+            "uploaded_at": str(c.get("uploaded_at") or "") or None,
+            "data": data,
+        })
+    # если один id дважды после нормализации — последний побеждает
+    by_id = {}
+    for c in clean:
+        by_id[c["id"]] = c
+    clean = list(by_id.values())
+    active = raw.get("active_id")
+    if active:
+        active = _normalize_pnl_cabinet_id(str(active)) or active
+    if active and not any(c["id"] == active for c in clean):
+        active = clean[0]["id"] if clean else None
+    if not active and clean:
+        active = clean[0]["id"]
+    selected = raw.get("selected_ids")
+    if not isinstance(selected, list):
+        selected = [c["id"] for c in clean]
+    else:
+        selected = [_normalize_pnl_cabinet_id(str(x)) or str(x) for x in selected]
+        selected = [x for x in selected if any(c["id"] == x for c in clean)]
+        if not selected and clean:
+            selected = [c["id"] for c in clean]
+    return {"cabinets": clean, "active_id": active, "selected_ids": selected}
+
+
+def _save_pnl_store(store: dict) -> bool:
+    return save_setting_value(PNL_STORE_KEY, {
+        "cabinets": store.get("cabinets") or [],
+        "active_id": store.get("active_id"),
+        "selected_ids": store.get("selected_ids") or [],
+    })
+
+
+# Фиксированные кабинеты Ozon (2 компании)
+PNL_FILE_PRESETS = {
+    "ozon": {"label": "Ozon", "channel": "ozon"},
+    "dataon": {"label": "Dataon", "channel": "ozon"},
+    "ozon_pvs": {"label": "Ozon PVS", "channel": "ozon"},
+    "wb_pvs": {"label": "Wildberries PVS", "channel": "wb"},
+    "wb": {"label": "Wildberries", "channel": "wb"},
+}
+PNL_OZON_PRESETS = PNL_FILE_PRESETS
+
+
+def _next_ozon_cabinet_id(cabinets: list) -> str:
+    used = set()
+    for c in cabinets:
+        m = re.match(r"^ozon_(\d+)$", str(c.get("id") or ""))
+        if m:
+            used.add(int(m.group(1)))
+    n = 1
+    while n in used:
+        n += 1
+    return f"ozon_{n}"
+
+
+def _normalize_pnl_cabinet_id(cid: str) -> str:
+    """Имя файла / слот → стабильный id."""
+    raw = (cid or "").strip().lower().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "ozon": "ozon",
+        "azon": "ozon",
+        "озон": "ozon",
+        "pvs": "ozon_pvs",
+        "ozon_pvs": "ozon_pvs",
+        "azon_pvs": "ozon_pvs",
+        "dataon": "dataon",
+        "data_on": "dataon",
+        "ozon_dataon": "dataon",
+        "azon_dataon": "dataon",
+        "wb": "wb",
+        "wildberries": "wb",
+        "wb_pvs": "wb_pvs",
+        "wildberries_pvs": "wb_pvs",
+        "wb.pvs": "wb_pvs",
+    }
+    return aliases.get(raw, cid.strip() if cid else "")
+
+
+def _guess_pnl_file(filename: str) -> tuple:
+    """(id, label, channel) из имени файла."""
+    n = (filename or "").lower().replace(" ", "")
+    if "dataon" in n or "датаон" in n:
+        return "dataon", "Dataon", "ozon"
+    if "pvs" in n and any(x in n for x in ("wb", "wild", "вб", "вайлд")):
+        return "wb_pvs", "Wildberries PVS", "wb"
+    if "pvs" in n and any(x in n for x in ("ozon", "azon", "озон")):
+        return "ozon_pvs", "Ozon PVS", "ozon"
+    if "pvs" in n:
+        return "ozon_pvs", "Ozon PVS", "ozon"
+    if any(x in n for x in ("ozon", "azon", "озон")):
+        return "ozon", "Ozon", "ozon"
+    if any(x in n for x in ("wb", "wild", "вб", "вайлд")):
+        return "wb", "Wildberries", "wb"
+    return "", "", ""
+
+
+def _pnl_cabinet_meta(c: dict) -> dict:
+    data = c.get("data") or {}
+    months = data.get("months") or []
+    return {
+        "id": c["id"],
+        "label": c.get("label") or c["id"],
+        "channel": c.get("channel") or "ozon",
+        "filename": c.get("filename"),
+        "uploaded_at": c.get("uploaded_at"),
+        "months": len(months),
+        "latest_month": months[0]["label"] if months else None,
+    }
+
+
+def _sum_pnl_datasets(items: list, label: str = "Итого") -> dict:
+    """Складывает несколько ОПИУ по label колонки (месяц/неделя)."""
+    if not items:
+        return {"cols": [], "months": [], "rows": []}
+    if len(items) == 1:
+        return items[0]
+    label_order = []
+    seen = set()
+    for d in items:
+        for col in d.get("cols") or []:
+            lb = col.get("label")
+            if lb and lb not in seen:
+                seen.add(lb)
+                label_order.append(lb)
+    cols = []
+    for i, lb in enumerate(label_order):
+        week = str(lb).lower().startswith("неделя")
+        short = "Месяц"
+        if week:
+            m = re.search(r"\(([^)]+)\)", str(lb))
+            short = (m.group(1).replace("-", "–") if m else lb)
+        cols.append({"id": f"c{i}", "label": lb, "short": short, "week": week})
+    col_idx = {c["label"]: i for i, c in enumerate(cols)}
+    n = len(cols)
+    by_k = {}
+    for k in PNL_ROW_ORDER:
+        by_k[k] = {
+            "k": k,
+            "name": PNL_ROW_NAMES[k],
+            "v": [0.0] * n,
+            "q": [None] * n,
+            "p": [None] * n,
+        }
+    for d in items:
+        idx_by_label = {c["label"]: i for i, c in enumerate(d.get("cols") or [])}
+        rows_by_k = {r["k"]: r for r in (d.get("rows") or []) if r.get("k")}
+        for k, out in by_k.items():
+            src = rows_by_k.get(k)
+            if not src:
+                continue
+            for lb, oi in col_idx.items():
+                si = idx_by_label.get(lb)
+                if si is None:
+                    continue
+                vs = src.get("v") or []
+                qs = src.get("q") or []
+                if si < len(vs):
+                    out["v"][oi] = round(out["v"][oi] + float(vs[si] or 0), 2)
+                if si < len(qs) and qs[si] is not None:
+                    out["q"][oi] = int(out["q"][oi] or 0) + int(qs[si])
+    # пересчёт % от реализации
+    real = by_k["real"]["v"]
+    for k in ("cogs", "ads", "storage", "commission", "logistics", "net"):
+        for i in range(n):
+            if real[i]:
+                by_k[k]["p"][i] = round(by_k[k]["v"][i] / real[i] * 100, 2)
+            else:
+                by_k[k]["p"][i] = None
+    months = []
+    i = 0
+    while i < n:
+        if cols[i]["week"]:
+            i += 1
+            continue
+        group = [cols[i]["id"]]
+        j = i + 1
+        while j < n and cols[j]["week"]:
+            group.append(cols[j]["id"])
+            j += 1
+        months.append({"id": cols[i]["id"], "label": cols[i]["label"], "cols": group})
+        i = j
+    return {"cols": cols, "months": months, "rows": [by_k[k] for k in PNL_ROW_ORDER], "label": label}
+
+
+def _pnl_resolve_selected(store: dict, selected: str = None, view: str = None) -> list:
+    cabinets = store.get("cabinets") or []
+    ids = []
+    raw = (selected or "").strip()
+    if raw:
+        ids = [_normalize_pnl_cabinet_id(x) or x for x in raw.split(",") if x.strip()]
+        ids = [x.strip() for x in ids if x.strip()]
+    elif view in ("ozon_all", "all"):
+        if view == "all":
+            ids = [c["id"] for c in cabinets]
+        else:
+            ids = [c["id"] for c in cabinets if c.get("channel") == "ozon"]
+    elif view:
+        ids = [_normalize_pnl_cabinet_id(view) or view]
+    else:
+        ids = list(store.get("selected_ids") or [c["id"] for c in cabinets])
+    have = {c["id"] for c in cabinets}
+    return [i for i in ids if i in have]
+
+
+@app.get("/api/finance/pnl")
+def get_finance_pnl(view: str = None, selected: str = None):
+    """ОПИУ: файлы. selected=id,id — сумма отмеченных."""
+    store = _pnl_store()
+    cabinets = store.get("cabinets") or []
+    meta = [_pnl_cabinet_meta(c) for c in cabinets]
+    ids = _pnl_resolve_selected(store, selected, view)
+    picked = [c for c in cabinets if c["id"] in ids]
+    labels = [c.get("label") or c["id"] for c in picked]
+    data = None
+    if len(picked) == 1:
+        data = picked[0].get("data")
+    elif picked:
+        data = _sum_pnl_datasets([c.get("data") for c in picked], " + ".join(labels))
+    view_label = " + ".join(labels) if labels else None
+    return {
+        "cabinets": meta,
+        "active_id": store.get("active_id"),
+        "selected_ids": ids,
+        "view": ",".join(ids) if ids else None,
+        "view_label": view_label,
+        "data": data,
+        "has_data": bool(data and (data.get("cols") or data.get("rows"))),
+        "presets": [
+            {"id": k, "label": v["label"], "channel": v["channel"]}
+            for k, v in PNL_FILE_PRESETS.items()
+        ],
+    }
+
+
+@app.post("/api/finance/pnl/upload")
+async def upload_finance_pnl(
+    file: UploadFile = File(...),
+    cabinet_id: str = Form(None),
+    label: str = Form(None),
+    channel: str = Form(None),
+):
+    """Загрузка opiy.xlsx. cabinet_id: wb | ozon_pvs | ozon_dataon | ozon_new."""
+    content = await file.read()
+    try:
+        data = parse_pnl_opiy_excel(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    store = _pnl_store()
+    cabinets = list(store.get("cabinets") or [])
+    fname = file.filename or "opiy.xlsx"
+    guessed_id, guessed_label, guessed_ch = _guess_pnl_file(fname)
+    raw_cid = (cabinet_id or "").strip() or guessed_id
+    cid = _normalize_pnl_cabinet_id(raw_cid) or raw_cid or guessed_id
+    ch = (channel or "").strip().lower() or guessed_ch
+    now = datetime.now(timezone.utc).isoformat()
+
+    def _upsert(entry: dict):
+        nonlocal cabinets
+        existing = next((c for c in cabinets if c["id"] == entry["id"]), None)
+        if existing:
+            cabinets = [entry if c["id"] == entry["id"] else c for c in cabinets]
+        elif entry["id"] == "wb":
+            cabinets.insert(0, entry)
+        else:
+            # PVS перед Dataon
+            order = {"wb": 0, "wb_pvs": 1, "ozon": 2, "ozon_pvs": 3, "dataon": 4}
+            cabinets.append(entry)
+            cabinets.sort(key=lambda c: (order.get(c["id"], 50), c.get("label") or c["id"]))
+
+    if cid in ("ozon_new", "new"):
+        cid = guessed_id or "ozon"
+
+    preset = PNL_FILE_PRESETS.get(cid)
+    if cid in ("wb", "wb_pvs") or ch == "wb":
+        if cid not in ("wb", "wb_pvs"):
+            cid = "wb_pvs" if "pvs" in fname.lower() else "wb"
+        preset = PNL_FILE_PRESETS.get(cid) or {"label": "Wildberries", "channel": "wb"}
+        lbl = (label or "").strip() or guessed_label or preset["label"]
+        ch = "wb"
+    elif preset:
+        lbl = (label or "").strip() or guessed_label or preset["label"]
+        ch = preset.get("channel") or ch or "ozon"
+    elif cid.startswith("ozon_") or ch == "ozon":
+        lbl = (label or "").strip() or guessed_label or cid.replace("_", " ")
+        ch = "ozon"
+    else:
+        cid = guessed_id or _next_ozon_cabinet_id(cabinets)
+        preset = PNL_FILE_PRESETS.get(cid)
+        lbl = (label or "").strip() or guessed_label or (preset["label"] if preset else fname)
+        ch = guessed_ch or (preset["channel"] if preset else "ozon")
+    _upsert({
+        "id": cid,
+        "label": lbl,
+        "channel": ch,
+        "filename": fname,
+        "uploaded_at": now,
+        "data": data,
+    })
+
+    store["cabinets"] = cabinets
+    store["active_id"] = cid
+    selected = list(store.get("selected_ids") or [])
+    if cid not in selected:
+        selected.append(cid)
+    store["selected_ids"] = selected
+    if not _save_pnl_store(store):
+        raise HTTPException(status_code=500, detail="Не удалось сохранить ОПИУ")
+    meta = next(_pnl_cabinet_meta(c) for c in cabinets if c["id"] == cid)
+    return {
+        "status": "ok",
+        "cabinet": meta,
+        "cabinets": [_pnl_cabinet_meta(c) for c in cabinets],
+        "active_id": cid,
+        "selected_ids": selected,
+        "data": data,
+        "presets": [
+            {"id": k, "label": v["label"], "channel": v["channel"]}
+            for k, v in PNL_OZON_PRESETS.items()
+        ],
+    }
+
+
+@app.post("/api/finance/pnl/selected")
+def set_finance_pnl_selected(request: dict):
+    ids = (request or {}).get("ids") if isinstance(request, dict) else None
+    if not isinstance(ids, list):
+        raise HTTPException(status_code=400, detail="нужен ids: []")
+    store = _pnl_store()
+    have = {c["id"] for c in store.get("cabinets") or []}
+    clean = []
+    for raw in ids:
+        cid = _normalize_pnl_cabinet_id(str(raw or "")) or str(raw or "").strip()
+        if cid in have and cid not in clean:
+            clean.append(cid)
+    store["selected_ids"] = clean
+    _save_pnl_store(store)
+    return get_finance_pnl(selected=",".join(clean))
+
+
+@app.post("/api/finance/pnl/active")
+def set_finance_pnl_active(request: dict):
+    cid = str((request or {}).get("id") or "").strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="нужен id")
+    store = _pnl_store()
+    if cid not in ("ozon_all", "all") and not any(c["id"] == cid for c in store["cabinets"]):
+        raise HTTPException(status_code=404, detail="кабинет не найден")
+    if cid not in ("ozon_all", "all"):
+        store["active_id"] = cid
+        _save_pnl_store(store)
+    return get_finance_pnl(view=cid)
+
+
+@app.delete("/api/finance/pnl/{cabinet_id}")
+def delete_finance_pnl(cabinet_id: str):
+    store = _pnl_store()
+    cid = _normalize_pnl_cabinet_id(cabinet_id) or cabinet_id
+    before = len(store["cabinets"])
+    store["cabinets"] = [c for c in store["cabinets"] if c["id"] != cid]
+    if len(store["cabinets"]) == before:
+        raise HTTPException(status_code=404, detail="кабинет не найден")
+    if store.get("active_id") == cid:
+        store["active_id"] = store["cabinets"][0]["id"] if store["cabinets"] else None
+    store["selected_ids"] = [x for x in (store.get("selected_ids") or []) if x != cid]
+    _save_pnl_store(store)
+    return {
+        "status": "ok",
+        "cabinets": [_pnl_cabinet_meta(c) for c in store["cabinets"]],
+        "active_id": store.get("active_id"),
+        "selected_ids": store.get("selected_ids") or [],
+    }
 
 
 # ---------- Финансы: CFO баланс / кредиты ----------
@@ -5974,6 +11853,1232 @@ def enrich_cfo_snapshot(raw: dict) -> dict:
     return data
 
 
+WB_MONEY_STORE_KEY = "wb_money_store"
+
+
+def _wb_money(v):
+    """WB finance API часто отдаёт деньги строкой."""
+    if v is None or v == "":
+        return None
+    try:
+        return float(str(v).replace(" ", "").replace("\xa0", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def _money_store() -> dict:
+    raw = get_setting_json(WB_MONEY_STORE_KEY, None)
+    if not isinstance(raw, dict):
+        return {"reports": [], "payments": [], "marks": {}, "updated_at": None}
+    return {
+        "reports": list(raw.get("reports") or []),
+        "payments": list(raw.get("payments") or []),
+        "marks": dict(raw.get("marks") or {}),
+        "updated_at": raw.get("updated_at"),
+        "balance": raw.get("balance"),
+    }
+
+
+def _save_money_store(store: dict) -> bool:
+    store = dict(store or {})
+    store["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return save_setting_value(WB_MONEY_STORE_KEY, store)
+
+
+def _report_id_str(r: dict) -> str:
+    rid = r.get("report_id") if r.get("report_id") not in (None, "") else r.get("id")
+    if rid is None or rid == "":
+        return ""
+    # int/str из API и Excel должны считаться одним id
+    return str(rid).strip()
+
+
+def _report_key(r: dict) -> str:
+    """Стабильный ключ: даты + нормализованный тип + report_id как строка."""
+    typ = _report_type_label(r.get("type"))
+    rid = _report_id_str(r)
+    return "|".join([
+        str(r.get("date_from") or "")[:10],
+        str(r.get("date_to") or "")[:10],
+        typ,
+        rid,
+    ])
+
+
+def _pick_report_amount(money: dict, fallback=None):
+    """Сумма «Итого к оплате» из отчёта реализации.
+
+    В кабинете ВБ это bankPaymentSum (не retailAmountSum = продажа
+    и не forPaySum = к перечислению до удержаний).
+    """
+    if not isinstance(money, dict):
+        return fallback
+    preferred = (
+        "bankPaymentSum", "bank_payment_sum",
+        "totalToPay", "total_to_pay", "Итого к оплате", "итог_к_оплате",
+        "forPaySum", "for_pay_sum", "toPay", "forPay", "ppvz_for_pay",
+        "paid_sum", "transferAmount",
+    )
+    for k in preferred:
+        if k in money and money[k] is not None:
+            try:
+                return float(money[k])
+            except (TypeError, ValueError):
+                continue
+    return fallback
+
+
+def _report_type_label(typ) -> str:
+    if typ is None or typ == "":
+        return "Отчёт"
+    # finance-api: 1 = основной, 2 = по выкупам
+    try:
+        n = int(typ)
+        if n == 1:
+            return "Основной"
+        if n == 2:
+            return "По выкупам"
+    except (TypeError, ValueError):
+        pass
+    s = str(typ).strip()
+    return s or "Отчёт"
+
+
+def _normalize_report_row(row: dict) -> dict:
+    """Пересчитывает amount из money (bankPaymentSum) и подписи типа."""
+    if not isinstance(row, dict):
+        return row
+    row = dict(row)
+    money = row.get("money") if isinstance(row.get("money"), dict) else {}
+    sale = _wb_money(money.get("retailAmountSum"))
+    for_pay = _wb_money(money.get("forPaySum"))
+    to_pay = _pick_report_amount(money, row.get("amount"))
+    if sale is not None:
+        row["sale_amount"] = float(sale)
+    if for_pay is not None:
+        row["for_pay_amount"] = float(for_pay)
+    if to_pay is not None:
+        row["amount"] = float(to_pay)
+    rid = _report_id_str(row)
+    if rid:
+        row["report_id"] = rid
+    row["type"] = _report_type_label(row.get("type"))
+    # ключ всегда после нормализации типа/id — иначе Excel и API не схлопнутся
+    row["key"] = _report_key(row)
+    return row
+
+
+def _match_payment_status(report: dict, payments: list, marks: dict) -> dict:
+    """Сверяет отчёт с историей платежей и ручными отметками."""
+    key = report.get("key") or _report_key(report)
+    amount = report.get("amount")
+    manual = (marks or {}).get(key)
+    if manual in ("paid", "unpaid", "processing", "partial"):
+        return {
+            "payment_status": manual,
+            "payment_source": "manual",
+            "matched_payment": None,
+            "key": key,
+        }
+
+    if amount is None or not payments:
+        return {
+            "payment_status": "unknown",
+            "payment_source": None,
+            "matched_payment": None,
+            "key": key,
+        }
+
+    best = None
+    best_diff = None
+    for p in payments:
+        try:
+            pam = float(p.get("amount") or 0)
+        except (TypeError, ValueError):
+            continue
+        diff = abs(pam - float(amount))
+        if best_diff is None or diff < best_diff:
+            best_diff = diff
+            best = p
+
+    if best is None or best_diff is None:
+        status = "unpaid"
+        matched = None
+    elif best_diff <= 1.0:
+        st = (best.get("status") or "").lower()
+        if best.get("paid_at") or st in ("paid", "done", "success", "оплачено"):
+            status = "paid"
+        elif st in ("processing", "queue", "pending", "обрабатывается", "очередь"):
+            status = "processing"
+        else:
+            status = "processing" if not best.get("paid_at") else "paid"
+        matched = best
+    elif best_diff <= max(5000.0, abs(float(amount)) * 0.01):
+        # близко — считаем near-match, статус по платежу
+        st = (best.get("status") or "").lower()
+        if best.get("paid_at") or st in ("paid", "done", "success", "оплачено"):
+            status = "paid"
+        else:
+            status = "processing"
+        matched = {**best, "near_match_diff": round(best_diff, 2)}
+    else:
+        status = "unpaid"
+        matched = None
+
+    return {
+        "payment_status": status,
+        "payment_source": "payment_match" if matched else None,
+        "matched_payment": matched,
+        "key": key,
+    }
+
+
+def fetch_wb_account_balance() -> dict:
+    """Виджет баланса с главной seller.wildberries.ru."""
+    if not WB_TOKEN:
+        return {"error": "WB_TOKEN не задан"}
+    try:
+        r = httpx.get(
+            f"{WB_FINANCE_URL}/api/v1/account/balance",
+            headers=wb_headers(),
+            timeout=30,
+        )
+    except Exception as e:
+        return {"error": str(e)}
+    if r.status_code != 200:
+        return {"error": f"HTTP {r.status_code}", "body": r.text[:400]}
+    data = r.json() if r.content else {}
+    if isinstance(data, dict) and isinstance(data.get("data"), dict):
+        data = data["data"]
+    return {
+        "currency": data.get("currency") or "RUB",
+        "current": _wb_money(data.get("current")),
+        "for_withdraw": _wb_money(data.get("for_withdraw")),
+        "raw_keys": sorted(data.keys()) if isinstance(data, dict) else [],
+    }
+
+
+def fetch_wb_sales_reports(date_from: str, date_to: str) -> dict:
+    """Список еженедельных отчётов реализации (Финансы → отчёты)."""
+    if not WB_TOKEN:
+        return {"error": "WB_TOKEN не задан", "reports": []}
+    payload = {"dateFrom": date_from, "dateTo": date_to}
+    r = None
+    last_err = None
+    for attempt in range(5):
+        try:
+            r = httpx.post(
+                f"{WB_FINANCE_URL}/api/finance/v1/sales-reports/list",
+                headers={**wb_headers(), "Content-Type": "application/json"},
+                json=payload,
+                timeout=60,
+            )
+        except Exception as e:
+            last_err = str(e)
+            time.sleep(1.5 * (attempt + 1))
+            continue
+        if r.status_code != 429:
+            break
+        wait = 3.0 * (attempt + 1)
+        try:
+            ra = float(r.headers.get("Retry-After") or 0)
+            if ra > 0:
+                wait = max(wait, ra)
+        except Exception:
+            pass
+        time.sleep(wait)
+        last_err = "HTTP 429"
+    if r is None:
+        return {"error": last_err or "WB API недоступен", "reports": []}
+    if r.status_code == 204:
+        return {"reports": [], "note": "пусто за период"}
+    if r.status_code != 200:
+        return {"error": f"HTTP {r.status_code}", "body": r.text[:500], "reports": []}
+    raw = r.json() if r.content else []
+    items = raw
+    if isinstance(raw, dict):
+        items = raw.get("data") or raw.get("reports") or raw.get("list") or []
+    if not isinstance(items, list):
+        return {"error": "неожиданный формат", "raw_type": str(type(raw)), "reports": []}
+
+    reports = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        money_fields = {}
+        for k, v in it.items():
+            mv = _wb_money(v)
+            if mv is not None and any(
+                x in str(k).lower()
+                for x in ("pay", "sum", "total", "amount", "transfer", "оплат", "перечисл", "sale", "retail")
+            ):
+                money_fields[str(k)] = mv
+        date_from_v = it.get("dateFrom") or it.get("date_from") or it.get("begin")
+        date_to_v = it.get("dateTo") or it.get("date_to") or it.get("end")
+        typ = it.get("reportType") or it.get("type") or it.get("category") or "Отчёт"
+        rid = it.get("reportId") or it.get("report_id") or it.get("id")
+        row = {
+            "report_id": rid,
+            "date_from": str(date_from_v)[:10] if date_from_v else None,
+            "date_to": str(date_to_v)[:10] if date_to_v else None,
+            "created": it.get("createDate") or it.get("createdAt") or it.get("created"),
+            "type": typ,
+            "api_status": it.get("status") or it.get("paymentStatus") or it.get("state"),
+            "money": money_fields,
+            "source": "wb_api",
+        }
+        # key до смены type→лейбл, чтобы стабильно матчить кэш
+        row["key"] = _report_key(row)
+        row = _normalize_report_row(row)
+        reports.append(row)
+    return {"reports": reports, "count": len(reports)}
+
+
+def parse_wb_weekly_pay_excel(content: bytes) -> list:
+    """Excel «Еженедельный отчет …» с колонкой «Итого к оплате»."""
+    import io
+    try:
+        import openpyxl
+    except ImportError:
+        raise RuntimeError("openpyxl не установлен")
+    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+    ws = wb.active
+    headers = {}
+    for c in range(1, (ws.max_column or 1) + 1):
+        h = ws.cell(1, c).value
+        if h is None:
+            continue
+        headers[str(h).strip().lower()] = c
+
+    def col(*names):
+        for n in names:
+            if n.lower() in headers:
+                return headers[n.lower()]
+        return None
+
+    c_id = col("№ отчета", "номер отчета", "report id", "id")
+    c_from = col("дата начала", "date from", "from")
+    c_to = col("дата конца", "дата окончания", "date to", "to")
+    c_type = col("тип отчета", "тип", "type")
+    c_pay = col("итого к оплате", "к оплате", "total to pay")
+    if not c_from or not c_to or not c_pay:
+        raise RuntimeError("Не нашёл колонки «Дата начала/конца» и «Итого к оплате»")
+
+    def cell_date(v):
+        if v is None:
+            return None
+        if hasattr(v, "date"):
+            try:
+                return v.date().isoformat()
+            except Exception:
+                pass
+        s = str(v)
+        if "T" in s:
+            return s[:10]
+        if len(s) >= 10 and s[4] == "-":
+            return s[:10]
+        # 01.06.2026
+        try:
+            return datetime.strptime(s[:10], "%d.%m.%Y").date().isoformat()
+        except Exception:
+            return s[:10]
+
+    out = []
+    for r in range(2, (ws.max_row or 1) + 1):
+        amount = _wb_money(ws.cell(r, c_pay).value)
+        if amount is None:
+            continue
+        dfrom = cell_date(ws.cell(r, c_from).value)
+        dto = cell_date(ws.cell(r, c_to).value)
+        typ = ws.cell(r, c_type).value if c_type else "Основной"
+        rid = ws.cell(r, c_id).value if c_id else None
+        row = {
+            "report_id": str(rid) if rid is not None else None,
+            "date_from": dfrom,
+            "date_to": dto,
+            "type": str(typ or "Основной"),
+            "amount": float(amount),
+            "source": "excel",
+        }
+        row["key"] = _report_key(row)
+        out.append(row)
+    wb.close()
+    return out
+
+
+def _report_merge_bucket(r: dict) -> str:
+    """Ключ схлопывания: сначала report_id, иначе неделя+тип."""
+    rid = _report_id_str(r)
+    if rid:
+        return "id:" + rid
+    return "k:" + (r.get("key") or _report_key(r))
+
+
+def _merge_reports(existing: list, incoming: list) -> list:
+    """Склеивает отчёты без дублей Excel+API (один report_id = одна строка)."""
+    by = {}
+    for raw in list(existing or []) + list(incoming or []):
+        if not isinstance(raw, dict):
+            continue
+        r = _normalize_report_row(raw)
+        bucket = _report_merge_bucket(r)
+        prev = by.get(bucket)
+        if not prev:
+            by[bucket] = r
+            continue
+        money = r.get("money") if isinstance(r.get("money"), dict) else None
+        if not money and isinstance(prev.get("money"), dict):
+            money = prev.get("money")
+        amount = r.get("amount")
+        if money:
+            picked = _pick_report_amount(money)
+            if picked is not None:
+                amount = picked
+        if amount is None:
+            amount = prev.get("amount")
+        src_prev = str(prev.get("source") or "")
+        src_new = str(r.get("source") or "")
+        if "excel" in src_prev and "api" in src_new:
+            source = "excel+api"
+        elif "excel" in src_new and "api" in src_prev:
+            source = "excel+api"
+        elif src_new and src_prev and src_new != src_prev:
+            source = "+".join(sorted({src_prev, src_new}))
+        else:
+            source = src_new or src_prev
+        merged = {**prev, **r, "amount": amount, "source": source or r.get("source") or prev.get("source")}
+        if money:
+            merged["money"] = money
+        by[bucket] = _normalize_report_row(merged)
+    rows = list(by.values())
+    rows.sort(key=lambda x: (str(x.get("date_from") or ""), str(x.get("type") or "")), reverse=True)
+    return rows
+
+
+def _payment_status_from_row(p: dict) -> str:
+    st = (p.get("status") or "").lower()
+    if p.get("paid_at") or st in ("paid", "done", "success", "оплачено"):
+        return "paid"
+    if st in ("processing", "queue", "pending", "обрабатывается", "очередь", "оплата обрабатывается"):
+        return "processing"
+    return "processing" if not p.get("paid_at") else "paid"
+
+
+def _parse_ru_date(s) -> date | None:
+    if not s:
+        return None
+    t = str(s).strip()[:10]
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(t, fmt).date()
+        except Exception:
+            continue
+    return None
+
+
+# Якорь: № выплаты → неделя (или несколько недель) отчёта.
+# 185 = 10.08–16.08.2026. 153 = две короткие недели НГ одной суммой.
+# Имеет приоритет над авто-сверкой по сумме.
+DEFAULT_PAYMENT_WEEK_LINKS = {
+    "185": {"date_from": "2026-08-10", "date_to": "2026-08-16"},
+    "153": {
+        "weeks": [
+            {"date_from": "2025-12-29", "date_to": "2025-12-31"},
+            {"date_from": "2026-01-01", "date_to": "2026-01-04"},
+        ]
+    },
+}
+
+
+def _normalize_week_link(link) -> list:
+    """Связь выплаты → [{date_from, date_to}, ...]."""
+    if not isinstance(link, dict):
+        return []
+    weeks = []
+    raw_weeks = link.get("weeks")
+    if isinstance(raw_weeks, list) and raw_weeks:
+        for w in raw_weeks:
+            if not isinstance(w, dict):
+                continue
+            df = str(w.get("date_from") or "")[:10]
+            dt = str(w.get("date_to") or "")[:10]
+            if df and dt:
+                weeks.append({"date_from": df, "date_to": dt})
+    else:
+        df = str(link.get("date_from") or "")[:10]
+        dt = str(link.get("date_to") or "")[:10]
+        if df and dt:
+            weeks.append({"date_from": df, "date_to": dt})
+    return weeks
+
+
+def _compact_week_link(weeks: list) -> dict:
+    if not weeks:
+        return {}
+    out = {
+        "date_from": weeks[0]["date_from"],
+        "date_to": weeks[-1]["date_to"],
+        "weeks": weeks,
+    }
+    return out
+
+
+def _payment_week_links(store: dict) -> dict:
+    """id выплаты → {date_from, date_to, weeks:[...]}."""
+    out = {}
+    for pid, link in DEFAULT_PAYMENT_WEEK_LINKS.items():
+        weeks = _normalize_week_link(link)
+        if weeks:
+            out[str(pid)] = _compact_week_link(weeks)
+    raw = store.get("payment_links") if isinstance(store, dict) else None
+    if isinstance(raw, dict):
+        for pid, link in raw.items():
+            weeks = _normalize_week_link(link)
+            if weeks:
+                out[str(pid)] = _compact_week_link(weeks)
+    return out
+
+
+def _enrich_reports_with_payments(store: dict) -> dict:
+    """Сверяет отчёты с платежами.
+
+    Важно: в кабинете ВБ одна заявка часто = сумма за неделю
+    (Основной + По выкупам). Поэтому матчим платёж к неделе, а не к одной строке.
+    """
+    payments = list(store.get("payments") or [])
+    marks = store.get("marks") or {}
+    pay_links = _payment_week_links(store)
+
+    locked = []
+    pending = []
+    for r in store.get("reports") or []:
+        if not isinstance(r, dict):
+            continue
+        row = _normalize_report_row(r)
+        manual = marks.get(row["key"])
+        if manual in ("paid", "unpaid", "processing", "partial"):
+            row.update({
+                "payment_status": manual,
+                "payment_source": "manual",
+                "matched_payment": None,
+            })
+            locked.append(row)
+        else:
+            pending.append(row)
+
+    # группы по неделе
+    weeks = {}
+    for row in pending:
+        wk = (str(row.get("date_from") or "")[:10], str(row.get("date_to") or "")[:10])
+        g = weeks.setdefault(wk, {"rows": [], "amount": 0.0})
+        g["rows"].append(row)
+        try:
+            g["amount"] += float(row.get("amount") or 0)
+        except (TypeError, ValueError):
+            pass
+
+    used_pay = set()
+    week_match = {}  # wk -> (payment, status, diff)
+
+    def assign(wk, pay_i, status, diff, source="payment_match", reuse_pay=False,
+               paid_for_week=None, group_from=None, group_to=None, group_total=None):
+        if wk in week_match:
+            return False
+        if pay_i in used_pay and not reuse_pay:
+            return False
+        used_pay.add(pay_i)
+        p = dict(payments[pay_i])
+        if diff and diff > 1.0:
+            p["near_match_diff"] = round(diff, 2)
+        p["week_total"] = round(group_total if group_total is not None else weeks[wk]["amount"], 2)
+        p["report_from"] = group_from or wk[0]
+        p["report_to"] = group_to or wk[1]
+        p["match_source"] = source
+        if paid_for_week is not None:
+            try:
+                p["paid_for_week"] = round(float(paid_for_week), 2)
+            except (TypeError, ValueError):
+                pass
+        week_match[wk] = (p, status, diff, source)
+        return True
+
+    def pay_amount(i):
+        try:
+            return float(payments[i].get("amount") or 0)
+        except (TypeError, ValueError):
+            return None
+
+    def pay_anchor(i):
+        p = payments[i]
+        return _parse_ru_date(p.get("created")) or _parse_ru_date(p.get("paid_at"))
+
+    def week_end(wk):
+        return _parse_ru_date(wk[1]) or _parse_ru_date(wk[0])
+
+    # 0) явные связи № выплаты → одна или несколько недель (185; 153 = две недели НГ)
+    pay_index = {str(p.get("id") or ""): i for i, p in enumerate(payments) if p.get("id") not in (None, "")}
+    for pid, link in pay_links.items():
+        i = pay_index.get(str(pid))
+        if i is None or i in used_pay:
+            continue
+        linked_wks = []
+        for w in link.get("weeks") or []:
+            wk = (str(w.get("date_from") or "")[:10], str(w.get("date_to") or "")[:10])
+            if wk in weeks and wk not in week_match:
+                linked_wks.append(wk)
+        if not linked_wks:
+            continue
+        pam = pay_amount(i)
+        group_total = sum(weeks[wk]["amount"] for wk in linked_wks)
+        status = _payment_status_from_row(payments[i])
+        if pam is not None and group_total > 0 and pam < group_total - 1 and pam >= group_total * 0.15:
+            status = "partial"
+        diff = abs(group_total - pam) if pam is not None else 0.0
+        group_from = min(wk[0] for wk in linked_wks)
+        group_to = max(wk[1] for wk in linked_wks)
+        covered = pam is not None and abs((pam or 0) - group_total) <= 1.0
+        for wk in linked_wks:
+            week_amt = weeks[wk]["amount"]
+            if covered:
+                share = week_amt
+            elif pam is not None and group_total > 0:
+                share = pam * (week_amt / group_total)
+            else:
+                share = week_amt
+            assign(
+                wk, i, status, diff, source="payment_link",
+                reuse_pay=True,
+                paid_for_week=share,
+                group_from=group_from, group_to=group_to, group_total=group_total,
+            )
+
+    # 1) точное совпадение суммы недели (±1₽)
+    for i, p in enumerate(payments):
+        pam = pay_amount(i)
+        if pam is None:
+            continue
+        candidates = []
+        for wk, g in weeks.items():
+            if wk in week_match:
+                continue
+            diff = abs(g["amount"] - pam)
+            if diff <= 1.0:
+                candidates.append((diff, wk))
+        if not candidates:
+            continue
+        # ближайшая по дате к созданию заявки
+        anchor = pay_anchor(i)
+        candidates.sort(key=lambda x: (
+            abs((week_end(x[1]) - anchor).days) if anchor and week_end(x[1]) else 10**6,
+            x[0],
+        ))
+        assign(candidates[0][1], i, _payment_status_from_row(p), candidates[0][0])
+
+    # 2) near-match недели (±1% или 8к₽), окно ±35 дней (заявку часто создают через 2–3 недели)
+    for i, p in enumerate(payments):
+        if i in used_pay:
+            continue
+        pam = pay_amount(i)
+        if pam is None:
+            continue
+        anchor = pay_anchor(i)
+        best = None
+        for wk, g in weeks.items():
+            if wk in week_match:
+                continue
+            diff = abs(g["amount"] - pam)
+            limit = max(8000.0, abs(g["amount"]) * 0.01)
+            if diff > limit:
+                continue
+            we = week_end(wk)
+            date_pen = abs((we - anchor).days) if anchor and we else 999
+            if anchor and we and date_pen > 35:
+                continue
+            score = (date_pen, diff)
+            if best is None or score < best[0]:
+                best = (score, wk, diff)
+        if best:
+            assign(best[1], i, _payment_status_from_row(p), best[2])
+
+    # 3) частичные выплаты: сумма заявки < суммы недели.
+    # Заявку обычно создают через 5–28 дней после конца недели (не на следующий день).
+    for i, p in enumerate(payments):
+        if i in used_pay:
+            continue
+        pam = pay_amount(i)
+        if pam is None or pam <= 0:
+            continue
+        anchor = pay_anchor(i)
+        best = None
+        for wk, g in weeks.items():
+            if wk in week_match:
+                continue
+            total = g["amount"]
+            if total <= 0 or pam >= total - 1:
+                continue
+            if pam < total * 0.15:
+                continue
+            we = week_end(wk)
+            if not anchor or not we:
+                continue
+            days_after = (anchor - we).days
+            if days_after < 5 or days_after > 28:
+                continue
+            # чем ближе доля к полной неделе и чем типичнее лаг ~14 дней — тем лучше
+            score = (abs(days_after - 14), -pam / total)
+            if best is None or score < best[0]:
+                best = (score, wk, total - pam)
+        if best:
+            assign(best[1], i, "partial", best[2])
+
+    reports = list(locked)
+    for wk, g in weeks.items():
+        match = week_match.get(wk)
+        for row in g["rows"]:
+            if match:
+                p, status, diff, *rest = match
+                src = rest[0] if rest else "payment_match"
+                row = dict(row)
+                week_total = round(g["amount"], 2)
+                try:
+                    if p.get("paid_for_week") is not None:
+                        paid_amt = float(p.get("paid_for_week"))
+                    else:
+                        paid_amt = float(p.get("amount") or 0)
+                except (TypeError, ValueError):
+                    paid_amt = None
+                remaining = None
+                if paid_amt is not None:
+                    remaining = round(week_total - paid_amt, 2)
+                row.update({
+                    "payment_status": status,
+                    "payment_source": src or "payment_match",
+                    "matched_payment": p,
+                    "payment_id": str(p.get("id") or "") or None,
+                    "week_total": week_total,
+                    "paid_amount": paid_amt,
+                    # разница неделя − заявка (для частичных / если заявка меньше недели)
+                    "remaining_amount": remaining if remaining is not None and remaining > 1 else None,
+                })
+            else:
+                row = dict(row)
+                if row.get("amount") is None:
+                    row.update({"payment_status": "unknown", "payment_source": None, "matched_payment": None, "payment_id": None})
+                else:
+                    row.update({"payment_status": "unpaid", "payment_source": None, "matched_payment": None, "payment_id": None})
+                row["week_total"] = round(g["amount"], 2)
+                row["paid_amount"] = None
+                row["remaining_amount"] = None
+            reports.append(row)
+
+    reports.sort(key=lambda x: (str(x.get("date_from") or ""), str(x.get("type") or "")), reverse=True)
+
+    # Одна строка на неделю: Основной + По выкупам → одна сумма к сверке с заявкой
+    week_groups = {}
+    for row in reports:
+        wk = (str(row.get("date_from") or "")[:10], str(row.get("date_to") or "")[:10])
+        g = week_groups.setdefault(wk, {
+            "date_from": wk[0] or None,
+            "date_to": wk[1] or None,
+            "parts": [],
+            "week_total": 0.0,
+            "sale_total": 0.0,
+            "keys": [],
+            "report_ids": [],
+        })
+        amt = 0.0
+        try:
+            amt = float(row.get("amount") or 0)
+        except (TypeError, ValueError):
+            amt = 0.0
+        sale = None
+        try:
+            if row.get("sale_amount") is not None:
+                sale = float(row.get("sale_amount"))
+            elif isinstance(row.get("money"), dict) and row["money"].get("retailAmountSum") is not None:
+                sale = float(row["money"]["retailAmountSum"])
+        except (TypeError, ValueError):
+            sale = None
+        g["parts"].append({
+            "type": row.get("type"),
+            "report_id": row.get("report_id"),
+            "amount": row.get("amount"),
+            "sale_amount": sale,
+            "key": row.get("key"),
+        })
+        g["week_total"] += amt
+        if sale is not None:
+            g["sale_total"] += sale
+        if row.get("key"):
+            g["keys"].append(row["key"])
+        if row.get("report_id") is not None:
+            g["report_ids"].append(row["report_id"])
+        # статус/платёж одинаковые для всех строк недели после матчинга
+        for fld in (
+            "payment_status", "payment_source", "matched_payment",
+            "paid_amount", "remaining_amount",
+        ):
+            if row.get(fld) is not None or fld in ("payment_status", "payment_source", "matched_payment"):
+                g[fld] = row.get(fld)
+
+    weeks = []
+    for wk, g in week_groups.items():
+        # сумма частей надёжнее, чем week_total после копирования полей строки
+        week_total = round(sum(float(p.get("amount") or 0) for p in (g.get("parts") or [])), 2)
+        if not week_total:
+            week_total = round(float(g.get("week_total") or 0), 2)
+        paid_amt = g.get("paid_amount")
+        try:
+            paid_amt = float(paid_amt) if paid_amt is not None else None
+        except (TypeError, ValueError):
+            paid_amt = None
+        status = g.get("payment_status") or "unknown"
+        if paid_amt is not None:
+            diff = round(week_total - paid_amt, 2)
+        elif status == "unpaid":
+            diff = week_total
+        else:
+            diff = None
+        # сколько ВБ ещё должен по этой неделе (не переплата)
+        wb_owes = round(diff, 2) if diff is not None and diff > 1 else 0.0
+        overpay = round(-diff, 2) if diff is not None and diff < -1 else 0.0
+        parts = sorted(
+            g["parts"],
+            key=lambda p: (0 if "основ" in str(p.get("type") or "").lower() else 1, str(p.get("type") or "")),
+        )
+        mp = g.get("matched_payment")
+        pay_id = None
+        if isinstance(mp, dict):
+            pay_id = mp.get("id") or mp.get("payment_id")
+        weeks.append({
+            "key": f"week:{wk[0]}:{wk[1]}",
+            "date_from": g.get("date_from"),
+            "date_to": g.get("date_to"),
+            "week_total": week_total,
+            "sale_total": round(float(g.get("sale_total") or 0), 2) or None,
+            "paid_amount": paid_amt,
+            "diff": diff,
+            "wb_owes": wb_owes,
+            "overpay": overpay,
+            "payment_status": status,
+            "payment_source": g.get("payment_source"),
+            "matched_payment": mp,
+            "payment_id": str(pay_id) if pay_id not in (None, "") else None,
+            "parts": parts,
+            "keys": g.get("keys") or [],
+            "report_ids": g.get("report_ids") or [],
+            "type_label": " + ".join(
+                str(p.get("type") or "Отчёт") for p in parts
+            ) if parts else "Неделя",
+        })
+
+    weeks.sort(key=lambda x: (str(x.get("date_from") or ""), str(x.get("date_to") or "")), reverse=True)
+
+    def _sum(status):
+        return round(sum(float(r.get("amount") or 0) for r in reports if r.get("payment_status") == status), 2)
+
+    unmatched_payments = [p for i, p in enumerate(payments) if i not in used_pay]
+    weeks_total = round(sum(float(w.get("week_total") or 0) for w in weeks), 2)
+    weeks_paid = round(sum(float(w.get("paid_amount") or 0) for w in weeks if w.get("paid_amount") is not None), 2)
+    wb_owes_total = round(sum(float(w.get("wb_owes") or 0) for w in weeks), 2)
+    overpay_total = round(sum(float(w.get("overpay") or 0) for w in weeks), 2)
+
+    # Проставляем неделю(и) отчёта обратно в список платежей (для таблицы заявок)
+    pay_week = {}
+    for wk, match in week_match.items():
+        p = match[0] if match else None
+        if not isinstance(p, dict):
+            continue
+        pid = str(p.get("id") or "")
+        if not pid:
+            continue
+        slot = pay_week.setdefault(pid, {
+            "weeks": [],
+            "match_source": p.get("match_source") or (match[3] if len(match) > 3 else None),
+        })
+        slot["weeks"].append({"date_from": wk[0], "date_to": wk[1]})
+        slot["report_from"] = min(w["date_from"] for w in slot["weeks"])
+        slot["report_to"] = max(w["date_to"] for w in slot["weeks"])
+        slot["week_total"] = p.get("week_total")
+        slot["match_source"] = p.get("match_source") or slot.get("match_source")
+    payments_out = []
+    for p in payments:
+        row = dict(p) if isinstance(p, dict) else p
+        if not isinstance(row, dict):
+            continue
+        meta = pay_week.get(str(row.get("id") or ""))
+        if meta:
+            row = {**row, **meta}
+        payments_out.append(row)
+    unmatched_payments = [
+        dict(p) for p in unmatched_payments if isinstance(p, dict)
+    ]
+
+    return {
+        "reports": reports,
+        "weeks": weeks,
+        "summary": {
+            "count": len(reports),
+            "weeks_count": len(weeks),
+            "paid": _sum("paid"),
+            "processing": _sum("processing"),
+            "partial": _sum("partial"),
+            "unpaid": _sum("unpaid"),
+            "unknown": _sum("unknown"),
+            "total_amount": round(sum(float(r.get("amount") or 0) for r in reports), 2),
+            "weeks_total": weeks_total,
+            "weeks_paid": weeks_paid,
+            "wb_owes": wb_owes_total,
+            "overpay": overpay_total,
+            "payments_total": round(sum(float(p.get("amount") or 0) for p in payments), 2),
+            "payments_matched": len(used_pay),
+            "payments_unmatched": len(unmatched_payments),
+        },
+        "payments": payments_out,
+        "unmatched_payments": unmatched_payments,
+        "payment_links": pay_links,
+        "marks": marks,
+        "updated_at": store.get("updated_at"),
+        "balance": store.get("balance"),
+    }
+
+
+def _wb_money_default_period():
+    """По умолчанию — с 1 января прошлого года по сегодня (чтобы был и 2025, и 2026)."""
+    today = _msk_now().date()
+    start = today.replace(year=today.year - 1, month=1, day=1)
+    return start.isoformat(), today.isoformat()
+
+
+def fetch_wb_sales_reports_range(date_from: str, date_to: str, chunk_days: int = 40) -> dict:
+    """Тянет отчёты кусками — у list-API иногда режется длинный период / 429."""
+    try:
+        d0 = datetime.strptime(str(date_from)[:10], "%Y-%m-%d").date()
+        d1 = datetime.strptime(str(date_to)[:10], "%Y-%m-%d").date()
+    except Exception:
+        return fetch_wb_sales_reports(date_from, date_to)
+
+    if d1 < d0:
+        d0, d1 = d1, d0
+
+    all_rows = []
+    errors = []
+    cur = d0
+    while cur <= d1:
+        end = min(cur + timedelta(days=max(7, int(chunk_days)) - 1), d1)
+        part = fetch_wb_sales_reports(cur.isoformat(), end.isoformat())
+        if part.get("error"):
+            errors.append(f"{cur}…{end}: {part.get('error')}")
+        else:
+            all_rows.extend(part.get("reports") or [])
+        cur = end + timedelta(days=1)
+        if cur <= d1:
+            time.sleep(1.2)
+
+    merged = _merge_reports([], all_rows)
+    out = {"reports": merged, "count": len(merged)}
+    if errors and not merged:
+        out["error"] = "; ".join(errors[:3])
+    elif errors:
+        out["note"] = "; ".join(errors[:3])
+    return out
+
+
+@app.get("/api/wb-money")
+def get_wb_money(date_from: str = None, date_to: str = None, refresh: bool = False):
+    """Отчёты ВБ + статус оплаты (сверка с историей платежей)."""
+    store = _money_store()
+    def_from, def_to = _wb_money_default_period()
+    if not date_to:
+        date_to = def_to
+    if not date_from:
+        date_from = def_from
+
+    balance = store.get("balance")
+    api_err = None
+    # всегда схлопываем Excel+API дубли (старый store мог хранить 2 строки на 1 report_id)
+    before_n = len(store.get("reports") or [])
+    store["reports"] = _merge_reports(store.get("reports") or [], [])
+    deduped = before_n != len(store.get("reports") or [])
+    if refresh or not store.get("reports"):
+        balance = fetch_wb_account_balance()
+        api = fetch_wb_sales_reports_range(date_from, date_to)
+        if api.get("error"):
+            api_err = api.get("error")
+            if api.get("body"):
+                api_err = f"{api_err}: {api.get('body')}"
+        else:
+            store["reports"] = _merge_reports(store.get("reports") or [], api.get("reports") or [])
+            deduped = True
+        store["balance"] = balance
+        _save_money_store(store)
+    elif deduped:
+        _save_money_store(store)
+
+    # якорь связей № выплаты → неделя (185 = 10.08–16.08.2026)
+    links = dict(store.get("payment_links") or {})
+    seeded = False
+    for pid, link in DEFAULT_PAYMENT_WEEK_LINKS.items():
+        if pid not in links:
+            links[pid] = dict(link)
+            seeded = True
+    if seeded:
+        store["payment_links"] = links
+        _save_money_store(store)
+
+    enriched = _enrich_reports_with_payments(store)
+    # период в ответе — фактический охват отчётов, если шире запроса
+    reps = enriched.get("reports") or []
+    if reps:
+        real_from = min((r.get("date_from") or date_from) for r in reps)
+        real_to = max((r.get("date_to") or r.get("date_from") or date_to) for r in reps)
+    else:
+        real_from, real_to = date_from, date_to
+    return {
+        "as_of": _msk_now().strftime("%d.%m.%Y %H:%M"),
+        "period": {"from": real_from, "to": real_to, "requested_from": date_from, "requested_to": date_to},
+        "balance": balance or {},
+        "api_error": api_err,
+        **enriched,
+        "payment_history_note": (
+            "Кликни выплату, отметь одну или несколько недель отчёта и нажми «Готово» — так свяжешь заявку с отчётами. "
+            "Историю платежей API не отдаёт: добавь заявки вручную или загрузи HTML «Активные платежи»."
+        ),
+    }
+
+
+@app.post("/api/wb-money/sync")
+def sync_wb_money(date_from: str = None, date_to: str = None):
+    return get_wb_money(date_from=date_from, date_to=date_to, refresh=True)
+
+
+
+def parse_wb_active_payments_html(content: bytes) -> list:
+    """Парсит сохранённую страницу seller.wildberries.ru/payment-history/active.
+
+    Возвращает [{id, amount, created, paid_at, status}].
+    """
+    import re
+    from html import unescape
+    try:
+        text = content.decode("utf-8")
+    except Exception:
+        text = content.decode("cp1251", errors="replace")
+    clean = re.sub(r"<script[\s\S]*?</script>", " ", text, flags=re.I)
+    clean = re.sub(r"<style[\s\S]*?</style>", " ", clean, flags=re.I)
+    clean = re.sub(r"<(br|p|div|tr|li|h[1-6]|td|th)[^>]*>", "\n", clean, flags=re.I)
+    clean = re.sub(r"<[^>]+>", " ", clean)
+    clean = unescape(clean)
+    clean = re.sub(r"[ \t\f\v]+", " ", clean)
+    lines = [ln.strip() for ln in clean.splitlines() if ln.strip()]
+    rows = []
+    i = 0
+    while i < len(lines):
+        m = re.fullmatch(r"(\d+)/(\d+)", lines[i])
+        if m and i + 3 < len(lines):
+            amt_raw = lines[i + 1].replace(" ", "").replace("\xa0", "").replace(",", ".")
+            if lines[i + 2] == "руб." and re.match(r"\d{2}\.\d{2}\.\d{4}$", lines[i + 3]):
+                try:
+                    amount = float(amt_raw)
+                except Exception:
+                    i += 1
+                    continue
+                status_raw = lines[i + 4] if i + 4 < len(lines) else ""
+                low = status_raw.lower()
+                paid_at = None
+                if "успешно" in low or "проведена банком" in low:
+                    status = "paid"
+                    dm = re.search(r"(\d{2}\.\d{2}\.\d{4})", status_raw)
+                    if dm:
+                        paid_at = dm.group(1)
+                elif "очеред" in low:
+                    status = "queue"
+                else:
+                    status = "processing"
+                rows.append({
+                    "id": m.group(2),
+                    "amount": amount,
+                    "created": lines[i + 3],
+                    "paid_at": paid_at,
+                    "status": status,
+                })
+                i += 5
+                continue
+        i += 1
+    # новее сверху в HTML — оставим как есть; уникализируем по id
+    by_id = {}
+    for r in rows:
+        by_id[str(r["id"])] = r
+    return list(by_id.values())
+
+
+@app.post("/api/wb-money/upload-reports")
+async def upload_wb_money_reports(file: UploadFile = File(...)):
+    content = await file.read()
+    try:
+        rows = parse_wb_weekly_pay_excel(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    store = _money_store()
+    store["reports"] = _merge_reports(store.get("reports") or [], rows)
+    _save_money_store(store)
+    return {
+        "status": "ok",
+        "imported": len(rows),
+        "total_reports": len(store["reports"]),
+        "summary": _enrich_reports_with_payments(store)["summary"],
+    }
+
+
+@app.post("/api/wb-money/payments")
+async def save_wb_money_payments(request: dict):
+    """Сохранить заявки из «Истории платежей».
+
+    body: {payments:[{id, amount, created, paid_at, status}], replace?: bool}
+    status: paid | processing | queue
+    """
+    items = request.get("payments") if isinstance(request, dict) else None
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="нужен payments: []")
+    cleaned = []
+    for p in items:
+        if not isinstance(p, dict):
+            continue
+        amount = _wb_money(p.get("amount"))
+        if amount is None:
+            continue
+        status = str(p.get("status") or "processing").strip().lower()
+        if status in ("оплачено", "done", "success", "paid") or "успешно" in status or "проведена банком" in status:
+            status = "paid"
+        elif status in ("очередь", "в очереди", "поручение в очереди", "queue") or "очеред" in status:
+            status = "queue"
+        elif status in ("обрабатывается", "оплата обрабатывается", "processing") or "обрабат" in status:
+            status = "processing"
+        cleaned.append({
+            "id": str(p.get("id") or p.get("payment_id") or ""),
+            "amount": float(amount),
+            "created": str(p.get("created") or p.get("created_at") or "")[:32] or None,
+            "paid_at": str(p.get("paid_at") or p.get("paid") or "")[:32] or None,
+            "status": status,
+        })
+    store = _money_store()
+    replace = bool(request.get("replace", True))
+    if replace:
+        store["payments"] = cleaned
+    else:
+        by_id = {p.get("id"): p for p in (store.get("payments") or []) if p.get("id")}
+        for p in cleaned:
+            if p.get("id"):
+                by_id[p["id"]] = p
+            else:
+                store.setdefault("payments", []).append(p)
+        store["payments"] = list(by_id.values())
+    _save_money_store(store)
+    return {
+        "status": "ok",
+        "payments": len(store["payments"]),
+        "summary": _enrich_reports_with_payments(store)["summary"],
+    }
+
+
+
+@app.post("/api/wb-money/upload-payments-html")
+async def upload_wb_money_payments_html(file: UploadFile = File(...)):
+    """Импорт заявок из HTML «Активные платежи» (сохранённая страница кабинета ВБ)."""
+    content = await file.read()
+    try:
+        rows = parse_wb_active_payments_html(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not rows:
+        raise HTTPException(status_code=400, detail="В HTML не нашёл заявок на оплату")
+    store = _money_store()
+    # мержим по id: HTML — источник правды по статусу/сумме
+    by_id = {str(p.get("id")): p for p in (store.get("payments") or []) if p.get("id")}
+    for r in rows:
+        by_id[str(r["id"])] = r
+    store["payments"] = list(by_id.values())
+    _save_money_store(store)
+    enriched = _enrich_reports_with_payments(store)
+    return {
+        "status": "ok",
+        "imported": len(rows),
+        "payments": len(store["payments"]),
+        "summary": enriched.get("summary"),
+    }
+
+
+@app.post("/api/wb-money/mark")
+async def mark_wb_money_report(request: dict):
+    """Ручная отметка отчёта: paid | unpaid | processing | partial | clear."""
+    key = str((request or {}).get("key") or "").strip()
+    status = str((request or {}).get("status") or "").strip().lower()
+    if not key:
+        raise HTTPException(status_code=400, detail="нужен key")
+    store = _money_store()
+    marks = dict(store.get("marks") or {})
+    if status in ("", "clear", "none", "auto"):
+        marks.pop(key, None)
+    elif status in ("paid", "unpaid", "processing", "partial"):
+        marks[key] = status
+    else:
+        raise HTTPException(status_code=400, detail="status: paid|unpaid|processing|partial|clear")
+    store["marks"] = marks
+    _save_money_store(store)
+    return {"status": "ok", "key": key, "mark": marks.get(key), "summary": _enrich_reports_with_payments(store)["summary"]}
+
+
+
+@app.post("/api/wb-money/link-payment")
+async def link_wb_money_payment(request: dict):
+    """Явно связать № выплаты с неделей отчёта.
+
+    body: {payment_id, date_from, date_to} или {payment_id, clear: true}
+    Пример: {"payment_id":"185","date_from":"2026-08-10","date_to":"2026-08-16"}
+    """
+    body = request or {}
+    pid = str(body.get("payment_id") or body.get("id") or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="нужен payment_id")
+    store = _money_store()
+    links = dict(store.get("payment_links") or {})
+    if body.get("clear") or body.get("status") == "clear":
+        links.pop(pid, None)
+        store["payment_links"] = links
+        _save_money_store(store)
+        return {"status": "ok", "payment_id": pid, "link": None, "summary": _enrich_reports_with_payments(store)["summary"]}
+    weeks = _normalize_week_link({
+        "weeks": body.get("weeks"),
+        "date_from": body.get("date_from"),
+        "date_to": body.get("date_to"),
+    })
+    if not weeks:
+        raise HTTPException(status_code=400, detail="нужны date_from и date_to (YYYY-MM-DD) или weeks: []")
+    taken = {(w["date_from"], w["date_to"]) for w in weeks}
+    for other_pid, other in list(links.items()):
+        if str(other_pid) == pid:
+            continue
+        kept = [
+            w for w in _normalize_week_link(other)
+            if (w["date_from"], w["date_to"]) not in taken
+        ]
+        if not kept:
+            links.pop(other_pid, None)
+        elif len(kept) != len(_normalize_week_link(other)):
+            links[other_pid] = _compact_week_link(kept)
+    links[pid] = _compact_week_link(weeks)
+    store["payment_links"] = links
+    _save_money_store(store)
+    enriched = _enrich_reports_with_payments(store)
+    return {
+        "status": "ok",
+        "payment_id": pid,
+        "link": links[pid],
+        "summary": enriched.get("summary"),
+        "weeks": [w for w in (enriched.get("weeks") or []) if w.get("payment_id") == pid],
+    }
+
+
 @app.get("/api/finance/cfo")
 def get_finance_cfo():
     raw = get_setting_json(CFO_SNAPSHOT_KEY, None)
@@ -6051,6 +13156,32 @@ async def save_finance_cfo(request: dict):
                 "cash_floor", "wb_compensation_pending"):
         if key in payload:
             payload[key] = _cfo_num(payload[key])
+    parties_in = payload.get("supplier_parties")
+    if isinstance(parties_in, list):
+        clean_parties = []
+        for i, party in enumerate(parties_in):
+            if not isinstance(party, dict):
+                continue
+            models = []
+            for j, model in enumerate(party.get("models") or []):
+                if not isinstance(model, dict):
+                    continue
+                models.append({
+                    "id": model.get("id") or f"model_{i}_{j}",
+                    "name": str(model.get("name") or ""),
+                    "vendor_code": str(model.get("vendor_code") or "").strip(),
+                    "qty": _cfo_num(model.get("qty")),
+                    "unit_cost": _cfo_num(model.get("unit_cost")),
+                    "cost": _cfo_num(model.get("cost")),
+                })
+            clean_parties.append({
+                "id": party.get("id") or f"sup_{i}",
+                "name": str(party.get("name") or f"Поставщик {i+1}"),
+                "debt": _cfo_num(party.get("debt")),
+                "models": models,
+            })
+        payload["supplier_parties"] = clean_parties
+        payload["suppliers"] = round(sum(p["debt"] for p in clean_parties), 2)
     payload["as_of"] = str(payload.get("as_of") or datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
     if not save_setting_value(CFO_SNAPSHOT_KEY, payload):
@@ -6120,6 +13251,149 @@ def _wb_search_next_host():
         host = WB_SEARCH_HOSTS[_wb_search_host_i % len(WB_SEARCH_HOSTS)]
         _wb_search_host_i += 1
         return host
+
+
+def _wb_search_headers() -> dict:
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+        "Origin": "https://www.wildberries.ru",
+        "Referer": "https://www.wildberries.ru/",
+    }
+
+
+def fetch_wb_search_catalog(query: str, dest: int, max_pages: int = 1) -> dict:
+    """Клиентская выдача WB по запросу: товары по порядку + total/error."""
+    query = (query or "").strip()
+    max_pages = max(1, min(int(max_pages or 1), 5))
+    if not query:
+        return {"products": [], "total": None, "error": "bad input"}
+    last_total = None
+    last_err = None
+    products = []
+    try:
+        with httpx.Client(timeout=30, headers=_wb_search_headers(), follow_redirects=True) as client:
+            for page in range(1, max_pages + 1):
+                page_ok = False
+                page_products = []
+                for attempt in range(5):
+                    base = _wb_search_next_host()
+                    _wb_search_throttle(0.85 + 0.15 * attempt)
+                    try:
+                        resp = client.get(
+                            base,
+                            params={
+                                "appType": 1,
+                                "curr": "rub",
+                                "dest": dest,
+                                "query": query,
+                                "resultset": "catalog",
+                                "sort": "popular",
+                                "spp": 30,
+                                "page": page,
+                            },
+                        )
+                    except Exception as e:
+                        last_err = str(e)[:120]
+                        time.sleep(0.8 * (attempt + 1))
+                        continue
+                    if resp.status_code == 429:
+                        last_err = "429"
+                        time.sleep(2.0 * (attempt + 1))
+                        continue
+                    if not resp.is_success:
+                        last_err = f"http {resp.status_code}"
+                        time.sleep(0.5 * (attempt + 1))
+                        continue
+                    try:
+                        data = resp.json()
+                    except Exception as e:
+                        last_err = f"json {e}"
+                        time.sleep(0.4)
+                        continue
+                    page_products = data.get("products") or (data.get("data") or {}).get("products") or []
+                    last_total = data.get("total")
+                    if last_total is None:
+                        last_total = (data.get("data") or {}).get("total")
+                    page_ok = True
+                    last_err = None
+                    break
+                if not page_ok:
+                    break
+                if not isinstance(page_products, list):
+                    page_products = []
+                products.extend(page_products)
+                if len(page_products) < 100:
+                    break
+        return {"products": products, "total": last_total, "error": last_err}
+    except Exception as e:
+        logger.exception(f"fetch_wb_search_catalog: {e}")
+        return {"products": products, "total": last_total, "error": str(e)[:160]}
+
+
+def find_own_in_wb_search(query: str, dest: int, limit: int = 100) -> dict:
+    """Топ выдачи по ключу: доли брендов + наши карточки."""
+    query = (query or "").strip()
+    limit = max(10, min(int(limit or 100), 500))
+    pages = max(1, min((limit + 99) // 100, 5))
+    cat = fetch_wb_search_catalog(query, dest, max_pages=pages)
+    own = _own_nm_vendor_map()
+    hits = []
+    brand_counts: dict[str, int] = {}
+    checked = 0
+    own_brand_names = set()
+    for p in (cat.get("products") or [])[:limit]:
+        checked += 1
+        if not isinstance(p, dict):
+            continue
+        pid = p.get("id") or p.get("nmId") or p.get("nmID")
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            pid = None
+        brand = str(p.get("brand") or "").strip() or "без бренда"
+        brand_counts[brand] = brand_counts.get(brand, 0) + 1
+        if pid is None or pid not in own:
+            continue
+        own_brand_names.add(brand)
+        hits.append({
+            "position": checked,
+            "nm_id": pid,
+            "vendor_code": own.get(pid) or "",
+            "brand": brand,
+            "name": p.get("name") or "",
+            "thumb": wb_product_thumb_url(pid),
+            "url": f"https://www.wildberries.ru/catalog/{pid}/detail.aspx",
+        })
+    own_brand_names.update({
+        b for b in brand_counts
+        if str(b).strip().upper() == "PVS"
+    })
+    brands = []
+    for brand, cnt in sorted(brand_counts.items(), key=lambda kv: (-kv[1], kv[0].lower())):
+        pct = round(cnt * 100.0 / checked, 1) if checked else 0
+        brands.append({
+            "brand": brand,
+            "count": cnt,
+            "pct": pct,
+            "is_own": brand in own_brand_names,
+        })
+    return {
+        "query": query,
+        "dest": dest,
+        "limit": limit,
+        "checked": checked,
+        "total": cat.get("total"),
+        "ours_count": len(hits),
+        "ours": hits,
+        "brands": brands,
+        "brand_count": len(brands),
+        "error": cat.get("error"),
+    }
 
 
 def find_nm_in_wb_search(nm_id: int, query: str, dest: int, max_pages: int = 3):
@@ -6249,6 +13523,28 @@ def get_search_keywords():
     }
 
 
+@app.post("/api/search-own-in-query")
+def search_own_in_query(request: dict):
+    """Топ-100 по ключу: доли брендов в выдаче. Body: {query, dest?, limit?}"""
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    query = str(request.get("query") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query required")
+    try:
+        dest = int(request.get("dest") if request.get("dest") is not None else -1257786)
+    except (TypeError, ValueError):
+        dest = -1257786
+    try:
+        limit = int(request.get("limit") if request.get("limit") is not None else 100)
+    except (TypeError, ValueError):
+        limit = 100
+    data = find_own_in_wb_search(query, dest, limit=limit)
+    city_name = next((c["name"] for c in WB_SEARCH_CITIES if c["dest"] == dest), str(dest))
+    data["city"] = city_name
+    return data
+
+
 @app.post("/api/search-positions")
 def search_positions(request: dict):
     """Позиции nm_id в клиентском поиске WB по списку запросов.
@@ -6356,6 +13652,7 @@ def fetch_wb_card_brief(nm_id: int, dest: int = -1257786):
             if not products:
                 return None
             p = products[0]
+            price_info = _parse_client_product(p)
             return {
                 "nm_id": p.get("id") or nm_id,
                 "brand": p.get("brand") or "",
@@ -6363,37 +13660,178 @@ def fetch_wb_card_brief(nm_id: int, dest: int = -1257786):
                 "supplier": p.get("supplier") or "",
                 "thumb": wb_product_thumb_url(p.get("id") or nm_id),
                 "url": f"https://www.wildberries.ru/catalog/{p.get('id') or nm_id}/detail.aspx",
+                "client_price": price_info.get("client_price"),
+                "sale_price": price_info.get("client_basic"),
+                "spp": _calc_spp(price_info.get("client_basic"), price_info.get("client_price")),
             }
     except Exception as e:
         logger.warning(f"fetch_wb_card_brief {nm_id}: {e}")
         return None
 
 
-def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
-    """Полка «Смотрите также» у карточки (клиентский recom.wb.ru)."""
-    limit = max(1, min(int(limit or 15), 30))
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-        ),
-        "Accept": "*/*",
-        "Origin": "https://www.wildberries.ru",
-        "Referer": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
+def _wb_shelf_headers(nm_id: int) -> dict:
+    h = dict(_wb_site_headers())
+    h["Accept"] = "*/*"
+    h["Accept-Language"] = "ru-RU,ru;q=0.9"
+    h["Referer"] = f"https://www.wildberries.ru/catalog/{int(nm_id)}/detail.aspx"
+    return h
+
+
+def _shelf_item_from_product(p: dict, position: int) -> dict | None:
+    if not isinstance(p, dict):
+        return None
+    pid = p.get("id") or p.get("nmId") or p.get("nmID")
+    if not pid:
+        return None
+    price_info = _parse_client_product(p)
+    client_price = price_info.get("client_price")
+    sale_price = price_info.get("client_basic")
+    return {
+        "position": position,
+        "nm_id": pid,
+        "brand": p.get("brand") or "",
+        "name": p.get("name") or "",
+        "supplier": p.get("supplier") or "",
+        "rating": p.get("reviewRating") or p.get("rating"),
+        "feedbacks": p.get("feedbacks"),
+        "thumb": wb_product_thumb_url(pid),
+        "url": f"https://www.wildberries.ru/catalog/{pid}/detail.aspx",
+        "client_price": client_price,
+        "sale_price": sale_price,
+        "spp": _calc_spp(sale_price, client_price),
     }
-    # query=<nm> даёт полку see-also для этой карточки
+
+
+def _shelf_items_ordered(products: list, limit: int, order_ids: list | None = None) -> list:
+    by_id = {}
+    seq = []
+    for p in products or []:
+        if not isinstance(p, dict):
+            continue
+        pid = p.get("id") or p.get("nmId") or p.get("nmID")
+        if not pid:
+            continue
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            continue
+        if pid not in by_id:
+            seq.append(pid)
+        by_id[pid] = p
+    ids = []
+    seen = set()
+    for raw in (order_ids if order_ids is not None else seq):
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if pid in seen or pid not in by_id:
+            continue
+        seen.add(pid)
+        ids.append(pid)
+        if len(ids) >= limit:
+            break
+    items = []
+    for i, pid in enumerate(ids, 1):
+        it = _shelf_item_from_product(by_id[pid], i)
+        if it:
+            items.append(it)
+    return items
+
+
+def _parse_similar_nm_ids(data, nm_id: int) -> list:
+    raw = data
+    if isinstance(data, dict):
+        raw = (
+            data.get("data")
+            or data.get("nms")
+            or data.get("nmIds")
+            or data.get("nm_ids")
+            or data.get("products")
+            or []
+        )
+    if not isinstance(raw, list):
+        return []
+    out = []
+    seen = set()
+    self_id = int(nm_id)
+    for x in raw:
+        if isinstance(x, dict):
+            x = x.get("id") or x.get("nmId") or x.get("nmID") or x.get("nm_id")
+        try:
+            n = int(x)
+        except (TypeError, ValueError):
+            continue
+        if n < 1 or n == self_id or n in seen:
+            continue
+        seen.add(n)
+        out.append(n)
+    return out
+
+
+def _fetch_similar_nm_ids(nm_id: int, headers: dict) -> list:
+    resp = httpx.get(
+        "https://in-similar.wildberries.ru/",
+        params={"nm": int(nm_id)},
+        headers=headers,
+        timeout=20,
+        follow_redirects=True,
+    )
+    if not resp.is_success:
+        raise RuntimeError(f"http {resp.status_code}")
+    return _parse_similar_nm_ids(resp.json(), nm_id)
+
+
+def _hydrate_shelf_products(nm_ids: list, dest: int, headers: dict) -> list:
+    if not nm_ids:
+        return []
+    ids = ";".join(str(int(n)) for n in nm_ids)
+    params = {"appType": 1, "curr": "rub", "dest": dest, "nm": ids}
+    for url in (
+        "https://card.wb.ru/cards/v4/detail",
+        "https://card.wb.ru/cards/v2/detail",
+    ):
+        try:
+            resp = httpx.get(url, params=params, headers=headers, timeout=25)
+        except Exception:
+            continue
+        if not resp.is_success:
+            continue
+        try:
+            data = resp.json() or {}
+        except Exception:
+            continue
+        products = _card_products_from(data) or data.get("products") or []
+        if isinstance(products, list) and products:
+            return products
+    return []
+
+
+def _wb_shelf_err_text(err) -> str:
+    s = str(err or "").strip()
+    if "403" in s:
+        return "WB закрыл витрину (403)"
+    if "429" in s:
+        return "WB просит подождать (429)"
+    return s or "unknown"
+
+
+def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
+    """Полка у карточки: «Смотрите также» (recom), при 403 — «Похожие»."""
+    limit = max(1, min(int(limit or 15), 30))
+    headers = _wb_shelf_headers(nm_id)
+    last_err = None
+    # query=<nm> — полка see-also. spp не передаём: иначе WB рисует виртуальную скидку.
     url = "https://recom.wb.ru/recom/ru/common/v8/search"
     params = {
         "appType": 1,
         "curr": "rub",
         "dest": dest,
-        "spp": 30,
         "resultset": "catalog",
         "query": str(nm_id),
         "suppressSpellcheck": "false",
     }
-    last_err = None
-    for attempt in range(4):
+    for attempt in range(2):
         try:
             with httpx.Client(timeout=25, headers=headers, follow_redirects=True) as client:
                 resp = client.get(url, params=params)
@@ -6403,39 +13841,607 @@ def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
                 continue
             if not resp.is_success:
                 last_err = f"http {resp.status_code}"
-                time.sleep(0.5)
+                if resp.status_code in (401, 403, 498):
+                    break
+                time.sleep(0.4)
                 continue
             data = resp.json()
             products = data.get("products") or (data.get("data") or {}).get("products") or []
-            items = []
-            for i, p in enumerate(products[:limit], 1):
-                pid = p.get("id") or p.get("nmId") or p.get("nmID")
-                if not pid:
-                    continue
-                items.append({
-                    "position": i,
-                    "nm_id": pid,
-                    "brand": p.get("brand") or "",
-                    "name": p.get("name") or "",
-                    "supplier": p.get("supplier") or "",
-                    "rating": p.get("reviewRating") or p.get("rating"),
-                    "feedbacks": p.get("feedbacks"),
-                    "thumb": wb_product_thumb_url(pid),
-                    "url": f"https://www.wildberries.ru/catalog/{pid}/detail.aspx",
-                })
-            return {"items": items, "total": len(products), "error": None}
+            items = _shelf_items_ordered(products, limit)
+            if items:
+                return {"items": items, "total": len(products), "error": None, "source": "recom"}
+            last_err = "empty"
+            break
         except Exception as e:
             last_err = str(e)[:160]
-            time.sleep(0.6 * (attempt + 1))
-    return {"items": [], "total": 0, "error": last_err or "unknown"}
+            time.sleep(0.4 * (attempt + 1))
+    try:
+        similar_ids = _fetch_similar_nm_ids(nm_id, headers)
+        take = similar_ids[:limit]
+        products = _hydrate_shelf_products(take, dest, headers)
+        items = _shelf_items_ordered(products, limit, order_ids=take)
+        if items:
+            return {
+                "items": items,
+                "total": len(similar_ids),
+                "error": None,
+                "source": "similar",
+            }
+        last_err = last_err or "empty similar"
+    except Exception as e:
+        last_err = last_err or str(e)[:160]
+    return {"items": [], "total": 0, "error": _wb_shelf_err_text(last_err), "source": None}
+
+
+def _watch_shape(vendor_code: str = "", name: str = "", brand: str = "") -> str:
+    """круглые / квадратные / неясно / skip (не часы)."""
+    vc = str(vendor_code or "").strip()
+    blob = f"{vc} {name or ''} {brand or ''}".lower().replace("ё", "е")
+    vc_l = vc.lower()
+    if any(k in blob for k in (
+        "заряд", "charger", "ремеш", "браслет", "бланк", "переходник",
+        "кабел", "adapter", "powerbank", "pods", "наушник",
+    )):
+        return "skip"
+    if any(k in blob for k in ("кругл", "round")):
+        return "round"
+    if any(k in blob for k in ("квадрат", "square")):
+        return "square"
+    # квадратные: линейка 11 / S11 / LK11 / HK11 / Pro Max / mini
+    if re.search(r"(^|[_/])(031|034|035|038|039|040|042|046)([_/]|$)", vc_l):
+        return "square"
+    if any(k in vc_l for k in ("lk11", "hk11", "s11", "promax", "dt11")):
+        return "square"
+    if any(k in blob for k in ("11 series", "11 серия", "11 сери", "pro max", "promax", "s11", "lk11", "hk11")):
+        return "square"
+    # круглые: GT5 / Ultra / Watch 6 Pro / X8–X10
+    if re.search(r"(^|[_/])(026|033|036|037|041|044|045)([_/]|$)", vc_l):
+        return "round"
+    if any(k in vc_l for k in ("gt5", "g7pro", "ultra", "x8", "x10", "watch_6", "6pro", "х10", "х8")):
+        return "round"
+    if any(k in blob for k in ("gt5", "gt 5", "ultra", "x8", "x10", "6pro", "6 pro", "х10", "х8")):
+        return "round"
+    return "unknown"
+
+
+_WATCH_SHAPE_LABEL = {
+    "round": "круглые",
+    "square": "квадратные",
+    "unknown": "неясно",
+    "skip": "не часы",
+}
+
+
+def _own_nm_vendor_map() -> dict:
+    """nm_id(int) → vendor_code для наших карточек."""
+    out = {}
+    try:
+        st = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&limit=5000",
+            headers=sb_headers(), timeout=15,
+        )
+        if st.is_success:
+            for r in st.json() or []:
+                nm = r.get("nm_id")
+                if nm is None:
+                    continue
+                try:
+                    nm = int(nm)
+                except (TypeError, ValueError):
+                    continue
+                vc = (r.get("vendor_code") or "").strip()
+                if nm and (nm not in out or (vc and not out[nm])):
+                    out[nm] = vc or str(nm)
+    except Exception as e:
+        logger.warning(f"own nm map stock_totals: {e}")
+    try:
+        rt = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/ratings_official?select=nm_id,article&nm_id=not.is.null&limit=5000",
+            headers=sb_headers(), timeout=15,
+        )
+        if rt.is_success:
+            for r in rt.json() or []:
+                nm = r.get("nm_id")
+                art = (r.get("article") or "").strip()
+                if nm is None:
+                    continue
+                try:
+                    nm = int(nm)
+                except (TypeError, ValueError):
+                    continue
+                if nm and art and (nm not in out or not out.get(nm) or out[nm] == str(nm)):
+                    out[nm] = art
+    except Exception as e:
+        logger.warning(f"own nm map ratings: {e}")
+    return out
+
+
+_SHELF_TOP_CACHE = {"ts": 0.0, "days": 0, "items": []}
+_OWN_NM_IDS_CACHE = {"ts": 0.0, "ids": set()}
+
+
+def _own_nm_ids_cached() -> set:
+    now = time.time()
+    if _OWN_NM_IDS_CACHE["ids"] and now - _OWN_NM_IDS_CACHE["ts"] < 300:
+        return _OWN_NM_IDS_CACHE["ids"]
+    ids = set(_own_nm_vendor_map().keys())
+    _OWN_NM_IDS_CACHE["ts"] = now
+    _OWN_NM_IDS_CACHE["ids"] = ids
+    return ids
+
+
+def _own_top_sellers_week(top_n: int = 20, days: int = 7) -> list:
+    """Топ наших nm по заказам за последние days дней.
+    Источники: article_daily_stats → кэш sales-pace → живая воронка WB."""
+    top_n = max(1, min(int(top_n or 20), 40))
+    days = max(1, min(int(days or 7), 30))
+    now_ts = time.time()
+    if (
+        _SHELF_TOP_CACHE.get("items")
+        and _SHELF_TOP_CACHE.get("days") == days
+        and now_ts - float(_SHELF_TOP_CACHE.get("ts") or 0) < 600
+    ):
+        return list(_SHELF_TOP_CACHE["items"])[:top_n]
+
+    own_map = _own_nm_vendor_map()
+    dt_from = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
+    agg = {}
+
+    # 1) дневная статистика в Supabase
+    if own_map:
+        try:
+            resp = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/article_daily_stats"
+                f"?dt=gte.{dt_from}&select=nm_id,vendor_code,orders,open_card,add_to_cart,dt&order=dt.desc",
+                headers=sb_headers(), timeout=30,
+            )
+            rows = resp.json() if resp.is_success else []
+        except Exception as e:
+            logger.warning(f"top sellers daily: {e}")
+            rows = []
+        for r in rows or []:
+            try:
+                nm = int(r.get("nm_id"))
+            except (TypeError, ValueError):
+                continue
+            if nm not in own_map:
+                continue
+            slot = agg.setdefault(nm, {
+                "nm_id": nm,
+                "vendor_code": (r.get("vendor_code") or own_map.get(nm) or str(nm)).strip(),
+                "orders": 0, "opens": 0, "cart": 0, "name": "",
+            })
+            vc = (r.get("vendor_code") or "").strip()
+            if vc and (not slot["vendor_code"] or slot["vendor_code"] == str(nm)):
+                slot["vendor_code"] = vc
+            try:
+                slot["orders"] += int(r.get("orders") or 0)
+                slot["opens"] += int(r.get("open_card") or 0)
+                slot["cart"] += int(r.get("add_to_cart") or 0)
+            except (TypeError, ValueError):
+                pass
+
+    # 2) кэш sales-pace (day/week)
+    if not agg:
+        by = SALES_PACE_CACHE.get("by_period") or {}
+        for key in ("week", "day"):
+            cached = by.get(key) or {}
+            arts = cached.get("articles") or []
+            if not arts:
+                continue
+            for a in arts:
+                try:
+                    nm = int(a.get("nm_id"))
+                except (TypeError, ValueError):
+                    continue
+                if own_map and nm not in own_map:
+                    continue
+                agg[nm] = {
+                    "nm_id": nm,
+                    "vendor_code": (a.get("vendor_code") or (own_map or {}).get(nm) or str(nm)).strip(),
+                    "orders": int(a.get("orders_today") or 0),
+                    "opens": int(a.get("opens_today") or a.get("clicks_today") or 0),
+                    "cart": int(a.get("cart_today") or 0),
+                    "name": a.get("name") or "",
+                }
+            if agg:
+                break
+
+    # 3) живая воронка WB за период (nm-report detail — все карточки продавца)
+    if not agg and WB_TOKEN:
+        end_d = datetime.now(timezone.utc).date()
+        begin_d = end_d - timedelta(days=days)
+        try:
+            resp = httpx.post(
+                f"{WB_ANALYTICS_URL}/api/analytics/v2/nm-report/detail",
+                headers=wb_headers(),
+                json={
+                    "period": {"begin": begin_d.isoformat(), "end": end_d.isoformat()},
+                    "brandNames": [], "objectIDs": [], "tagIDs": [],
+                    "nmIDs": [],
+                    "timezone": "Europe/Moscow",
+                    "page": 1,
+                },
+                timeout=45,
+            )
+            if resp.is_success:
+                cards = (resp.json() or {}).get("data", {}).get("cards") or []
+                for c in cards:
+                    nm = c.get("nmID") or c.get("nmId")
+                    try:
+                        nm = int(nm)
+                    except (TypeError, ValueError):
+                        continue
+                    if own_map and nm not in own_map:
+                        # всё равно берём — это карточки кабинета
+                        pass
+                    stats = (c.get("statistics") or {}).get("selectedPeriod") or {}
+                    vc = (own_map or {}).get(nm) or c.get("vendorCode") or str(nm)
+                    agg[nm] = {
+                        "nm_id": nm,
+                        "vendor_code": str(vc).strip(),
+                        "orders": int(stats.get("ordersCount") or 0),
+                        "opens": int(stats.get("openCardCount") or 0),
+                        "cart": int(stats.get("addToCartCount") or 0),
+                        "name": c.get("objectName") or c.get("brandName") or "",
+                    }
+            else:
+                logger.warning(f"top sellers live nm-report: {resp.status_code} {resp.text[:180]}")
+        except Exception as e:
+            logger.warning(f"top sellers live: {e}")
+
+    # 4) fallback: sales-funnel v3 по списку own nm (батчами)
+    if not agg and WB_TOKEN and own_map:
+        end_d = datetime.now(timezone.utc).date()
+        begin_d = end_d - timedelta(days=days)
+        ids = list(own_map.keys())
+        for i in range(0, len(ids), 100):
+            chunk = ids[i:i + 100]
+            stats = fetch_own_stats_v3(chunk, begin_d.isoformat(), end_d.isoformat())
+            for s in (stats or {}).values():
+                try:
+                    nm = int(s.get("nm_id"))
+                except (TypeError, ValueError):
+                    continue
+                agg[nm] = {
+                    "nm_id": nm,
+                    "vendor_code": (s.get("vendor_code") or own_map.get(nm) or str(nm)).strip(),
+                    "orders": int(s.get("orders") or 0),
+                    "opens": int(s.get("card_opens") or 0),
+                    "cart": int(s.get("cart_adds") or 0),
+                    "name": s.get("name") or "",
+                }
+            if i + 100 < len(ids):
+                time.sleep(1.1)
+
+    items = []
+    for nm, slot in agg.items():
+        vc = slot.get("vendor_code") or (own_map or {}).get(nm) or str(nm)
+        name = slot.get("name") or ""
+        shape = _watch_shape(vc, name)
+        if shape == "skip":
+            continue
+        if int(slot.get("orders") or 0) <= 0 and int(slot.get("cart") or 0) <= 0:
+            continue
+        items.append({
+            "nm_id": nm,
+            "vendor_code": vc,
+            "name": name,
+            "orders": int(slot.get("orders") or 0),
+            "opens": int(slot.get("opens") or 0),
+            "cart": int(slot.get("cart") or 0),
+            "shape": shape,
+            "shape_label": _WATCH_SHAPE_LABEL.get(shape, shape),
+            "thumb": wb_product_thumb_url(nm),
+            "url": f"https://www.wildberries.ru/catalog/{nm}/detail.aspx",
+        })
+    items.sort(key=lambda x: (-x["orders"], -x["cart"], -x["opens"], x["vendor_code"]))
+    items = items[:top_n]
+    _SHELF_TOP_CACHE["ts"] = now_ts
+    _SHELF_TOP_CACHE["days"] = days
+    _SHELF_TOP_CACHE["items"] = items
+    return items
+
+
+def _shelf_suggest_add(competitor: dict, shelf_items: list, top_n: int = 20) -> dict:
+    """Какие наши топ-продажи ещё не стоят в полке конкурента (с учётом формы)."""
+    own_map = _own_nm_vendor_map()
+    own_set = set(own_map.keys())
+    shelf_nms = set()
+    already = []
+    for it in shelf_items or []:
+        try:
+            nid = int(it.get("nm_id"))
+        except (TypeError, ValueError):
+            continue
+        shelf_nms.add(nid)
+        if nid in own_set:
+            vc = own_map.get(nid) or ""
+            already.append({
+                "nm_id": nid,
+                "vendor_code": vc,
+                "position": it.get("position"),
+                "brand": it.get("brand") or "",
+                "name": it.get("name") or "",
+                "thumb": it.get("thumb") or wb_product_thumb_url(nid),
+            })
+
+    comp_shape = _watch_shape("", competitor.get("name") or "", competitor.get("brand") or "")
+    if comp_shape == "unknown" and already:
+        shapes = [_watch_shape(a.get("vendor_code") or "", a.get("name") or "") for a in already]
+        sq = sum(1 for s in shapes if s == "square")
+        rd = sum(1 for s in shapes if s == "round")
+        if sq >= 2 and sq > rd:
+            comp_shape = "square"
+        elif rd >= 2 and rd > sq:
+            comp_shape = "round"
+
+    top = _own_top_sellers_week(top_n=top_n, days=7)
+    missing = [t for t in top if t["nm_id"] not in shelf_nms]
+
+    def sort_key(t):
+        sh = t.get("shape") or "unknown"
+        if comp_shape in ("round", "square"):
+            if sh == comp_shape:
+                bucket = 0
+            elif sh == "unknown":
+                bucket = 1
+            else:
+                bucket = 2
+        else:
+            bucket = 0
+        return (bucket, -int(t.get("orders") or 0), -int(t.get("cart") or 0))
+
+    missing.sort(key=sort_key)
+    same = [t for t in missing if t.get("shape") == comp_shape] if comp_shape in ("round", "square") else list(missing)
+    other = [t for t in missing if t not in same]
+
+    return {
+        "own_nm_ids": sorted(own_set),
+        "comp_shape": comp_shape,
+        "comp_shape_label": _WATCH_SHAPE_LABEL.get(comp_shape, comp_shape),
+        "top_period_days": 7,
+        "top_n": top_n,
+        "already_in_shelf": already,
+        "already_count": len(already),
+        "top_in_shelf_count": sum(1 for t in top if t["nm_id"] in shelf_nms),
+        "suggest_add": missing,
+        "suggest_same_shape": same,
+        "suggest_other_shape": other,
+        "top_sellers": top,
+    }
+
+
+def _shelf_is_mine_item(it: dict, own_set: set) -> bool:
+    try:
+        nid = int(it.get("nm_id"))
+    except (TypeError, ValueError):
+        nid = 0
+    if nid and nid in own_set:
+        return True
+    return str(it.get("brand") or "").strip().upper() == "PVS"
+
+
+def _shelf_mine_share(items: list, own_set: set) -> dict:
+    rows = [it for it in (items or []) if isinstance(it, dict)]
+    total = len(rows)
+    mine = sum(1 for it in rows if _shelf_is_mine_item(it, own_set))
+    pct = round((mine / total) * 1000) / 10 if total else 0.0
+    return {"mine_count": mine, "total": total, "mine_pct": pct}
+
+
+def _shelf_share_store() -> dict:
+    raw = get_setting_json(SHELF_SHARE_HISTORY_KEY, {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _shelf_share_record(nm_id: int, dest: int, competitor: dict, share: dict) -> dict | None:
+    if not share or not int(share.get("total") or 0):
+        return None
+    week, start, end, label = _own_wh_week_bounds(_msk_now())
+    rec = {
+        "nm_id": int(nm_id),
+        "dest": int(dest),
+        "week": week,
+        "week_start": start,
+        "week_end": end,
+        "week_label": label,
+        "brand": str((competitor or {}).get("brand") or ""),
+        "name": str((competitor or {}).get("name") or ""),
+        "thumb": str((competitor or {}).get("thumb") or wb_product_thumb_url(int(nm_id))),
+        "mine_pct": float(share.get("mine_pct") or 0),
+        "mine_count": int(share.get("mine_count") or 0),
+        "total": int(share.get("total") or 0),
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    with _SHELF_SHARE_LOCK:
+        store = _shelf_share_store()
+        by_week = store.get("by_week") if isinstance(store.get("by_week"), dict) else {}
+        dest_map = by_week.get(week) if isinstance(by_week.get(week), dict) else {}
+        dest_key = str(int(dest))
+        comps = dest_map.get(dest_key) if isinstance(dest_map.get(dest_key), dict) else {}
+        comps[str(int(nm_id))] = rec
+        dest_map[dest_key] = comps
+        by_week[week] = dest_map
+        keep = sorted(by_week.keys())[-12:]
+        store["by_week"] = {k: by_week[k] for k in keep}
+        save_setting_value(SHELF_SHARE_HISTORY_KEY, store)
+    return rec
+
+
+def _shelf_share_week_pair():
+    week, start, end, label = _own_wh_week_bounds(_msk_now())
+    prev_dt = _msk_now() - timedelta(days=7)
+    prev_week, p_start, p_end, prev_label = _own_wh_week_bounds(prev_dt)
+    return {
+        "week": week,
+        "week_start": start,
+        "week_end": end,
+        "week_label": label,
+        "prev_week": prev_week,
+        "prev_week_start": p_start,
+        "prev_week_end": p_end,
+        "prev_week_label": prev_label,
+    }
+
+
+def _shelf_share_week_map(store: dict, week: str, dest: int) -> dict:
+    by_week = store.get("by_week") if isinstance(store.get("by_week"), dict) else {}
+    dest_map = by_week.get(week) if isinstance(by_week.get(week), dict) else {}
+    comps = dest_map.get(str(int(dest))) if isinstance(dest_map.get(str(int(dest))), dict) else {}
+    return comps if isinstance(comps, dict) else {}
+
+
+def _shelf_share_remember_competitors(competitors: list, dest: int):
+    if not competitors:
+        return
+    dest = int(dest)
+    with _SHELF_SHARE_LOCK:
+        store = _shelf_share_store()
+        saved = store.get("competitors") if isinstance(store.get("competitors"), dict) else {}
+        for c in competitors:
+            if not isinstance(c, dict):
+                continue
+            try:
+                nid = int(c.get("nm_id"))
+            except (TypeError, ValueError):
+                continue
+            if nid < 1:
+                continue
+            prev = saved.get(str(nid)) if isinstance(saved.get(str(nid)), dict) else {}
+            saved[str(nid)] = {
+                "nm_id": nid,
+                "dest": dest,
+                "brand": str(c.get("brand") or prev.get("brand") or ""),
+                "name": str(c.get("name") or prev.get("name") or ""),
+                "thumb": str(c.get("thumb") or prev.get("thumb") or wb_product_thumb_url(nid)),
+            }
+        store["competitors"] = saved
+        save_setting_value(SHELF_SHARE_HISTORY_KEY, store)
+
+
+def _shelf_share_measure_one(nm_id: int, dest: int, competitor: dict | None = None) -> dict:
+    nm_id = int(nm_id)
+    dest = int(dest)
+    meta = dict(competitor or {})
+    meta.setdefault("nm_id", nm_id)
+    meta.setdefault("thumb", wb_product_thumb_url(nm_id))
+    if not str(meta.get("brand") or "").strip():
+        card = fetch_wb_card_brief(nm_id, dest=dest)
+        if card:
+            for k in ("brand", "name", "thumb"):
+                if card.get(k):
+                    meta[k] = card.get(k)
+    shelf = fetch_wb_see_also_shelf(nm_id, dest=dest, limit=15)
+    items = shelf.get("items") or []
+    if not items:
+        return {"ok": False, "nm_id": nm_id, "error": shelf.get("error") or "пустая полка"}
+    share = _shelf_mine_share(items, _own_nm_ids_cached())
+    snap = _shelf_share_record(nm_id, dest, meta, share)
+    return {
+        "ok": True,
+        "nm_id": nm_id,
+        "brand": meta.get("brand") or "",
+        "name": meta.get("name") or "",
+        "thumb": meta.get("thumb") or wb_product_thumb_url(nm_id),
+        "share": share,
+        "snap": snap,
+    }
+
+
+def _shelf_share_scan(competitors: list, dest: int, skip_have: bool = True) -> dict:
+    dest = int(dest)
+    week = _shelf_share_week_pair()["week"]
+    have = set()
+    if skip_have:
+        have = {
+            str(k) for k, v in _shelf_share_week_map(_shelf_share_store(), week, dest).items()
+            if isinstance(v, dict) and v.get("total")
+        }
+    todo = []
+    seen = set()
+    for c in competitors or []:
+        raw = c if isinstance(c, dict) else {"nm_id": c}
+        try:
+            nid = int(raw.get("nm_id"))
+        except (TypeError, ValueError):
+            continue
+        if nid < 1 or nid in seen:
+            continue
+        seen.add(nid)
+        if skip_have and str(nid) in have:
+            continue
+        todo.append({"nm_id": nid, "brand": raw.get("brand") or "", "name": raw.get("name") or "",
+                     "thumb": raw.get("thumb") or wb_product_thumb_url(nid)})
+    results = []
+    if todo:
+        workers = min(5, len(todo))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(_shelf_share_measure_one, c["nm_id"], dest, c): c
+                for c in todo
+            }
+            for fut in as_completed(futs):
+                try:
+                    results.append(fut.result())
+                except Exception as e:
+                    c = futs[fut]
+                    results.append({"ok": False, "nm_id": c["nm_id"], "error": str(e)[:160]})
+    return {
+        "scanned": len(todo),
+        "ok_count": sum(1 for r in results if r.get("ok")),
+        "results": results,
+    }
+
+
+def sync_shelf_share_snapshots():
+    """Фоном добирает замеры по сохранённым конкурентам, если за эту неделю ещё нет."""
+    store = _shelf_share_store()
+    comps = store.get("competitors") if isinstance(store.get("competitors"), dict) else {}
+    if not comps:
+        return
+    by_dest = {}
+    for c in comps.values():
+        if not isinstance(c, dict):
+            continue
+        dest = int(c.get("dest") or -1257786)
+        by_dest.setdefault(dest, []).append(c)
+    for dest, lst in by_dest.items():
+        try:
+            _shelf_share_scan(lst, dest, skip_have=True)
+        except Exception as e:
+            logger.warning(f"sync_shelf_share dest={dest}: {e}")
+
+
+try:
+    scheduler.add_job(sync_shelf_share_snapshots, "interval", hours=12, id="sync_shelf_share")
+except Exception as e:
+    logger.warning(f"shelf share job: {e}")
+
+
+def _shelf_share_delta(this: dict | None, prev: dict | None) -> dict:
+    if not this or this.get("mine_pct") is None or not prev or prev.get("mine_pct") is None:
+        return {"delta_pp": None, "delta_pct": None}
+    this_pct = float(this["mine_pct"])
+    prev_pct = float(prev["mine_pct"])
+    delta_pp = round(this_pct - prev_pct, 1)
+    if prev_pct == 0:
+        delta_pct = None if this_pct == 0 else None
+    else:
+        delta_pct = round((this_pct - prev_pct) / prev_pct * 100, 1)
+    return {"delta_pp": delta_pp, "delta_pct": delta_pct}
 
 
 @app.get("/api/competitor-shelf")
-def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
-    """Топ полки «Смотрите также» у конкурента + краткая карточка конкурента."""
+def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15, top: int = 20):
+    """Топ полки «Смотрите также» у конкурента + предложения из нашего топ-20 продаж за неделю."""
     if not nm_id or nm_id < 1:
         raise HTTPException(status_code=400, detail="nm_id required")
     limit = max(1, min(int(limit or 15), 30))
+    try:
+        top = max(5, min(int(top or 20), 40))
+    except (TypeError, ValueError):
+        top = 20
     try:
         dest = int(dest)
     except (TypeError, ValueError):
@@ -6444,22 +14450,2160 @@ def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
     card = fetch_wb_card_brief(nm_id, dest=dest)
     shelf = fetch_wb_see_also_shelf(nm_id, dest=dest, limit=limit)
     city_name = next((c["name"] for c in WB_SEARCH_CITIES if c["dest"] == dest), str(dest))
+    competitor = card or {
+        "nm_id": nm_id,
+        "brand": "",
+        "name": "",
+        "thumb": wb_product_thumb_url(nm_id),
+        "url": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
+    }
+    items = shelf.get("items") or []
+    suggest = _shelf_suggest_add(competitor=competitor, shelf_items=items, top_n=top)
+    own_set = set(suggest.get("own_nm_ids") or [])
+    share = _shelf_mine_share(items, own_set)
+    snap = None
+    if items and not shelf.get("error"):
+        try:
+            snap = _shelf_share_record(nm_id, dest, competitor, share)
+            _shelf_share_remember_competitors([competitor or {"nm_id": nm_id}], dest)
+        except Exception as e:
+            logger.warning(f"shelf share snapshot: {e}")
     return {
         "nm_id": nm_id,
         "dest": dest,
         "city": city_name,
         "limit": limit,
-        "competitor": card or {
-            "nm_id": nm_id,
-            "brand": "",
-            "name": "",
-            "thumb": wb_product_thumb_url(nm_id),
-            "url": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
-        },
-        "items": shelf.get("items") or [],
+        "competitor": competitor,
+        "items": items,
         "shelf_total": shelf.get("total") or 0,
         "error": shelf.get("error"),
+        "source": shelf.get("source"),
+        "mine_share": share,
+        "share_week": snap,
+        **suggest,
     }
+
+
+@app.get("/api/shelf-share-history")
+def shelf_share_history(dest: int = -1257786):
+    """Замеры моей доли в топ-15 полок конкурентов: эта неделя vs прошлая."""
+    try:
+        dest = int(dest)
+    except (TypeError, ValueError):
+        dest = -1257786
+    meta = _shelf_share_week_pair()
+    store = _shelf_share_store()
+    this_map = _shelf_share_week_map(store, meta["week"], dest)
+    prev_map = _shelf_share_week_map(store, meta["prev_week"], dest)
+    nms = set(this_map.keys()) | set(prev_map.keys())
+    items = []
+    for key in nms:
+        this = this_map.get(key) if isinstance(this_map.get(key), dict) else None
+        prev = prev_map.get(key) if isinstance(prev_map.get(key), dict) else None
+        src = this or prev or {}
+        try:
+            nid = int(src.get("nm_id") or key)
+        except (TypeError, ValueError):
+            continue
+        row = {
+            "nm_id": nid,
+            "brand": src.get("brand") or "",
+            "name": src.get("name") or "",
+            "thumb": src.get("thumb") or wb_product_thumb_url(nid),
+            "this_week": this,
+            "prev_week": prev,
+            **_shelf_share_delta(this, prev),
+        }
+        items.append(row)
+    views_map = _latest_competitor_views([r["nm_id"] for r in items])
+    for r in items:
+        v = views_map.get(int(r["nm_id"]))
+        r["views"] = int(v) if v is not None else None
+    items.sort(key=lambda r: (
+        -(int(r.get("views") or 0)),
+        -float((r.get("this_week") or {}).get("mine_pct") or -1),
+        -float((r.get("prev_week") or {}).get("mine_pct") or -1),
+        str(r.get("brand") or ""),
+    ))
+    both = [r for r in items if r.get("this_week") and r.get("prev_week")]
+    def _avg(rows, field):
+        vals = [float((r.get(field) or {}).get("mine_pct") or 0) for r in rows if r.get(field)]
+        return round(sum(vals) / len(vals), 1) if vals else None
+    avg_this = _avg(items, "this_week")
+    avg_prev = _avg(both, "prev_week") if both else _avg(items, "prev_week")
+    avg_this_both = _avg(both, "this_week")
+    summary_delta = _shelf_share_delta(
+        {"mine_pct": avg_this_both} if avg_this_both is not None else None,
+        {"mine_pct": avg_prev} if avg_prev is not None else None,
+    )
+    return {
+        "ok": True,
+        "dest": dest,
+        **meta,
+        "items": items,
+        "summary": {
+            "count_this": sum(1 for r in items if r.get("this_week")),
+            "count_prev": sum(1 for r in items if r.get("prev_week")),
+            "count_both": len(both),
+            "avg_this_pct": avg_this,
+            "avg_prev_pct": avg_prev,
+            **summary_delta,
+        },
+    }
+
+
+@app.post("/api/shelf-competitors")
+def save_shelf_competitors(request: dict):
+    """Запомнить список конкурентов с полок, чтобы замерять всех без клика."""
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    try:
+        dest = int(request.get("dest") or -1257786)
+    except (TypeError, ValueError):
+        dest = -1257786
+    comps = request.get("competitors") or request.get("items") or []
+    if not isinstance(comps, list):
+        return {"ok": False, "error": "competitors: список"}
+    _shelf_share_remember_competitors(comps, dest)
+    return {"ok": True, "count": len(comps)}
+
+
+@app.post("/api/shelf-share-scan")
+def shelf_share_scan(request: dict):
+    """Замерить мою долю в топ-15 у списка конкурентов (без полного разбора полки)."""
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    try:
+        dest = int(request.get("dest") or -1257786)
+    except (TypeError, ValueError):
+        dest = -1257786
+    comps = request.get("competitors") or request.get("nm_ids") or []
+    if not isinstance(comps, list):
+        return {"ok": False, "error": "competitors: список"}
+    norm = []
+    for c in comps:
+        if isinstance(c, dict):
+            norm.append(c)
+        else:
+            try:
+                norm.append({"nm_id": int(c)})
+            except (TypeError, ValueError):
+                continue
+    if len(norm) > 12:
+        norm = norm[:12]
+    skip_have = bool(request.get("skip_have", True))
+    _shelf_share_remember_competitors(norm, dest)
+    scan = _shelf_share_scan(norm, dest, skip_have=skip_have)
+    hist = shelf_share_history(dest=dest)
+    return {"ok": True, **scan, "history": hist}
+
+
+def _crm_headers() -> dict:
+    h = {"Content-Type": "application/json"}
+    if CRM_PASSWORD:
+        h["x-crm-password"] = CRM_PASSWORD
+    return h
+
+
+def _crm_sent_key(manager: str, kind: str, own_nm: int, comp_nm: int) -> str:
+    return f"{manager}:{kind}:{int(own_nm)}:{int(comp_nm)}"
+
+
+def _crm_sent_store() -> list:
+    raw = get_setting_json(CRM_SHELF_TASKS_KEY, {}) or {}
+    items = raw.get("items") if isinstance(raw, dict) else raw
+    return [i for i in items if isinstance(i, dict) and i.get("key")] if isinstance(items, list) else []
+
+
+def _crm_sent_save(items: list) -> bool:
+    by = {}
+    for it in items or []:
+        if isinstance(it, dict) and it.get("key"):
+            by[it["key"]] = it
+    out = sorted(by.values(), key=lambda x: str(x.get("at") or ""), reverse=True)
+    return save_setting_value(CRM_SHELF_TASKS_KEY, {"items": out[:2500]})
+
+
+def _crm_sent_record(manager: str, kind: str, own_nm: int, comp_nm: int, task_id, assignee_name: str = ""):
+    rec = {
+        "key": _crm_sent_key(manager, kind, own_nm, comp_nm),
+        "manager": manager,
+        "kind": kind,
+        "own_nm_id": int(own_nm),
+        "competitor_nm_id": int(comp_nm),
+        "task_id": task_id,
+        "assignee_name": assignee_name or "",
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    items = [i for i in _crm_sent_store() if i.get("key") != rec["key"]]
+    items.insert(0, rec)
+    _crm_sent_save(items)
+    return rec
+
+
+def _crm_manager_from_name(name: str):
+    low = str(name or "").strip().lower().replace("ё", "е")
+    if not low:
+        return None
+    for key, aliases in CRM_MANAGER_ALIASES.items():
+        if any(a in low for a in aliases):
+            return key
+    return None
+
+
+def _crm_iter_board_tasks(board: dict):
+    if not isinstance(board, dict):
+        return
+    seen = []
+    blobs = [board.get("tasks"), board.get("items")]
+    for col in board.get("columns") or []:
+        if isinstance(col, dict):
+            blobs.append(col.get("tasks") or col.get("items"))
+    for blob in blobs:
+        if not isinstance(blob, list):
+            continue
+        for t in blob:
+            if isinstance(t, dict) and t not in seen:
+                seen.append(t)
+                yield t
+
+
+def _crm_merge_sent_from_board(board: dict) -> list:
+    items = _crm_sent_store()
+    have = {i.get("key") for i in items}
+    changed = False
+    for task in _crm_iter_board_tasks(board):
+        text = f"{task.get('description') or ''} {task.get('title') or ''}"
+        m = _CRM_SENT_MARKER_RE.search(text)
+        if not m:
+            continue
+        kind = _CRM_MARKER_KIND.get(m.group(1))
+        if not kind:
+            continue
+        own_nm, comp_nm = int(m.group(2)), int(m.group(3))
+        manager = _crm_manager_from_name(task.get("assignee_name") or "")
+        if not manager:
+            manager = "dilya" if kind in ("cart_warmup", "high_drr") else None
+        if not manager:
+            continue
+        key = _crm_sent_key(manager, kind, own_nm, comp_nm)
+        if key in have:
+            continue
+        items.append({
+            "key": key,
+            "manager": manager,
+            "kind": kind,
+            "own_nm_id": own_nm,
+            "competitor_nm_id": comp_nm,
+            "task_id": task.get("id"),
+            "assignee_name": task.get("assignee_name") or "",
+            "at": task.get("created_at") or task.get("updated_at") or datetime.now(timezone.utc).isoformat(),
+        })
+        have.add(key)
+        changed = True
+    if changed:
+        _crm_sent_save(items)
+    return items
+
+
+def _crm_post_once_task(
+    *,
+    manager_key: str,
+    aliases: tuple,
+    title: str,
+    description: str,
+    articles: str,
+    kind: str,
+    own_nm: int,
+    comp_nm: int,
+):
+    if not CRM_API_URL:
+        return {
+            "ok": False,
+            "error": "CRM_API_URL не задан в Railway (URL team-crm без слэша в конце)",
+        }
+    try:
+        board_resp = httpx.get(
+            f"{CRM_API_URL}/api/board",
+            headers=_crm_headers(),
+            timeout=25,
+        )
+    except Exception as e:
+        return {"ok": False, "error": f"CRM недоступен: {e}"}
+    if board_resp.status_code == 401:
+        return {"ok": False, "error": "CRM: неверный CRM_PASSWORD (x-crm-password)"}
+    if not board_resp.is_success:
+        return {"ok": False, "error": f"CRM board HTTP {board_resp.status_code}: {board_resp.text[:180]}"}
+
+    board = board_resp.json() or {}
+    employees = board.get("employees") or []
+    assignee = _crm_find_employee(employees, aliases)
+    if not assignee:
+        names = ", ".join(str(e.get("name") or "") for e in employees[:20])
+        return {
+            "ok": False,
+            "error": f"В CRM не найден менеджер «{manager_key}». Есть: {names}",
+        }
+
+    owner = next((e for e in employees if str(e.get("role") or "") == "owner"), None)
+    created_by_id = (owner or assignee).get("id")
+
+    payload = {
+        "title": title[:500],
+        "description": description[:2000],
+        "articles": (articles or "")[:500],
+        "assignee_id": assignee.get("id"),
+        "assignee_ids": [assignee.get("id")],
+        "created_by_id": created_by_id,
+        "status": "todo",
+        "kind": "once",
+        "priority": "normal",
+        "notify_now": True,
+    }
+    try:
+        create_resp = httpx.post(
+            f"{CRM_API_URL}/api/tasks",
+            headers=_crm_headers(),
+            json=payload,
+            timeout=30,
+        )
+    except Exception as e:
+        return {"ok": False, "error": f"CRM create: {e}"}
+    if not create_resp.is_success:
+        return {
+            "ok": False,
+            "error": f"CRM tasks HTTP {create_resp.status_code}: {create_resp.text[:220]}",
+        }
+    task = create_resp.json() or {}
+    rec = _crm_sent_record(
+        manager_key, kind, own_nm, comp_nm,
+        task.get("id"),
+        task.get("assignee_name") or assignee.get("name") or "",
+    )
+    return {
+        "ok": True,
+        "task_id": task.get("id"),
+        "title": task.get("title") or title,
+        "assignee_name": task.get("assignee_name") or assignee.get("name"),
+        "notified": task.get("notified"),
+        "notify_error": task.get("notify_error"),
+        "manager": manager_key,
+        "kind": kind,
+        "sent": rec,
+    }
+
+
+def _crm_find_employee(employees: list, aliases: tuple) -> dict | None:
+    for emp in employees or []:
+        if not emp.get("active", True):
+            continue
+        name = str(emp.get("name") or "").strip().lower().replace("ё", "е")
+        if not name:
+            continue
+        for a in aliases:
+            if a in name:
+                return emp
+    return None
+
+
+@app.post("/api/crm-shelf-boost-task")
+async def crm_shelf_boost_task(request: dict):
+    """Создать в Team CRM задачу на менеджера.
+
+    Body: {
+      manager: "afina"|"zaira"|"olga"|"dilya",
+      kind?: "shelf"|"cart_warmup",
+      own_vendor_code, own_nm_id,
+      competitor_nm_id, competitor_brand?, competitor_name?
+    }
+    kind=cart_warmup — прогрев корзинами (как выкупы, но корзинами), обычно Диле.
+    """
+    if not CRM_API_URL:
+        return {
+            "ok": False,
+            "error": "CRM_API_URL не задан в Railway (URL team-crm без слэша в конце)",
+        }
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+
+    manager_key = str(request.get("manager") or "").strip().lower()
+    aliases = CRM_MANAGER_ALIASES.get(manager_key)
+    if not aliases:
+        return {"ok": False, "error": "manager: укажи afina, zaira, olga или dilya"}
+
+    kind = str(request.get("kind") or "shelf").strip().lower()
+    if kind not in ("shelf", "cart_warmup"):
+        return {"ok": False, "error": "kind: shelf или cart_warmup"}
+    if kind == "cart_warmup":
+        manager_key = "dilya"
+        aliases = CRM_MANAGER_ALIASES["dilya"]
+
+    own_vc = str(request.get("own_vendor_code") or "").strip()
+    try:
+        own_nm = int(request.get("own_nm_id"))
+        competitor_nm = int(request.get("competitor_nm_id"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "нужны own_nm_id и competitor_nm_id"}
+    if not own_vc:
+        own_vc = str(own_nm)
+    if own_nm < 1 or competitor_nm < 1:
+        return {"ok": False, "error": "некорректные nm_id"}
+
+    comp_brand = str(request.get("competitor_brand") or "").strip()
+    comp_name = str(request.get("competitor_name") or "").strip()
+
+    if kind == "cart_warmup":
+        title = (
+            f'Прогрев корзинами "{own_vc}" и {own_nm}, '
+            f'через этого конкурента "{competitor_nm}".'
+        )
+        marker = f"[dash:cart-warmup:{own_nm}:{competitor_nm}]"
+        action_line = "Прогрев корзинами — как выкупы, но класть в корзину."
+    else:
+        title = (
+            f'Раздача "{own_vc}" и {own_nm}, '
+            f'через этого конкурента "{competitor_nm}".'
+        )
+        marker = f"[dash:shelf-boost:{own_nm}:{competitor_nm}]"
+        action_line = "Прокачать полки."
+    comp_bits = [str(competitor_nm)]
+    if comp_brand:
+        comp_bits.insert(0, comp_brand)
+    if comp_name:
+        comp_bits.append(comp_name)
+    description = (
+        f"{marker}\n"
+        f"{action_line}\n"
+        f"Наш: {own_vc} · https://www.wildberries.ru/catalog/{own_nm}/detail.aspx\n"
+        f"Конкурент: {' · '.join(comp_bits)} · "
+        f"https://www.wildberries.ru/catalog/{competitor_nm}/detail.aspx"
+    )
+
+    return _crm_post_once_task(
+        manager_key=manager_key,
+        aliases=aliases,
+        title=title,
+        description=description,
+        articles=f"{own_vc} {own_nm} / {competitor_nm}",
+        kind=kind,
+        own_nm=own_nm,
+        comp_nm=competitor_nm,
+    )
+
+
+@app.post("/api/crm-ads-drr-task")
+async def crm_ads_drr_task(request: dict):
+    """Задача Диле: высокий ДРР по рекламной кампании — разобраться."""
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    try:
+        campaign_id = int(request.get("campaign_id"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "нужен campaign_id"}
+    if campaign_id < 1:
+        return {"ok": False, "error": "некорректный campaign_id"}
+
+    name = str(request.get("campaign_name") or f"#{campaign_id}").strip() or f"#{campaign_id}"
+    raw_drr = request.get("drr")
+    try:
+        drr = None if raw_drr in (None, "") else float(raw_drr)
+    except (TypeError, ValueError):
+        drr = None
+    try:
+        spend = float(request.get("spend") or 0)
+    except (TypeError, ValueError):
+        spend = 0.0
+    period = str(request.get("period") or "").strip()
+
+    drr_s = "нет продаж" if drr is None else f"{drr:.1f}%".replace(".", ",")
+    spend_s = f"{int(round(spend)):,}".replace(",", " ") + " ₽"
+    title = f'Высокий ДРР {drr_s} · «{name}» · разобраться'
+    marker = f"[dash:high-drr:{campaign_id}:0]"
+    description = (
+        f"{marker}\n"
+        f"Задание: разобраться.\n"
+        f"Кампания: {name} · #{campaign_id}\n"
+        f"ДРР: {drr_s}\n"
+        f"Трат: {spend_s}"
+    )
+    if period:
+        description += f"\nПериод: {period}"
+
+    return _crm_post_once_task(
+        manager_key="dilya",
+        aliases=CRM_MANAGER_ALIASES["dilya"],
+        title=title,
+        description=description,
+        articles=f"{name} #{campaign_id}",
+        kind="high_drr",
+        own_nm=campaign_id,
+        comp_nm=0,
+    )
+
+
+@app.get("/api/crm-shelf-boost-sent")
+def crm_shelf_boost_sent(competitor_nm_id: int = 0, scan: bool = False):
+    """Какие задачи с дашборда уже ставили (Афине / Заире / Ольге / Диле)."""
+    items = _crm_sent_store()
+    if CRM_API_URL and (scan or not items):
+        try:
+            board_resp = httpx.get(
+                f"{CRM_API_URL}/api/board",
+                headers=_crm_headers(),
+                timeout=20,
+            )
+            if board_resp.is_success:
+                items = _crm_merge_sent_from_board(board_resp.json() or {})
+        except Exception as e:
+            logger.warning(f"crm sent scan: {e}")
+    if competitor_nm_id:
+        items = [i for i in items if int(i.get("competitor_nm_id") or 0) == int(competitor_nm_id)]
+    return {"ok": True, "items": items}
+
+
+@app.post("/api/shelf-presence")
+def shelf_presence(request: dict):
+    """Где наша карточка стоит в полках «Смотрите также» у списка конкурентов.
+
+    Body: {own_nm_id, competitor_nm_ids: [int], dest?, limit?}
+    limit — глубина полки (1–30, по умолчанию 15).
+    """
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    try:
+        own_nm_id = int(request.get("own_nm_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="own_nm_id required")
+    if own_nm_id < 1:
+        raise HTTPException(status_code=400, detail="own_nm_id required")
+
+    try:
+        dest = int(request.get("dest") if request.get("dest") is not None else -1257786)
+    except (TypeError, ValueError):
+        dest = -1257786
+
+    limit = request.get("limit", 15)
+    try:
+        limit = max(1, min(int(limit or 15), 30))
+    except (TypeError, ValueError):
+        limit = 15
+
+    raw_ids = request.get("competitor_nm_ids")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(status_code=400, detail="competitor_nm_ids required (non-empty list)")
+
+    competitor_ids = []
+    seen = set()
+    for x in raw_ids:
+        try:
+            nid = int(x)
+        except (TypeError, ValueError):
+            continue
+        if nid < 1 or nid == own_nm_id or nid in seen:
+            continue
+        seen.add(nid)
+        competitor_ids.append(nid)
+        if len(competitor_ids) >= 400:
+            break
+
+    if not competitor_ids:
+        raise HTTPException(status_code=400, detail="no valid competitor_nm_ids")
+
+    results = []
+    for i, nm in enumerate(competitor_ids):
+        if i:
+            time.sleep(0.35)
+        shelf = fetch_wb_see_also_shelf(nm, dest=dest, limit=limit)
+        items = shelf.get("items") or []
+        position = None
+        for it in items:
+            try:
+                if int(it.get("nm_id")) == own_nm_id:
+                    position = it.get("position")
+                    break
+            except (TypeError, ValueError):
+                continue
+        results.append({
+            "competitor_nm_id": nm,
+            "found": position is not None,
+            "position": position,
+            "shelf_total": shelf.get("total") or len(items),
+            "shelf_checked": len(items),
+            "error": shelf.get("error"),
+            "thumb": wb_product_thumb_url(nm),
+            "url": f"https://www.wildberries.ru/catalog/{nm}/detail.aspx",
+        })
+
+    city_name = next((c["name"] for c in WB_SEARCH_CITIES if c["dest"] == dest), str(dest))
+    found = [r for r in results if r["found"]]
+    found.sort(key=lambda r: (r["position"] is None, r["position"] or 999))
+    not_found = [r for r in results if not r["found"]]
+    return {
+        "own_nm_id": own_nm_id,
+        "dest": dest,
+        "city": city_name,
+        "limit": limit,
+        "checked": len(results),
+        "found_count": len(found),
+        "own_thumb": wb_product_thumb_url(own_nm_id),
+        "own_url": f"https://www.wildberries.ru/catalog/{own_nm_id}/detail.aspx",
+        "results": found + not_found,
+    }
+
+
+# ---------- «Продавец рекомендует» (Content API, настраиваемый блок на КТ) ----------
+
+SELLER_RECS_PATHS = (
+    f"{WB_CONTENT_URL}/content/v1/recommendations/list",
+    f"{WB_CONTENT_URL}/api/content/v1/recommendations/list",
+)
+
+# Короткий кэш полного агрегата (источник — Content API)
+SELLER_RECS_AGG_CACHE = {"ts": 0.0, "data": None}
+
+
+def fetch_seller_recommendations_raw(limit: int = 1000):
+    """
+    Весь список настроек «Продавец рекомендует» из Content API.
+    → (hosts, error)
+      hosts: [{nm_id, vendor_code, brand, name, thumb, recom_nms, recom_pics, recom_count, updated_at}]
+    """
+    if not WB_TOKEN:
+        return [], "WB_TOKEN не задан"
+
+    limit = max(1, min(int(limit or 1000), 5000))
+    hosts = []
+    next_cur = 0
+    used_path = None
+    last_err = None
+
+    for page in range(80):
+        body = {"limit": limit, "next": next_cur}
+        resp = None
+        for path in (used_path,) if used_path else SELLER_RECS_PATHS:
+            if not path:
+                continue
+            try:
+                resp = httpx.post(path, headers=wb_headers(), json=body, timeout=45)
+            except Exception as e:
+                last_err = str(e)[:200]
+                resp = None
+                continue
+            if resp.status_code == 404 and not used_path:
+                last_err = f"404 {path}"
+                continue
+            used_path = path
+            break
+
+        if resp is None:
+            return hosts, last_err or "Content API недоступен"
+
+        if resp.status_code == 429:
+            time.sleep(2.0)
+            try:
+                resp = httpx.post(used_path, headers=wb_headers(), json=body, timeout=45)
+            except Exception as e:
+                return hosts, str(e)[:200]
+
+        if not resp.is_success:
+            text = (resp.text or "")[:280]
+            # 401/403 — нет категории Контент / опции рекомендаций
+            hint = ""
+            if resp.status_code in (401, 403):
+                hint = " — проверь WB_TOKEN (категория «Контент») и доступ к блоку «Продавец рекомендует»"
+            elif resp.status_code == 402:
+                hint = " — рекомендациями управляет тариф/опция продавца (Джем и т.п.)"
+            return hosts, f"Content API {resp.status_code}: {text}{hint}"
+
+        payload = resp.json() or {}
+        # схемы: {data: [...], next: int} или обёртка data
+        rows = payload.get("data")
+        if rows is None and isinstance(payload.get("data"), dict):
+            rows = (payload.get("data") or {}).get("data")
+        if not isinstance(rows, list):
+            rows = []
+
+        if not rows:
+            break
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            nm = row.get("nmId") or row.get("nmID") or row.get("nm_id")
+            if not nm:
+                continue
+            recom_nms = row.get("recomNms") or row.get("recom_nms") or []
+            recom_pics = row.get("recomPics") or row.get("recom_pics") or []
+            try:
+                recom_nms = [int(x) for x in recom_nms if x is not None]
+            except (TypeError, ValueError):
+                recom_nms = []
+            hosts.append({
+                "nm_id": int(nm),
+                "vendor_code": (row.get("vendorCode") or row.get("vendor_code") or "").strip(),
+                "brand": (row.get("brandName") or row.get("brand_name") or row.get("brand") or "").strip(),
+                "name": (row.get("title") or row.get("name") or "").strip(),
+                "subject": (row.get("subjectName") or row.get("subject_name") or "").strip(),
+                "thumb": row.get("pic") or wb_product_thumb_url(int(nm)),
+                "recom_count": int(row.get("recomCount") or row.get("recom_count") or len(recom_nms) or 0),
+                "recom_nms": recom_nms,
+                "recom_pics": list(recom_pics) if isinstance(recom_pics, list) else [],
+                "updated_at": row.get("updatedAt") or row.get("updated_at"),
+            })
+
+        new_next = payload.get("next")
+        try:
+            new_next = int(new_next) if new_next is not None else 0
+        except (TypeError, ValueError):
+            new_next = 0
+
+        # курсор = последний nmId; если не сдвинулся — стоп
+        if not new_next or new_next == next_cur or len(rows) < limit:
+            # если next == 0 после страницы — конец
+            if not new_next:
+                break
+            if new_next == next_cur:
+                break
+        next_cur = new_next
+        # лимит 100 req/min — берём с запасом
+        time.sleep(0.65)
+
+    logger.info(f"seller recommendations: {len(hosts)} host cards via {used_path}")
+    return hosts, None
+
+
+def aggregate_seller_recommendations(hosts: list, catalog: list | None = None):
+    """
+    Инверт: для каждого рекомендуемого nm — у скольких карточек он в топ-5 / ниже.
+    Порядок в recom_nms = место (1-based).
+    missing — свои карточки, которых нет ни в одном recomNms.
+    """
+    own = {}
+    for h in hosts:
+        nm = int(h.get("nm_id") or 0)
+        if nm:
+            own[nm] = h
+    for c in catalog or []:
+        nm = int(c.get("nm_id") or 0)
+        if not nm:
+            continue
+        prev = own.get(nm)
+        if not prev:
+            own[nm] = c
+        else:
+            # дополняем метаданные из полного каталога
+            for k in ("vendor_code", "brand", "name", "thumb"):
+                if not prev.get(k) and c.get(k):
+                    prev[k] = c[k]
+
+    by_nm = {}
+    hosts_with = 0
+    for host in hosts:
+        recom_nms = host.get("recom_nms") or []
+        if not recom_nms:
+            continue
+        hosts_with += 1
+        host_nm = int(host["nm_id"])
+        host_vc = host.get("vendor_code") or str(host_nm)
+        pics = host.get("recom_pics") or []
+        for pos, rnm in enumerate(recom_nms, 1):
+            try:
+                rnm = int(rnm)
+            except (TypeError, ValueError):
+                continue
+            if not rnm or rnm == host_nm:
+                continue
+            row = by_nm.get(rnm)
+            if not row:
+                meta = own.get(rnm) or {}
+                pic = ""
+                if pos - 1 < len(pics) and pics[pos - 1]:
+                    pic = pics[pos - 1]
+                row = {
+                    "nm_id": rnm,
+                    "vendor_code": meta.get("vendor_code") or "",
+                    "brand": meta.get("brand") or "",
+                    "name": meta.get("name") or "",
+                    "thumb": pic or meta.get("thumb") or wb_product_thumb_url(rnm),
+                    "top5": 0,
+                    "below": 0,
+                    "hosts_top5": [],
+                    "hosts_below": [],
+                    "is_mine": rnm in own,
+                }
+                by_nm[rnm] = row
+            else:
+                meta = own.get(rnm)
+                if meta:
+                    row["is_mine"] = True
+                    if not row.get("vendor_code") and meta.get("vendor_code"):
+                        row["vendor_code"] = meta["vendor_code"]
+                    if not row.get("brand") and meta.get("brand"):
+                        row["brand"] = meta["brand"]
+                    if not row.get("name") and meta.get("name"):
+                        row["name"] = meta["name"]
+                    if not row.get("thumb") and meta.get("thumb"):
+                        row["thumb"] = meta["thumb"]
+
+            host_info = {
+                "host_nm": host_nm,
+                "host_vc": host_vc,
+                "position": pos,
+            }
+            if pos <= 5:
+                if not any(x["host_nm"] == host_nm for x in row["hosts_top5"]):
+                    row["top5"] += 1
+                    row["hosts_top5"].append(host_info)
+            else:
+                if not any(x["host_nm"] == host_nm for x in row["hosts_below"]):
+                    row["below"] += 1
+                    row["hosts_below"].append(host_info)
+
+    rows = list(by_nm.values())
+    rows.sort(key=lambda r: (-r["top5"], -r["below"], r["nm_id"]))
+
+    recommended = set(by_nm.keys())
+    missing = []
+    # каталог — все свои nm; fallback own keys if catalog empty
+    all_own = catalog if catalog else list(own.values())
+    seen_miss = set()
+    for c in all_own:
+        try:
+            nm = int(c.get("nm_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not nm or nm in recommended or nm in seen_miss:
+            continue
+        seen_miss.add(nm)
+        missing.append({
+            "nm_id": nm,
+            "vendor_code": c.get("vendor_code") or "",
+            "brand": c.get("brand") or "",
+            "name": c.get("name") or "",
+            "thumb": c.get("thumb") or wb_product_thumb_url(nm),
+            "top5": 0,
+            "below": 0,
+            "hosts_top5": [],
+            "hosts_below": [],
+            "is_mine": True,
+        })
+    missing.sort(key=lambda r: (
+        (r.get("vendor_code") or "").lower(),
+        r["nm_id"],
+    ))
+
+    return {
+        "hosts_total": len(hosts),
+        "hosts_with_recs": hosts_with,
+        "catalog_total": len(all_own) if catalog else len(own),
+        "rows": rows,
+        "missing": missing,
+    }
+
+
+def fetch_all_own_content_cards() -> list:
+    """Все свои nm-карточки из Content API: nm_id, vendor_code, brand, name, thumb."""
+    if not WB_TOKEN:
+        return []
+    out, seen = [], set()
+    cursor = {"limit": 100}
+    for _ in range(200):
+        try:
+            resp = httpx.post(
+                f"{WB_CONTENT_URL}/content/v2/get/cards/list",
+                headers=wb_headers(),
+                json={
+                    "settings": {
+                        "sort": {"ascending": True},
+                        "filter": {"withPhoto": -1},
+                        "cursor": cursor,
+                    }
+                },
+                timeout=40,
+            )
+        except Exception as e:
+            logger.error(f"cards/list for seller recs catalog: {e}")
+            break
+        if not resp.is_success:
+            logger.error(f"cards/list seller recs {resp.status_code}: {resp.text[:200]}")
+            break
+        payload = resp.json() or {}
+        cards = payload.get("cards") or []
+        if not cards:
+            break
+        for c in cards:
+            nm = c.get("nmID") or c.get("nmId")
+            if not nm:
+                continue
+            try:
+                nm = int(nm)
+            except (TypeError, ValueError):
+                continue
+            if nm in seen:
+                continue
+            seen.add(nm)
+            vc = (c.get("vendorCode") or "").strip()
+            brand = (c.get("brand") or "").strip()
+            name = (c.get("title") or c.get("subjectName") or "").strip()
+            thumb = wb_product_thumb_url(nm)
+            photos = c.get("photos") or c.get("mediaFiles") or []
+            if isinstance(photos, list) and photos:
+                p0 = photos[0]
+                if isinstance(p0, dict):
+                    thumb = (
+                        p0.get("c516x688")
+                        or p0.get("big")
+                        or p0.get("square")
+                        or p0.get("tm")
+                        or thumb
+                    )
+                elif isinstance(p0, str) and p0.startswith("http"):
+                    thumb = p0
+            out.append({
+                "nm_id": nm,
+                "vendor_code": vc,
+                "brand": brand,
+                "name": name,
+                "thumb": thumb,
+            })
+        curs = payload.get("cursor") or {}
+        updated = curs.get("updatedAt")
+        nm_cur = curs.get("nmID") or curs.get("nmId")
+        if len(cards) < 100 or not updated or nm_cur is None:
+            break
+        cursor = {"limit": 100, "updatedAt": updated, "nmID": nm_cur}
+        time.sleep(0.35)
+    logger.info(f"seller recs catalog cards: {len(out)}")
+    return out
+
+
+def fetch_fbs_speed_report_data(days: int = 14) -> dict:
+    """
+    Выгружает сборочные задания FBS, поставки и склады из WB Marketplace API v3,
+    рассчитывает время сдачи (от создания заказа до скана/закрытия поставки),
+    коэффициент kC (правила с 07.08.2026) и финансовый эффект (скидка/штраф к комиссии).
+    """
+    if not WB_TOKEN:
+        return {"error": "WB_TOKEN не задан"}
+
+    now = datetime.now(timezone.utc)
+    date_from_dt = now - timedelta(days=days)
+    date_from_ts = int(date_from_dt.timestamp())
+
+    headers = wb_headers()
+
+    # 1. Склады FBS
+    wh_map = {}
+    try:
+        r_wh = httpx.get(f"{WB_MARKETPLACE_URL}/api/v3/warehouses", headers=headers, timeout=20)
+        if r_wh.is_success:
+            for w in r_wh.json():
+                wh_map[w.get("id")] = w.get("name")
+    except Exception as e:
+        logger.warning(f"fetch_fbs_speed_report warehouses error: {e}")
+
+    # 2. Поставки FBS (supplies)
+    supplies_map = {}
+    try:
+        next_val = 0
+        while True:
+            r_sup = httpx.get(
+                f"{WB_MARKETPLACE_URL}/api/v3/supplies",
+                headers=headers,
+                params={"limit": 1000, "next": next_val},
+                timeout=30,
+            )
+            if not r_sup.is_success:
+                logger.warning(f"fetch_fbs_speed_report supplies error: {r_sup.status_code} {r_sup.text[:200]}")
+                break
+            data = r_sup.json()
+            items = data.get("supplies") if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            if not items:
+                break
+            for sup in items:
+                sid = sup.get("id")
+                if sid:
+                    supplies_map[sid] = sup
+            next_val = data.get("next", 0) if isinstance(data, dict) else 0
+            if not next_val or len(items) < 1000:
+                break
+    except Exception as e:
+        logger.warning(f"fetch_fbs_speed_report supplies fetch error: {e}")
+
+    # 3. Заказы FBS (сборочные задания)
+    orders = []
+    try:
+        next_val = 0
+        for _ in range(20):  # до 20,000 заказов
+            r_ord = httpx.get(
+                f"{WB_MARKETPLACE_URL}/api/v3/orders",
+                headers=headers,
+                params={"limit": 1000, "next": next_val, "dateFrom": date_from_ts},
+                timeout=35,
+            )
+            if not r_ord.is_success:
+                logger.warning(f"fetch_fbs_speed_report orders error: {r_ord.status_code} {r_ord.text[:200]}")
+                break
+            data = r_ord.json()
+            batch = data.get("orders") if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            if not batch:
+                break
+            orders.extend(batch)
+            next_val = data.get("next", 0) if isinstance(data, dict) else 0
+            if not next_val or len(batch) < 1000:
+                break
+    except Exception as e:
+        logger.warning(f"fetch_fbs_speed_report orders fetch error: {e}")
+
+    # 4. Анализ каждого заказа и расчет kC
+    orders_analyzed = []
+    bracket_counts = {
+        "bonus_13": 0,    # <= 13ч (-5.0%)
+        "norm_42": 0,     # 13-42ч (-3.5%)
+        "base_48": 0,     # 42-48ч (0%)
+        "fine_54": 0,     # 48-54ч (+0.30%/ч)
+        "fine_60": 0,     # 54-60ч (+0.35%/ч)
+        "fine_over": 0,   # > 60ч (+0.45%/ч)
+        "pending": 0,     # еще не сданы
+    }
+    wh_stats = {}  # wh_name -> {total, <=13, 13-42, >48, bonus_rub, fine_rub, hours_list}
+
+    total_bonus_rub = 0.0
+    total_fine_rub = 0.0
+    all_hours = []
+
+    for o in orders:
+        created_str = o.get("createdAt") or ""
+        created_dt = parse_wb_dt(created_str)
+        if not created_dt:
+            continue
+
+        sup_id = o.get("supplyId")
+        sup = supplies_map.get(sup_id, {}) if sup_id else {}
+        
+        # Определяем время сканирования/сдачи
+        scan_str = sup.get("scanDt") or sup.get("closedAt") or o.get("scanDt") or ""
+        scan_dt = parse_wb_dt(scan_str)
+
+        wh_id = o.get("warehouseId")
+        wh_name = wh_map.get(wh_id) or f"Склад #{wh_id}"
+
+        if wh_name not in wh_stats:
+            wh_stats[wh_name] = {
+                "warehouse_id": wh_id,
+                "warehouse_name": wh_name,
+                "total_orders": 0,
+                "bonus_13_count": 0,
+                "norm_42_count": 0,
+                "base_48_count": 0,
+                "fine_48_count": 0,
+                "pending_count": 0,
+                "bonus_rub": 0.0,
+                "fine_rub": 0.0,
+                "hours_list": [],
+            }
+        wstat = wh_stats[wh_name]
+        wstat["total_orders"] += 1
+
+        price_raw = o.get("convertedPrice") or o.get("price") or 0
+        price_rub = (price_raw / 100.0) if price_raw > 100000 else float(price_raw)
+
+        if not scan_dt:
+            bracket_counts["pending"] += 1
+            wstat["pending_count"] += 1
+            orders_analyzed.append({
+                "order_id": o.get("id"),
+                "created_at": created_str,
+                "scan_at": None,
+                "hours": None,
+                "warehouse_name": wh_name,
+                "article": o.get("article"),
+                "nm_id": o.get("nmId"),
+                "price_rub": price_rub,
+                "status": "pending",
+                "kc_pct": 0.0,
+                "impact_rub": 0.0,
+            })
+            continue
+
+        diff_seconds = (scan_dt - created_dt).total_seconds()
+        hours = max(0.0, round(diff_seconds / 3600.0, 2))
+        all_hours.append(hours)
+        wstat["hours_list"].append(hours)
+
+        # Расчет kC
+        kc_pct = 0.0
+        bracket = ""
+        if hours <= 13.0:
+            kc_pct = -5.0
+            bracket = "bonus_13"
+            bracket_counts["bonus_13"] += 1
+            wstat["bonus_13_count"] += 1
+            b_rub = abs(kc_pct) / 100.0 * price_rub
+            total_bonus_rub += b_rub
+            wstat["bonus_rub"] += b_rub
+            impact_rub = b_rub
+        elif hours <= 42.0:
+            kc_pct = -3.5
+            bracket = "norm_42"
+            bracket_counts["norm_42"] += 1
+            wstat["norm_42_count"] += 1
+            b_rub = abs(kc_pct) / 100.0 * price_rub
+            total_bonus_rub += b_rub
+            wstat["bonus_rub"] += b_rub
+            impact_rub = b_rub
+        elif hours <= 48.0:
+            kc_pct = 0.0
+            bracket = "base_48"
+            bracket_counts["base_48"] += 1
+            wstat["base_48_count"] += 1
+            impact_rub = 0.0
+        elif hours <= 54.0:
+            kc_pct = (hours - 48.0) * 0.30
+            bracket = "fine_54"
+            bracket_counts["fine_54"] += 1
+            wstat["fine_48_count"] += 1
+            f_rub = kc_pct / 100.0 * price_rub
+            total_fine_rub += f_rub
+            wstat["fine_rub"] += f_rub
+            impact_rub = -f_rub
+        elif hours <= 60.0:
+            kc_pct = (6.0 * 0.30) + ((hours - 54.0) * 0.35)
+            bracket = "fine_60"
+            bracket_counts["fine_60"] += 1
+            wstat["fine_48_count"] += 1
+            f_rub = kc_pct / 100.0 * price_rub
+            total_fine_rub += f_rub
+            wstat["fine_rub"] += f_rub
+            impact_rub = -f_rub
+        else:
+            kc_pct = (6.0 * 0.30) + (6.0 * 0.35) + ((hours - 60.0) * 0.45)
+            bracket = "fine_over"
+            bracket_counts["fine_over"] += 1
+            wstat["fine_48_count"] += 1
+            f_rub = kc_pct / 100.0 * price_rub
+            total_fine_rub += f_rub
+            wstat["fine_rub"] += f_rub
+            impact_rub = -f_rub
+
+        orders_analyzed.append({
+            "order_id": o.get("id"),
+            "created_at": created_str,
+            "scan_at": scan_str,
+            "hours": hours,
+            "warehouse_name": wh_name,
+            "article": o.get("article"),
+            "nm_id": o.get("nmId"),
+            "price_rub": price_rub,
+            "bracket": bracket,
+            "kc_pct": round(kc_pct, 2),
+            "impact_rub": round(impact_rub, 2),
+        })
+
+    import statistics
+    median_hours = round(float(statistics.median(all_hours)), 1) if all_hours else 0.0
+    delivered_count = len(all_hours)
+
+    # Формируем сводку по складам
+    wh_summary = []
+    for w in wh_stats.values():
+        h_list = w.pop("hours_list")
+        w["median_hours"] = round(float(statistics.median(h_list)), 1) if h_list else 0.0
+        w["bonus_rub"] = round(w["bonus_rub"], 2)
+        w["fine_rub"] = round(w["fine_rub"], 2)
+        w["net_rub"] = round(w["bonus_rub"] - w["fine_rub"], 2)
+        wh_summary.append(w)
+    wh_summary.sort(key=lambda x: -x["total_orders"])
+
+    return {
+        "period_days": days,
+        "total_orders": len(orders_analyzed),
+        "delivered_orders": delivered_count,
+        "pending_orders": bracket_counts["pending"],
+        "median_hours": median_hours,
+        "bracket_counts": bracket_counts,
+        "total_bonus_rub": round(total_bonus_rub, 2),
+        "total_fine_rub": round(total_fine_rub, 2),
+        "net_profit_rub": round(total_bonus_rub - total_fine_rub, 2),
+        "warehouses": wh_summary,
+        "orders_sample": orders_analyzed[:500],
+    }
+
+
+@app.get("/api/fbs-speed-report")
+def get_fbs_speed_report(days: int = 14):
+    """Отчет по скорости отгрузки FBS, порогам kC и экономии на комиссии."""
+    try:
+        data = fetch_fbs_speed_report_data(days=days)
+        return data
+    except Exception as e:
+        logger.error(f"get_fbs_speed_report error: {e}")
+        return {"error": str(e)}
+
+
+# ---------- География заказов FBS / FBW (лента заказов + Statistics API) ----------
+
+ORDERS_GEO_CACHE = {
+    "orders": [],
+    "updated_at": None,
+    "source": None,
+    "filename": None,
+    "syncing": False,
+    "error": None,
+}
+_ORDERS_GEO_LOCK = threading.Lock()
+_ORDERS_GEO_FILE = Path(__file__).resolve().parent.parent / "data" / "orders_geo_cache.json"
+# Диск контейнера на Railway эфемерный, поэтому долговременно храним в Supabase.
+ORDERS_GEO_SETTING_KEY = "orders_geo_cache"
+
+
+def _orders_geo_ensure_dir():
+    try:
+        _ORDERS_GEO_FILE.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+
+def _orders_geo_payload() -> dict:
+    return {
+        "orders": ORDERS_GEO_CACHE.get("orders") or [],
+        "updated_at": ORDERS_GEO_CACHE.get("updated_at"),
+        "source": ORDERS_GEO_CACHE.get("source"),
+        "filename": ORDERS_GEO_CACHE.get("filename"),
+    }
+
+
+def _orders_geo_apply_payload(payload, source_fallback: str) -> bool:
+    orders = payload.get("orders") if isinstance(payload, dict) else payload
+    if not isinstance(orders, list) or not orders:
+        return False
+    ORDERS_GEO_CACHE["orders"] = orders
+    if isinstance(payload, dict):
+        ORDERS_GEO_CACHE["updated_at"] = payload.get("updated_at")
+        ORDERS_GEO_CACHE["source"] = payload.get("source") or source_fallback
+        ORDERS_GEO_CACHE["filename"] = payload.get("filename")
+    else:
+        ORDERS_GEO_CACHE["updated_at"] = None
+        ORDERS_GEO_CACHE["source"] = source_fallback
+        ORDERS_GEO_CACHE["filename"] = None
+    return True
+
+
+def _orders_geo_encode(payload: dict) -> str:
+    """Гзипуем: 12 тысяч заказов это около 3 МБ JSON, в settings столько лить незачем."""
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return base64.b64encode(gzip.compress(raw, 6)).decode("ascii")
+
+
+def _orders_geo_decode(blob):
+    if not blob:
+        return None
+    if isinstance(blob, (dict, list)):
+        return blob
+    s = str(blob).strip()
+    if not s:
+        return None
+    if s.startswith("{") or s.startswith("["):
+        return json.loads(s)
+    return json.loads(gzip.decompress(base64.b64decode(s)).decode("utf-8"))
+
+
+def _orders_geo_save_supabase() -> bool:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False
+    try:
+        blob = _orders_geo_encode(_orders_geo_payload())
+    except Exception as e:
+        logger.error(f"orders_geo encode error: {e}")
+        return False
+    ok = save_setting_value(ORDERS_GEO_SETTING_KEY, blob)
+    if ok:
+        logger.info(f"orders_geo: сохранено в Supabase, {len(blob)} символов")
+    return ok
+
+
+def _orders_geo_load_supabase() -> bool:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False
+    try:
+        raw = get_setting_raw(ORDERS_GEO_SETTING_KEY, None)
+        payload = _orders_geo_decode(raw)
+    except Exception as e:
+        logger.warning(f"orders_geo load supabase error: {e}")
+        return False
+    if not _orders_geo_apply_payload(payload, "supabase"):
+        return False
+    logger.info(f"orders_geo: поднято из Supabase, {len(ORDERS_GEO_CACHE['orders'])} заказов")
+    return True
+
+
+def _orders_geo_save_file():
+    _orders_geo_ensure_dir()
+    try:
+        with open(_ORDERS_GEO_FILE, "w", encoding="utf-8") as f:
+            json.dump(_orders_geo_payload(), f, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"orders_geo save file error: {e}")
+
+
+def _orders_geo_persist():
+    """Локальный файл — быстрый кэш, Supabase — то, что переживает редеплой."""
+    _orders_geo_save_file()
+    _orders_geo_save_supabase()
+
+
+def _orders_geo_load_file() -> bool:
+    try:
+        if not _ORDERS_GEO_FILE.exists():
+            return False
+        with open(_ORDERS_GEO_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return _orders_geo_apply_payload(payload, "file")
+    except Exception as e:
+        logger.warning(f"orders_geo load file error: {e}")
+        return False
+
+
+def _orders_geo_load_seed() -> bool:
+    seed = Path(__file__).resolve().parent.parent / "tmp" / "orders_ribbon_preprocessed.json"
+    try:
+        if not seed.exists():
+            return False
+        with open(seed, "r", encoding="utf-8") as f:
+            orders = json.load(f)
+        if not isinstance(orders, list) or not orders:
+            return False
+        ORDERS_GEO_CACHE["orders"] = orders
+        ORDERS_GEO_CACHE["updated_at"] = datetime.now(timezone.utc).isoformat()
+        ORDERS_GEO_CACHE["source"] = "seed"
+        ORDERS_GEO_CACHE["filename"] = seed.name
+        _orders_geo_persist()
+        return True
+    except Exception as e:
+        logger.warning(f"orders_geo seed error: {e}")
+        return False
+
+
+def _orders_geo_ensure_loaded() -> list:
+    with _ORDERS_GEO_LOCK:
+        if ORDERS_GEO_CACHE.get("orders"):
+            return ORDERS_GEO_CACHE["orders"]
+        # Supabase первым: после редеплоя контейнера локального файла уже нет.
+        if _orders_geo_load_supabase():
+            _orders_geo_persist()
+        elif _orders_geo_load_file():
+            _orders_geo_save_supabase()
+        else:
+            _orders_geo_load_seed()
+        return ORDERS_GEO_CACHE.get("orders") or []
+
+
+def _orders_geo_normalize_channel(tipo_sklada: str, warehouse: str = "") -> str:
+    t = (tipo_sklada or "").strip().lower()
+    w = (warehouse or "").strip().lower()
+    if "сво" in t or "продавц" in t or "fbs" in t:
+        return "FBS"
+    if "склад wb" in t or "склады wb" in t or "fbw" in t or "fbo" in t:
+        return "FBW"
+    if "продавц" in w or "склад продавца" in w:
+        return "FBS"
+    return "FBW"
+
+
+def _orders_geo_parse_ribbon_df(df: "pd.DataFrame") -> list:
+    """Парсит лист «Все заказы» / «Активные» из отчёта «Лента заказов» WB."""
+    if df is None or df.empty:
+        return []
+
+    cols = [str(c).strip() if c is not None else "" for c in df.columns]
+    # Иногда регион/город разбиты на две колонки (название + Unnamed)
+    rename = {}
+    for i, c in enumerate(cols):
+        cl = c.lower()
+        if "артикул продавца" in cl:
+            rename[df.columns[i]] = "article"
+        elif c == "Артикул WB" or "артикул wb" in cl:
+            rename[df.columns[i]] = "nm_id"
+        elif c == "Название" or cl == "название":
+            rename[df.columns[i]] = "name"
+        elif "дата оформления" in cl:
+            rename[df.columns[i]] = "order_dt"
+        elif "статус заказа" in cl:
+            rename[df.columns[i]] = "status"
+        elif "регион отправки" in cl:
+            rename[df.columns[i]] = "src_region"
+        elif "регион прибытия" in cl:
+            rename[df.columns[i]] = "dest_region"
+        elif "цена со скидкой" in cl:
+            rename[df.columns[i]] = "price"
+        elif "тип склада" in cl:
+            rename[df.columns[i]] = "warehouse_type"
+        elif "id заказа" in cl:
+            rename[df.columns[i]] = "order_id"
+
+    df = df.rename(columns=rename)
+
+    # Unnamed колонки сразу после региона — склад отправки / город прибытия
+    cols_now = list(df.columns)
+    for i, c in enumerate(cols_now):
+        if c == "src_region" and i + 1 < len(cols_now):
+            nxt = cols_now[i + 1]
+            if str(nxt).startswith("Unnamed") or nxt not in ("article", "nm_id", "name", "order_dt", "status", "dest_region", "price", "warehouse_type", "order_id", "warehouse", "dest_city"):
+                df = df.rename(columns={nxt: "warehouse"})
+        if c == "dest_region" and i + 1 < len(cols_now):
+            nxt = cols_now[i + 1]
+            if str(nxt).startswith("Unnamed") or nxt not in ("article", "nm_id", "name", "order_dt", "status", "src_region", "price", "warehouse_type", "order_id", "warehouse", "dest_city"):
+                df = df.rename(columns={nxt: "dest_city"})
+
+    # если склад/город всё ещё unnamed — эвристика по позиции
+    if "warehouse" not in df.columns:
+        for c in df.columns:
+            if str(c).startswith("Unnamed"):
+                sample = df[c].dropna().astype(str).head(20).str.lower()
+                if sample.str.contains("склад|сц ").any():
+                    df = df.rename(columns={c: "warehouse"})
+                    break
+    if "dest_city" not in df.columns:
+        for c in df.columns:
+            if str(c).startswith("Unnamed"):
+                df = df.rename(columns={c: "dest_city"})
+                break
+
+    records = []
+    for _, r in df.iterrows():
+        try:
+            dt_raw = r.get("order_dt")
+            if pd.isna(dt_raw):
+                continue
+            dt = pd.to_datetime(dt_raw, errors="coerce")
+            if pd.isna(dt):
+                continue
+            date_str = dt.strftime("%Y-%m-%d")
+            wh = str(r.get("warehouse") or "").strip() or "Не указан"
+            wtype = str(r.get("warehouse_type") or "").strip()
+            channel = _orders_geo_normalize_channel(wtype, wh)
+            try:
+                price = float(r.get("price") or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            if price != price:  # NaN
+                price = 0.0
+            try:
+                nm = int(r.get("nm_id") or 0)
+            except (TypeError, ValueError):
+                nm = 0
+            records.append({
+                "order_id": str(r.get("order_id") or ""),
+                "date": date_str,
+                "dt": dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "channel": channel,
+                "warehouse": wh,
+                "dest_region": str(r.get("dest_region") or "").strip() or "Не указан",
+                "dest_city": str(r.get("dest_city") or "").strip() or "Не указан",
+                "article": str(r.get("article") or "").strip(),
+                "nm_id": nm,
+                "name": str(r.get("name") or "").strip(),
+                "price": round(price, 2),
+                "status": str(r.get("status") or "").strip(),
+            })
+        except Exception:
+            continue
+    return records
+
+
+def parse_orders_geo_excel(content: bytes, filename: str = "") -> list:
+    """Читает xlsx ленты заказов WB и возвращает нормализованный список заказов."""
+    bio = io.BytesIO(content)
+    xl = pd.ExcelFile(bio)
+    sheet = None
+    for name in xl.sheet_names:
+        low = str(name).lower()
+        if "все заказ" in low or "активн" in low:
+            sheet = name
+            break
+    if sheet is None:
+        sheet = xl.sheet_names[-1] if xl.sheet_names else 0
+
+    # пробуем header=1 (типичный формат ленты), иначе header=0
+    df = pd.read_excel(xl, sheet_name=sheet, header=1)
+    # если колонки Unnamed и мало смысла — перечитать с header=0
+    named = [c for c in df.columns if not str(c).startswith("Unnamed")]
+    if len(named) < 5:
+        df = pd.read_excel(xl, sheet_name=sheet, header=0)
+
+    # если первая ячейка — «Все заказы», сдвигаем заголовок
+    if df.shape[0] > 0 and str(df.iloc[0, 0]).strip().lower().startswith("артикул"):
+        df.columns = [str(x).strip() for x in df.iloc[0].tolist()]
+        df = df.iloc[1:].reset_index(drop=True)
+
+    records = _orders_geo_parse_ribbon_df(df)
+    if not records:
+        # fallback: raw без заголовка
+        raw = pd.read_excel(xl, sheet_name=sheet, header=None)
+        if raw.shape[0] > 2:
+            header_row = None
+            for i in range(min(5, len(raw))):
+                row_vals = [str(x).lower() for x in raw.iloc[i].tolist()]
+                if any("артикул продавца" in v for v in row_vals):
+                    header_row = i
+                    break
+            if header_row is not None:
+                df2 = raw.iloc[header_row + 1:].copy()
+                df2.columns = [str(x).strip() for x in raw.iloc[header_row].tolist()]
+                records = _orders_geo_parse_ribbon_df(df2)
+    logger.info(f"orders_geo parse {filename or sheet}: {len(records)} orders")
+    return records
+
+
+def aggregate_orders_geo(
+    orders: list,
+    date_from: str = None,
+    date_to: str = None,
+    channel: str = "all",
+    warehouse: str = "all",
+    region: str = "all",
+    city: str = "all",
+    search: str = "",
+) -> dict:
+    filtered = []
+    search = (search or "").strip().lower()
+    ch_filter = (channel or "all").upper()
+    wh_filter = (warehouse or "all")
+    reg_filter = (region or "all")
+    city_filter = (city or "all")
+
+    # опции фильтров — по датам (чтобы селекты не схлопывались при выборе канала)
+    date_scoped = []
+    for o in orders or []:
+        o_date = o.get("date") or ""
+        if date_from and o_date < date_from:
+            continue
+        if date_to and o_date > date_to:
+            continue
+        date_scoped.append(o)
+
+    for o in date_scoped:
+        o_ch = (o.get("channel") or "FBW").upper()
+        if ch_filter not in ("ALL", "") and o_ch != ch_filter:
+            continue
+        o_wh = o.get("warehouse") or ""
+        if wh_filter not in ("all", "", None) and o_wh != wh_filter:
+            continue
+        o_reg = o.get("dest_region") or ""
+        if reg_filter not in ("all", "", None) and o_reg != reg_filter:
+            continue
+        o_city = o.get("dest_city") or ""
+        if city_filter not in ("all", "", None) and o_city != city_filter:
+            continue
+        if search:
+            blob = " ".join([
+                str(o.get("article") or ""),
+                str(o.get("nm_id") or ""),
+                str(o.get("name") or ""),
+                str(o_wh),
+                str(o_city),
+                str(o_reg),
+            ]).lower()
+            if search not in blob:
+                continue
+        filtered.append(o)
+
+    total_orders = len(filtered)
+    total_rev = sum(float(o.get("price") or 0) for o in filtered)
+    fbs_orders = sum(1 for o in filtered if (o.get("channel") or "").upper() == "FBS")
+    fbs_rev = sum(float(o.get("price") or 0) for o in filtered if (o.get("channel") or "").upper() == "FBS")
+    fbw_orders = total_orders - fbs_orders
+    fbw_rev = total_rev - fbs_rev
+
+    by_day_dict = {}
+    by_wh_dict = {}
+    by_reg_dict = {}
+    by_city_dict = {}
+    by_art_dict = {}
+    warehouses_set = {(o.get("warehouse") or "Не указан") for o in date_scoped}
+    regions_set = {(o.get("dest_region") or "Не указан") for o in date_scoped}
+    cities_set = {(o.get("dest_city") or "Не указан") for o in date_scoped}
+
+    for o in filtered:
+        d = o.get("date") or ""
+        ch = (o.get("channel") or "FBW").upper()
+        p = float(o.get("price") or 0)
+        wh = o.get("warehouse") or "Не указан"
+        reg = o.get("dest_region") or "Не указан"
+        city_name = o.get("dest_city") or "Не указан"
+        art = (o.get("article") or "").strip() or str(o.get("nm_id") or "—")
+
+        if d:
+            slot = by_day_dict.setdefault(d, {
+                "date": d, "total": 0, "fbs": 0, "fbw": 0,
+                "revenue": 0.0, "fbs_revenue": 0.0, "fbw_revenue": 0.0,
+            })
+            slot["total"] += 1
+            slot["revenue"] += p
+            if ch == "FBS":
+                slot["fbs"] += 1
+                slot["fbs_revenue"] += p
+            else:
+                slot["fbw"] += 1
+                slot["fbw_revenue"] += p
+
+        wslot = by_wh_dict.setdefault(wh, {
+            "warehouse": wh, "channel": ch, "orders": 0, "revenue": 0.0, "regions": {},
+        })
+        wslot["orders"] += 1
+        wslot["revenue"] += p
+        wslot["regions"][reg] = wslot["regions"].get(reg, 0) + 1
+
+        rslot = by_reg_dict.setdefault(reg, {
+            "region": reg, "fbs_orders": 0, "fbw_orders": 0,
+            "total_orders": 0, "revenue": 0.0, "cities": {},
+        })
+        rslot["total_orders"] += 1
+        rslot["revenue"] += p
+        if ch == "FBS":
+            rslot["fbs_orders"] += 1
+        else:
+            rslot["fbw_orders"] += 1
+        rslot["cities"][city_name] = rslot["cities"].get(city_name, 0) + 1
+
+        cslot = by_city_dict.setdefault(city_name, {
+            "city": city_name, "region": reg, "fbs_orders": 0, "fbw_orders": 0,
+            "total_orders": 0, "revenue": 0.0,
+        })
+        cslot["total_orders"] += 1
+        cslot["revenue"] += p
+        if ch == "FBS":
+            cslot["fbs_orders"] += 1
+        else:
+            cslot["fbw_orders"] += 1
+
+        aslot = by_art_dict.setdefault(art, {
+            "article": art, "nm_id": o.get("nm_id"), "name": o.get("name") or "",
+            "fbs_orders": 0, "fbw_orders": 0, "total_orders": 0, "revenue": 0.0, "cities": {},
+        })
+        aslot["total_orders"] += 1
+        aslot["revenue"] += p
+        if ch == "FBS":
+            aslot["fbs_orders"] += 1
+        else:
+            aslot["fbw_orders"] += 1
+        aslot["cities"][city_name] = aslot["cities"].get(city_name, 0) + 1
+
+    by_day = sorted(by_day_dict.values(), key=lambda x: x["date"])
+    for s in by_day:
+        s["revenue"] = round(s["revenue"], 2)
+        s["fbs_revenue"] = round(s["fbs_revenue"], 2)
+        s["fbw_revenue"] = round(s["fbw_revenue"], 2)
+
+    by_wh = []
+    for item in by_wh_dict.values():
+        top_regs = [r[0] for r in sorted(item["regions"].items(), key=lambda x: -x[1])[:3]]
+        by_wh.append({
+            "warehouse": item["warehouse"],
+            "channel": item["channel"],
+            "orders": item["orders"],
+            "revenue": round(item["revenue"], 2),
+            "share_pct": round(item["orders"] / max(1, total_orders) * 100, 1),
+            "top_regions": top_regs,
+        })
+    by_wh.sort(key=lambda x: -x["orders"])
+
+    by_reg = []
+    for item in by_reg_dict.values():
+        top_cities = [c[0] for c in sorted(item["cities"].items(), key=lambda x: -x[1])[:4]]
+        by_reg.append({
+            "region": item["region"],
+            "fbs_orders": item["fbs_orders"],
+            "fbw_orders": item["fbw_orders"],
+            "total_orders": item["total_orders"],
+            "revenue": round(item["revenue"], 2),
+            "share_pct": round(item["total_orders"] / max(1, total_orders) * 100, 1),
+            "top_cities": top_cities,
+        })
+    by_reg.sort(key=lambda x: -x["total_orders"])
+
+    by_city = []
+    for item in by_city_dict.values():
+        by_city.append({
+            "city": item["city"],
+            "region": item["region"],
+            "fbs_orders": item["fbs_orders"],
+            "fbw_orders": item["fbw_orders"],
+            "total_orders": item["total_orders"],
+            "revenue": round(item["revenue"], 2),
+            "share_pct": round(item["total_orders"] / max(1, total_orders) * 100, 1),
+        })
+    by_city.sort(key=lambda x: -x["total_orders"])
+
+    by_art = []
+    for item in by_art_dict.values():
+        top_city = sorted(item["cities"].items(), key=lambda x: -x[1])[0][0] if item["cities"] else ""
+        by_art.append({
+            "article": item["article"],
+            "nm_id": item["nm_id"],
+            "name": item["name"],
+            "fbs_orders": item["fbs_orders"],
+            "fbw_orders": item["fbw_orders"],
+            "total_orders": item["total_orders"],
+            "revenue": round(item["revenue"], 2),
+            "avg_price": round(item["revenue"] / max(1, item["total_orders"]), 2),
+            "top_city": top_city,
+        })
+    by_art.sort(key=lambda x: -x["total_orders"])
+
+    all_orders = _orders_geo_ensure_loaded()
+    dates = sorted({o.get("date") for o in all_orders if o.get("date")})
+    return {
+        "summary": {
+            "total_orders": total_orders,
+            "total_revenue": round(total_rev, 2),
+            "avg_order_price": round(total_rev / max(1, total_orders), 2),
+            "fbs_orders": fbs_orders,
+            "fbs_revenue": round(fbs_rev, 2),
+            "fbs_share_pct": round(fbs_orders / max(1, total_orders) * 100, 1),
+            "fbw_orders": fbw_orders,
+            "fbw_revenue": round(fbw_rev, 2),
+            "fbw_share_pct": round(fbw_orders / max(1, total_orders) * 100, 1),
+        },
+        "by_day": by_day,
+        "by_warehouse": by_wh[:40],
+        "by_region": by_reg[:30],
+        "by_city": by_city[:80],
+        "by_article": by_art[:80],
+        "filters": {
+            "warehouses": sorted(warehouses_set),
+            "regions": sorted(regions_set),
+            "cities": sorted(cities_set)[:300],
+            "date_min": dates[0] if dates else None,
+            "date_max": dates[-1] if dates else None,
+            "total_cached": len(all_orders),
+        },
+        "meta": {
+            "updated_at": ORDERS_GEO_CACHE.get("updated_at"),
+            "source": ORDERS_GEO_CACHE.get("source"),
+            "filename": ORDERS_GEO_CACHE.get("filename"),
+            "filtered": total_orders,
+            "city_note": _orders_geo_city_note(ORDERS_GEO_CACHE.get("source")),
+        },
+    }
+
+
+def _orders_geo_city_note(source: str) -> str:
+    if source == "ribbon":
+        return "Точные города — из отчёта «Лента заказов»."
+    if source == "statistics_api":
+        return "Данные с API: это область/край, а не город. Точные города — только в отчёте «Лента заказов»."
+    if source == "ribbon+api":
+        return "Из ленты — точные города, из API — область/край."
+    return ""
+
+
+def fetch_fbs_office_cities(days: int = 30) -> dict:
+    """Город сдачи заказа FBS: Marketplace API v3 отдаёт offices — куда везём заказ.
+    Statistics API для FBS пишет обезличенный «Склад WB РФ», поэтому этим уточняем склад
+    отгрузки. Ключ — rid (он же srid в Statistics API)."""
+    if not WB_TOKEN:
+        return {}
+    date_from_ts = int((datetime.now(timezone.utc) - timedelta(days=max(1, min(int(days), 90)))).timestamp())
+    out = {}
+    try:
+        next_val = 0
+        for _ in range(30):
+            r = httpx.get(
+                f"{WB_MARKETPLACE_URL}/api/v3/orders",
+                headers=wb_headers(),
+                params={"limit": 1000, "next": next_val, "dateFrom": date_from_ts},
+                timeout=35,
+            )
+            if not r.is_success:
+                logger.warning(f"orders_geo fbs offices error {r.status_code} {r.text[:200]}")
+                break
+            data = r.json()
+            batch = data.get("orders") if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            if not batch:
+                break
+            for o in batch:
+                offices = o.get("offices") or []
+                city = str(offices[0]).strip() if offices else ""
+                if not city:
+                    continue
+                for key in (o.get("rid"), o.get("orderUid"), o.get("id")):
+                    if key:
+                        out[str(key)] = city
+            next_val = data.get("next", 0) if isinstance(data, dict) else 0
+            if not next_val or len(batch) < 1000:
+                break
+    except Exception as e:
+        logger.warning(f"orders_geo fbs offices exception: {e}")
+    logger.info(f"orders_geo fbs offices: {len(out)} rids with city")
+    return out
+
+
+def sync_orders_geo_from_statistics(days: int = 30) -> dict:
+    """Подтягивает заказы из Statistics API (склад + регион).
+    Города для FBS дотягиваем из Marketplace API v3 (offices)."""
+    if not WB_TOKEN:
+        return {"error": "WB_TOKEN не задан"}
+    if ORDERS_GEO_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    ORDERS_GEO_CACHE["syncing"] = True
+    ORDERS_GEO_CACHE["error"] = None
+    try:
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=max(1, min(int(days), 90)))
+        date_from = cutoff.strftime("%Y-%m-%dT00:00:00")
+        raw = fetch_supplier_feed("/api/v1/supplier/orders", date_from, max_pages=5)
+        fbs_cities = fetch_fbs_office_cities(days=days)
+        records = []
+        for o in raw or []:
+            d = parse_wb_dt(o.get("date") or "")
+            if d is None or d < cutoff:
+                continue
+            wh = str(o.get("warehouseName") or "").strip() or "Не указан"
+            # Statistics API: warehouseType / склад продавца ≈ FBS
+            wtype = str(o.get("warehouseType") or o.get("orderType") or "")
+            channel = _orders_geo_normalize_channel(wtype, wh)
+            if "seller" in wh.lower() or "продав" in wh.lower():
+                channel = "FBS"
+            price = float(o.get("finishedPrice") or o.get("priceWithDisc") or o.get("totalPrice") or 0)
+            srid = str(o.get("srid") or "")
+            # Для FBS Statistics API пишет обезличенный склад — берём город сдачи из Marketplace.
+            if channel == "FBS" and srid:
+                office = fbs_cities.get(srid)
+                if office:
+                    wh = f"Сдача: {office}"
+            records.append({
+                "order_id": srid or str(o.get("gNumber") or ""),
+                "date": d.strftime("%Y-%m-%d"),
+                "dt": d.strftime("%Y-%m-%d %H:%M:%S"),
+                "channel": channel,
+                "warehouse": wh,
+                "dest_region": str(o.get("oblastOkrugName") or o.get("regionName") or "").strip() or "Не указан",
+                "dest_city": str(o.get("regionName") or "").strip() or "Не указан",
+                "article": str(o.get("supplierArticle") or "").strip(),
+                "nm_id": int(o.get("nmId") or 0),
+                "name": str(o.get("subject") or "").strip(),
+                "price": round(price, 2),
+                "status": "Отменён" if o.get("isCancel") else "Заказ",
+            })
+        with _ORDERS_GEO_LOCK:
+            # если уже есть лента с городами — не затираем, а дополняем только новые даты API
+            existing = ORDERS_GEO_CACHE.get("orders") or []
+            if existing and ORDERS_GEO_CACHE.get("source") == "ribbon":
+                exist_ids = {x.get("order_id") for x in existing if x.get("order_id")}
+                exist_keys = {(x.get("date"), x.get("nm_id"), x.get("warehouse"), x.get("article")) for x in existing}
+                added = 0
+                for r in records:
+                    key = (r.get("date"), r.get("nm_id"), r.get("warehouse"), r.get("article"))
+                    if r.get("order_id") and r["order_id"] in exist_ids:
+                        continue
+                    if key in exist_keys:
+                        continue
+                    existing.append(r)
+                    added += 1
+                ORDERS_GEO_CACHE["orders"] = existing
+                ORDERS_GEO_CACHE["updated_at"] = datetime.now(timezone.utc).isoformat()
+                ORDERS_GEO_CACHE["source"] = "ribbon+api"
+                _orders_geo_persist()
+                return {"status": "ok", "added": added, "total": len(existing), "source": "ribbon+api"}
+            ORDERS_GEO_CACHE["orders"] = records
+            ORDERS_GEO_CACHE["updated_at"] = datetime.now(timezone.utc).isoformat()
+            ORDERS_GEO_CACHE["source"] = "statistics_api"
+            ORDERS_GEO_CACHE["filename"] = None
+            _orders_geo_persist()
+        return {"status": "ok", "total": len(records), "source": "statistics_api"}
+    except Exception as e:
+        ORDERS_GEO_CACHE["error"] = str(e)
+        logger.error(f"sync_orders_geo_from_statistics: {e}")
+        return {"error": str(e)}
+    finally:
+        ORDERS_GEO_CACHE["syncing"] = False
+
+
+@app.get("/api/orders-geo")
+def get_orders_geo(
+    date_from: str = None,
+    date_to: str = None,
+    channel: str = "all",
+    warehouse: str = "all",
+    region: str = "all",
+    city: str = "all",
+    search: str = "",
+):
+    """Сводка географии заказов FBS/FBW за период (из кэша ленты или Statistics API)."""
+    orders = _orders_geo_ensure_loaded()
+    if not orders:
+        return {
+            "summary": {
+                "total_orders": 0, "total_revenue": 0, "avg_order_price": 0,
+                "fbs_orders": 0, "fbs_revenue": 0, "fbs_share_pct": 0,
+                "fbw_orders": 0, "fbw_revenue": 0, "fbw_share_pct": 0,
+            },
+            "by_day": [], "by_warehouse": [], "by_region": [], "by_city": [], "by_article": [],
+            "filters": {"warehouses": [], "regions": [], "cities": [], "date_min": None, "date_max": None, "total_cached": 0},
+            "meta": {"updated_at": None, "source": None, "filename": None, "filtered": 0, "empty": True},
+            "hint": "Загрузите Excel «Лента заказов» (вкладка Все заказы) или нажмите «Подтянуть с WB».",
+        }
+    # дефолтный период — последние 28 дней от max даты в кэше
+    if not date_from and not date_to:
+        dates = sorted({o.get("date") for o in orders if o.get("date")})
+        if dates:
+            date_to = dates[-1]
+            try:
+                d_to = datetime.strptime(date_to, "%Y-%m-%d").date()
+                date_from = (d_to - timedelta(days=27)).isoformat()
+            except Exception:
+                date_from = dates[0]
+    return aggregate_orders_geo(
+        orders,
+        date_from=date_from,
+        date_to=date_to,
+        channel=channel,
+        warehouse=warehouse,
+        region=region,
+        city=city,
+        search=search,
+    )
+
+
+@app.post("/api/orders-geo/upload")
+async def upload_orders_geo(file: UploadFile = File(...)):
+    """Загрузка Excel «Лента заказов» WB для раздела географии."""
+    try:
+        content = await file.read()
+        if not content:
+            return {"error": "Пустой файл"}
+        records = parse_orders_geo_excel(content, filename=file.filename or "")
+        if not records:
+            return {"error": "Не удалось разобрать файл. Нужна вкладка «Все заказы» из ленты заказов WB."}
+        with _ORDERS_GEO_LOCK:
+            ORDERS_GEO_CACHE["orders"] = records
+            ORDERS_GEO_CACHE["updated_at"] = datetime.now(timezone.utc).isoformat()
+            ORDERS_GEO_CACHE["source"] = "ribbon"
+            ORDERS_GEO_CACHE["filename"] = file.filename
+            ORDERS_GEO_CACHE["error"] = None
+            _orders_geo_persist()
+        dates = sorted({o.get("date") for o in records if o.get("date")})
+        return {
+            "status": "ok",
+            "total": len(records),
+            "fbs": sum(1 for o in records if o.get("channel") == "FBS"),
+            "fbw": sum(1 for o in records if o.get("channel") == "FBW"),
+            "date_min": dates[0] if dates else None,
+            "date_max": dates[-1] if dates else None,
+            "filename": file.filename,
+        }
+    except Exception as e:
+        logger.error(f"upload_orders_geo: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/api/orders-geo/sync")
+def sync_orders_geo(days: int = 30):
+    """Подтянуть заказы из Statistics API WB (склад + регион)."""
+    import threading
+    if ORDERS_GEO_CACHE.get("syncing"):
+        return {"status": "already_running"}
+    threading.Thread(target=sync_orders_geo_from_statistics, args=(days,), daemon=True).start()
+    return {"status": "started", "days": days}
+
+
+DELIVERY_TIME_CACHE = {"data": None, "ts": 0, "days": 0}
+
+
+def compute_delivery_times(days: int = 30, region: str = "") -> dict:
+    """
+    Сколько идёт заказ до покупателя. Считаем от оформления до выкупа, сопоставляя
+    supplier/orders и supplier/sales по srid.
+
+    Важно: это не чистая логистика. В срок входит время, пока покупатель забирает
+    посылку из пункта выдачи, а невыкупленные заказы сюда вообще не попадают.
+    Поэтому число всегда чуть больше реального срока доставки, но сравнивать
+    склады и регионы между собой оно позволяет.
+    """
+    import statistics
+
+    date_from = (_msk_now() - timedelta(days=max(1, int(days or 30)))).strftime("%Y-%m-%dT00:00:00")
+    orders = fetch_supplier_feed("/api/v1/supplier/orders", date_from, max_pages=5)
+    sales = fetch_supplier_feed("/api/v1/supplier/sales", date_from, max_pages=5)
+
+    ord_by_srid = {}
+    for o in orders:
+        srid = str(o.get("srid") or "")
+        if srid:
+            ord_by_srid[srid] = o
+
+    reg_filter = (region or "").strip().lower()
+    pairs = []
+    for s in sales:
+        if not str(s.get("saleID") or "").startswith("S"):
+            continue  # возвраты и корректировки пропускаем
+        o = ord_by_srid.get(str(s.get("srid") or ""))
+        if not o:
+            continue
+        od, sd = parse_wb_dt(o.get("date")), parse_wb_dt(s.get("date"))
+        if not od or not sd:
+            continue
+        hours = (sd - od).total_seconds() / 3600.0
+        if hours <= 0 or hours > 24 * 60:
+            continue
+        reg = str(o.get("regionName") or "").strip() or "Не указан"
+        if reg_filter and reg_filter not in reg.lower():
+            continue
+        wh = str(o.get("warehouseName") or "").strip() or "Не указан"
+        pairs.append({
+            "days": hours / 24.0,
+            "region": reg,
+            "district": str(o.get("oblastOkrugName") or "").strip(),
+            "warehouse": wh,
+            "channel": _orders_geo_normalize_channel("", wh),
+        })
+
+    def summarize(items):
+        d = sorted(x["days"] for x in items)
+        return {
+            "orders": len(d),
+            "median_days": round(statistics.median(d), 1) if d else None,
+            "avg_days": round(sum(d) / len(d), 1) if d else None,
+            "p90_days": round(d[int(len(d) * 0.9)], 1) if len(d) >= 10 else None,
+            "fastest_days": round(d[0], 1) if d else None,
+        }
+
+    by_wh, by_reg = {}, {}
+    for p in pairs:
+        by_wh.setdefault(p["warehouse"], []).append(p)
+        by_reg.setdefault(p["region"], []).append(p)
+
+    wh_rows = [{"warehouse": k, "channel": v[0]["channel"], **summarize(v)} for k, v in by_wh.items()]
+    wh_rows.sort(key=lambda x: -x["orders"])
+    reg_rows = [{"region": k, **summarize(v)} for k, v in by_reg.items()]
+    reg_rows.sort(key=lambda x: -x["orders"])
+
+    return {
+        "period_days": days,
+        "region_filter": region or None,
+        "matched_pairs": len(pairs),
+        "orders_seen": len(orders),
+        "sales_seen": len(sales),
+        "overall": summarize(pairs),
+        "by_warehouse": wh_rows[:30],
+        "by_region": reg_rows[:40],
+        "note": ("Срок считается от оформления заказа до выкупа, поэтому включает время, "
+                 "пока покупатель забирает посылку. Невыкупленные заказы не учитываются."),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/delivery-time")
+def get_delivery_time(days: int = 30, region: str = "", refresh: int = 0):
+    """Сроки доставки до покупателя по складам отгрузки и регионам."""
+    key_days = int(days or 30)
+    fresh = (
+        DELIVERY_TIME_CACHE.get("data")
+        and DELIVERY_TIME_CACHE.get("days") == key_days
+        and not region
+        and time.time() - float(DELIVERY_TIME_CACHE.get("ts") or 0) < 3600
+    )
+    if fresh and not refresh:
+        return DELIVERY_TIME_CACHE["data"]
+    try:
+        data = compute_delivery_times(days=key_days, region=region)
+    except Exception as e:
+        logger.error(f"delivery-time: {e}")
+        return {"error": str(e)}
+    if not region:
+        DELIVERY_TIME_CACHE.update({"data": data, "ts": time.time(), "days": key_days})
+    return data
+
+
+@app.get("/api/seller-recommendations-agg")
+def get_seller_recommendations_agg(refresh: int = 0):
+    """
+    Сводка «Продавец рекомендует»: какой nm в скольких карточках в топ-5 / ниже
+    + missing — свои карточки, которых нигде нет в рекомендациях.
+    """
+    now = time.time()
+    if (
+        not refresh
+        and SELLER_RECS_AGG_CACHE.get("data")
+        and now - float(SELLER_RECS_AGG_CACHE.get("ts") or 0) < 300
+    ):
+        return SELLER_RECS_AGG_CACHE["data"]
+
+    hosts, err = fetch_seller_recommendations_raw()
+    if err and not hosts:
+        raise HTTPException(status_code=502, detail=err)
+
+    catalog = fetch_all_own_content_cards()
+    agg = aggregate_seller_recommendations(hosts, catalog=catalog)
+    out = {
+        **agg,
+        "error": err,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    SELLER_RECS_AGG_CACHE["ts"] = now
+    SELLER_RECS_AGG_CACHE["data"] = out
+    return out
+
+
+def _warm_caches_after_start():
+    """Через пару минут после старта прогреваем то, что не переживает редеплой."""
+    time.sleep(120)
+    try:
+        _orders_geo_ensure_loaded()
+    except Exception as e:
+        logger.warning(f"warmup orders_geo: {e}")
+    try:
+        if not WB_PRODUCTS_CACHE.get("sales_by_nm"):
+            refresh_wb_products_catalog(sync_sources=True)
+    except Exception as e:
+        logger.warning(f"warmup wb_products: {e}")
+    try:
+        sync_new_stock()
+    except Exception as e:
+        logger.warning(f"warmup new_stock: {e}")
+
+
+threading.Thread(target=_warm_caches_after_start, daemon=True, name="warmup").start()
+threading.Thread(target=sync_promo_calendar, daemon=True, name="promo-cal-boot").start()
+
+
+# ---------- Телеграм-бот (только чтение) ----------
+# Живёт в этом же процессе. Отдельный сервер не нужен: Railway уже за рубежом.
+try:
+    import telegram_bot
+
+    telegram_bot.start_bot({
+        "wb_products": lambda: get_wb_products(),
+        "orders_geo": lambda **kw: aggregate_orders_geo(_orders_geo_ensure_loaded(), **kw),
+        "fbs_speed": lambda days=14: fetch_fbs_speed_report_data(days=days),
+        "sales_pace": lambda period="day": get_sales_pace(period=period),
+        "own_warehouse": lambda: get_own_warehouse_stock(),
+    })
+    @app.get("/api/telegram-status")
+    def telegram_status():
+        """Что настроено у бота и жив ли он. Секреты не отдаёт."""
+        return telegram_bot.bot_status()
+
+    @app.get("/api/llm-models")
+    def llm_models(contains: str = ""):
+        """Какие модели доступны настроенному ключу — чтобы не гадать с точным id."""
+        return telegram_bot.list_models(contains)
+
+    @app.get("/api/llm-ping")
+    def llm_ping(q: str = "Ответь одним словом: работает"):
+        """Прогоняет ту же цепочку, что и бот, — чтобы проверять её без телеграма."""
+        started = time.time()
+        answer = telegram_bot.ask_llm(0, q)
+        return {
+            "question": q,
+            "answer": answer,
+            "provider": telegram_bot.bot_status().get("llm_provider"),
+            "model": telegram_bot.bot_status().get("model"),
+            "seconds": round(time.time() - started, 1),
+        }
+
+except Exception as e:
+    logger.warning(f"telegram bot не поднялся: {e}")
 
 
 if __name__ == "__main__":
