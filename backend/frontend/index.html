@@ -1906,7 +1906,6 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
     <div id="finCfoPanel" style="display:none">
       <div class="cfo-actions">
         <button class="action-btn primary" onclick="saveCfoSnapshot()">💾 Сохранить</button>
-        <button class="action-btn" onclick="addCfoLoan()">+ Кредит</button>
         <button class="action-btn" onclick="loadCfo(true)">↺ Сбросить к сохранённому</button>
         <span class="cfo-status" id="cfoStatus"></span>
       </div>
@@ -14205,7 +14204,6 @@ function cfoNum(v) {
 }
 function cfoInterest(loan) {
   if(loan.interest_only) return cfoNum(loan.payment);
-  if(loan.id === 'vtb_big') return 88000 + cfoNum(loan.fee_month);
   const rate = cfoNum(loan.rate), bal = cfoNum(loan.balance);
   const fee = cfoNum(loan.fee_month);
   const interest = (rate > 0 && bal > 0) ? bal * rate / 12 : 0;
@@ -14912,6 +14910,7 @@ function setCfoStatus(msg, ok) {
 }
 
 const CFO_PORTFOLIO = [
+  {name:'ВБ Банк 20 млн', body:20000000, pay:766728, day:'пн, еженедельно', rate:'22,92% (1,91%/мес)', close:'08.10.2029'},
   {name:'Кредитная линия 6 млн', body:5747830, pay:243600, day:'25-е', rate:'18,9% + 24 000 (~26,6%)', close:'~06.2029'},
   {name:'Альфа #1', body:767246, pay:64100, day:'2-е', rate:'22,99%', close:'~02.10.2027'},
   {name:'ВТБ #2', body:541658, pay:24000, day:'4-е', rate:'17,2%', close:'сен 2028'},
@@ -14938,12 +14937,12 @@ function drawCfoPortfolio() {
     <td>${l.close}</td>
   </tr>`).join('');
   el.innerHTML = `
-    <h3>Портфель кредитов · срез 24.09.2026</h3>
+    <h3>Портфель кредитов · срез 02.10.2026</h3>
     <div class="cfo-health">
       <div class="cfo-hcard"><div class="hl">Тело</div><div class="hv">${fmtMoney(body)}</div></div>
       <div class="cfo-hcard"><div class="hl">Платёж / мес</div><div class="hv">${fmtMoney(pay)}</div></div>
-      <div class="cfo-hcard"><div class="hl">Средняя ставка</div><div class="hv">24,6%</div><div class="hs">по телу, линия с комиссией</div></div>
-      <div class="cfo-hcard"><div class="hl">Проценты / мес</div><div class="hv">~420 тыс</div><div class="hs">плата за деньги, не тело</div></div>
+      <div class="cfo-hcard"><div class="hl">Средняя ставка</div><div class="hv">23,4%</div><div class="hs">по телу, линия с комиссией</div></div>
+      <div class="cfo-hcard"><div class="hl">Проценты / мес</div><div class="hv">~810 тыс</div><div class="hs">плата за деньги, не тело</div></div>
     </div>
     <div class="cfo-scroll">
       <table class="cfo-table" style="min-width:0">
@@ -14960,7 +14959,7 @@ function drawCfoPortfolio() {
         </tbody>
       </table>
     </div>
-    <div class="cfo-hint">Сбер бизнес #1 закрыт. Займы 2 и 5 млн — только проценты, тело не уменьшается. Тело ВТБ #2 и Альфы #2 оценочное.</div>`;
+    <div class="cfo-hint">ВБ Банк: 176 937,29 ₽/нед (155 платежей), выдан 02.10.2026, разово 200 тыс. за выдачу. Сбер бизнес #1 закрыт. Займы 2 и 5 млн — только проценты, тело не уменьшается. Тело ВТБ #2 и Альфы #2 оценочное.</div>`;
 }
 
 function drawCfo() {
@@ -14993,20 +14992,6 @@ function drawCfo() {
     ].map(([l,v,s]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s||''}">${v}</div></div>`).join('');
   }
   if(!root) return;
-  const loanRows = (d.loans || []).map((l, i) => `
-    <tr data-i="${i}">
-      <td><input class="cfo-inp" data-f="name" value="${escapeHtml(l.name || '')}" oninput="onCfoLoanEdit(${i},'name',this.value)"></td>
-      <td><input class="cfo-inp cfo-num" data-f="balance" type="number" step="1" value="${cfoNum(l.balance)}" oninput="onCfoLoanEdit(${i},'balance',this.value)"></td>
-      <td><input class="cfo-inp cfo-rate" data-f="rate" type="number" step="0.001" value="${cfoNum(l.rate)}" oninput="onCfoLoanEdit(${i},'rate',this.value)" title="доля, напр. 0.189 = 18.9%"></td>
-      <td><input class="cfo-inp cfo-num" data-f="payment" type="number" step="1" value="${cfoNum(l.payment)}" oninput="onCfoLoanEdit(${i},'payment',this.value)"></td>
-      <td><input class="cfo-inp cfo-num" data-f="fee_month" type="number" step="1" value="${cfoNum(l.fee_month)}" oninput="onCfoLoanEdit(${i},'fee_month',this.value)" title="Фикс. комиссия / мес (0.4% лимита и т.п.)"></td>
-      <td style="text-align:right;font-variant-numeric:tabular-nums">${fmtMoney(l.interest_month)}</td>
-      <td><input class="cfo-inp" style="width:90px" data-f="close" value="${escapeHtml(l.close || '')}" oninput="onCfoLoanEdit(${i},'close',this.value)"></td>
-      <td><label class="cfo-check"><input type="checkbox" ${l.interest_only ? 'checked' : ''} onchange="onCfoLoanEdit(${i},'interest_only',this.checked)"> только %</label></td>
-      <td><input class="cfo-inp" data-f="notes" value="${escapeHtml(l.notes || '')}" oninput="onCfoLoanEdit(${i},'notes',this.value)"></td>
-      <td><button class="cfo-del" onclick="removeCfoLoan(${i})" title="Удалить">✕</button></td>
-    </tr>`).join('');
-  const h = t.health || {};
 
   root.innerHTML = `
     ${cfoSuppliersHtml()}
@@ -15021,18 +15006,6 @@ function drawCfo() {
         <div class="cfo-recv-list" id="cfoOzRecv">${cfoRecvHtml('ozon', d.ozon_receivables || [])}</div>
         <div class="cfo-hint">Сумма: <b>${fmtMoney(t.ozon_receivable)}</b></div>
       </div>
-    </div>
-    <div class="cfo-box">
-      <h3>Кредиты</h3>
-      <div class="cfo-scroll">
-        <table class="cfo-table">
-          <thead><tr>
-            <th>Название</th><th>Тело</th><th>Ставка</th><th>Платёж</th><th>Комиссия/мес</th><th>≈ %/мес</th><th>Закрытие</th><th></th><th>Заметка</th><th></th>
-          </tr></thead>
-          <tbody>${loanRows || '<tr><td colspan="10" class="empty">Нет кредитов</td></tr>'}</tbody>
-        </table>
-      </div>
-      <div class="cfo-hint">Ставка как доля: 0.189 = 18.9%. «Комиссия/мес» — фикс (напр. 0.4% лимита). ≈%/мес = тело×ставка/12 + комиссия. Средневзвешенная: <b>${h.avg_rate_pct != null ? h.avg_rate_pct + '%' : '—'}</b> · % в месяц суммарно: <b>${fmtMoney(t.bank_interest)}</b></div>
     </div>`;
 }
 
@@ -15399,31 +15372,6 @@ function removeCfoRecv(kind, i) {
   if(!CFO_DATA) return;
   const key = kind === 'ozon' ? 'ozon_receivables' : 'wb_receivables';
   CFO_DATA[key].splice(i, 1);
-  drawCfo();
-}
-function onCfoLoanEdit(i, field, val) {
-  if(!CFO_DATA || !CFO_DATA.loans[i]) return;
-  if(field === 'interest_only') CFO_DATA.loans[i].interest_only = !!val;
-  else if(field === 'name' || field === 'close' || field === 'notes') CFO_DATA.loans[i][field] = val;
-  else CFO_DATA.loans[i][field] = cfoNum(val);
-  recomputeCfoLocal();
-  // обновить % в строке без полной перерисовки фокуса
-  const tr = document.querySelector(`#cfoRoot tr[data-i="${i}"]`);
-  if(tr && tr.children[5]) tr.children[5].textContent = fmtMoney(CFO_DATA.loans[i].interest_month);
-  drawCfoCardsOnly();
-}
-function addCfoLoan() {
-  if(!CFO_DATA) return;
-  if(!Array.isArray(CFO_DATA.loans)) CFO_DATA.loans = [];
-  CFO_DATA.loans.push({
-    id: 'loan_' + Date.now(), name: 'Новый кредит', contract: '', balance: 0, rate: 0.2,
-    payment: 0, fee_month: 0, close: '', early_repay: '', interest_only: false, notes: ''
-  });
-  drawCfo();
-}
-function removeCfoLoan(i) {
-  if(!CFO_DATA) return;
-  CFO_DATA.loans.splice(i, 1);
   drawCfo();
 }
 function drawCfoCardsOnly() {

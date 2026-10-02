@@ -11582,9 +11582,6 @@ def _cfo_num(v, default=0.0):
 def _cfo_interest_month(loan: dict) -> float:
     if loan.get("interest_only"):
         return _cfo_num(loan.get("payment"))
-    # факт по ВТБ крупному из июня
-    if loan.get("id") == "vtb_big":
-        return 88000.0 + _cfo_num(loan.get("fee_month"))
     rate = _cfo_num(loan.get("rate"))
     bal = _cfo_num(loan.get("balance"))
     fee = _cfo_num(loan.get("fee_month"))
