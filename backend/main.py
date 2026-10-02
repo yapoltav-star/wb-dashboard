@@ -7434,6 +7434,46 @@ def _sales_pace_hidden() -> list:
     raw = get_setting_json(SALES_PACE_HIDDEN_KEY, [])
     return _uniq_str_list(raw if isinstance(raw, list) else [])
 
+
+def _ads_views_total(ads: dict) -> int:
+    if not isinstance(ads, dict):
+        return 0
+    return sum(int((v or {}).get("views") or 0) for v in ads.values())
+
+
+def _ads_from_snaps_for_day(day: str) -> tuple:
+    """Показы/расход за календарный день из последнего часового снимка.
+    WB fullstats несколько часов не отдаёт только что закрытые сутки —
+    тогда берём свой снимок. → (by_nm, as_of)."""
+    snaps = get_setting_json(SALES_PACE_SNAPS_KEY, []) or []
+    if not isinstance(snaps, list):
+        return {}, None
+    day_snaps = [s for s in snaps if (s.get("day") or "") == str(day)[:10] and s.get("hour_key")]
+    if not day_snaps:
+        return {}, None
+    last = max(day_snaps, key=lambda s: s["hour_key"])
+    out = {}
+    for key, v in (last.get("products") or {}).items():
+        if not isinstance(v, dict):
+            continue
+        views = int(v.get("views") or 0)
+        spend = float(v.get("spend") or 0)
+        if views <= 0 and spend <= 0:
+            continue
+        try:
+            nm_i = int(key)
+        except (TypeError, ValueError):
+            continue
+        out[nm_i] = {
+            "views": views,
+            "spend": spend,
+            "clicks": int(v.get("clicks") or 0),
+            "orders": int(v.get("orders") or 0),
+        }
+    if not out:
+        return {}, None
+    return out, last.get("as_of")
+
 def _msk_now():
     try:
         from zoneinfo import ZoneInfo
@@ -7715,6 +7755,7 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
         funnel_ready = True
         ads_ready = True
         ads_cur, ads_prev = {}, {}
+        ads_cur_snap_at = ads_prev_snap_at = None
 
         # Реклама: fullstats только по дням — для «день» кладём показы в почасовые снимки
         try:
@@ -7728,6 +7769,11 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             # день: снимок воронки + показов (сегодня накопленно; вчера — из снимка на тот же час)
             funnel_cur = _funnel_products_day(cur_s)
             ads_cur = ads_cur_api or {}
+            # «Вчера 0–24ч» берём из API, но ночью он ещё пуст — тогда из снимка
+            if not _ads_views_total(ads_prev_api):
+                snap_full, ads_prev_snap_at = _ads_from_snaps_for_day(prev_s)
+                if snap_full:
+                    ads_prev_api = snap_full
             hour_key = now.strftime("%Y-%m-%dT%H")
             snaps = get_setting_json(SALES_PACE_SNAPS_KEY, []) or []
             if not isinstance(snaps, list):
@@ -7809,6 +7855,15 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             ads_cur = ads_cur_api or {}
             ads_prev = ads_prev_api or {}
             ads_ready = True
+            if win.get("custom_dates"):
+                if not _ads_views_total(ads_cur):
+                    ads_cur, ads_cur_snap_at = _ads_from_snaps_for_day(cur_s)
+                if not _ads_views_total(ads_prev):
+                    ads_prev, ads_prev_snap_at = _ads_from_snaps_for_day(prev_s)
+                # нечего показать за выбранный день — лучше «—», чем Δ против нуля
+                if not _ads_views_total(ads_cur):
+                    ads_ready = False
+                    ads_prev = {}
 
         try:
             st = httpx.get(
@@ -7984,6 +8039,8 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             "updated_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
             "funnel_ready": funnel_ready,
             "ads_ready": ads_ready,
+            "ads_cur_snap_at": ads_cur_snap_at,
+            "ads_prev_snap_at": ads_prev_snap_at,
             "disabled_warehouses": sorted(disabled_wh),
             "error": None,
         }

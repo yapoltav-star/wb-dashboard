@@ -1070,6 +1070,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
     <button class="filter-btn" id="paceFltUp" onclick="setPaceFilter('up')">Растут</button>
     <button class="filter-btn" id="paceFltFlat" onclick="setPaceFilter('flat')">Без изменений</button>
     <button class="filter-btn" id="paceFltHidden" onclick="togglePaceHiddenList()" title="Показать скрытые артикулы">Скрытые</button>
+    <button class="filter-btn on" id="paceFltInsights" onclick="togglePaceInsights()" title="Скрыть / показать блок «Выводы по темпу»">Выводы</button>
     <span id="paceInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
     <div class="ml-auto">
       <button class="action-btn" id="paceSyncBtn" onclick="triggerSalesPaceSync()">↻ Обновить</button>
@@ -7261,7 +7262,14 @@ let PACE_SORT = {key: 'orders_delta', dir: 1};
 let PACE_PINNED = JSON.parse(localStorage.getItem('wb_pace_pinned') || '[]');
 let PACE_HIDDEN = [];
 let PACE_SHOW_HIDDEN = false;
+let PACE_INSIGHTS_ON = localStorage.getItem('wb_pace_insights_off') !== '1';
 let paceHidSaveT = null;
+
+function togglePaceInsights() {
+  PACE_INSIGHTS_ON = !PACE_INSIGHTS_ON;
+  try { localStorage.setItem('wb_pace_insights_off', PACE_INSIGHTS_ON ? '0' : '1'); } catch(e) {}
+  drawSalesPace();
+}
 
 function paceEyeOffSvg() {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -7484,6 +7492,16 @@ function paceDeltaHtml(d, unit) {
 function paceCpmFmt(v) {
   if(v == null || !isFinite(Number(v))) return '—';
   return Number(v).toLocaleString('ru-RU', {maximumFractionDigits: 1});
+}
+
+// WB не отдаёт рекламу за только что закрытые сутки — показываем, что взяли свой снимок
+function paceAdsSnapNote() {
+  const d = PACE_DATA || {};
+  const parts = [];
+  if(d.ads_cur_snap_at) parts.push(`${d.col_cur || 'текущий день'} — снимок ${d.ads_cur_snap_at}`);
+  if(d.ads_prev_snap_at) parts.push(`${d.col_prev || 'база'} — снимок ${d.ads_prev_snap_at}`);
+  if(!parts.length) return '';
+  return ` <span style="color:var(--amber)">WB ещё не закрыл сутки в рекламном API, показы из нашего часового снимка: ${escapeHtml(parts.join('; '))}.</span>`;
 }
 
 function paceCpmDeltaHtml(d) {
@@ -7838,6 +7856,11 @@ function buildPaceInsights(all) {
 function renderPaceInsights(all) {
   const box = document.getElementById('paceInsights');
   if(!box) return;
+  if(!PACE_INSIGHTS_ON) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
   if(PACE_DATA.syncing && !(all || []).length) {
     box.style.display = 'none';
     box.innerHTML = '';
@@ -7944,6 +7967,7 @@ function renderPaceInsights(all) {
     <div class="pace-insights-h">
       <h3>Выводы по темпу</h3>
       <span class="pi-sub">Лидеры падения · гипотеза: сток → ★1–2 → показы → клик → корзина · топ ${items.length} из ${totalDrops}</span>
+      <button class="filter-btn" onclick="togglePaceInsights()" title="Скрыть выводы — вернуть кнопкой «Выводы» в фильтрах">Скрыть</button>
     </div>
     ${chips ? `<div class="pace-insights-sum">${chips}</div>` : ''}
     ${body}
@@ -7983,6 +8007,8 @@ function drawSalesPace() {
     hidBtn.classList.toggle('on', PACE_SHOW_HIDDEN);
     hidBtn.innerHTML = (hiddenSet.size ? ('Скрытые (' + hiddenSet.size + ')') : 'Скрытые');
   }
+  const insBtn = document.getElementById('paceFltInsights');
+  if(insBtn) insBtn.classList.toggle('on', PACE_INSIGHTS_ON);
 
   let arts = [...(PACE_DATA.articles || [])].filter(a => (a.orders_today||0) > 0 || (a.orders_yesterday||0) > 0);
   const q = ((document.getElementById('paceSearch') || {}).value || '').toLowerCase().trim();
@@ -8098,7 +8124,8 @@ function drawSalesPace() {
   tot.opens_delta = funnelOk ? tot.opens_today - tot.opens_yesterday : null;
   tot.cart_delta = funnelOk ? tot.cart_today - tot.cart_yesterday : null;
   const adsOk = PACE_PERIOD !== 'day' || PACE_DATA.ads_ready !== false;
-  const showViewsFull = PACE_PERIOD === 'day';
+  // «срез до часа» есть только у сегодняшнего дня; выбранные даты — полные сутки
+  const showViewsFull = PACE_PERIOD === 'day' && !PACE_DATA.custom_dates;
   tot.views_delta = adsOk ? tot.views_today - tot.views_yesterday : null;
   tot.cpm_today = tot.views_today > 0 ? Math.round(tot.spend_today / tot.views_today * 1000 * 10) / 10 : null;
   tot.cpm_yesterday = adsOk && tot.views_yesterday > 0 ? Math.round(tot.spend_yesterday / tot.views_yesterday * 1000 * 10) / 10 : null;
@@ -8177,7 +8204,7 @@ function drawSalesPace() {
     <b>Остаток</b> — шт. на «Склад WB РФ» и на сколько дней хватит.
     <b>Показы / CPM</b>${showViewsFull
       ? ': срез «до часа» vs вчера до того же часа; колонка «Вчера 0–24ч» — полный день (API).'
-      : ': текущее окно vs прошлое.'}
+      : ': текущее окно vs прошлое.'}${paceAdsSnapNote()}
     CR = корзина ÷ переходы. 📌 — закрепить. Зачёркнутый глаз — скрыть у всех.
   </div>
     <div class="matrix-wrap"><table class="matrix promo-xls pace-tbl">
