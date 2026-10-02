@@ -11583,6 +11583,7 @@ var SHELF_SENT_LOADED = false;
 var SHELF_SHARE_WOW = null;
 var SHELF_SHARE_SCAN = {running: false, done: 0, total: 0, error: ''};
 var SHELF_SHARE_LIVE = {data: null, shares: null};
+var SHELF_SHARE_SORT = localStorage.getItem('shelf_share_sort') || 'views'; // views | share
 let SHELF_CACHE = {}; // nm_id -> {items, competitor, loaded_at, error}
 let SHELF_LOADING = false;
 let SHELF_SUGGEST_ADDED = JSON.parse(localStorage.getItem('shelf_suggest_added') || '{}'); // comp_nm -> [{nm_id, vendor_code, thumb?}]
@@ -12305,12 +12306,38 @@ async function startShelfShareScan() {
   renderShelfShareWow(SHELF_SHARE_LIVE.data, SHELF_SHARE_LIVE.shares);
 }
 
+function shelfShareCompetitorViews(row) {
+  if(row && row.views != null && row.views !== '') {
+    const n = Number(row.views);
+    if(!Number.isNaN(n)) return n;
+  }
+  const nm = Number(row && row.nm_id);
+  if(!nm) return null;
+  const fromComp = (typeof COMP_ALL_METRICS !== 'undefined' ? COMP_ALL_METRICS : []).find(m => Number(m.nm_id) === nm);
+  if(fromComp && fromComp.views != null && fromComp.views !== '') {
+    const n = Number(fromComp.views);
+    if(!Number.isNaN(n)) return n;
+  }
+  const fromWho = (typeof WHO_SHELF_COMPS !== 'undefined' ? WHO_SHELF_COMPS : []).find(m => Number(m.nm_id) === nm);
+  if(fromWho && fromWho.views != null && fromWho.views !== '') {
+    const n = Number(fromWho.views);
+    if(!Number.isNaN(n)) return n;
+  }
+  return null;
+}
+
+function setShelfShareSort(mode) {
+  SHELF_SHARE_SORT = (mode === 'share') ? 'share' : 'views';
+  try { localStorage.setItem('shelf_share_sort', SHELF_SHARE_SORT); } catch(e) {}
+  renderShelfShareWow(SHELF_SHARE_LIVE.data, SHELF_SHARE_LIVE.shares);
+}
+
 function renderShelfShareWow(liveData, liveShares) {
   const el = document.getElementById('shelfShareWow');
   if(!el) return;
   const hist = SHELF_SHARE_WOW || {};
   const byNm = {};
-  (hist.items || []).forEach(it => { if(it && it.nm_id) byNm[Number(it.nm_id)] = it; });
+  (hist.items || []).forEach(it => { if(it && it.nm_id) byNm[Number(it.nm_id)] = {...it}; });
 
   const liveNm = Number((liveData && (liveData.nm_id || (liveData.competitor || {}).nm_id)) || SHELF_ACTIVE || 0);
   if(liveNm && liveShares) {
@@ -12321,6 +12348,7 @@ function renderShelfShareWow(liveData, liveShares) {
       prev_week: null,
       delta_pp: null,
       delta_pct: null,
+      views: null,
     };
     cur.this_week = shelfShareLiveSnap(liveShares);
     const prev = cur.prev_week;
@@ -12336,7 +12364,7 @@ function renderShelfShareWow(liveData, liveShares) {
     const nid = Number(c.nm_id);
     if(!nid) return;
     if(!byNm[nid]) {
-      byNm[nid] = {nm_id: nid, brand: c.brand || '', name: c.name || '', thumb: c.thumb || '', this_week: null, prev_week: null, delta_pp: null, delta_pct: null};
+      byNm[nid] = {nm_id: nid, brand: c.brand || '', name: c.name || '', thumb: c.thumb || '', this_week: null, prev_week: null, delta_pp: null, delta_pct: null, views: null};
       return;
     }
     if(!byNm[nid].brand && c.brand) byNm[nid].brand = c.brand;
@@ -12344,10 +12372,29 @@ function renderShelfShareWow(liveData, liveShares) {
     if(!byNm[nid].thumb && c.thumb) byNm[nid].thumb = c.thumb;
   });
 
+  Object.values(byNm).forEach(r => {
+    const v = shelfShareCompetitorViews(r);
+    r._views = v;
+    if(v != null) r.views = v;
+  });
+
+  const sortMode = SHELF_SHARE_SORT === 'share' ? 'share' : 'views';
   const rows = Object.values(byNm).sort((a, b) => {
-    const ta = (a.this_week && a.this_week.mine_pct != null) ? a.this_week.mine_pct : -1;
-    const tb = (b.this_week && b.this_week.mine_pct != null) ? b.this_week.mine_pct : -1;
-    if(tb !== ta) return tb - ta;
+    if(sortMode === 'views') {
+      const va = a._views != null ? a._views : -1;
+      const vb = b._views != null ? b._views : -1;
+      if(vb !== va) return vb - va;
+      const ta = (a.this_week && a.this_week.mine_pct != null) ? a.this_week.mine_pct : -1;
+      const tb = (b.this_week && b.this_week.mine_pct != null) ? b.this_week.mine_pct : -1;
+      if(tb !== ta) return tb - ta;
+    } else {
+      const ta = (a.this_week && a.this_week.mine_pct != null) ? a.this_week.mine_pct : -1;
+      const tb = (b.this_week && b.this_week.mine_pct != null) ? b.this_week.mine_pct : -1;
+      if(tb !== ta) return tb - ta;
+      const va = a._views != null ? a._views : -1;
+      const vb = b._views != null ? b._views : -1;
+      if(vb !== va) return vb - va;
+    }
     return String(a.brand || '').localeCompare(String(b.brand || ''), 'ru');
   });
 
@@ -12383,6 +12430,13 @@ function renderShelfShareWow(liveData, liveShares) {
     return;
   }
 
+  const sortTh = (mode, label, width) => {
+    const on = sortMode === mode;
+    const arrow = on ? ' ↓' : '';
+    return `<th style="width:${width};cursor:pointer;user-select:none;${on?'color:var(--wb-purple)':''}"
+      onclick="setShelfShareSort('${mode}')" title="Сортировать по ${label.toLowerCase()}">${label}${arrow}</th>`;
+  };
+
   el.innerHTML = `<div style="padding:16px 20px 24px;border-top:1px solid var(--wb-border)">
     <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
       <div>
@@ -12390,6 +12444,7 @@ function renderShelfShareWow(liveData, liveShares) {
         <div style="font-size:12px;color:var(--wb-muted);margin-top:2px">
           ${escapeHtml(weekLabel)} vs ${escapeHtml(prevLabel)}${cityName ? ' · ' + escapeHtml(cityName) : ''}
           · ${escapeHtml(scanTxt)}
+          · сортировка: ${sortMode === 'views' ? 'показы' : 'доля'}
         </div>
       </div>
       <div style="font-size:12px;color:var(--wb-muted);text-align:right">
@@ -12403,7 +12458,8 @@ function renderShelfShareWow(liveData, liveShares) {
         <thead><tr>
           <th style="width:56px">Фото</th>
           <th>Конкурент</th>
-          <th style="width:160px">Эта неделя</th>
+          ${sortTh('views', 'Показы', '110px')}
+          ${sortTh('share', 'Эта неделя', '160px')}
           <th style="width:160px">Прошлая неделя</th>
           <th style="width:120px">Динамика</th>
         </tr></thead>
@@ -12411,6 +12467,9 @@ function renderShelfShareWow(liveData, liveShares) {
           ${rows.map(r => {
             const on = Number(r.nm_id) === liveNm;
             const pending = scan.running && !(r.this_week && r.this_week.mine_pct != null);
+            const viewsHtml = r._views != null
+              ? `<b style="font-variant-numeric:tabular-nums">${fmt(r._views)}</b>`
+              : '<span style="color:var(--wb-faint)">—</span>';
             return `<tr style="${on?'background:rgba(155,81,224,.07)':''}">
               <td><a href="${wbCatalogUrl(r.nm_id)}" target="_blank" rel="noopener" title="Открыть на WB">
                 <img src="${wbThumbUrl(r.nm_id)}" alt="" width="40" height="40" loading="lazy"
@@ -12421,6 +12480,7 @@ function renderShelfShareWow(liveData, liveShares) {
                 <div style="font-weight:600">${escapeHtml(r.brand || 'Конкурент')}</div>
                 <div style="font-size:11px;color:var(--wb-muted)">${r.nm_id}${r.name ? ' · ' + escapeHtml(r.name) : ''}</div>
               </td>
+              <td style="font-variant-numeric:tabular-nums">${viewsHtml}</td>
               <td>${pending ? '<span style="color:var(--wb-faint)">замеряю…</span>' : shelfShareSnapHtml(r.this_week)}</td>
               <td>${shelfShareSnapHtml(r.prev_week)}</td>
               <td>${shelfShareDeltaHtml(r)}</td>
@@ -13499,7 +13559,7 @@ function drawPnl() {
       <button class="filter-btn ${PNL_RANGE==='month'?'on':''}" onclick="setPnlRange('month')">Недели месяца</button>
       ${PNL_RANGE === 'month' ? `<label style="font-size:13px">Месяц <select class="cfo-inp" onchange="setPnlMonth(this.value)">${monthOpts}</select></label>` : ''}
     </div>`;
-  const hint = `<div class="cfo-hint">Продажи, прямые расходы и налог — из файла. Строки в рамке — операционные расходы. Налог как в файле. Маржинальность — чистая прибыль ÷ реализация. В «Все месяцы» колонка «Итого» — сумма года.</div>`;
+    const hint = `<div class="cfo-hint">Продажи, прямые расходы и налог — из файла. Строки в рамке — операционные расходы. Налог как в файле. Маржинальность — чистая прибыль ÷ реализация. В «Все месяцы» колонка «Итого» — сумма года.</div>`;
 
   if(PNL_RANGE === 'year') {
     const months = pnlMonthsChrono();
