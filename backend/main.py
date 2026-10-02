@@ -8386,6 +8386,8 @@ def get_sales_pace(period: str = "day", refresh: bool = False, date_cur: str = N
         "updated_at": cached.get("updated_at"),
         "funnel_ready": cached.get("funnel_ready"),
         "ads_ready": cached.get("ads_ready"),
+        "ads_cur_snap_at": cached.get("ads_cur_snap_at"),
+        "ads_prev_snap_at": cached.get("ads_prev_snap_at"),
         "syncing": SALES_PACE_CACHE.get("syncing", False) and SALES_PACE_CACHE.get("syncing_period") == cache_key,
         "error": SALES_PACE_CACHE.get("error") or cached.get("error"),
         "hidden": _sales_pace_hidden(),
