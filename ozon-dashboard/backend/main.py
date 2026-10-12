@@ -1916,6 +1916,28 @@ def article_reviews(article: str, days: int = 5, stars: str = "1,2,3", limit: in
     return {"article": article, "days": days, "stars": star_list, "feedbacks": feedbacks}
 
 
+@app.get("/api/ratings/export-xlsx")
+def export_ratings_xlsx():
+    """Выгрузка рейтинга каждой карточки (без склейки)."""
+    rows = revs.REVIEWS_CACHE.get("ratings") or []
+    if not rows:
+        raise HTTPException(status_code=409, detail="Нет данных: сначала нажми «Обновить»")
+    try:
+        content = revs.build_xlsx_bytes(rows)
+    except Exception as e:
+        logger.exception("ratings export")
+        raise HTTPException(status_code=502, detail=f"Не удалось собрать Excel: {e}") from e
+    fname = f"ozon_ratings_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "X-Ratings-Rows": str(len(rows)),
+        },
+    )
+
+
 @app.get("/api/review-groups")
 def get_review_groups():
     groups = revs.load_groups(get_setting)

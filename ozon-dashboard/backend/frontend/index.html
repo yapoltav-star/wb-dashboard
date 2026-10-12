@@ -714,26 +714,30 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
   <div id="revRoot"><div class="empty"><b>Последние отзывы</b>Нажми «Обновить» — подтянем ReviewAPI v2 и посчитаем негатив по товарам.</div></div>
 </div>
 
-<!-- REVIEWS: оценки по каждому товару -->
+<!-- REVIEWS: оценки по каждой карточке -->
 <div class="page" id="page-ratings">
   <div class="banner" id="ratBanner" style="display:none"></div>
   <div class="cards" id="ratCards"></div>
   <div class="toolbar">
     <div class="search">
-      <input id="ratSearch" placeholder="Артикул продавца…" oninput="drawRatings()">
+      <input id="ratSearch" placeholder="Артикул, название, SKU…" oninput="drawRatings()">
     </div>
-    <span style="font-size:12px;color:var(--oz-muted)">Сортировка:</span>
+    <button class="filter-btn on" id="ratFltAll" onclick="setRatFilter('all')">Все карточки</button>
+    <button class="filter-btn" id="ratFltRated" onclick="setRatFilter('rated')">С рейтингом</button>
+    <button class="filter-btn" id="ratFltLow" onclick="setRatFilter('low')" title="Ниже 4.5">Ниже 4.5</button>
+    <button class="filter-btn" id="ratFltR1" onclick="setRatFilter('r1')">Есть ★1</button>
+    <span style="font-size:12px;color:var(--oz-muted);margin-left:8px">Сортировка:</span>
     <button class="filter-btn on" id="s_avg_rating" onclick="SS('avg_rating')">★ Рейтинг</button>
     <button class="filter-btn" id="s_r1" onclick="SS('r1')">★1</button>
     <button class="filter-btn" id="s_total" onclick="SS('total')">Отзывов</button>
     <button class="filter-btn" id="s_article" onclick="SS('article')">А–Я</button>
+    <span id="ratInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
     <div class="ml-auto" style="display:flex;gap:8px">
-      <button class="action-btn" onclick="EA(1)">▾ Раскрыть</button>
-      <button class="action-btn" onclick="EA(0)">▸ Свернуть</button>
+      <button class="action-btn" id="ratExportBtn" onclick="exportRatingsXlsx()">↓ Excel</button>
       <button class="action-btn primary" id="ratSyncBtn" onclick="triggerReviewsSync()">↻ Обновить</button>
     </div>
   </div>
-  <div id="ratRoot"><div class="empty"><b>Оценки</b>Рейтинг каждого товара отдельно. Склейки — только группировка, без общей оценки карточки.</div></div>
+  <div id="ratRoot"><div class="empty"><b>Оценки</b>Рейтинг каждой карточки отдельно: подтянем отзывы ReviewAPI v2 и посчитаем ★ по SKU этой карточки, без склейки.</div></div>
 </div>
 
 <!-- REVIEWS: склейки -->
@@ -742,7 +746,7 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
     <div style="display:flex;align-items:center;margin-bottom:4px">
       <div>
         <div class="section-title">Управление склейками</div>
-        <div class="section-sub">Перетаскивай артикулы между группами. Нажми «Сохранить» — применится во вкладке «Оценки».</div>
+        <div class="section-sub">Группы артикулов для себя. На вкладке «Оценки» рейтинг каждой карточки всё равно считается отдельно — склейка его не суммирует.</div>
       </div>
       <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
         <span class="saved-note" id="savedNote">✓ Сохранено</span>
@@ -1073,7 +1077,7 @@ function showRevPage(id, el) {
   const page = document.getElementById('page-' + REV_PAGE);
   if (page) page.classList.add('on');
   if (REV_PAGE === 'reviews') renderReviews(true);
-  else if (REV_PAGE === 'ratings') drawRatings();
+  else if (REV_PAGE === 'ratings') renderReviews(true);
   else if (REV_PAGE === 'groups') renderGroupManager();
 }
 
@@ -3674,6 +3678,7 @@ let GROUPS = {};
 let EXP = {};
 let SK = 'avg_rating';
 let SD = -1;
+let RAT_FLT = 'all';
 let dragArt = null, dragFrom = null;
 let revPoll = null;
 const GROUP_COLORS = ['#005BFF','#12B76A','#F79009','#7C3AED','#F04438','#0EA5E9','#EC4899','#65A30D'];
@@ -3763,7 +3768,7 @@ async function loadReviews() {
   if (REV_DATA.syncing) revPoll = setTimeout(loadReviews, 3000);
 }
 async function triggerReviewsSync() {
-  ['revSyncBtn', 'ratSyncBtn'].forEach(id => {
+  ['revSyncBtn', 'ratSyncBtn', 'ratExportBtn'].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.disabled = true;
   });
@@ -3911,7 +3916,14 @@ function drawNegReviews() {
   });
 }
 
-/* ── Оценки ── */
+/* ── Оценки: одна строка = одна карточка, без склейки ── */
+function glueNameOf(article) {
+  GROUPS = REV_DATA.groups || GROUPS || {};
+  for (const [g, list] of Object.entries(GROUPS)) {
+    if ((list || []).includes(article)) return g;
+  }
+  return '';
+}
 function starBars(a) {
   if (!a.total) return '<span style="color:var(--oz-faint);font-size:11px">—</span>';
   return '<div class="sbar">' + [[5,'#12B76A'],[4,'#65A30D'],[3,'#F79009'],[2,'#EA580C'],[1,'#F04438']].map(([s,c]) => {
@@ -3924,6 +3936,11 @@ function artRow(a) {
   const ratingCell = rat != null
     ? `<span class="rnum" style="color:${rc(rat)}">${Number(rat).toFixed(2)}</span>`
     : '<span style="color:var(--oz-faint)">—</span>';
+  const glue = glueNameOf(a.article);
+  const glueCell = glue
+    ? `<span class="gh-badge" style="background:${gc(glue)}22;color:${gc(glue)}" title="группа, рейтинг карточки свой">${esc(glue)}</span>`
+    : '<span style="color:var(--oz-faint)">—</span>';
+  const excl = a.excluded || 0;
   return `<tr>
     <td>${revProdCell(a, a.article)}</td>
     <td class="tc">${ratingCell}</td>
@@ -3933,84 +3950,38 @@ function artRow(a) {
     <td class="tr2">${a.r2 || '—'}</td>
     <td class="tr2" style="color:${(a.r1||0)>0?'var(--red)':'inherit'};font-weight:${(a.r1||0)>0?600:400}">${a.r1 || '—'}</td>
     <td class="tr2" style="color:var(--oz-muted)">${a.total || '—'}</td>
+    <td class="tc">${excl ? `<span class="gh-badge" style="background:#FEF3C7;color:#B45309" title="не участвуют в рейтинге карточки">↩ ${fmt(excl)}</span>` : '<span style="color:var(--oz-faint);font-size:11px">—</span>'}</td>
+    <td>${glueCell}</td>
     <td>${starBars(a)}</td>
   </tr>`;
 }
 function thead() {
   const a = k => SK === k ? (SD === -1 ? ' ↓' : ' ↑') : '';
   return `<thead><tr>
-    <th onclick="SS('article')" style="cursor:pointer">Артикул${a('article')}</th>
+    <th onclick="SS('article')" style="cursor:pointer">Карточка${a('article')}</th>
     <th class="tc" onclick="SS('avg_rating')" style="cursor:pointer">Рейтинг${a('avg_rating')}</th>
     <th class="tr2" style="color:#12B76A">★5</th>
     <th class="tr2">★4</th>
     <th class="tr2">★3</th>
     <th class="tr2">★2</th>
     <th class="tr2" onclick="SS('r1')" style="color:var(--red);cursor:pointer">★1${a('r1')}</th>
-    <th class="tr2" onclick="SS('total')" style="cursor:pointer">Всего${a('total')}</th>
+    <th class="tr2" onclick="SS('total')" style="cursor:pointer">В рейтинге${a('total')}</th>
+    <th class="tc" onclick="SS('excluded')" style="cursor:pointer">Исключено${a('excluded')}</th>
+    <th>Группа</th>
     <th>Распределение</th>
   </tr></thead>`;
 }
-function gblock(grp, arts) {
-  const color = gc(grp);
-  const wD = arts.filter(a => a.total > 0).length;
-  const tot = { r5:0,r4:0,r3:0,r2:0,r1:0,total:0 };
-  arts.forEach(a => ['r5','r4','r3','r2','r1','total'].forEach(k => tot[k] += (a[k] || 0)));
-  // справочная сумма по склейке (не подменяет рейтинг товара)
-  let weightedSum = 0, weightedTotal = 0;
-  arts.forEach(a => {
-    const starSum = (a.r5||0)+(a.r4||0)+(a.r3||0)+(a.r2||0)+(a.r1||0);
-    if (starSum > 0) {
-      weightedSum += (a.r5||0)*5+(a.r4||0)*4+(a.r3||0)*3+(a.r2||0)*2+(a.r1||0);
-      weightedTotal += starSum;
-    }
+function setRatFilter(id) {
+  RAT_FLT = id || 'all';
+  ['all','rated','low','r1'].forEach(x => {
+    const el = document.getElementById('ratFlt' + (x === 'all' ? 'All' : x === 'rated' ? 'Rated' : x === 'low' ? 'Low' : 'R1'));
+    if (el) el.classList.toggle('on', x === RAT_FLT);
   });
-  const avg = weightedTotal ? Math.round(weightedSum / weightedTotal * 100) / 100 : null;
-  const gi = Object.keys(GROUPS).concat(['Без склейки']).indexOf(grp);
-  const isOpen = EXP[grp] === true;
-  const sorted = [...arts].sort((a, b) => {
-    if (SK === 'article') return SD * String(a.article).localeCompare(String(b.article), 'ru');
-    return SD * ((+(a[SK] || 0)) - (+(b[SK] || 0)));
-  });
-  const totRow = `<tr class="total-row">
-    <td><span class="total-label">∑ Справка по склейке</span><div class="total-sub">оценка каждого товара — в своей строке</div></td>
-    <td class="tc">${avg != null ? `<span class="rnum" style="color:${rc(avg)}">${avg.toFixed(2)}</span>` : '—'}</td>
-    <td class="tr2" style="font-weight:600;color:#12B76A">${fmt(tot.r5)}</td>
-    <td class="tr2" style="font-weight:600">${fmt(tot.r4)}</td>
-    <td class="tr2" style="font-weight:600">${fmt(tot.r3)}</td>
-    <td class="tr2" style="font-weight:600">${fmt(tot.r2)}</td>
-    <td class="tr2" style="font-weight:600;color:${tot.r1>0?'var(--red)':'inherit'}">${fmt(tot.r1)}</td>
-    <td class="tr2" style="font-weight:600;color:var(--oz-muted)">${fmt(tot.total)}</td>
-    <td></td>
-  </tr>`;
-  const badges = tot.r1 > 0 ? `<span class="gh-badge" style="background:#FEE2E2;color:#B91C1C">★1: ${tot.r1}</span>` : '';
-  return `<div class="group${isOpen ? ' open' : ''}" id="g${gi}">
-    <div class="gh" onclick="TG(${gi})">
-      <div class="gh-color" style="background:${color}"></div>
-      <div class="gh-name">${esc(grp)}</div>
-      <div class="gh-stats">
-        <span class="gh-stat">${arts.length} арт. · ${wD} с отзывами</span>
-        ${badges}
-      </div>
-      ${avg != null ? `<span class="gh-rating" style="color:${rc(avg)}" title="Справка: среднее по сумме отзывов склейки">${avg.toFixed(2)} ★</span>` : ''}
-      <span class="gh-arr">▾</span>
-    </div>
-    <div class="gbody"><div class="tbl-wrap"><table>${thead()}<tbody>
-      ${sorted.map(artRow).join('')}
-      ${totRow}
-    </tbody></table></div></div>
-  </div>`;
+  drawRatings();
 }
-function TG(i) {
-  const g = Object.keys(GROUPS).concat(['Без склейки'])[i];
-  if (!g) return;
-  EXP[g] = EXP[g] !== true;
-  const el = document.getElementById('g' + i);
-  if (el) el.classList.toggle('open', EXP[g]);
-}
-function EA(v) { Object.keys(GROUPS).concat(['Без склейки']).forEach(g => EXP[g] = !!v); drawRatings(); }
 function SS(k) {
   if (SK === k) SD *= -1; else { SK = k; SD = -1; }
-  ['avg_rating','r1','total','article'].forEach(x => {
+  ['avg_rating','r1','total','article','excluded'].forEach(x => {
     const el = document.getElementById('s_' + x);
     if (el) el.classList.toggle('on', x === SK);
   });
@@ -4021,6 +3992,7 @@ function drawRatings() {
   const cards = document.getElementById('ratCards');
   const banner = document.getElementById('ratBanner');
   const btn = document.getElementById('ratSyncBtn');
+  const info = document.getElementById('ratInfo');
   if (!root) return;
   GROUPS = REV_DATA.groups || GROUPS || {};
   const ALL = REV_DATA.ratings || [];
@@ -4029,53 +4001,86 @@ function drawRatings() {
   if (REV_DATA.premium_required) {
     banner.style.display = 'block';
     banner.className = 'banner warn';
-    banner.innerHTML = '<b>Нужна подписка.</b> Без ReviewAPI v2 оценки по отзывам недоступны.';
+    banner.innerHTML = '<b>Нужна подписка.</b> Без ReviewAPI v2 («Управление отзывами» / Premium Pro) рейтинг карточек из отзывов не подтянуть.';
   } else {
     banner.style.display = 'block';
     banner.className = 'banner';
-    banner.innerHTML = 'Оценка <b>каждого товара отдельно</b> (по отзывам Ozon). Склейка только группирует строки — общая оценка склейки справочная.';
+    banner.innerHTML = 'Рейтинг <b>каждой карточки отдельно</b> — по отзывам её SKU. Склейка не суммирует оценки: у золота свой ★, у чёрного свой. В средний входят только отзывы, которые Ozon считает в рейтинге карточки.';
   }
 
+  const withRat = ALL.filter(a => a.avg_rating != null).length;
   const tRev = ALL.reduce((s, a) => s + (a.total || 0), 0);
   const t1 = ALL.reduce((s, a) => s + (a.r1 || 0), 0);
   const tStars = ALL.reduce((s, a) => s + ((a.r5||0)*5+(a.r4||0)*4+(a.r3||0)*3+(a.r2||0)*2+(a.r1||0)), 0);
   const avg = tRev ? (tStars / tRev).toFixed(2) : '—';
   cards.innerHTML = [
-    ['Товаров', fmt(ALL.length), '', ''],
-    ['Отзывов в расчёте', fmt(tRev), '', ''],
-    ['Средний ★', avg + (avg !== '—' ? ' ★' : ''), `color:${rc(+avg)}`, 'по товарам'],
+    ['Карточек', fmt(ALL.length), '', withRat ? `${fmt(withRat)} с рейтингом` : ''],
+    ['Отзывов в рейтинге', fmt(tRev), '', 'is_rating_participant'],
+    ['Средний ★', avg + (avg !== '—' ? ' ★' : ''), `color:${rc(+avg)}`, 'по карточкам, не склейка'],
     ['★1', fmt(t1), 'color:var(--red)', ''],
   ].map(([l,v,s,sub]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="${s}">${v}</div>${sub?`<div class="card-sub">${sub}</div>`:''}</div>`).join('');
 
+  if (info) {
+    if (REV_DATA.error && !REV_DATA.premium_required) info.textContent = 'Ошибка: ' + REV_DATA.error;
+    else if (REV_DATA.syncing) info.textContent = 'Тянем отзывы…';
+    else info.textContent = REV_DATA.updated_at ? ('обновлено ' + fmtDt(REV_DATA.updated_at)) : '';
+  }
+
   if (REV_DATA.syncing && !ALL.length) {
-    root.innerHTML = '<div class="loading"><div class="spinner"></div>Считаем оценки…</div>';
+    root.innerHTML = '<div class="loading"><div class="spinner"></div>Подтягиваем рейтинг каждой карточки…</div>';
     return;
   }
   if (!ALL.length) {
-    root.innerHTML = `<div class="empty"><b>Нет данных</b>${REV_DATA.error ? esc(REV_DATA.error) : 'Нажми «Обновить»'}</div>`;
+    root.innerHTML = `<div class="empty"><b>Нет данных</b>${REV_DATA.error ? esc(REV_DATA.error) : 'Нажми «Обновить» — подтянем отзывы и посчитаем ★ по каждой карточке.'}</div>`;
     return;
   }
 
   const q = ((document.getElementById('ratSearch') || {}).value || '').toLowerCase().trim();
-  let html = '';
-  const gnames = Object.keys(GROUPS).concat(['Без склейки']);
-  const ga = new Set(Object.values(GROUPS).flat());
-  const grouped = {};
-  gnames.forEach(g => { grouped[g] = []; });
-  Object.entries(GROUPS).forEach(([g, list]) => {
-    (list || []).forEach(n => {
-      const found = ALL.find(a => a.article === n);
-      grouped[g].push(found || { article: n, total: 0, r5:0,r4:0,r3:0,r2:0,r1:0, avg_rating: null });
+  let rows = ALL.slice();
+  if (RAT_FLT === 'rated') rows = rows.filter(a => a.avg_rating != null);
+  else if (RAT_FLT === 'low') rows = rows.filter(a => a.avg_rating != null && a.avg_rating < 4.5);
+  else if (RAT_FLT === 'r1') rows = rows.filter(a => (a.r1 || 0) > 0);
+  if (q) {
+    rows = rows.filter(a => {
+      const hay = [a.article, a.offer_id, a.name, a.sku, ...(a.skus || [])].map(x => String(x || '').toLowerCase()).join(' ');
+      return hay.includes(q);
     });
+  }
+  rows.sort((a, b) => {
+    if (SK === 'article') return SD * String(a.article || '').localeCompare(String(b.article || ''), 'ru');
+    const av = a[SK] == null ? -1 : +a[SK];
+    const bv = b[SK] == null ? -1 : +b[SK];
+    return SD * (av - bv);
   });
-  ALL.forEach(a => { if (!ga.has(a.article)) grouped['Без склейки'].push(a); });
-  gnames.forEach(g => {
-    let arts = grouped[g] || [];
-    if (q) arts = arts.filter(a => String(a.article).toLowerCase().includes(q) || String(a.sku||'').includes(q));
-    if (q && !arts.length) return;
-    html += gblock(g, arts);
-  });
-  root.innerHTML = html || '<div class="empty">Ничего не найдено</div>';
+
+  if (!rows.length) {
+    root.innerHTML = '<div class="empty">Ничего не найдено</div>';
+    return;
+  }
+  root.innerHTML = `<div class="tbl-wrap"><table>${thead()}<tbody>${rows.map(artRow).join('')}</tbody></table></div>
+    <div class="hint">Показаны ${fmt(rows.length)} из ${fmt(ALL.length)} карточек. Источник: <code>/v2/review/list</code> по SKU карточки. Склейка в колонке «Группа» — только метка, рейтинг не общий.</div>`;
+}
+async function exportRatingsXlsx() {
+  const btn = document.getElementById('ratExportBtn');
+  const info = document.getElementById('ratInfo');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Excel…'; }
+  try {
+    const r = await fetch('/api/ratings/export-xlsx');
+    if (!r.ok) throw new Error(await readErr(r));
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ozon_ratings_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch (e) {
+    if (info) info.textContent = 'Excel: ' + (e.message || e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↓ Excel'; }
+  }
 }
 
 /* ── Склейки ── */
