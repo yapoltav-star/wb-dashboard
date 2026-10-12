@@ -967,6 +967,42 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
 .sp-total-zero{color:#D0D5DD;font-weight:500}
 .ads-drr-hi{color:var(--red);font-weight:600;line-height:1.25}
 .ads-drr-hi .ads-drr-spend{display:block;margin-top:2px;font-size:10px;font-weight:500;color:var(--red)}
+.gv-wrap{display:grid;grid-template-columns:minmax(320px,400px) 1fr;gap:16px;align-items:start}
+.gv-card{background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--r);padding:16px 18px}
+.gv-h{font-size:13px;font-weight:600;margin-bottom:12px}
+.gv-sub{font-size:12px;color:var(--wb-muted);margin:-6px 0 12px;line-height:1.4}
+.gv-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.gv-field{display:flex;flex-direction:column;gap:4px}
+.gv-field label{font-size:11px;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px}
+.gv-field input,.gv-field select{border:1px solid var(--wb-border);border-radius:var(--rs);padding:7px 10px;font-size:13px;font-family:inherit;width:100%;background:#fff;color:var(--wb-text)}
+.gv-field.wide{grid-column:1/-1}
+.gv-check{display:flex;align-items:center;gap:8px;font-size:13px;margin-top:4px}
+.gv-cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.gv-kpi{font-size:28px;font-weight:700;letter-spacing:-.02em}
+.gv-kpi.ok{color:#027A48}
+.gv-kpi.bad{color:#B42318}
+.gv-kpi.warn{color:#B54708}
+.gv-kpisub{font-size:12px;color:var(--wb-muted);margin-top:2px}
+.gv-rows{display:flex;flex-direction:column;gap:6px;margin-top:14px;font-size:13px}
+.gv-row{display:flex;justify-content:space-between;gap:12px}
+.gv-row .m{color:var(--wb-muted)}
+.gv-row.tot{padding-top:8px;border-top:1px solid var(--wb-border);font-weight:600}
+.gv-delta{padding:14px 16px;border-radius:var(--r);border:1px solid var(--wb-border);margin-top:12px;background:var(--wb-surface)}
+.gv-delta.bad{background:#FEF2F2;border-color:#FECACA}
+.gv-delta.ok{background:#ECFDF3;border-color:#A6F4C5}
+.gv-delta.warn{background:#FFF7ED;border-color:#FDBA74}
+.gv-delta b{font-size:16px}
+.gv-search{position:relative}
+.gv-dd{display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid var(--wb-border);border-radius:var(--rs);max-height:280px;overflow:auto;z-index:30;box-shadow:0 8px 24px rgba(0,0,0,.12)}
+.gv-dd.on{display:block}
+.gv-dd button{display:block;width:100%;text-align:left;padding:8px 10px;border:0;background:none;font:inherit;cursor:pointer}
+.gv-dd button:hover{background:#FFF0E8}
+.gv-dd .nm{font-size:11px;color:var(--wb-muted)}
+.gv-chip{display:inline-flex;align-items:center;gap:8px;margin-top:8px;padding:6px 10px;border:1px solid var(--wb-border);border-radius:999px;font-size:12px;background:#fff}
+.gv-chip img{width:28px;height:28px;border-radius:6px;object-fit:cover;background:#F5F3F0}
+@media (max-width: 980px){
+  .gv-wrap,.gv-cols{grid-template-columns:1fr}
+}
 </style>
 </head>
 <body>
@@ -1008,6 +1044,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   <div class="sn-item on" onclick="showPage('promo-cal',this)">Календарь</div>
   <div class="sn-item" onclick="showPage('promotions',this)">Товары в акциях</div>
   <div class="sn-item" onclick="showPage('prices',this)">Цены и СПП</div>
+  <div class="sn-item" onclick="showPage('giveaway',this)">Калькулятор раздач</div>
 </div>
 <div class="subnav" id="subnav-supplies" style="display:none">
   <div class="sn-item on" onclick="showPage('new-stock',this)">Новые остатки</div>
@@ -1567,6 +1604,54 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
     </div>
     <div class="spp-chart-wrap" id="sppChartWrap"></div>
     <div class="modal-btns"><button class="action-btn" onclick="closeSppChart()">Закрыть</button></div>
+  </div>
+</div>
+
+<div class="page" id="page-giveaway">
+  <div class="toolbar">
+    <span style="font-size:13px;font-weight:600">Калькулятор раздач</span>
+    <span style="font-size:12px;color:var(--wb-muted);margin-left:8px">Сравни текущую цену с промо и смотри, сколько теряешь на штуке</span>
+  </div>
+  <div class="gv-wrap">
+    <div class="gv-card">
+      <div class="gv-h">Товар и рычаги</div>
+      <div class="gv-sub">Артикул подтянет цену, СПП и себес. Раздачу крути справа — расчёт сразу.</div>
+      <div class="gv-grid">
+        <div class="gv-field wide">
+          <label>Артикул</label>
+          <div class="gv-search">
+            <input id="gvSearch" placeholder="Артикул или nm…" autocomplete="off"
+              oninput="gvSearchArticles(this.value)" onfocus="gvSearchArticles(this.value)">
+            <div id="gvDropdown" class="gv-dd"></div>
+          </div>
+          <div id="gvChip"></div>
+        </div>
+        <div class="gv-field"><label>Цена сейчас, ₽</label><input id="gvPriceNow" type="number" min="0" step="1" oninput="gvRecalc()" onchange="gvRecalc()"></div>
+        <div class="gv-field"><label>СПП сейчас, %</label><input id="gvSppNow" type="number" min="0" max="95" step="0.1" oninput="gvRecalc()" onchange="gvRecalc()"></div>
+        <div class="gv-field"><label>Цена раздачи, ₽</label><input id="gvPriceOff" type="number" min="0" step="1" oninput="gvRecalc()" onchange="gvRecalc()"></div>
+        <div class="gv-field"><label>СПП на раздаче, %</label><input id="gvSppOff" type="number" min="0" max="95" step="0.1" oninput="gvRecalc()" onchange="gvRecalc()"></div>
+        <div class="gv-field"><label>Себес, ₽</label><input id="gvCost" type="number" min="0" step="1" oninput="gvRecalc()" onchange="gvRecalc()"></div>
+        <div class="gv-field"><label>Комиссия WB, %</label><input id="gvComm" type="number" min="0" max="80" step="0.1" value="13" oninput="gvRecalc()" onchange="gvRecalc()"></div>
+        <div class="gv-field"><label>Эквайринг, %</label><input id="gvAcq" type="number" min="0" max="20" step="0.1" value="2.6" oninput="gvRecalc()" onchange="gvRecalc()"></div>
+        <div class="gv-field"><label>ДРР / реклама, %</label><input id="gvDrr" type="number" min="0" max="80" step="0.1" value="10" oninput="gvRecalc()" onchange="gvRecalc()"></div>
+        <div class="gv-field"><label>Выкуп, %</label><input id="gvBuyout" type="number" min="1" max="100" step="1" value="80" oninput="gvRecalc()" onchange="gvRecalc()"></div>
+        <div class="gv-field"><label>Логистика, ₽</label><input id="gvLogi" type="number" min="0" step="1" value="50" oninput="gvRecalc()" onchange="gvRecalc()"></div>
+        <div class="gv-field"><label>Обратная логистика, ₽</label><input id="gvRev" type="number" min="0" step="1" value="50" oninput="gvRecalc()" onchange="gvRecalc()"></div>
+        <div class="gv-field"><label>Хранение, ₽</label><input id="gvStor" type="number" min="0" step="0.1" value="3" oninput="gvRecalc()" onchange="gvRecalc()"></div>
+        <div class="gv-field"><label>Налог УСН, %</label><input id="gvTax" type="number" min="0" max="20" step="0.1" value="6" oninput="gvRecalc()" onchange="gvRecalc()"></div>
+        <div class="gv-field"><label>Штук в раздаче</label><input id="gvQty" type="number" min="0" step="1" value="10" oninput="gvRecalc()" onchange="gvRecalc()"></div>
+        <div class="gv-field wide">
+          <label class="gv-check"><input id="gvVat" type="checkbox" checked onchange="gvRecalc()"> НДС 5% (от цены покупателя)</label>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="gv-cols">
+        <div class="gv-card" id="gvCardNow"></div>
+        <div class="gv-card" id="gvCardOff"></div>
+      </div>
+      <div id="gvDelta"></div>
+    </div>
   </div>
 </div>
 
@@ -2284,6 +2369,7 @@ function showPage(id, btn) {
   if(id === 'promo-cal') renderPromoCalendar(true);
   if(id === 'promotions') renderPromotions();
   if(id === 'prices') renderSppPrices(true);
+  if(id === 'giveaway') renderGiveawayCalc();
   if(id === 'sales-pace') renderSalesPace(true);
   if(id === 'positions') renderPositionsPage();
   if(id === 'shelves') renderShelvesPage();
@@ -8662,6 +8748,7 @@ async function loadSppPrices() {
     SPP_DATA = {articles: [], error: e.message, syncing: false};
   }
   drawSppPrices();
+  if(document.getElementById('page-giveaway')?.classList.contains('on')) gvOnDataReady();
   clearTimeout(sppPoll);
   if(SPP_DATA.syncing) sppPoll = setTimeout(loadSppPrices, 3500);
 }
@@ -9040,6 +9127,314 @@ function drawSppPrices() {
     Смотрим в 8:00, 12:00, 18:00 и 22:00 МСК, изменения уходят в Telegram.
     Наведи — почему сдвинулось; клик по цене — график.</div>`;
 }
+
+// ─────────── Калькулятор раздач ───────────
+let GV_ART = null;
+const GV_LS = 'giveaway_calc_v1';
+
+function gvNum(id, fallback) {
+  const el = document.getElementById(id);
+  if(!el) return fallback;
+  const v = parseFloat(String(el.value).replace(',', '.'));
+  return Number.isFinite(v) ? v : fallback;
+}
+
+function gvUnit(price, spp) {
+  const comm = gvNum('gvComm', 13);
+  const acq = gvNum('gvAcq', 2.6);
+  const drr = gvNum('gvDrr', 10);
+  const buyout = Math.min(100, Math.max(1, gvNum('gvBuyout', 80)));
+  const logi = Math.max(0, gvNum('gvLogi', 50));
+  const rev = Math.max(0, gvNum('gvRev', 50));
+  const stor = Math.max(0, gvNum('gvStor', 3));
+  const cost = Math.max(0, gvNum('gvCost', 0));
+  const taxPct = Math.max(0, gvNum('gvTax', 6));
+  const vatOn = !!(document.getElementById('gvVat') || {}).checked;
+  const p = Math.max(0, Number(price) || 0);
+  const s = Math.min(95, Math.max(0, Number(spp) || 0));
+  const buyer = p * (1 - s / 100);
+  const commissionRub = p * comm / 100;
+  const acqRub = p * acq / 100;
+  const adsRub = p * drr / 100;
+  const logiEff = logi + rev * ((100 - buyout) / buyout);
+  const withhold = commissionRub + acqRub + adsRub + logiEff + stor;
+  const payout = p - withhold;
+  const vatRub = vatOn ? buyer * 5 / 105 : 0;
+  const taxBase = Math.max(0, buyer - vatRub);
+  const usnRub = taxBase * taxPct / 100;
+  const taxTotal = vatRub + usnRub;
+  const profit = payout - taxTotal - cost;
+  const margin = p > 0 ? profit / p * 100 : 0;
+  const roi = cost > 0 ? profit / cost * 100 : null;
+  const k = 1 - comm / 100 - acq / 100 - drr / 100;
+  const b = 1 - s / 100;
+  const coeff = k - (vatOn ? b * 5 / 105 : 0) - b * (vatOn ? 100 / 105 : 1) * (taxPct / 100);
+  const fixed = logiEff + stor + cost;
+  const be = coeff > 0 ? fixed / coeff : null;
+  return {
+    price: p, spp: s, buyer, commissionRub, acqRub, adsRub, logiEff, stor,
+    withhold, payout, vatRub, usnRub, taxTotal, taxBase, cost, profit, margin, roi, be,
+  };
+}
+
+function gvMoney(n, digits) {
+  if(n == null || !Number.isFinite(n)) return '—';
+  return n.toLocaleString('ru-RU', {maximumFractionDigits: digits == null ? 0 : digits}) + ' ₽';
+}
+
+function gvPct(n) {
+  if(n == null || !Number.isFinite(n)) return '—';
+  return n.toLocaleString('ru-RU', {maximumFractionDigits: 1}) + '%';
+}
+
+function gvCardHtml(title, u, qtyNote) {
+  const cls = u.profit > 0 ? 'ok' : (u.profit < 0 ? 'bad' : 'warn');
+  const rows = [
+    ['Цена покупателя', gvMoney(u.buyer)],
+    ['Комиссия WB', gvMoney(u.commissionRub)],
+    ['Эквайринг', gvMoney(u.acqRub)],
+    ['Реклама', gvMoney(u.adsRub)],
+    ['Логистика с возвратами', gvMoney(u.logiEff)],
+    ['Хранение', gvMoney(u.stor, 1)],
+    ['К перечислению', gvMoney(u.payout)],
+    ['Налог (УСН' + ((document.getElementById('gvVat') || {}).checked ? ' + НДС 5%' : '') + ')', gvMoney(u.taxTotal)],
+    ['Себес', gvMoney(u.cost)],
+    ['Маржа', gvPct(u.margin)],
+    ['ROI', gvPct(u.roi)],
+    ['Безубыток', u.be != null ? gvMoney(u.be) : '—'],
+  ];
+  return `<div class="gv-h">${escapeHtml(title)}</div>
+    <div class="gv-kpi ${cls}">${gvMoney(u.profit)}</div>
+    <div class="gv-kpisub">чистая на 1 шт${qtyNote ? ' · ' + qtyNote : ''}</div>
+    <div class="gv-rows">${rows.map(([l,v]) =>
+      `<div class="gv-row${l === 'К перечислению' || l === 'Себес' ? ' tot' : ''}"><span class="m">${l}</span><span>${v}</span></div>`
+    ).join('')}</div>`;
+}
+
+function gvCatalog() {
+  const byNm = new Map();
+  (SPP_DATA.articles || []).forEach(a => {
+    if(!a.nm_id) return;
+    byNm.set(Number(a.nm_id), {
+      nm_id: Number(a.nm_id),
+      vendor_code: a.vendor_code || '',
+      name: a.name || '',
+      sale_price: a.sale_price,
+      client_price: a.client_price,
+      spp: a.spp,
+    });
+  });
+  (WB_PRODUCTS.products || []).forEach(p => {
+    if(!p.nm_id) return;
+    const nm = Number(p.nm_id);
+    const prev = byNm.get(nm) || {nm_id: nm, vendor_code: '', name: ''};
+    byNm.set(nm, {
+      ...prev,
+      vendor_code: prev.vendor_code || p.vendor_code || '',
+      name: prev.name || p.name || '',
+      sale_price: prev.sale_price != null ? prev.sale_price : p.sale_price,
+      client_price: prev.client_price != null ? prev.client_price : p.client_price,
+      stock: p.stock,
+      sales_7d: p.sales_7d,
+    });
+  });
+  return [...byNm.values()].sort((a, b) => String(a.vendor_code).localeCompare(String(b.vendor_code), 'ru'));
+}
+
+function gvCostOf(art) {
+  if(!art) return null;
+  const costs = (FINANCE_DATA || {}).costs || [];
+  const vc = String(art.vendor_code || '').trim().toLowerCase();
+  const nm = Number(art.nm_id);
+  let hit = costs.find(c => vc && String(c.vendor_code || '').trim().toLowerCase() === vc);
+  if(!hit && nm) hit = costs.find(c => Number(c.nm_id) === nm);
+  if(hit && hit.cost != null) return Number(hit.cost);
+  const rows = [
+    ...(((FINANCE_DATA || {}).wb || {}).rows || []),
+    ...(((FINANCE_DATA || {}).own || {}).rows || []),
+  ];
+  hit = rows.find(r => (vc && String(r.vendor_code || '').trim().toLowerCase() === vc) || (nm && Number(r.nm_id) === nm));
+  return hit && hit.cost != null ? Number(hit.cost) : null;
+}
+
+async function gvSearchArticles(q) {
+  const dd = document.getElementById('gvDropdown');
+  if(!dd) return;
+  const query = String(q || '').trim();
+  const ql = query.toLowerCase();
+  let rows = gvCatalog();
+  if(ql) {
+    rows = rows.filter(a =>
+      String(a.vendor_code || '').toLowerCase().includes(ql) ||
+      String(a.nm_id || '').includes(ql) ||
+      String(a.name || '').toLowerCase().includes(ql)
+    );
+  }
+  if(query.length >= 2) {
+    try {
+      const r = await fetch(`${RAILWAY_URL}/api/search-own-articles?q=${encodeURIComponent(query)}`);
+      const extra = await r.json();
+      if(Array.isArray(extra)) {
+        const have = new Set(rows.map(a => Number(a.nm_id)));
+        extra.forEach(a => {
+          const nm = Number(a.nm_id);
+          if(!nm || have.has(nm)) return;
+          have.add(nm);
+          rows.push({nm_id: nm, vendor_code: a.vendor_code || '', name: a.name || ''});
+        });
+      }
+    } catch(e) {}
+  }
+  rows = rows.slice(0, 40);
+  if(!rows.length) {
+    dd.classList.remove('on');
+    dd.innerHTML = query
+      ? `<div style="padding:8px 10px;font-size:12px;color:var(--wb-muted)">Ничего не найдено</div>`
+      : '';
+    dd.classList.toggle('on', !!query);
+    return;
+  }
+  dd.innerHTML = rows.map(a =>
+    `<button type="button" onclick="gvPick(${a.nm_id}, '${String(a.vendor_code || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')">${escapeHtml(a.vendor_code || '—')}
+      <div class="nm">${a.nm_id}${a.name ? ' · ' + escapeHtml(a.name) : ''}</div></button>`
+  ).join('');
+  dd.classList.add('on');
+}
+
+function gvPick(nmId, vendorCode) {
+  const art = gvCatalog().find(a => Number(a.nm_id) === Number(nmId)) || {
+    nm_id: Number(nmId),
+    vendor_code: vendorCode || '',
+    name: '',
+  };
+  if(vendorCode && !art.vendor_code) art.vendor_code = vendorCode;
+  const dd = document.getElementById('gvDropdown');
+  if(dd) { dd.classList.remove('on'); dd.innerHTML = ''; }
+  if(!art) return;
+  GV_ART = art;
+  const search = document.getElementById('gvSearch');
+  if(search) search.value = art.vendor_code || String(art.nm_id);
+  const price = art.sale_price != null ? Number(art.sale_price)
+    : (art.client_price != null ? Number(art.client_price) : null);
+  const spp = art.spp != null ? Number(art.spp)
+    : (price && art.client_price != null && price > 0
+      ? Math.round((1 - Number(art.client_price) / price) * 1000) / 10
+      : 0);
+  const set = (id, v) => { const el = document.getElementById(id); if(el && v != null && Number.isFinite(v)) el.value = String(v); };
+  set('gvPriceNow', price != null ? Math.round(price) : null);
+  set('gvSppNow', spp);
+  set('gvPriceOff', price != null ? Math.round(price) : null);
+  set('gvSppOff', spp);
+  const cost = gvCostOf(art);
+  if(cost != null) set('gvCost', Math.round(cost * 100) / 100);
+  const chip = document.getElementById('gvChip');
+  if(chip) {
+    const thumb = typeof wbThumbHtml === 'function' ? wbThumbHtml(art.nm_id, {className: ''}) : '';
+    const extra = [
+      art.sales_7d != null ? `7д ${fmt(art.sales_7d)}` : '',
+      art.stock != null ? `ост. ${fmt(art.stock)}` : '',
+    ].filter(Boolean).join(' · ');
+    chip.innerHTML = `<span class="gv-chip">${thumb || ''}<span><b>${escapeHtml(art.vendor_code || String(art.nm_id))}</b>
+      <div style="font-size:11px;color:var(--wb-muted)">${art.nm_id}${extra ? ' · ' + extra : ''}</div></span></span>`;
+  }
+  try { localStorage.setItem(GV_LS + '_nm', String(art.nm_id)); } catch(e) {}
+  gvRecalc();
+}
+
+function gvSaveLevers() {
+  const ids = ['gvComm','gvAcq','gvDrr','gvBuyout','gvLogi','gvRev','gvStor','gvTax','gvQty'];
+  const data = {};
+  ids.forEach(id => { const el = document.getElementById(id); if(el) data[id] = el.value; });
+  const vat = document.getElementById('gvVat');
+  data.gvVat = vat ? !!vat.checked : true;
+  try { localStorage.setItem(GV_LS, JSON.stringify(data)); } catch(e) {}
+}
+
+function gvRestoreLevers() {
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem(GV_LS) || 'null'); } catch(e) { data = null; }
+  if(!data) return;
+  Object.keys(data).forEach(id => {
+    if(id === 'gvVat') {
+      const el = document.getElementById('gvVat');
+      if(el) el.checked = !!data[id];
+      return;
+    }
+    const el = document.getElementById(id);
+    if(el && data[id] != null && data[id] !== '') el.value = data[id];
+  });
+}
+
+function gvRecalc() {
+  gvSaveLevers();
+  const now = gvUnit(gvNum('gvPriceNow', 0), gvNum('gvSppNow', 0));
+  const off = gvUnit(gvNum('gvPriceOff', 0), gvNum('gvSppOff', 0));
+  const qty = Math.max(0, Math.round(gvNum('gvQty', 0)));
+  const nowEl = document.getElementById('gvCardNow');
+  const offEl = document.getElementById('gvCardOff');
+  const deltaEl = document.getElementById('gvDelta');
+  if(nowEl) nowEl.innerHTML = gvCardHtml('Сейчас', now);
+  if(offEl) offEl.innerHTML = gvCardHtml('Раздача', off, qty ? qty + ' шт' : '');
+  if(!deltaEl) return;
+  const dUnit = off.profit - now.profit;
+  const dAll = dUnit * qty;
+  let cls = 'warn';
+  if(off.profit < 0) cls = 'bad';
+  else if(dUnit >= 0) cls = 'ok';
+  const bits = [];
+  bits.push(`<b>${dUnit >= 0 ? '+' : ''}${gvMoney(dUnit)}</b> на 1 шт против текущей цены`);
+  if(qty) bits.push(`на ${fmt(qty)} шт: <b>${dAll >= 0 ? '+' : ''}${gvMoney(dAll)}</b>`);
+  if(off.profit < 0) bits.push(`раздача в минус: ${gvMoney(Math.abs(off.profit))} с каждой штуки`);
+  else if(off.be != null && off.price > 0 && off.price < off.be)
+    bits.push(`цена ниже безубытка ${gvMoney(off.be)}`);
+  else if(off.profit >= 0)
+    bits.push(`ещё в плюсе ${gvMoney(off.profit)} / шт`);
+  if(now.profit > 0 && off.profit <= 0)
+    bits.push('текущая прибыль обнуляется на этой цене');
+  deltaEl.className = 'gv-delta ' + cls;
+  deltaEl.innerHTML = bits.join('<br>');
+}
+
+function gvOnDataReady() {
+  if(GV_ART) {
+    const fresh = gvCatalog().find(a => Number(a.nm_id) === Number(GV_ART.nm_id));
+    if(fresh) GV_ART = {...GV_ART, ...fresh};
+    const chip = document.getElementById('gvChip');
+    if(chip && !chip.innerHTML && GV_ART) gvPick(GV_ART.nm_id);
+  }
+}
+
+async function renderGiveawayCalc() {
+  gvRestoreLevers();
+  if(!SPP_LOADED) {
+    SPP_LOADED = true;
+    loadSppPrices();
+  }
+  if(!WB_PRODUCTS_LOADED) renderWbProducts(false);
+  if(!FINANCE_DATA) {
+    try {
+      const r = await fetch(`${RAILWAY_URL}/api/finance`);
+      FINANCE_DATA = await r.json();
+    } catch(e) {
+      FINANCE_DATA = {error: e.message};
+    }
+  }
+  if(!GV_ART) {
+    let last = null;
+    try { last = Number(localStorage.getItem(GV_LS + '_nm') || 0); } catch(e) {}
+    if(last) {
+      const art = gvCatalog().find(a => Number(a.nm_id) === last);
+      if(art) gvPick(art.nm_id);
+    }
+  }
+  gvRecalc();
+}
+
+document.addEventListener('click', (e) => {
+  const box = document.querySelector('#page-giveaway .gv-search');
+  const dd = document.getElementById('gvDropdown');
+  if(dd && box && !box.contains(e.target)) dd.classList.remove('on');
+});
 
 function setPromoExcelFilter(f) {
   PROMO_XLS_FILTER = f;
