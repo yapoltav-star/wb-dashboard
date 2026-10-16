@@ -6460,6 +6460,12 @@ async def upload_competitor_report(file: UploadFile = File(...)):
                 if ri is not None:
                     row_idx[field] = ri
                     break
+        if "brand" not in row_idx:
+            for i in range(2, len(df)):
+                head = str(df.iloc[i, 0]).strip().lower()
+                if head == "бренд" or head.startswith("бренд"):
+                    row_idx["brand"] = i
+                    break
 
         # ── Создаём сессию ──
         session_row = {"period_begin": period_begin, "period_end": period_end}
@@ -6977,6 +6983,44 @@ def delete_competitor_session(session_id: int):
     except Exception as e:
         return {"error": str(e)}
 
+def _competitor_brands_by_session(session_ids: list) -> dict:
+    """Бренды по session_id. PostgREST по умолчанию отдаёт 1000 строк — без пагинации
+    новые отчёты теряют подпись и рисуются как «отчёт #268»."""
+    brands_by_sid = {}
+    ids = [sid for sid in session_ids if sid is not None]
+    if not ids:
+        return brands_by_sid
+    chunk_size = 80
+    page = 1000
+    for i in range(0, len(ids), chunk_size):
+        chunk = ",".join(str(sid) for sid in ids[i:i + chunk_size])
+        offset = 0
+        while offset < 50000:
+            br = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/competitor_metrics"
+                f"?session_id=in.({chunk})&select=session_id,brand"
+                f"&limit={page}&offset={offset}",
+                headers=sb_headers(),
+                timeout=20,
+            )
+            if not br.is_success:
+                logger.warning(f"competitor-sessions brands page {offset}: {br.status_code}")
+                break
+            rows = br.json() or []
+            for row in rows:
+                sid = row.get("session_id")
+                brand = (row.get("brand") or "").strip()
+                if sid is None or not brand:
+                    continue
+                bucket = brands_by_sid.setdefault(sid, [])
+                if brand not in bucket:
+                    bucket.append(brand)
+            if len(rows) < page:
+                break
+            offset += page
+    return brands_by_sid
+
+
 @app.get("/api/competitor-sessions")
 def get_competitor_sessions():
     """Список загруженных сессий сравнения (+ уникальные бренды из метрик)."""
@@ -6991,26 +7035,13 @@ def get_competitor_sessions():
         if not sessions:
             return []
 
-        # Бренды из competitor_metrics — чтобы подпись файла была «14–20 июля · Brand»
-        brands_by_sid = {}
         try:
-            ids = ",".join(str(s["id"]) for s in sessions if s.get("id") is not None)
-            if ids:
-                br = httpx.get(
-                    f"{SUPABASE_URL}/rest/v1/competitor_metrics?session_id=in.({ids})&select=session_id,brand",
-                    headers=sb_headers(), timeout=15
-                )
-                if br.is_success:
-                    for row in br.json() or []:
-                        sid = row.get("session_id")
-                        brand = (row.get("brand") or "").strip()
-                        if sid is None or not brand:
-                            continue
-                        brands_by_sid.setdefault(sid, [])
-                        if brand not in brands_by_sid[sid]:
-                            brands_by_sid[sid].append(brand)
+            brands_by_sid = _competitor_brands_by_session(
+                [s.get("id") for s in sessions]
+            )
         except Exception as e:
             logger.warning(f"competitor-sessions brands enrich: {e}")
+            brands_by_sid = {}
 
         for s in sessions:
             s["brands"] = brands_by_sid.get(s.get("id"), [])
