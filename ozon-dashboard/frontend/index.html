@@ -4005,7 +4005,7 @@ function drawRatings() {
   } else {
     banner.style.display = 'block';
     banner.className = 'banner';
-    banner.innerHTML = 'Рейтинг <b>каждой карточки отдельно</b> — по отзывам её SKU. Склейка не суммирует оценки: у золота свой ★, у чёрного свой. В средний входят только отзывы, которые Ozon считает в рейтинге карточки.';
+    banner.innerHTML = 'Как на WB: «Обновить» тянет отзывы из Seller API <b>в Supabase</b>, сайт читает рейтинг каждой карточки из базы. Склейка не суммирует ★.';
   }
 
   const withRat = ALL.filter(a => a.avg_rating != null).length;

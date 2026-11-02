@@ -411,6 +411,244 @@ def save_groups(save_setting: Callable, groups: dict) -> dict[str, list[str]]:
     return cleaned
 
 
+def _review_row(r: dict) -> dict | None:
+    rid = r.get("id")
+    if not rid:
+        return None
+    sku = r.get("sku")
+    try:
+        sku_i = int(sku) if sku not in (None, "") else None
+    except (TypeError, ValueError):
+        sku_i = None
+    pid = r.get("product_id")
+    try:
+        pid_i = int(pid) if pid not in (None, "") else None
+    except (TypeError, ValueError):
+        pid_i = None
+    return {
+        "id": str(rid),
+        "article": r.get("article") or r.get("offer_id") or "",
+        "sku": sku_i,
+        "product_id": pid_i,
+        "name": r.get("name") or "",
+        "primary_image": r.get("primary_image") or "",
+        "stars": int(r.get("rating") or r.get("stars") or 0),
+        "created_date": r.get("published_at") or r.get("created_date"),
+        "text": (r.get("text") or "")[:2000],
+        "status": r.get("status") or "",
+        "order_status": r.get("order_status") or "",
+        "is_rating_participant": False if r.get("is_rating_participant") is False else True,
+        "photos_amount": int(r.get("photos_amount") or 0),
+        "videos_amount": int(r.get("videos_amount") or 0),
+        "comments_amount": int(r.get("comments_amount") or 0),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _row_to_review(row: dict) -> dict:
+    return {
+        "id": row.get("id"),
+        "sku": row.get("sku"),
+        "rating": row.get("stars") if row.get("stars") is not None else row.get("rating"),
+        "text": row.get("text") or "",
+        "status": row.get("status") or "",
+        "published_at": row.get("created_date") or row.get("published_at"),
+        "order_status": row.get("order_status") or "",
+        "photos_amount": row.get("photos_amount") or 0,
+        "videos_amount": row.get("videos_amount") or 0,
+        "comments_amount": row.get("comments_amount") or 0,
+        "is_rating_participant": False if row.get("is_rating_participant") is False else True,
+        "offer_id": row.get("article") or row.get("offer_id") or "",
+        "article": row.get("article") or row.get("offer_id") or "",
+        "name": row.get("name") or "",
+        "product_id": row.get("product_id"),
+        "primary_image": row.get("primary_image") or "",
+    }
+
+
+def _rating_row(r: dict) -> dict:
+    return {
+        "article": r.get("article") or r.get("offer_id") or "",
+        "product_id": r.get("product_id"),
+        "sku": r.get("sku"),
+        "skus": r.get("skus") or [],
+        "name": r.get("name") or "",
+        "primary_image": r.get("primary_image") or "",
+        "avg_rating": r.get("avg_rating"),
+        "r5": r.get("r5") or 0,
+        "r4": r.get("r4") or 0,
+        "r3": r.get("r3") or 0,
+        "r2": r.get("r2") or 0,
+        "r1": r.get("r1") or 0,
+        "total": r.get("total") or 0,
+        "excluded": r.get("excluded") or 0,
+        "reviews_all": r.get("reviews_all") or 0,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def persist_reviews(sb_upsert: Callable, reviews: list[dict], batch: int = 200) -> int:
+    """API Ozon → таблица reviews (как feedbacks на WB)."""
+    rows = [x for r in reviews if (x := _review_row(r))]
+    wrote = 0
+    for i in range(0, len(rows), batch):
+        part = rows[i : i + batch]
+        resp = sb_upsert("reviews", part, on_conflict="id")
+        if resp is not None and getattr(resp, "is_success", True) is False:
+            raise RuntimeError(f"reviews upsert: {getattr(resp, 'status_code', '?')} {getattr(resp, 'text', '')[:300]}")
+        wrote += len(part)
+    return wrote
+
+
+def persist_ratings(sb_upsert: Callable, ratings: list[dict], batch: int = 200) -> int:
+    rows = [_rating_row(r) for r in ratings if r.get("article") or r.get("offer_id")]
+    wrote = 0
+    for i in range(0, len(rows), batch):
+        part = rows[i : i + batch]
+        resp = sb_upsert("ratings", part, on_conflict="article")
+        if resp is not None and getattr(resp, "is_success", True) is False:
+            raise RuntimeError(f"ratings upsert: {getattr(resp, 'status_code', '?')} {getattr(resp, 'text', '')[:300]}")
+        wrote += len(part)
+    return wrote
+
+
+def persist_groups_table(sb_delete: Callable, sb_upsert: Callable, groups: dict) -> dict:
+    """Склейки в groups_config, как на WB: delete all + insert."""
+    sb_delete("groups_config", {"id": "gte.0"})
+    rows = [
+        {"name": name, "articles": arts, "sort_order": i + 1}
+        for i, (name, arts) in enumerate((groups or {}).items())
+        if name and name != "Без склейки"
+    ]
+    if rows:
+        resp = sb_upsert("groups_config", rows, on_conflict=None)
+        if resp is not None and getattr(resp, "is_success", True) is False:
+            raise RuntimeError(f"groups_config upsert: {getattr(resp, 'status_code', '?')}")
+    return groups or {}
+
+
+def load_reviews(sb_get: Callable, page_size: int = 1000, max_pages: int = 50) -> list[dict]:
+    out: list[dict] = []
+    for i in range(max_pages):
+        resp = sb_get("reviews", {
+            "select": "id,article,sku,product_id,name,primary_image,stars,created_date,text,status,order_status,is_rating_participant,photos_amount,videos_amount,comments_amount",
+            "order": "created_date.desc",
+            "limit": str(page_size),
+            "offset": str(i * page_size),
+        })
+        if not getattr(resp, "is_success", False):
+            raise RuntimeError(f"reviews load: {getattr(resp, 'status_code', '?')} {getattr(resp, 'text', '')[:200]}")
+        batch = resp.json() or []
+        out.extend(_row_to_review(r) for r in batch)
+        if len(batch) < page_size:
+            break
+    return out
+
+
+def load_ratings(sb_get: Callable) -> list[dict]:
+    resp = sb_get("ratings", {
+        "select": "article,product_id,sku,skus,name,primary_image,avg_rating,r5,r4,r3,r2,r1,total,excluded,reviews_all",
+        "order": "avg_rating.desc.nullslast",
+        "limit": "5000",
+    })
+    if not getattr(resp, "is_success", False):
+        raise RuntimeError(f"ratings load: {getattr(resp, 'status_code', '?')} {getattr(resp, 'text', '')[:200]}")
+    rows = []
+    for r in resp.json() or []:
+        item = dict(r)
+        item["offer_id"] = item.get("article") or ""
+        if item.get("avg_rating") is not None:
+            try:
+                item["avg_rating"] = float(item["avg_rating"])
+            except (TypeError, ValueError):
+                item["avg_rating"] = None
+        rows.append(item)
+    return rows
+
+
+def load_groups_table(sb_get: Callable) -> dict[str, list[str]]:
+    resp = sb_get("groups_config", {
+        "select": "name,articles,sort_order",
+        "order": "sort_order.asc",
+    })
+    if not getattr(resp, "is_success", False):
+        return {}
+    out: dict[str, list[str]] = {}
+    for row in resp.json() or []:
+        name = row.get("name")
+        arts = row.get("articles") or []
+        if not name or not isinstance(arts, list):
+            continue
+        out[str(name)] = [str(a) for a in arts if a]
+    return out
+
+
+def merge_review_lists(fresh: list[dict], stored: list[dict]) -> list[dict]:
+    by_id: dict[str, dict] = {}
+    for r in (stored or []) + (fresh or []):
+        rid = r.get("id")
+        if rid:
+            by_id[str(rid)] = r
+    return list(by_id.values())
+
+
+def hydrate_from_db(sb_get: Callable, products: list[dict] | None = None) -> dict:
+    """Сайт читает отзывы/оценки из Supabase, как WB читает feedbacks/ratings_official."""
+    reviews, ratings, groups = [], [], {}
+    try:
+        reviews = load_reviews(sb_get)
+    except Exception as e:
+        logger.warning("hydrate reviews: %s", e)
+    try:
+        ratings = load_ratings(sb_get)
+    except Exception as e:
+        logger.warning("hydrate ratings: %s", e)
+    try:
+        groups = load_groups_table(sb_get)
+    except Exception as e:
+        logger.warning("hydrate groups: %s", e)
+    if reviews and not ratings:
+        ratings = compute_ratings(reviews, products=products)
+    neg = compute_negative_counts(reviews) if reviews else {}
+    return {
+        "reviews": reviews,
+        "ratings": ratings,
+        "negative_counts": neg,
+        "groups": groups,
+        "updated_at": datetime.now(timezone.utc).isoformat() if (reviews or ratings) else None,
+        "syncing": False,
+        "error": None,
+        "from_db": bool(reviews or ratings),
+    }
+
+
+def persist_sync_result(
+    sb_upsert: Callable,
+    sb_get: Callable,
+    reviews: list[dict],
+    ratings: list[dict],
+    products: list[dict] | None = None,
+) -> dict:
+    """После синка API: записать в базу и пересчитать рейтинг по всей истории в Supabase."""
+    n_rev = persist_reviews(sb_upsert, reviews)
+    stored = []
+    try:
+        stored = load_reviews(sb_get)
+    except Exception as e:
+        logger.warning("persist reload reviews: %s", e)
+    merged = merge_review_lists(reviews, stored)
+    ratings2 = compute_ratings(merged, products=products) if merged else ratings
+    n_rat = persist_ratings(sb_upsert, ratings2)
+    logger.info("reviews persist: upserted=%s ratings=%s db_total=%s", n_rev, n_rat, len(merged))
+    return {
+        "reviews": merged,
+        "ratings": ratings2,
+        "negative_counts": compute_negative_counts(merged) if merged else {},
+        "persisted_reviews": n_rev,
+        "persisted_ratings": n_rat,
+    }
+
+
 def filter_article_reviews(
     article: str,
     days: int = 5,

@@ -1846,6 +1846,23 @@ def trigger_finance(days: int = 7):
     return {"ok": True, "syncing": True}
 
 
+def _hydrate_reviews_from_db(products: list[dict] | None = None) -> dict:
+    """Сайт читает отзывы/оценки из Supabase (как WB читает feedbacks)."""
+    loaded = revs.hydrate_from_db(sb_get, products=products)
+    if loaded.get("reviews") or loaded.get("ratings"):
+        revs.REVIEWS_CACHE.update({
+            "reviews": loaded.get("reviews") or [],
+            "ratings": loaded.get("ratings") or [],
+            "negative_counts": loaded.get("negative_counts") or {},
+            "updated_at": loaded.get("updated_at"),
+            "syncing": False,
+            "error": None,
+        })
+        if loaded.get("groups"):
+            revs.REVIEWS_CACHE["groups"] = loaded["groups"]
+    return loaded
+
+
 def _run_reviews_sync(status: str = "ALL"):
     try:
         products = []
@@ -1853,9 +1870,14 @@ def _run_reviews_sync(status: str = "ALL"):
             products = load_products_from_db()
         except Exception as e:
             logger.warning("reviews: products load skipped: %s", e)
-        # подтянуть склейки из settings перед синкингом
         try:
             revs.REVIEWS_CACHE["groups"] = revs.load_groups(get_setting)
+        except Exception:
+            pass
+        try:
+            g2 = revs.load_groups_table(sb_get)
+            if g2:
+                revs.REVIEWS_CACHE["groups"] = g2
         except Exception:
             pass
         revs.sync_reviews(
@@ -1864,6 +1886,22 @@ def _run_reviews_sync(status: str = "ALL"):
             products=products,
             get_setting=get_setting,
         )
+        cached = revs.get_cached()
+        if cached.get("premium_required"):
+            return
+        try:
+            persisted = revs.persist_sync_result(
+                sb_upsert, sb_get,
+                cached.get("reviews") or [],
+                cached.get("ratings") or [],
+                products=products,
+            )
+            revs.REVIEWS_CACHE["reviews"] = persisted.get("reviews") or cached.get("reviews") or []
+            revs.REVIEWS_CACHE["ratings"] = persisted.get("ratings") or cached.get("ratings") or []
+            revs.REVIEWS_CACHE["negative_counts"] = persisted.get("negative_counts") or cached.get("negative_counts") or {}
+            save_setting("last_reviews_sync", datetime.now(timezone.utc).isoformat())
+        except Exception as e:
+            logger.warning("reviews persist: %s — накати ozon-dashboard/supabase/reviews_migration.sql", e)
     except Exception as e:
         logger.exception("reviews sync thread: %s", e)
         revs.REVIEWS_CACHE["error"] = str(e)
@@ -1873,13 +1911,24 @@ def _run_reviews_sync(status: str = "ALL"):
 @app.get("/api/reviews")
 def get_reviews(status: str = "ALL"):
     cached = revs.get_cached()
+    if not cached.get("reviews") and not cached.get("ratings") and not cached.get("syncing"):
+        try:
+            _hydrate_reviews_from_db()
+            cached = revs.get_cached()
+        except Exception as e:
+            logger.warning("reviews hydrate: %s", e)
     if not cached.get("groups"):
         try:
-            cached["groups"] = revs.load_groups(get_setting)
+            g2 = revs.load_groups_table(sb_get)
+            cached["groups"] = g2 or revs.load_groups(get_setting)
             revs.REVIEWS_CACHE["groups"] = cached["groups"]
         except Exception:
-            pass
-    if not cached["reviews"] and not cached["syncing"] and not cached["error"] and not cached["premium_required"]:
+            try:
+                cached["groups"] = revs.load_groups(get_setting)
+                revs.REVIEWS_CACHE["groups"] = cached["groups"]
+            except Exception:
+                pass
+    if not cached["reviews"] and not cached["ratings"] and not cached["syncing"] and not cached["error"] and not cached["premium_required"]:
         if not revs.REVIEWS_CACHE.get("syncing"):
             threading.Thread(target=_run_reviews_sync, kwargs={"status": status}, daemon=True).start()
         cached = revs.get_cached()
@@ -1907,6 +1956,11 @@ def article_reviews(article: str, days: int = 5, stars: str = "1,2,3", limit: in
             star_list.append(int(part))
     if not star_list:
         star_list = [1, 2, 3]
+    if not (revs.REVIEWS_CACHE.get("reviews") or []):
+        try:
+            _hydrate_reviews_from_db()
+        except Exception:
+            pass
     feedbacks = revs.filter_article_reviews(
         article=article,
         days=days,
@@ -1920,6 +1974,12 @@ def article_reviews(article: str, days: int = 5, stars: str = "1,2,3", limit: in
 def export_ratings_xlsx():
     """Выгрузка рейтинга каждой карточки (без склейки)."""
     rows = revs.REVIEWS_CACHE.get("ratings") or []
+    if not rows:
+        try:
+            _hydrate_reviews_from_db()
+            rows = revs.REVIEWS_CACHE.get("ratings") or []
+        except Exception:
+            pass
     if not rows:
         raise HTTPException(status_code=409, detail="Нет данных: сначала нажми «Обновить»")
     try:
@@ -1951,6 +2011,10 @@ def save_review_groups(body: dict = Body(...)):
     if not isinstance(groups, dict):
         raise HTTPException(status_code=400, detail="groups must be object")
     saved = revs.save_groups(save_setting, groups)
+    try:
+        revs.persist_groups_table(sb_delete, sb_upsert, saved)
+    except Exception as e:
+        logger.warning("groups_config persist: %s", e)
     return {"ok": True, "groups": saved, "count": len(saved)}
 
 

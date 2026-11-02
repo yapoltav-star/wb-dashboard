@@ -27,6 +27,16 @@ WB_DASHBOARD_URL=https://wb-dashboard-production-baf4.up.railway.app
 
 6. Открой сайт → **Обновить товары** — первый синк карточек.
 
+Поток данных **как на WB**: сайт сам в Seller API не ходит. Кнопка «Обновить» на Railway тянет Ozon API → пишет в Supabase → фронт читает из Supabase.
+
+| Кнопка на сайте | Куда пишет в Supabase |
+|---|---|
+| Обновить товары | `products` |
+| Обновить остатки | `stock_totals`, `stocks` |
+| Обновить отзывы / оценки | `reviews`, `ratings` |
+
+Если проект Supabase уже создан — накати ещё `supabase/reviews_migration.sql` (таблицы отзывов и оценок).
+
 ## MVP
 
 | Раздел | Статус |
