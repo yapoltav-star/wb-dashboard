@@ -1969,21 +1969,30 @@ def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
                 for v in vals
             )
             # shk / поставка: артикул + количество
-            vc_i = next(
-                (
-                    j
-                    for j, v in enumerate(vals)
-                    if "артикул поставщика" in v
-                    or v == "артикул продавца"
-                    or (
-                        v.startswith("артикул")
-                        and "wildberries" not in v
-                        and "баркод" not in v
-                    )
-                ),
-                None,
-            )
-            qty_i = next((j for j, v in enumerate(vals) if v.startswith("количество")), None)
+            # также Ozon Excel поставок: «Артикул» + «Количество»/«Кол-во»
+            def _is_vc_header(v: str) -> bool:
+                if "артикул поставщика" in v or v == "артикул продавца":
+                    return True
+                if (
+                    v.startswith("артикул")
+                    and "wildberries" not in v
+                    and "баркод" not in v
+                    and "номер" not in v
+                ):
+                    return True
+                return False
+
+            def _is_qty_header(v: str) -> bool:
+                if not v:
+                    return False
+                if v.startswith("количество") or v in ("кол-во", "кол во", "qty", "quantity", "кол."):
+                    return True
+                if v.replace(".", "").replace(" ", "") in ("кол-во", "колво"):
+                    return True
+                return False
+
+            vc_i = next((j for j, v in enumerate(vals) if _is_vc_header(v)), None)
+            qty_i = next((j for j, v in enumerate(vals) if _is_qty_header(v)), None)
             if vc_i is not None and qty_i is not None:
                 header_row, col_vc, col_qty, kind = i, vc_i, qty_i, "shk"
                 break
@@ -1999,9 +2008,11 @@ def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
                 header_row, col_vc, col_qty, kind = i, bc_i, qty_i, "barcode"
                 break
             # fallback: shk headers slightly different
-            if "артикул поставщика" in joined and "количество" in joined:
-                vc_i = next((j for j, v in enumerate(vals) if "артикул" in v), None)
-                qty_i = next((j for j, v in enumerate(vals) if "количество" in v), None)
+            if ("артикул поставщика" in joined or "артикул" in joined) and (
+                "количество" in joined or "кол-во" in joined or "кол во" in joined
+            ):
+                vc_i = next((j for j, v in enumerate(vals) if "артикул" in v and "номер" not in v), None)
+                qty_i = next((j for j, v in enumerate(vals) if _is_qty_header(v) or "количество" in v or "кол-во" in v), None)
                 if vc_i is not None and qty_i is not None:
                     header_row, col_vc, col_qty, kind = i, vc_i, qty_i, "shk"
                     break
@@ -2053,8 +2064,8 @@ def parse_own_wh_shipment_excel(content: bytes, filename: str = "") -> dict:
     if not best or not best["items"]:
         hint = (
             "Не нашёл артикулы в файле. Ожидаю shk-excel "
-            "(Артикул поставщика + Количество), шаблон WB (Баркод + Количество) "
-            "или лист подбора WB-GI (Артикул продавца)."
+            "(Артикул поставщика/Артикул + Количество), шаблон WB (Баркод + Количество), "
+            "Excel поставок Ozon или лист подбора WB-GI (Артикул продавца)."
         )
         unmapped = (best or {}).get("unmapped_barcodes") or []
         if unmapped:
