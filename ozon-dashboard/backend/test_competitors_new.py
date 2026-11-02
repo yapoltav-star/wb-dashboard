@@ -77,6 +77,48 @@ def test_save_and_delete_memory():
     assert deleted["reports"] == []
 
 
+def test_thumb_helpers():
+    html = r'https://ir.ozone.ru/s3/multimedia-1-q/8511204230.jpg&quot; other'
+    imgs = cnew._parse_ozon_imgs(html)
+    assert imgs and imgs[0].endswith("8511204230.jpg")
+    assert "/c200/" in cnew._to_c200(imgs[0])
+    assert "/c200/" in cnew._to_c200("https://ir.ozone.ru/s3/multimedia-1-i/c1000/7627962258.jpg")
+    assert cnew._parse_ozon_imgs("https://ir.ozone.ru/s3/rp-photo-1/x.jpg") == []
+    assert cnew._ozon_img_ok("https://ir.ozone.ru/s3/multimedia-1-q/c200/1.jpg")
+    assert not cnew._ozon_img_ok("https://evil.example/x.jpg")
+
+
+def test_fetch_thumb_bytes():
+    cnew.THUMB_CACHE.clear()
+    cnew.THUMB_BYTES.clear()
+    cnew.THUMB_CACHE["4115126740"] = "https://ir.ozone.ru/s3/multimedia-1-q/c200/8511204230.jpg"
+
+    class Fake:
+        status_code = 200
+        content = b"\xff\xd8\xff" + b"x" * 80
+        headers = {"content-type": "image/jpeg"}
+
+    orig = cnew.httpx.get
+
+    def fake_get(url, **kwargs):
+        assert "ir.ozone.ru" in url
+        return Fake()
+
+    cnew.httpx.get = fake_get
+    try:
+        got = cnew.fetch_thumb_bytes("4115126740")
+        assert got and got[1] == "image/jpeg"
+        assert got[0].startswith(b"\xff\xd8\xff")
+        again = cnew.fetch_thumb_bytes("4115126740")
+        assert again[0] is got[0]
+        cnew.THUMB_CACHE["1"] = "https://evil.example/x.jpg"
+        assert cnew.fetch_thumb_bytes("1") is None
+    finally:
+        cnew.httpx.get = orig
+        cnew.THUMB_CACHE.clear()
+        cnew.THUMB_BYTES.clear()
+
+
 def test_real_analytics_report():
     if not SAMPLE.exists():
         print("skip real file")
@@ -102,5 +144,7 @@ def test_real_analytics_report():
 if __name__ == "__main__":
     test_parse_rows_minimal()
     test_save_and_delete_memory()
+    test_thumb_helpers()
+    test_fetch_thumb_bytes()
     test_real_analytics_report()
     print("ok")

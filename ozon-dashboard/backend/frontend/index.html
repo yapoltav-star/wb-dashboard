@@ -152,12 +152,13 @@ a.offer-link:hover{text-decoration:underline}
 .cnew-col h3{font-size:13px;font-weight:700;margin:0 0 10px;display:flex;align-items:center;justify-content:space-between;gap:8px}
 .cnew-row{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--oz-border)}
 .cnew-row:last-child{border-bottom:0}
+img.cnew-img,.prod-ph.cnew-img{width:40px;height:40px;border-radius:6px;object-fit:cover;background:#F0F2F5;border:1px solid var(--oz-border);flex-shrink:0;display:block}
 .cnew-rank{width:20px;flex-shrink:0;font-size:12px;font-weight:700;color:var(--oz-faint);text-align:center}
 .cnew-rank.r1{color:#B45309}
 .cnew-rank.r2{color:#6B7280}
 .cnew-rank.r3{color:#B45309}
 .cnew-body{flex:1;min-width:0}
-.cnew-name{font-size:12px;font-weight:600;color:inherit;text-decoration:none;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cnew-name{font-size:12px;font-weight:600;color:inherit;text-decoration:none;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.3}
 .cnew-name:hover{color:var(--oz-blue);text-decoration:underline}
 .cnew-meta{font-size:10px;color:var(--oz-faint);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cnew-score{font-variant-numeric:tabular-nums;font-weight:700;font-size:12px;flex-shrink:0}
@@ -5374,10 +5375,11 @@ function cnewTop(rows, field, limit) {
     .slice(0, limit || 15);
 }
 function cnewThumb(m) {
-  const img = m.primary_image;
-  if (img) return `<img src="${esc(img)}" alt="" width="32" height="32" style="width:32px;height:32px;border-radius:5px;object-fit:cover;background:#F0F2F5;border:1px solid var(--oz-border);flex-shrink:0">`;
   const ch = esc((m.brand || m.seller || m.name || '?').trim().slice(0, 1).toUpperCase() || '?');
-  return `<div class="prod-ph" style="width:32px;height:32px;flex-shrink:0">${ch}</div>`;
+  const sku = String(m.sku || '').trim();
+  if (!sku) return `<div class="prod-ph cnew-img">${ch}</div>`;
+  const src = '/api/competitors-new/thumb/' + encodeURIComponent(sku) + '?name=' + encodeURIComponent(String(m.name || '').slice(0, 80));
+  return `<img class="cnew-img" src="${esc(src)}" alt="" width="40" height="40" loading="lazy" decoding="async" data-ch="${ch}" onerror="var d=document.createElement('div');d.className='prod-ph cnew-img';d.textContent=this.dataset.ch||'?';this.replaceWith(d);">`;
 }
 function cnewHref(m) {
   return ozonProductUrl(m.sku, m.url);
@@ -5386,18 +5388,23 @@ function cnewTopCol(title, color, rows, field) {
   if (!rows.length) {
     return `<div class="cnew-col"><h3 style="color:${color}">${esc(title)}</h3><div style="font-size:12px;color:var(--oz-faint)">Нет данных</div></div>`;
   }
+  const unit = field === 'views' ? 'показы' : field === 'cart_adds' ? 'корзины' : 'заказы';
   const items = rows.map((m, i) => {
     const href = cnewHref(m);
     const rankCls = i === 0 ? ' r1' : i === 1 ? ' r2' : i === 2 ? ' r3' : '';
     const own = m.is_own ? ' <span class="tag own">мой</span>' : '';
+    const cardName = m.name || m.brand || '—';
     const name = href
-      ? `<a class="cnew-name" href="${esc(href)}" target="_blank" rel="noopener">${esc(m.brand || m.name || '—')}</a>`
-      : `<div class="cnew-name">${esc(m.brand || m.name || '—')}</div>`;
+      ? `<a class="cnew-name" href="${esc(href)}" target="_blank" rel="noopener" title="${esc(cardName)}">${esc(cardName)}</a>`
+      : `<div class="cnew-name" title="${esc(cardName)}">${esc(cardName)}</div>`;
+    const score = field === 'views' ? (Number(m.views) || 0) : (Number(m._score) || 0);
     return `<div class="cnew-row">
       <div class="cnew-rank${rankCls}">${i + 1}</div>
       ${href ? `<a href="${esc(href)}" target="_blank" rel="noopener">${cnewThumb(m)}</a>` : cnewThumb(m)}
-      <div class="cnew-body">${name}<div class="cnew-meta">${esc(m.sku || '')}${own} · ${esc(m.seller || '')}</div></div>
-      <div class="cnew-score" style="color:${color}">${fmt(m._score)}</div>
+      <div class="cnew-body">${name}<div class="cnew-meta">${esc(m.brand || '—')} · ${esc(m.sku || '')}${own} · ${esc(m.seller || '')}</div></div>
+      <div class="cnew-score" style="color:${color}" title="${esc(unit)} этой карточки">
+        ${fmt(score)}<div style="font-size:9px;font-weight:500;color:var(--oz-faint);text-align:right;margin-top:1px">${esc(unit)}</div>
+      </div>
     </div>`;
   }).join('');
   return `<div class="cnew-col"><h3 style="color:${color}">${esc(title)}<span style="font-weight:500;color:var(--oz-faint);font-size:11px">${rows.length}</span></h3>${items}</div>`;
@@ -5568,9 +5575,9 @@ function drawCompetitorsNew() {
     return `<tr>
       <td class="mono">${i + 1}</td>
       <td>${name}</td>
+      <td class="mono" style="font-weight:700;color:#2563EB">${fmt(m.views)}</td>
       <td>${esc(m.seller || '—')}</td>
       <td>${esc(m.brand || '—')}</td>
-      <td class="mono">${fmt(m.views)}</td>
       <td class="mono">${fmt(m.cart_adds)}</td>
       <td class="mono">${fmt(m.ordered_qty)}</td>
       <td class="mono">${money(m.ordered_sum)}</td>
@@ -5582,8 +5589,8 @@ function drawCompetitorsNew() {
   if (root) {
     root.innerHTML = `<div class="tbl-wrap"><table>
       <thead><tr>
-        <th>#</th><th>Товар</th><th>Продавец</th><th>Бренд</th>
-        <th>Показы</th><th>Корзины ≈</th><th>Заказы</th><th>Сумма</th><th>Цена</th><th>Признак</th>
+        <th>#</th><th>Товар</th><th>Показы</th><th>Продавец</th><th>Бренд</th>
+        <th>Корзины ≈</th><th>Заказы</th><th>Сумма</th><th>Цена</th><th>Признак</th>
       </tr></thead>
       <tbody>${body || '<tr><td colspan="10">Нет строк по фильтру</td></tr>'}</tbody>
     </table></div>`;

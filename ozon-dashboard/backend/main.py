@@ -2139,7 +2139,27 @@ async def upload_competitors_new(file: UploadFile = File(...)):
         logger.exception("competitors-new parse")
         raise HTTPException(status_code=400, detail=f"не удалось прочитать файл: {e}") from e
     data = cnew.save_report(save_setting, get_setting, payload, products=_cnew_products())
+    rows = (payload.get("rows") or [])[:40]
+    threading.Thread(
+        target=cnew.prefetch_thumbs,
+        kwargs={"rows": rows, "save_setting": save_setting, "get_setting": get_setting, "limit": 40},
+        daemon=True,
+    ).start()
     return {"ok": True, **data}
+
+
+@app.get("/api/competitors-new/thumb/{sku}")
+def competitors_new_thumb(sku: str, name: str = ""):
+    """Миниатюра карточки конкурента — JPEG/WebP с нашего origin, без 302."""
+    got = cnew.fetch_thumb_bytes(sku, name, get_setting=get_setting)
+    if not got:
+        return Response(status_code=204)
+    data, ctype = got
+    return Response(
+        content=data,
+        media_type=ctype or "image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @app.post("/api/delete-competitors-new")

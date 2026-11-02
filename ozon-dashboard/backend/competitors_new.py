@@ -10,16 +10,22 @@ import io
 import json
 import logging
 import re
+import threading
+import time
+import urllib.parse
 import uuid
 import zipfile
 from datetime import datetime, timezone
 from typing import Callable
+
+import httpx
 
 import competitors as _comp
 
 logger = logging.getLogger("ozon-dashboard.competitors-new")
 
 KEY = "ozon_competitor_new"
+THUMBS_KEY = "ozon_competitor_thumbs"
 MAX_REPORTS = 12
 TOP_LIMIT = 15
 
@@ -28,6 +34,20 @@ CACHE: dict = {
     "active": None,  # full report with rows
     "loaded": False,
 }
+
+THUMB_CACHE: dict[str, str] = {}
+THUMB_BYTES: dict[str, tuple[bytes, str]] = {}
+_thumb_lock = threading.Lock()
+_thumb_last = 0.0
+_thumbs_loaded = False
+_THUMB_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
+_OZON_IMG_HOST = re.compile(
+    r"^(?:cdn\d*\.|ir(?:-\d+)?\.)?(?:ozone\.ru|ozonusercontent\.com)$",
+    re.I,
+)
 
 
 def _now_iso() -> str:
@@ -196,8 +216,11 @@ def mark_own_rows(rows: list[dict], products: list[dict] | None) -> None:
         hit = by_sku.get(sku) or by_pid.get(sku)
         if hit:
             r["is_own"] = True
-            r["primary_image"] = hit.get("primary_image") or r.get("primary_image") or ""
+            img = str(hit.get("primary_image") or r.get("primary_image") or "").strip()
+            r["primary_image"] = img
             r["offer_id"] = hit.get("offer_id") or ""
+            if img and sku:
+                THUMB_CACHE[sku] = _to_c200(img)
         else:
             r["is_own"] = False
 
@@ -238,6 +261,7 @@ def summarize() -> dict:
 
 
 def load_all(get_setting: Callable, products: list[dict] | None = None, active_id: str | None = None) -> dict:
+    load_thumbs(get_setting)
     raw = get_setting(KEY, None)
     if raw is None and CACHE.get("loaded") and CACHE.get("reports"):
         want = str(active_id or "").strip()
@@ -266,6 +290,7 @@ def load_all(get_setting: Callable, products: list[dict] | None = None, active_i
             continue
         if r.get("rows"):
             mark_own_rows(r.get("rows") or [], products)
+            apply_thumbs(r.get("rows") or [])
         metas.append(r)
         if want and r.get("id") == want:
             active = r
@@ -283,8 +308,10 @@ def save_report(
     payload: dict,
     products: list[dict] | None = None,
 ) -> dict:
+    load_thumbs(get_setting)
     if products is not None:
         mark_own_rows(payload.get("rows") or [], products)
+    apply_thumbs(payload.get("rows") or [])
     blob = _load_json(get_setting, KEY, {}) or {}
     reports = blob.get("reports") if isinstance(blob, dict) else []
     if not isinstance(reports, list):
@@ -364,3 +391,184 @@ def top_rows(rows: list[dict], field: str, limit: int = TOP_LIMIT) -> list[dict]
             scored.append((score, r))
     scored.sort(key=lambda x: -x[0])
     return [r for _, r in scored[:limit]]
+
+
+def _to_c200(url: str) -> str:
+    if not url:
+        return url
+    url = re.sub(r"/c\d+/", "/c200/", url)
+    if "/c200/" in url or "/wc50/" in url:
+        return url
+    return re.sub(
+        r"(multimedia[^/]+)/(\d+\.(?:jpg|jpeg|webp))",
+        r"\1/c200/\2",
+        url,
+        flags=re.I,
+    )
+
+
+def _ozon_img_ok(url: str) -> bool:
+    host = (urllib.parse.urlparse(url).netloc or "").split(":")[0].lower()
+    return bool(host and _OZON_IMG_HOST.match(host))
+
+
+def _parse_ozon_imgs(html: str) -> list[str]:
+    found: list[str] = []
+    for m in re.finditer(
+        r"https://(?:cdn1|ir(?:-\d+)?)\.ozone\.ru/s3/multimedia[^\"\\<>\s]+",
+        html or "",
+    ):
+        u = m.group(0).replace("\\/", "/")
+        u = u.split("&quot;")[0].split('"')[0].split("\\")[0]
+        if "rp-photo" in u or "video-" in u or "abt-challenge" in u:
+            continue
+        if not re.search(r"\.(jpg|jpeg|webp)(?:$|\?)", u, re.I):
+            continue
+        if u not in found:
+            found.append(u)
+    return found
+
+
+def load_thumbs(get_setting: Callable | None) -> None:
+    global _thumbs_loaded
+    if _thumbs_loaded:
+        return
+    _thumbs_loaded = True
+    if not get_setting:
+        return
+    data = _load_json(get_setting, THUMBS_KEY, {}) or {}
+    if not isinstance(data, dict):
+        return
+    for k, v in data.items():
+        sku, url = str(k or "").strip(), str(v or "").strip()
+        if sku and url and sku not in THUMB_CACHE:
+            THUMB_CACHE[sku] = url
+
+
+def persist_thumbs(save_setting: Callable | None) -> None:
+    if not save_setting:
+        return
+    try:
+        save_setting(THUMBS_KEY, dict(THUMB_CACHE))
+    except Exception as e:
+        logger.warning("thumbs persist: %s", e)
+
+
+def apply_thumbs(rows: list[dict] | None) -> None:
+    for r in rows or []:
+        if r.get("primary_image"):
+            continue
+        sku = str(r.get("sku") or "").strip()
+        url = THUMB_CACHE.get(sku) or ""
+        if url:
+            r["primary_image"] = url
+
+
+def _yandex_lookup(sku: str, name: str) -> str | None:
+    parts = []
+    title = (name or "").strip()[:70]
+    if title:
+        parts.append(f'"{title}"')
+    if sku:
+        parts.append(sku)
+    parts.append("site:ozon.ru")
+    url = "https://yandex.ru/images/search?text=" + urllib.parse.quote(" ".join(parts))
+    resp = httpx.get(
+        url,
+        headers={"User-Agent": _THUMB_UA, "Accept-Language": "ru-RU,ru;q=0.9"},
+        timeout=12.0,
+        follow_redirects=True,
+    )
+    if resp.status_code != 200 or not resp.text:
+        return None
+    imgs = _parse_ozon_imgs(resp.text)
+    return _to_c200(imgs[0]) if imgs else None
+
+
+def get_thumb(sku: str, name: str = "", get_setting: Callable | None = None) -> str | None:
+    sku = str(sku or "").strip()
+    if not sku.isdigit():
+        return None
+    if sku in THUMB_CACHE:
+        return THUMB_CACHE[sku] or None
+    load_thumbs(get_setting)
+    if sku in THUMB_CACHE:
+        return THUMB_CACHE[sku] or None
+    with _thumb_lock:
+        if sku in THUMB_CACHE:
+            return THUMB_CACHE[sku] or None
+        global _thumb_last
+        wait = 0.4 - (time.monotonic() - _thumb_last)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            url = _yandex_lookup(sku, name) or ""
+        except Exception as e:
+            logger.warning("thumb %s: %s", sku, e)
+            url = ""
+        _thumb_last = time.monotonic()
+        THUMB_CACHE[sku] = url
+        return url or None
+
+
+def fetch_thumb_bytes(
+    sku: str,
+    name: str = "",
+    get_setting: Callable | None = None,
+) -> tuple[bytes, str] | None:
+    """Скачать JPEG/WebP с CDN и отдать байты — img src остаётся same-origin."""
+    sku = str(sku or "").strip()
+    if not sku.isdigit():
+        return None
+    cached = THUMB_BYTES.get(sku)
+    if cached:
+        return cached
+    url = get_thumb(sku, name, get_setting=get_setting)
+    if not url or not _ozon_img_ok(url):
+        return None
+    try:
+        resp = httpx.get(
+            url,
+            headers={
+                "User-Agent": _THUMB_UA,
+                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                "Referer": "https://www.ozon.ru/",
+            },
+            timeout=8.0,
+            follow_redirects=True,
+        )
+        data = resp.content or b""
+        if resp.status_code != 200 or len(data) < 32:
+            return None
+        ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+        if not ctype.startswith("image/"):
+            if data[:3] == b"\xff\xd8\xff":
+                ctype = "image/jpeg"
+            elif data[:8] == b"\x89PNG\r\n\x1a\n":
+                ctype = "image/png"
+            elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+                ctype = "image/webp"
+            else:
+                return None
+        THUMB_BYTES[sku] = (data, ctype)
+        return THUMB_BYTES[sku]
+    except Exception as e:
+        logger.warning("thumb bytes %s: %s", sku, e)
+        return None
+
+
+def prefetch_thumbs(
+    rows: list[dict] | None,
+    save_setting: Callable | None = None,
+    get_setting: Callable | None = None,
+    limit: int = 40,
+) -> None:
+    load_thumbs(get_setting)
+    ranked = sorted(rows or [], key=lambda r: -(int(r.get("views") or 0)))[:limit]
+    for r in ranked:
+        sku = str(r.get("sku") or "")
+        get_thumb(sku, r.get("name") or "", get_setting=get_setting)
+        if sku and THUMB_CACHE.get(sku):
+            r["primary_image"] = r.get("primary_image") or THUMB_CACHE.get(sku)
+            fetch_thumb_bytes(sku, r.get("name") or "", get_setting=get_setting)
+    persist_thumbs(save_setting)
