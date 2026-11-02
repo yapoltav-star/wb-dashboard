@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 import ads
 import coinvest as coin
 import competitors as comp
+import competitors_new as cnew
 import costs as costmod
 import discounted as discmod
 import finance as fin
@@ -2100,6 +2101,75 @@ def competitors_own_brand(body: dict = Body(...)):
     """Сохранить «мой бренд» для сравнения в отчёте бренда."""
     brand = body.get("brand")
     data = comp.set_own_brand(save_setting, get_setting, brand)
+    return {"ok": True, **data}
+
+
+def _cnew_products() -> list:
+    try:
+        return load_products_from_db()
+    except Exception as e:
+        logger.warning("competitors-new products: %s", e)
+        return []
+
+
+@app.get("/api/competitors-new")
+def get_competitors_new(id: str | None = None):
+    """Отчёты аналитики категории (Конкуренты.new)."""
+    try:
+        return cnew.load_all(get_setting, products=_cnew_products(), active_id=id)
+    except Exception as e:
+        logger.warning("competitors-new load: %s", e)
+        return cnew.summarize()
+
+
+@app.post("/api/upload-competitors-new")
+async def upload_competitors_new(file: UploadFile = File(...)):
+    """xlsx analytics_report → топ по показам / корзинам / заказам."""
+    name = file.filename or "analytics_report.xlsx"
+    if not name.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="нужен файл .xlsx (analytics_report)")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="пустой файл")
+    try:
+        payload = cnew.parse_analytics_xlsx(content, filename=name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("competitors-new parse")
+        raise HTTPException(status_code=400, detail=f"не удалось прочитать файл: {e}") from e
+    data = cnew.save_report(save_setting, get_setting, payload, products=_cnew_products())
+    return {"ok": True, **data}
+
+
+@app.post("/api/delete-competitors-new")
+def delete_competitors_new(body: dict = Body(...)):
+    """Удалить отчёт аналитики. {id} или {all: true}."""
+    report_id = body.get("id")
+    clear_all = bool(body.get("all") or body.get("clear_all"))
+    try:
+        data = cnew.delete_report(
+            save_setting,
+            get_setting,
+            report_id=str(report_id) if report_id else None,
+            clear_all=clear_all,
+            products=_cnew_products(),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, **data}
+
+
+@app.post("/api/competitors-new-active")
+def competitors_new_active(body: dict = Body(...)):
+    """Выбрать активный отчёт аналитики."""
+    report_id = str(body.get("id") or "").strip()
+    if not report_id:
+        raise HTTPException(status_code=400, detail="нужен id")
+    try:
+        data = cnew.set_active(save_setting, get_setting, report_id, products=_cnew_products())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"ok": True, **data}
 
 

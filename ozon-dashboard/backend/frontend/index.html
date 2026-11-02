@@ -147,6 +147,26 @@ a.offer-link:hover{text-decoration:underline}
 .tag.stock{background:var(--oz-blue-light);color:var(--oz-blue)}
 .empty{padding:48px 24px;text-align:center;color:var(--oz-muted);font-size:14px}
 .empty b{display:block;color:var(--oz-text);margin-bottom:6px;font-size:15px}
+.cnew-tops{display:flex;gap:12px;flex-wrap:wrap;margin:0 0 16px}
+.cnew-col{flex:1;min-width:280px;background:var(--oz-surface);border:1px solid var(--oz-border);border-radius:var(--r);padding:12px 14px}
+.cnew-col h3{font-size:13px;font-weight:700;margin:0 0 10px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.cnew-row{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--oz-border)}
+.cnew-row:last-child{border-bottom:0}
+.cnew-rank{width:20px;flex-shrink:0;font-size:12px;font-weight:700;color:var(--oz-faint);text-align:center}
+.cnew-rank.r1{color:#B45309}
+.cnew-rank.r2{color:#6B7280}
+.cnew-rank.r3{color:#B45309}
+.cnew-body{flex:1;min-width:0}
+.cnew-name{font-size:12px;font-weight:600;color:inherit;text-decoration:none;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cnew-name:hover{color:var(--oz-blue);text-decoration:underline}
+.cnew-meta{font-size:10px;color:var(--oz-faint);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cnew-score{font-variant-numeric:tabular-nums;font-weight:700;font-size:12px;flex-shrink:0}
+.cnew-sessions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.cnew-chip{border:1px solid var(--oz-border);background:var(--oz-surface);border-radius:999px;padding:4px 10px;font-size:11px;cursor:pointer;color:var(--oz-muted);font-family:inherit}
+.cnew-chip.on{border-color:var(--oz-blue);background:var(--oz-blue-light);color:var(--oz-blue);font-weight:600}
+.cnew-chip .x{margin-left:6px;color:var(--oz-faint)}
+.cnew-chip .x:hover{color:var(--red)}
+.tag.own{background:#ECFDF3;color:#027A48}
 
 .matrix-wrap{overflow-x:auto;border:1px solid var(--oz-border);border-radius:var(--r);background:var(--oz-surface);-webkit-overflow-scrolling:touch}
 .matrix{border-collapse:separate;border-spacing:0;font-size:12px;min-width:100%;table-layout:fixed}
@@ -402,6 +422,7 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
     <div class="tb-nav-item soon" data-sec="orders" title="Скоро">Заказы</div>
     <div class="tb-nav-item" data-sec="reviews" onclick="showSection('reviews',this)">Отзывы</div>
     <div class="tb-nav-item" data-sec="competitors" onclick="showSection('competitors',this)">Конкуренты</div>
+    <div class="tb-nav-item" data-sec="competitors-new" onclick="showSection('competitors-new',this)">Конкуренты.new</div>
     <div class="tb-nav-item soon" data-sec="ads" title="Скоро">Реклама</div>
     <div class="tb-nav-item" data-sec="finance" onclick="showSection('finance',this)">Финансы</div>
   </div>
@@ -856,6 +877,34 @@ select.neg-sel{border:1px solid var(--oz-border);border-radius:var(--rs);padding
   <div class="empty" id="compareEmpty" style="display:none"><b>Сравнение</b>Укажи мой бренд и конкурента с загруженными отчётами.</div>
 </div>
 
+<!-- COMPETITORS.NEW: analytics_report → топы как на WB -->
+<div class="page" id="page-competitors-new">
+  <div class="banner" id="cnewBanner" style="display:none"></div>
+  <div class="cards" id="cnewCards"></div>
+  <div class="toolbar">
+    <div class="search">
+      <input id="cnewSearch" placeholder="Товар / бренд / продавец / SKU…" oninput="drawCompetitorsNew()">
+    </div>
+    <button class="filter-btn on" id="cnewFltAll" onclick="setCnewFilter('all')">Все</button>
+    <button class="filter-btn" id="cnewFltOwn" onclick="setCnewFilter('own')">Мои</button>
+    <button class="filter-btn" id="cnewFltOther" onclick="setCnewFilter('other')">Чужие</button>
+    <span style="font-size:12px;color:var(--oz-muted);margin-left:8px">Топ:</span>
+    <button class="filter-btn on" id="cnewSortViews" onclick="setCnewSort('views')">Показы</button>
+    <button class="filter-btn" id="cnewSortCart" onclick="setCnewSort('cart_adds')">Корзины</button>
+    <button class="filter-btn" id="cnewSortOrders" onclick="setCnewSort('ordered_qty')">Заказы</button>
+    <span id="cnewInfo" style="font-size:12px;color:var(--oz-muted);margin-left:8px"></span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="action-btn" id="cnewDelBtn" onclick="deleteCompetitorsNew(false)" style="display:none">🗑 Удалить</button>
+      <button class="action-btn" id="cnewDelAllBtn" onclick="deleteCompetitorsNew(true)" style="display:none">🗑 Удалить все</button>
+      <button class="action-btn primary" onclick="document.getElementById('cnewFileInput').click()">📊 Загрузить Excel</button>
+      <input type="file" id="cnewFileInput" accept=".xlsx" style="display:none" onchange="uploadCompetitorsNew(this.files[0])">
+    </div>
+  </div>
+  <div id="cnewSessions" class="cnew-sessions"></div>
+  <div id="cnewTops"></div>
+  <div id="cnewRoot"><div class="empty"><b>Конкуренты.new</b>Загрузи analytics_report.xlsx из аналитики Ozon — сразу топ по показам, корзинам и заказам (как на WB).</div></div>
+</div>
+
 <!-- ADS -->
 <div class="page" id="page-ads">
   <div class="banner" id="adsBanner" style="display:none"></div>
@@ -1013,6 +1062,13 @@ function showSection(sec, el) {
     showCompPage(COMP_PAGE || 'position');
     return;
   }
+  if (sec === 'competitors-new') {
+    btn.textContent = 'Загрузить Excel';
+    const page = document.getElementById('page-competitors-new');
+    if (page) page.classList.add('on');
+    renderCompetitorsNew(true);
+    return;
+  }
   if (sec === 'stocks') {
     showStocksPage(STOCKS_PAGE || 'matrix');
     return;
@@ -1096,6 +1152,7 @@ function topSync() {
   else if (CURRENT === 'orders') triggerOrdersSync();
   else if (CURRENT === 'reviews') triggerReviewsSync();
   else if (CURRENT === 'competitors') document.getElementById('compFileInput')?.click();
+  else if (CURRENT === 'competitors-new') document.getElementById('cnewFileInput')?.click();
   else if (CURRENT === 'ads') triggerAdsSync();
   else if (CURRENT === 'finance') triggerFinanceSync();
   else syncProducts();
@@ -5285,6 +5342,270 @@ function renderCompareCharts(own, rival) {
   const rStock = H.byStock(rivalRows), mStock = H.byStock(ownRows);
   makeBarChart('cmp-stock-rival', H.lab(rStock), [{ label: 'Остаток, шт', data: rStock.map(r => r.stock || 0), backgroundColor: rStock.map(r => (r.stock || 0) === 0 ? 'rgba(240,68,56,0.75)' : rivalColor), borderRadius: 4 }], { fullLabels: H.full(rStock), rows: rStock });
   makeBarChart('cmp-stock-me', H.lab(mStock), [{ label: 'Остаток, шт', data: mStock.map(r => r.stock || 0), backgroundColor: mStock.map(r => (r.stock || 0) === 0 ? 'rgba(240,68,56,0.75)' : meColor), borderRadius: 4 }], { fullLabels: H.full(mStock), rows: mStock });
+}
+
+/* ── Конкуренты.new: analytics_report → топы как на WB ── */
+let CNEW = { reports: [], active: null, active_id: null, _loaded: false };
+let CNEW_FILTER = 'all';
+let CNEW_SORT = 'views';
+
+function setCnewFilter(v) {
+  CNEW_FILTER = v;
+  ['All', 'Own', 'Other'].forEach(x => {
+    const el = document.getElementById('cnewFlt' + x);
+    if (el) el.classList.toggle('on', (x === 'All' && v === 'all') || (x === 'Own' && v === 'own') || (x === 'Other' && v === 'other'));
+  });
+  drawCompetitorsNew();
+}
+function setCnewSort(v) {
+  CNEW_SORT = v;
+  const map = { views: 'cnewSortViews', cart_adds: 'cnewSortCart', ordered_qty: 'cnewSortOrders' };
+  Object.entries(map).forEach(([k, id]) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('on', k === v);
+  });
+  drawCompetitorsNew();
+}
+function cnewTop(rows, field, limit) {
+  return [...(rows || [])]
+    .map(m => ({ ...m, _score: Number(m[field]) || 0 }))
+    .filter(m => m._score > 0)
+    .sort((a, b) => b._score - a._score)
+    .slice(0, limit || 15);
+}
+function cnewThumb(m) {
+  const img = m.primary_image;
+  if (img) return `<img src="${esc(img)}" alt="" width="32" height="32" style="width:32px;height:32px;border-radius:5px;object-fit:cover;background:#F0F2F5;border:1px solid var(--oz-border);flex-shrink:0">`;
+  const ch = esc((m.brand || m.seller || m.name || '?').trim().slice(0, 1).toUpperCase() || '?');
+  return `<div class="prod-ph" style="width:32px;height:32px;flex-shrink:0">${ch}</div>`;
+}
+function cnewHref(m) {
+  return ozonProductUrl(m.sku, m.url);
+}
+function cnewTopCol(title, color, rows, field) {
+  if (!rows.length) {
+    return `<div class="cnew-col"><h3 style="color:${color}">${esc(title)}</h3><div style="font-size:12px;color:var(--oz-faint)">Нет данных</div></div>`;
+  }
+  const items = rows.map((m, i) => {
+    const href = cnewHref(m);
+    const rankCls = i === 0 ? ' r1' : i === 1 ? ' r2' : i === 2 ? ' r3' : '';
+    const own = m.is_own ? ' <span class="tag own">мой</span>' : '';
+    const name = href
+      ? `<a class="cnew-name" href="${esc(href)}" target="_blank" rel="noopener">${esc(m.brand || m.name || '—')}</a>`
+      : `<div class="cnew-name">${esc(m.brand || m.name || '—')}</div>`;
+    return `<div class="cnew-row">
+      <div class="cnew-rank${rankCls}">${i + 1}</div>
+      ${href ? `<a href="${esc(href)}" target="_blank" rel="noopener">${cnewThumb(m)}</a>` : cnewThumb(m)}
+      <div class="cnew-body">${name}<div class="cnew-meta">${esc(m.sku || '')}${own} · ${esc(m.seller || '')}</div></div>
+      <div class="cnew-score" style="color:${color}">${fmt(m._score)}</div>
+    </div>`;
+  }).join('');
+  return `<div class="cnew-col"><h3 style="color:${color}">${esc(title)}<span style="font-weight:500;color:var(--oz-faint);font-size:11px">${rows.length}</span></h3>${items}</div>`;
+}
+async function renderCompetitorsNew(force) {
+  if (force || !CNEW._loaded) await loadCompetitorsNew();
+  drawCompetitorsNew();
+}
+async function loadCompetitorsNew(id) {
+  try {
+    const q = id ? ('?id=' + encodeURIComponent(id)) : '';
+    const r = await fetch('/api/competitors-new' + q);
+    CNEW = await r.json();
+    CNEW._loaded = true;
+  } catch (e) {
+    CNEW = { reports: [], active: null, _loaded: true, error: String(e) };
+  }
+}
+async function uploadCompetitorsNew(file) {
+  if (!file) return;
+  const root = document.getElementById('cnewRoot');
+  const tops = document.getElementById('cnewTops');
+  if (root) root.innerHTML = '<div class="loading"><div class="spinner"></div>Парсим отчёт…</div>';
+  if (tops) tops.innerHTML = '';
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch('/api/upload-competitors-new', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : (d.error || ('HTTP ' + r.status)));
+    CNEW = d;
+    CNEW._loaded = true;
+    drawCompetitorsNew();
+  } catch (e) {
+    if (root) root.innerHTML = `<div class="empty"><b>Ошибка загрузки</b>${esc(e.message || e)}</div>`;
+  } finally {
+    const inp = document.getElementById('cnewFileInput');
+    if (inp) inp.value = '';
+  }
+}
+async function selectCompetitorsNew(id) {
+  if (!id || id === CNEW.active_id) return;
+  try {
+    const r = await fetch('/api/competitors-new-active', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : 'не удалось выбрать отчёт');
+    CNEW = d;
+    CNEW._loaded = true;
+    drawCompetitorsNew();
+  } catch (e) {
+    alert(e.message || e);
+  }
+}
+async function deleteCompetitorsNew(all) {
+  const label = all ? 'все отчёты Конкуренты.new' : 'этот отчёт';
+  if (!confirm('Удалить ' + label + '?')) return;
+  try {
+    const r = await fetch('/api/delete-competitors-new', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(all ? { all: true } : { id: CNEW.active_id }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : 'не удалось удалить');
+    CNEW = d;
+    CNEW._loaded = true;
+    drawCompetitorsNew();
+  } catch (e) {
+    alert(e.message || e);
+  }
+}
+function drawCompetitorsNew() {
+  const active = CNEW.active || null;
+  const rows = (active && active.rows) || [];
+  const banner = document.getElementById('cnewBanner');
+  const cards = document.getElementById('cnewCards');
+  const sessions = document.getElementById('cnewSessions');
+  const topsEl = document.getElementById('cnewTops');
+  const root = document.getElementById('cnewRoot');
+  const delBtn = document.getElementById('cnewDelBtn');
+  const delAllBtn = document.getElementById('cnewDelAllBtn');
+  const reports = CNEW.reports || [];
+
+  if (delBtn) delBtn.style.display = active ? '' : 'none';
+  if (delAllBtn) delAllBtn.style.display = reports.length > 1 ? '' : 'none';
+
+  if (banner) {
+    if (active) {
+      const bits = [
+        active.category || 'Категория',
+        active.period || '',
+        active.price_filter || '',
+        active.filename || '',
+      ].filter(Boolean);
+      banner.style.display = '';
+      banner.className = 'banner ok';
+      banner.textContent = bits.join(' · ') + ' · ' + fmt(rows.length) + ' карточек. Корзины считаем из % конверсии в отчёте (Ozon не отдаёт штуки).';
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+
+  if (sessions) {
+    if (reports.length) {
+      sessions.innerHTML = reports.map(r => {
+        const on = r.id === (CNEW.active_id || (active && active.id));
+        const label = [r.category || 'отчёт', r.period || '', r.formed_at || ''].filter(Boolean).join(' · ');
+        return `<button class="cnew-chip${on ? ' on' : ''}" onclick="selectCompetitorsNew('${esc(r.id)}')">${esc(label)} <span class="x" onclick="event.stopPropagation();deleteOneCnew('${esc(r.id)}')">×</span></button>`;
+      }).join('');
+    } else sessions.innerHTML = '';
+  }
+
+  if (!active) {
+    if (cards) cards.innerHTML = '';
+    if (topsEl) topsEl.innerHTML = '';
+    if (root) root.innerHTML = '<div class="empty"><b>Конкуренты.new</b>Загрузи analytics_report.xlsx из аналитики Ozon — сразу топ по показам, корзинам и заказам (как на WB).</div>';
+    const info0 = document.getElementById('cnewInfo');
+    if (info0) info0.textContent = '';
+    return;
+  }
+
+  const q = (document.getElementById('cnewSearch')?.value || '').trim().toLowerCase();
+  let list = rows;
+  if (CNEW_FILTER === 'own') list = list.filter(r => r.is_own);
+  if (CNEW_FILTER === 'other') list = list.filter(r => !r.is_own);
+  if (q) {
+    list = list.filter(r => [r.name, r.brand, r.seller, r.sku, r.flag].join(' ').toLowerCase().includes(q));
+  }
+
+  const totViews = rows.reduce((s, r) => s + (Number(r.views) || 0), 0);
+  const totCarts = rows.reduce((s, r) => s + (Number(r.cart_adds) || 0), 0);
+  const totOrders = rows.reduce((s, r) => s + (Number(r.ordered_qty) || 0), 0);
+  const totSum = rows.reduce((s, r) => s + (Number(r.ordered_sum) || 0), 0);
+  if (cards) {
+    cards.innerHTML = `
+      <div class="card"><div class="card-l">Карточек</div><div class="card-v">${fmt(rows.length)}</div><div class="card-sub">моих ${fmt(rows.filter(r => r.is_own).length)}</div></div>
+      <div class="card"><div class="card-l">Показы</div><div class="card-v">${fmt(totViews)}</div></div>
+      <div class="card"><div class="card-l">Корзины ≈</div><div class="card-v">${fmt(totCarts)}</div><div class="card-sub">из % конверсии</div></div>
+      <div class="card"><div class="card-l">Заказы</div><div class="card-v">${fmt(totOrders)}</div><div class="card-sub">${money(totSum)}</div></div>`;
+  }
+
+  const topViews = cnewTop(list, 'views', 15);
+  const topCarts = cnewTop(list, 'cart_adds', 15);
+  const topOrders = cnewTop(list, 'ordered_qty', 15);
+  if (topsEl) {
+    topsEl.innerHTML = `<div class="cnew-tops">
+      ${cnewTopCol('Топ по показам', '#2563EB', topViews, 'views')}
+      ${cnewTopCol('Топ по корзинам', '#059669', topCarts, 'cart_adds')}
+      ${cnewTopCol('Топ по заказам', '#EA580C', topOrders, 'ordered_qty')}
+    </div>`;
+  }
+
+  const sortKey = CNEW_SORT;
+  const sorted = [...list].sort((a, b) => (Number(b[sortKey]) || 0) - (Number(a[sortKey]) || 0));
+  const shown = sorted.slice(0, 1000);
+  const info = document.getElementById('cnewInfo');
+  if (info) info.textContent = shown.length === list.length ? `${fmt(list.length)} шт` : `${fmt(shown.length)} из ${fmt(list.length)}`;
+
+  const body = shown.map((m, i) => {
+    const href = cnewHref(m);
+    const name = href
+      ? `<a class="prod-link" href="${esc(href)}" target="_blank" rel="noopener"><div class="prod-mini">${cnewThumb(m)}<div><div class="prod-name" style="font-family:inherit;max-width:340px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.name || '—')}</div><div class="prod-meta">${esc(m.sku || '')}${m.is_own ? ' · мой' : ''}</div></div></a>`
+      : `<div class="prod-mini">${cnewThumb(m)}<div class="prod-name" style="font-family:inherit">${esc(m.name || '—')}</div></div>`;
+    return `<tr>
+      <td class="mono">${i + 1}</td>
+      <td>${name}</td>
+      <td>${esc(m.seller || '—')}</td>
+      <td>${esc(m.brand || '—')}</td>
+      <td class="mono">${fmt(m.views)}</td>
+      <td class="mono">${fmt(m.cart_adds)}</td>
+      <td class="mono">${fmt(m.ordered_qty)}</td>
+      <td class="mono">${money(m.ordered_sum)}</td>
+      <td class="mono">${money(m.avg_price)}</td>
+      <td>${m.flag ? `<span class="tag">${esc(m.flag)}</span>` : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  if (root) {
+    root.innerHTML = `<div class="tbl-wrap"><table>
+      <thead><tr>
+        <th>#</th><th>Товар</th><th>Продавец</th><th>Бренд</th>
+        <th>Показы</th><th>Корзины ≈</th><th>Заказы</th><th>Сумма</th><th>Цена</th><th>Признак</th>
+      </tr></thead>
+      <tbody>${body || '<tr><td colspan="10">Нет строк по фильтру</td></tr>'}</tbody>
+    </table></div>`;
+  }
+}
+async function deleteOneCnew(id) {
+  if (!id) return;
+  if (!confirm('Удалить этот отчёт?')) return;
+  try {
+    const r = await fetch('/api/delete-competitors-new', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : 'не удалось удалить');
+    CNEW = d;
+    CNEW._loaded = true;
+    drawCompetitorsNew();
+  } catch (e) {
+    alert(e.message || e);
+  }
 }
 
 /* ── Реклама ── */
