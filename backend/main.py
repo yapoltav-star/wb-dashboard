@@ -7277,6 +7277,180 @@ def _enrich_competitor_metrics_prices(metrics: list) -> list:
         out.append(item)
     return out
 
+
+# ---------- Остатки конкурентов по складам (витрина card.wb.ru) ----------
+# Excel «Сравнение карточек» остатков не даёт — тянем живьём по nm_id.
+COMPETITOR_STOCK_CACHE = {"by_nm": {}, "loaded_at": 0.0, "as_of": None, "error": None}
+# Один dest на макрорегион — чтобы поймать региональный FBS, не гоняя все города «Новых остатков».
+COMPETITOR_STOCK_CITIES = [
+    c for c in NEW_STOCK_CITIES
+    if c.get("id") in {"msk", "spb", "krd", "ekb", "nsk", "kzn"}
+]
+
+
+def _competitor_stock_wh_qtys(product: dict) -> dict:
+    """wid → qty по sizes[].stocks (сумма размеров). Без product.stocks — там часто дубль."""
+    by_wh = {}
+    if not isinstance(product, dict):
+        return by_wh
+    sizes = product.get("sizes") or []
+    blobs = []
+    for sz in sizes:
+        if isinstance(sz, dict) and sz.get("stocks"):
+            blobs.append(sz.get("stocks"))
+    if not blobs and product.get("stocks"):
+        blobs.append(product.get("stocks"))
+    for stocks in blobs:
+        if not isinstance(stocks, list):
+            continue
+        for st in stocks:
+            if not isinstance(st, dict):
+                continue
+            wid = _new_stock_wh_int(st.get("wh") or st.get("whId") or st.get("warehouseId"))
+            if wid is None:
+                continue
+            try:
+                q = int(st.get("qty") if st.get("qty") is not None else st.get("quantity") or 0)
+            except Exception:
+                q = 0
+            if q > 0:
+                by_wh[wid] = by_wh.get(wid, 0) + q
+    return by_wh
+
+
+def _competitor_stock_merge_product(acc: dict, product: dict, stores: dict):
+    """В acc[nm] копим склады: max qty по wid между dest (один склад не суммируем дважды)."""
+    try:
+        nm = int(product.get("id") or product.get("nmId") or product.get("nm_id"))
+    except Exception:
+        return
+    slot = acc.setdefault(nm, {})
+    for wid, qty in _competitor_stock_wh_qtys(product).items():
+        if _new_stock_store_is_pickup(wid, stores):
+            continue
+        prev = slot.get(wid) or 0
+        if qty > prev:
+            slot[wid] = qty
+
+
+def _competitor_stock_pack_row(nm: int, by_wh: dict, stores: dict) -> dict:
+    warehouses = []
+    for wid, qty in (by_wh or {}).items():
+        meta = stores.get(wid) if stores else None
+        meta = meta if isinstance(meta, dict) else {}
+        name = str(meta.get("name") or "").strip() or f"Склад {wid}"
+        if _fbs_wh_is_ignored(name):
+            continue
+        warehouses.append({
+            "id": wid,
+            "name": name,
+            "qty": int(qty or 0),
+            "is_wb": bool(meta.get("is_wb")),
+            "type": meta.get("type"),
+        })
+    warehouses.sort(key=lambda w: (-int(w.get("qty") or 0), str(w.get("name") or "")))
+    total = sum(int(w.get("qty") or 0) for w in warehouses)
+    return {
+        "nm_id": nm,
+        "total": total,
+        "warehouse_count": len(warehouses),
+        "warehouses": warehouses,
+    }
+
+
+def fetch_competitor_stocks(nm_ids: list, force: bool = False) -> dict:
+    """Живые остатки по складам для nm_id конкурентов (и своих) с витрины WB."""
+    ids = []
+    seen = set()
+    for x in nm_ids or []:
+        try:
+            n = int(x)
+        except (TypeError, ValueError):
+            continue
+        if n and n not in seen:
+            seen.add(n)
+            ids.append(n)
+    if not ids:
+        return {"items": {}, "as_of": None, "error": None, "cities": []}
+
+    now = time.time()
+    cached = COMPETITOR_STOCK_CACHE.get("by_nm") or {}
+    cache_ts = float(COMPETITOR_STOCK_CACHE.get("loaded_at") or 0)
+    fresh = {}
+    missing = []
+    if force:
+        missing = list(ids)
+    elif cached and now - cache_ts < 10 * 60:
+        for n in ids:
+            if n in cached:
+                fresh[n] = cached[n]
+            else:
+                missing.append(n)
+    else:
+        missing = list(ids)
+
+    error = None
+    if missing:
+        stores = _new_stock_load_stores()
+        acc = {}
+        cities_used = []
+        blocked = 0
+        for city in COMPETITOR_STOCK_CITIES:
+            # Фиксированный dest из справочника — без geo-resolve (быстрее и стабильнее для батча).
+            try:
+                dest = int(city.get("dest") or -1257786)
+            except Exception:
+                dest = -1257786
+            cities_used.append({"id": city.get("id"), "name": city.get("name"), "dest": dest})
+            for i in range(0, len(missing), 25):
+                got = _fetch_card_detail(missing[i:i + 25], dest)
+                if got.get("status") == 403:
+                    blocked += 1
+                for p in got.get("products") or []:
+                    _competitor_stock_merge_product(acc, p, stores)
+                time.sleep(0.25)
+        for n in missing:
+            row = _competitor_stock_pack_row(n, acc.get(n) or {}, stores)
+            fresh[n] = row
+            cached[n] = row
+        COMPETITOR_STOCK_CACHE["by_nm"] = cached
+        COMPETITOR_STOCK_CACHE["loaded_at"] = now
+        COMPETITOR_STOCK_CACHE["as_of"] = _msk_now().strftime("%d.%m.%Y %H:%M")
+        if blocked and not any(int((fresh.get(n) or {}).get("total") or 0) > 0 for n in missing):
+            error = "WB витрина временно закрыла доступ (403). Подожди и обнови остатки."
+            COMPETITOR_STOCK_CACHE["error"] = error
+        else:
+            COMPETITOR_STOCK_CACHE["error"] = None
+        city_meta = cities_used
+    else:
+        city_meta = [{"id": c.get("id"), "name": c.get("name")} for c in COMPETITOR_STOCK_CITIES]
+        error = COMPETITOR_STOCK_CACHE.get("error")
+
+    return {
+        "items": {str(n): fresh[n] for n in ids if n in fresh},
+        "as_of": COMPETITOR_STOCK_CACHE.get("as_of"),
+        "error": error,
+        "cities": city_meta,
+        "cached": not bool(missing),
+    }
+
+
+@app.post("/api/competitor-stocks")
+def competitor_stocks(request: dict):
+    """Остатки по складам для nm_id из сравнения карточек (живая витрина WB)."""
+    raw = request.get("nm_ids") if isinstance(request, dict) else None
+    force = bool(request.get("force")) if isinstance(request, dict) else False
+    if isinstance(raw, str):
+        raw = [x.strip() for x in raw.split(",") if x.strip()]
+    if not isinstance(raw, list):
+        return {"error": "nm_ids required", "items": {}}
+    try:
+        return fetch_competitor_stocks(raw, force=force)
+    except Exception as e:
+        logger.warning(f"competitor-stocks: {e}")
+        return {"error": str(e), "items": {}}
+
+
 @app.get("/api/my-article-stats")
 def my_article_stats(begin: str, end: str, nm_ids: str = ""):
     """Тянет метрики своих артикулов с WB Analytics API за указанный период.
