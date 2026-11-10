@@ -13830,6 +13830,23 @@ def search_positions(request: dict):
     }
 
 
+_WB_BASKET_RANGES = [
+    143, 287, 431, 719, 1007, 1061, 1115, 1169, 1313, 1601, 1655, 1919,
+    2045, 2189, 2405, 2621, 2837, 3053, 3269, 3485, 3701, 3917, 4133,
+    4349, 4565, 4877, 5189, 5501, 5813, 6125, 6437, 6749, 7061, 7373,
+    7685, 7997, 8309, 8741, 9173, 9605, 10373, 11141, 11909, 12677,
+    13445, 14213,
+]
+
+
+def _wb_basket_num(nm_id: int) -> int:
+    vol = int(nm_id) // 100000
+    for i, r in enumerate(_WB_BASKET_RANGES):
+        if vol <= r:
+            return i + 1
+    return 47
+
+
 def wb_product_thumb_url(nm_id: int) -> str:
     """Публичный CDN превью карточки WB."""
     try:
@@ -13838,43 +13855,151 @@ def wb_product_thumb_url(nm_id: int) -> str:
         return ""
     vol = nm_id // 100000
     part = nm_id // 1000
-    ranges = [
-        143, 287, 431, 719, 1007, 1061, 1115, 1169, 1313, 1601, 1655, 1919,
-        2045, 2189, 2405, 2621, 2837, 3053, 3269, 3485, 3701, 3917, 4133,
-        4349, 4565, 4877, 5189, 5501, 5813, 6125, 6437, 6749, 7061, 7373,
-        7685, 7997, 8309, 8741, 9173, 9605, 10373, 11141, 11909, 12677,
-        13445, 14213,
-    ]
-    basket = 47
-    for i, r in enumerate(ranges):
-        if vol <= r:
-            basket = i + 1
-            break
+    basket = _wb_basket_num(nm_id)
     return f"https://basket-{basket:02d}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/images/tm/1.webp"
 
 
-def fetch_wb_card_brief(nm_id: int, dest: int = -1257786):
-    """Краткие данные карточки (бренд/название) через клиентский card API."""
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-        ),
-        "Accept": "*/*",
-        "Origin": "https://www.wildberries.ru",
-        "Referer": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
-    }
+def wb_product_card_json_url(nm_id: int) -> str:
+    """CDN card.json (имя/бренд) — обычно без WBAAS, в отличие от card.wb.ru."""
     try:
-        with httpx.Client(timeout=20, headers=headers, follow_redirects=True) as client:
-            resp = client.get(
-                "https://card.wb.ru/cards/v4/detail",
-                params={"appType": 1, "curr": "rub", "dest": dest, "nm": nm_id},
-            )
-            if not resp.is_success:
-                return None
-            products = resp.json().get("products") or []
-            if not products:
-                return None
+        nm_id = int(nm_id)
+    except (TypeError, ValueError):
+        return ""
+    vol = nm_id // 100000
+    part = nm_id // 1000
+    basket = _wb_basket_num(nm_id)
+    return f"https://basket-{basket:02d}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json"
+
+
+def _wb_curl_get(url: str, headers: dict | None = None, timeout: int = 25):
+    """GET через системный curl --http2: у datacenter-IP httpx часто ловит TLS/403, curl проходит."""
+    import subprocess
+    hdrs = dict(headers or {})
+    ua = hdrs.pop("User-Agent", None) or (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"
+    )
+    cmd = [
+        "curl", "-sS", "--http2", "--compressed", "--location",
+        "--max-time", str(int(timeout)),
+        "-A", ua,
+        "-w", "\n__HTTP_STATUS__:%{http_code}",
+    ]
+    for k, v in hdrs.items():
+        if v is None or v == "":
+            continue
+        cmd.extend(["-H", f"{k}: {v}"])
+    cmd.append(url)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+    except Exception as e:
+        return 0, "", str(e)
+    out = proc.stdout or ""
+    body, _, code_s = out.rpartition("\n__HTTP_STATUS__:")
+    try:
+        code = int(code_s.strip() or 0)
+    except Exception:
+        code = 0
+    if proc.returncode != 0 and not body:
+        err = (proc.stderr or "").strip() or f"curl exit {proc.returncode}"
+        return code or 0, body, err
+    return code, body, None
+
+
+def _wb_http_get_json(
+    url: str,
+    headers: dict | None = None,
+    timeout: int = 25,
+    params: dict | None = None,
+    curl_only: bool = False,
+):
+    """JSON GET: curl HTTP/2 → httpx. Возвращает (data|None, status, error)."""
+    full = url
+    if params:
+        from urllib.parse import urlencode
+        q = urlencode({k: v for k, v in params.items() if v is not None})
+        full = f"{url}?{q}" if q else url
+    code, body, err = _wb_curl_get(full, headers=headers, timeout=timeout)
+    if code and 200 <= code < 300 and body:
+        try:
+            return json.loads(body), code, None
+        except Exception as e:
+            err = f"json: {e}"
+    elif code in (401, 403, 498):
+        # Тот же IP — httpx обычно тоже 403, не жжём секунды.
+        return None, code, f"http {code}"
+    elif code:
+        err = err or f"http {code}"
+    if curl_only:
+        return None, code or 0, err or "curl failed"
+    # fallback httpx (таймаут curl / пустое тело)
+    try:
+        resp = httpx.get(full, headers=headers or {}, timeout=min(timeout, 12), follow_redirects=True)
+        code = resp.status_code
+        if resp.is_success:
+            try:
+                return resp.json(), code, None
+            except Exception as e:
+                return None, code, f"json: {e}"
+        return None, code, f"http {code}"
+    except Exception as e:
+        return None, code or 0, err or str(e)[:160]
+
+
+def _basket_card_brief(nm_id: int) -> dict | None:
+    """Имя/бренд с CDN card.json — запасной путь, когда card.wb.ru закрыт."""
+    try:
+        nm_id = int(nm_id)
+    except (TypeError, ValueError):
+        return None
+    url = wb_product_card_json_url(nm_id)
+    if not url:
+        return None
+    data = None
+    try:
+        resp = httpx.get(url, headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"}, timeout=10)
+        if resp.is_success:
+            data = resp.json()
+    except Exception as e:
+        logger.debug(f"basket card {nm_id}: {e}")
+        data = None
+    if not isinstance(data, dict):
+        return None
+    selling = data.get("selling") if isinstance(data.get("selling"), dict) else {}
+    brand = (
+        selling.get("brand_name")
+        or data.get("brand")
+        or (data.get("brand_name") if isinstance(data.get("brand_name"), str) else "")
+        or ""
+    )
+    name = data.get("imt_name") or data.get("name") or data.get("slug") or ""
+    return {
+        "nm_id": nm_id,
+        "brand": str(brand or ""),
+        "name": str(name or ""),
+        "supplier": str(selling.get("supplier_name") or ""),
+        "thumb": wb_product_thumb_url(nm_id),
+        "url": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
+        "client_price": None,
+        "sale_price": None,
+        "spp": None,
+    }
+
+
+def fetch_wb_card_brief(nm_id: int, dest: int = -1257786):
+    """Краткие данные карточки (бренд/название) через клиентский card API / CDN."""
+    headers = _wb_shelf_headers(nm_id)
+    try:
+        data, code, err = _wb_http_get_json(
+            "https://card.wb.ru/cards/v4/detail",
+            headers=headers,
+            timeout=20,
+            params={"appType": 1, "curr": "rub", "dest": dest, "nm": nm_id},
+        )
+        products = []
+        if isinstance(data, dict):
+            products = data.get("products") or (data.get("data") or {}).get("products") or []
+        if products:
             p = products[0]
             price_info = _parse_client_product(p)
             return {
@@ -13888,9 +14013,11 @@ def fetch_wb_card_brief(nm_id: int, dest: int = -1257786):
                 "sale_price": price_info.get("client_basic"),
                 "spp": _calc_spp(price_info.get("client_basic"), price_info.get("client_price")),
             }
+        if err:
+            logger.info(f"fetch_wb_card_brief card.wb.ru nm={nm_id}: {err}")
     except Exception as e:
         logger.warning(f"fetch_wb_card_brief {nm_id}: {e}")
-        return None
+    return _basket_card_brief(nm_id)
 
 
 def _wb_shelf_headers(nm_id: int) -> dict:
@@ -13994,16 +14121,60 @@ def _parse_similar_nm_ids(data, nm_id: int) -> list:
 
 
 def _fetch_similar_nm_ids(nm_id: int, headers: dict) -> list:
-    resp = httpx.get(
+    data, code, err = _wb_http_get_json(
         "https://in-similar.wildberries.ru/",
-        params={"nm": int(nm_id)},
         headers=headers,
-        timeout=20,
-        follow_redirects=True,
+        timeout=25,
+        params={"nm": int(nm_id)},
     )
-    if not resp.is_success:
-        raise RuntimeError(f"http {resp.status_code}")
-    return _parse_similar_nm_ids(resp.json(), nm_id)
+    if data is None:
+        raise RuntimeError(err or f"http {code}")
+    return _parse_similar_nm_ids(data, nm_id)
+
+
+def _hydrate_shelf_from_basket(nm_ids: list) -> list:
+    """Собирает «продукты» полки из CDN card.json, когда card.wb.ru отдаёт 403."""
+    ids = []
+    for raw in nm_ids or []:
+        try:
+            nid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if nid:
+            ids.append(nid)
+    if not ids:
+        return []
+
+    def one(nid: int) -> dict:
+        brief = _basket_card_brief(nid) or {
+            "nm_id": nid,
+            "brand": "",
+            "name": "",
+            "supplier": "",
+            "thumb": wb_product_thumb_url(nid),
+            "url": f"https://www.wildberries.ru/catalog/{nid}/detail.aspx",
+        }
+        return {
+            "id": nid,
+            "nmId": nid,
+            "brand": brief.get("brand") or "",
+            "name": brief.get("name") or "",
+            "supplier": brief.get("supplier") or "",
+            "reviewRating": None,
+            "feedbacks": None,
+        }
+
+    by_id = {}
+    workers = min(8, len(ids))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = {pool.submit(one, nid): nid for nid in ids}
+        for fut in as_completed(futs):
+            nid = futs[fut]
+            try:
+                by_id[nid] = fut.result()
+            except Exception:
+                by_id[nid] = one(nid)
+    return [by_id[nid] for nid in ids if nid in by_id]
 
 
 def _hydrate_shelf_products(nm_ids: list, dest: int, headers: dict) -> list:
@@ -14011,24 +14182,19 @@ def _hydrate_shelf_products(nm_ids: list, dest: int, headers: dict) -> list:
         return []
     ids = ";".join(str(int(n)) for n in nm_ids)
     params = {"appType": 1, "curr": "rub", "dest": dest, "nm": ids}
-    for url in (
+    data, code, _err = _wb_http_get_json(
         "https://card.wb.ru/cards/v4/detail",
-        "https://card.wb.ru/cards/v2/detail",
-    ):
-        try:
-            resp = httpx.get(url, params=params, headers=headers, timeout=25)
-        except Exception:
-            continue
-        if not resp.is_success:
-            continue
-        try:
-            data = resp.json() or {}
-        except Exception:
-            continue
+        headers=headers,
+        timeout=6,
+        params=params,
+        curl_only=True,
+    )
+    if isinstance(data, dict):
         products = _card_products_from(data) or data.get("products") or []
         if isinstance(products, list) and products:
             return products
-    return []
+    # card.wb.ru часто 403 с сервера — CDN card.json стабильнее
+    return _hydrate_shelf_from_basket(nm_ids)
 
 
 def _wb_shelf_err_text(err) -> str:
@@ -14037,16 +14203,17 @@ def _wb_shelf_err_text(err) -> str:
         return "WB закрыл витрину (403)"
     if "429" in s:
         return "WB просит подождать (429)"
+    if "498" in s:
+        return "WB антибот (498) — открой полку ещё раз"
     return s or "unknown"
 
 
 def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
-    """Полка у карточки: «Смотрите также» (recom), при 403 — «Похожие»."""
+    """Полка у карточки: «Смотрите также» (recom), при 403 — «Похожие» + CDN."""
     limit = max(1, min(int(limit or 15), 30))
     headers = _wb_shelf_headers(nm_id)
     last_err = None
     # query=<nm> — полка see-also. spp не передаём: иначе WB рисует виртуальную скидку.
-    url = "https://recom.wb.ru/recom/ru/common/v8/search"
     params = {
         "appType": 1,
         "curr": "rub",
@@ -14055,35 +14222,52 @@ def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
         "query": str(nm_id),
         "suppressSpellcheck": "false",
     }
-    for attempt in range(2):
-        try:
-            with httpx.Client(timeout=25, headers=headers, follow_redirects=True) as client:
-                resp = client.get(url, params=params)
-            if resp.status_code == 429:
-                last_err = "429"
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            if not resp.is_success:
-                last_err = f"http {resp.status_code}"
-                if resp.status_code in (401, 403, 498):
-                    break
-                time.sleep(0.4)
-                continue
-            data = resp.json()
-            products = data.get("products") or (data.get("data") or {}).get("products") or []
-            items = _shelf_items_ordered(products, limit)
-            if items:
-                return {"items": items, "total": len(products), "error": None, "source": "recom"}
-            last_err = "empty"
-            break
-        except Exception as e:
-            last_err = str(e)[:160]
-            time.sleep(0.4 * (attempt + 1))
+    recom_urls = (
+        "https://recom.wb.ru/recom/ru/common/v8/search",
+        "https://u-recom.wb.ru/recom/ru/common/v8/search",
+    )
+    for url in recom_urls:
+        # Только curl и короткий таймаут: на datacenter-IP recom почти всегда 403/hang.
+        data, code, err = _wb_http_get_json(
+            url, headers=headers, timeout=6, params=params, curl_only=True
+        )
+        if code == 429:
+            last_err = "429"
+            time.sleep(1.0)
+            data, code, err = _wb_http_get_json(
+                url, headers=headers, timeout=8, params=params, curl_only=True
+            )
+        if not isinstance(data, dict):
+            last_err = err or f"http {code}"
+            continue
+        products = data.get("products") or (data.get("data") or {}).get("products") or []
+        items = _shelf_items_ordered(products, limit)
+        if items:
+            return {"items": items, "total": len(products), "error": None, "source": "recom"}
+        last_err = "empty"
     try:
         similar_ids = _fetch_similar_nm_ids(nm_id, headers)
         take = similar_ids[:limit]
         products = _hydrate_shelf_products(take, dest, headers)
         items = _shelf_items_ordered(products, limit, order_ids=take)
+        if not items and take:
+            # жёсткий fallback: места полки только по nm + превью
+            items = []
+            for i, nid in enumerate(take, 1):
+                items.append({
+                    "position": i,
+                    "nm_id": nid,
+                    "brand": "",
+                    "name": "",
+                    "supplier": "",
+                    "rating": None,
+                    "feedbacks": None,
+                    "thumb": wb_product_thumb_url(nid),
+                    "url": f"https://www.wildberries.ru/catalog/{nid}/detail.aspx",
+                    "client_price": None,
+                    "sale_price": None,
+                    "spp": None,
+                })
         if items:
             return {
                 "items": items,

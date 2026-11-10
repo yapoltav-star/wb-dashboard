@@ -12258,13 +12258,130 @@ function refreshActiveShelf() {
   if(SHELF_ACTIVE) loadShelfFor(SHELF_ACTIVE, true);
 }
 
+function wbBasketCardUrl(nmId) {
+  nmId = Number(nmId);
+  if(!nmId) return '';
+  const vol = Math.floor(nmId / 100000);
+  const part = Math.floor(nmId / 1000);
+  const ranges = [143,287,431,719,1007,1061,1115,1169,1313,1601,1655,1919,2045,2189,2405,2621,2837,3053,3269,3485,3701,3917,4133,4349,4565,4877,5189,5501,5813,6125,6437,6749,7061,7373,7685,7997,8309,8741,9173,9605,10373,11141,11909,12677,13445,14213];
+  let basket = 47;
+  for(let i=0;i<ranges.length;i++){ if(vol <= ranges[i]){ basket = i+1; break; } }
+  return `https://basket-${String(basket).padStart(2,'0')}.wbbasket.ru/vol${vol}/part${part}/${nmId}/info/ru/card.json`;
+}
+
+async function fetchBasketCardBrief(nmId) {
+  try {
+    const r = await fetch(wbBasketCardUrl(nmId), {credentials:'omit'});
+    if(!r.ok) return null;
+    const d = await r.json();
+    const selling = d && d.selling && typeof d.selling === 'object' ? d.selling : {};
+    return {
+      nm_id: Number(nmId),
+      brand: selling.brand_name || d.brand || '',
+      name: d.imt_name || d.name || '',
+      supplier: selling.supplier_name || '',
+      thumb: wbThumbUrl(nmId),
+      url: wbCatalogUrl(nmId),
+    };
+  } catch(_) { return null; }
+}
+
+async function fetchShelfDataFromBrowser(nmId, dest, limit=15) {
+  // Браузер пользователя часто проходит WBAAS, сервер — нет. CORS у recom отражает Origin, у similar/basket — *.
+  const headers = {Accept:'*/*'};
+  let products = [];
+  let source = null;
+  const recomUrls = [
+    `https://recom.wb.ru/recom/ru/common/v8/search?appType=1&curr=rub&dest=${dest}&resultset=catalog&query=${nmId}&suppressSpellcheck=false`,
+    `https://u-recom.wb.ru/recom/ru/common/v8/search?appType=1&curr=rub&dest=${dest}&resultset=catalog&query=${nmId}&suppressSpellcheck=false`,
+    `https://recom.wb.ru/related/ru/common/v8/search?appType=1&curr=rub&dest=${dest}&resultset=catalog&query=${nmId}`,
+  ];
+  for(const u of recomUrls) {
+    try {
+      const r = await fetch(u, {headers, credentials:'omit'});
+      if(!r.ok) continue;
+      const d = await r.json();
+      const arr = d.products || (d.data && d.data.products) || [];
+      if(arr.length) { products = arr; source = 'recom-browser'; break; }
+    } catch(_) {}
+  }
+  let similarIds = [];
+  if(!products.length) {
+    try {
+      const r = await fetch(`https://in-similar.wildberries.ru/?nm=${nmId}`, {headers, credentials:'omit'});
+      if(r.ok) {
+        const raw = await r.json();
+        similarIds = (Array.isArray(raw) ? raw : []).map(Number).filter(n => n && n !== Number(nmId)).slice(0, limit);
+      }
+    } catch(_) {}
+    if(similarIds.length) {
+      const briefs = await Promise.all(similarIds.map(id => fetchBasketCardBrief(id)));
+      products = similarIds.map((id, i) => ({
+        id,
+        brand: (briefs[i] && briefs[i].brand) || '',
+        name: (briefs[i] && briefs[i].name) || '',
+        supplier: (briefs[i] && briefs[i].supplier) || '',
+      }));
+      source = 'similar-browser';
+    }
+  }
+  if(!products.length) throw new Error('WB закрыл витрину (403)');
+  const items = products.slice(0, limit).map((p, i) => {
+    const pid = Number(p.id || p.nmId || p.nmID || similarIds[i]);
+    return {
+      position: i+1,
+      nm_id: pid,
+      brand: p.brand || '',
+      name: p.name || '',
+      supplier: p.supplier || '',
+      rating: p.reviewRating || p.rating || null,
+      feedbacks: p.feedbacks || null,
+      thumb: wbThumbUrl(pid),
+      url: wbCatalogUrl(pid),
+      client_price: null,
+      sale_price: null,
+      spp: null,
+    };
+  }).filter(it => it.nm_id);
+  const competitor = await fetchBasketCardBrief(nmId) || {
+    nm_id: Number(nmId), brand:'', name:'', thumb: wbThumbUrl(nmId), url: wbCatalogUrl(nmId),
+  };
+  return {
+    nm_id: Number(nmId),
+    dest,
+    city: '',
+    limit,
+    competitor,
+    items,
+    total: items.length,
+    source,
+    error: null,
+    browser_fallback: true,
+  };
+}
+
 async function fetchShelfData(nmId) {
   const dest = shelfDest();
-  const r = await fetch(`${RAILWAY_URL}/api/competitor-shelf?nm_id=${nmId}&dest=${dest}&limit=15`);
-  const d = await r.json().catch(() => ({}));
-  if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
-  if(d.error && !(d.items||[]).length) throw new Error(d.error);
-  return d;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/competitor-shelf?nm_id=${nmId}&dest=${dest}&limit=15`);
+    const d = await r.json().catch(() => ({}));
+    if(r.ok && (d.items||[]).length) return d;
+    // сервер упёрся в 403/пустую полку — пробуем с браузера пользователя
+    const browser = await fetchShelfDataFromBrowser(nmId, dest, 15);
+    // подмешаем suggest/share с бэка, если пришли
+    if(d && typeof d === 'object') {
+      if(d.suggest) browser.suggest = d.suggest;
+      if(d.share) browser.share = d.share;
+      if(d.city) browser.city = d.city;
+    }
+    return browser;
+  } catch(e) {
+    try {
+      return await fetchShelfDataFromBrowser(nmId, dest, 15);
+    } catch(_) {
+      throw e;
+    }
+  }
 }
 
 async function loadShelfFor(nmId, force) {
