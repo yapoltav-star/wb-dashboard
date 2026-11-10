@@ -9797,6 +9797,8 @@ let COMP_OWN_ARTICLES = JSON.parse(localStorage.getItem('comp_own_articles') || 
 let OWN_ARTICLE_STATS = {};
 let COMP_TAB = 'metrics';
 let COMP_ALL_METRICS = [];
+let COMP_STOCKS = {}; // nm_id -> {total, warehouse_count, warehouses:[{name,qty}]}
+let COMP_STOCKS_META = {as_of: null, error: null, loading: false};
 
 async function renderCompetitors() {
   try {
@@ -10176,9 +10178,115 @@ async function loadAllSelectedSessions() {
     await refreshOwnArticleStats();
     if(DAILY_STATS.length) buildDynChart();
     renderCompetitorView();
+    loadCompetitorStocks();
   } catch(e) {
     document.getElementById('compRoot').innerHTML = `<div class="empty">Ошибка загрузки: ${e.message}</div>`;
   }
+}
+
+function compStockOf(nmId) {
+  return COMP_STOCKS[Number(nmId)] || COMP_STOCKS[String(nmId)] || null;
+}
+
+function compStockTipHtml(stock) {
+  if(!stock) return '<span style="color:var(--wb-faint)">…</span>';
+  const total = Number(stock.total || 0);
+  const whs = stock.warehouses || [];
+  const n = Number(stock.warehouse_count != null ? stock.warehouse_count : whs.length) || 0;
+  if(!whs.length) {
+    return `<span class="wb-stock-main">${fmt(total)}</span>${n ? ` <span class="wb-stock-whn">(${fmt(n)})</span>` : ''}`;
+  }
+  const rows = whs.slice(0, 40).map(w =>
+    `<div class="wb-tip-row"><span>${escapeHtml(w.name || ('Склад '+w.id))}</span><span>${fmt(w.qty)}</span></div>`
+  ).join('');
+  const more = whs.length > 40 ? `<div style="margin-top:4px;opacity:.7">и ещё ${whs.length - 40}</div>` : '';
+  return `<span class="wb-stock-tip" tabindex="0">
+    <span class="wb-stock-main">${fmt(total)}</span> <span class="wb-stock-whn">(${fmt(n)})</span>
+    <div class="wb-tip"><div style="font-weight:600;margin-bottom:4px">Склады с остатком</div>${rows}${more}</div>
+  </span>`;
+}
+
+function buildCompStocksBlock(allMetrics) {
+  const items = (allMetrics || []).map(m => {
+    const st = compStockOf(m.nm_id);
+    return {m, st};
+  });
+  const asOf = COMP_STOCKS_META.as_of ? `обновлено ${COMP_STOCKS_META.as_of}` : '';
+  const err = COMP_STOCKS_META.error ? ` · ${escapeHtml(COMP_STOCKS_META.error)}` : '';
+  const loading = COMP_STOCKS_META.loading ? ' · грузим витрину…' : '';
+  const rows = items.map(({m, st}) => {
+    const title = m.is_own ? (m.vendor_code || m.nm_id) : (m.brand || m.nm_id);
+    const whs = (st && st.warehouses) ? st.warehouses : [];
+    const whHtml = whs.length
+      ? whs.slice(0, 12).map(w =>
+          `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border:1px solid var(--wb-border);border-radius:4px;font-size:11px;background:#fff">
+            <span style="color:var(--wb-muted);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(w.name || '')}">${escapeHtml(w.name || ('Склад '+w.id))}</span>
+            <b style="font-variant-numeric:tabular-nums">${fmt(w.qty)}</b>
+          </span>`
+        ).join(' ')
+      : `<span style="font-size:12px;color:var(--wb-faint)">${COMP_STOCKS_META.loading ? '…' : 'нет на витрине'}</span>`;
+    const more = whs.length > 12 ? `<span style="font-size:11px;color:var(--wb-faint)">+${whs.length - 12}</span>` : '';
+    return `<div style="display:grid;grid-template-columns:minmax(120px,180px) 70px 1fr;gap:10px;align-items:start;padding:8px 0;border-bottom:1px solid var(--wb-border)">
+      <div style="min-width:0">
+        <div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(String(title))}${m.is_own?' <span style="color:var(--wb-purple);font-size:10px">мой</span>':''}</div>
+        <div style="font-size:10px;color:var(--wb-faint)">${m.nm_id}</div>
+      </div>
+      <div style="text-align:right;font-variant-numeric:tabular-nums">${compStockTipHtml(st)}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">${whHtml}${more}</div>
+    </div>`;
+  }).join('');
+  return `<div style="padding:14px 16px;border-top:1px solid var(--wb-border);background:var(--wb-surface)">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+      <div>
+        <div style="font-size:13px;font-weight:600">Остатки по складам</div>
+        <div style="font-size:12px;color:var(--wb-muted)">Живая витрина WB по регионам (Москва, СПб, Юг, Урал, Сибирь, Волга)${loading}${err}</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span style="font-size:11px;color:var(--wb-faint)">${asOf}</span>
+        <button class="filter-btn" onclick="loadCompetitorStocks(true)" style="padding:4px 10px;font-size:11px" ${COMP_STOCKS_META.loading?'disabled':''}>↻ Обновить остатки</button>
+      </div>
+    </div>
+    ${rows || '<div class="empty" style="padding:12px 0">Нет артикулов в таблице</div>'}
+  </div>`;
+}
+
+async function loadCompetitorStocks(force) {
+  const nms = new Set();
+  (COMP_OWN_ARTICLES || []).forEach(a => { if(a && a.nm_id) nms.add(Number(a.nm_id)); });
+  (COMP_ALL_METRICS || []).forEach(m => { if(m && m.nm_id) nms.add(Number(m.nm_id)); });
+  const ids = [...nms].filter(Boolean);
+  if(!ids.length) {
+    COMP_STOCKS = {};
+    COMP_STOCKS_META = {as_of: null, error: null, loading: false};
+    return;
+  }
+  if(COMP_STOCKS_META.loading) return;
+  const needFetch = force || ids.some(id => !compStockOf(id));
+  if(!needFetch && COMP_STOCKS_META.as_of) return;
+  COMP_STOCKS_META = {...COMP_STOCKS_META, loading: true, error: null};
+  try { renderCompetitorView(); } catch(_) {}
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/competitor-stocks`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({nm_ids: ids, force: !!force}),
+    });
+    const d = await r.json();
+    if(d.error && !(d.items && Object.keys(d.items).length)) {
+      COMP_STOCKS_META = {as_of: d.as_of || null, error: d.error, loading: false};
+    } else {
+      const next = {...COMP_STOCKS};
+      Object.entries(d.items || {}).forEach(([k, v]) => {
+        next[Number(k)] = v;
+        next[String(k)] = v;
+      });
+      COMP_STOCKS = next;
+      COMP_STOCKS_META = {as_of: d.as_of || null, error: d.error || null, loading: false};
+    }
+  } catch(e) {
+    COMP_STOCKS_META = {as_of: COMP_STOCKS_META.as_of, error: e.message || String(e), loading: false};
+  }
+  renderCompetitorView();
 }
 
 // ── Свои артикулы ──
@@ -10232,6 +10340,7 @@ async function addOwnArticle(nmId, vendorCode) {
   buildOwnArtChips();
   await refreshOwnArticleStats();
   renderCompetitorView();
+  loadCompetitorStocks();
 }
 
 function removeOwnArticle(nmId) {
@@ -10627,6 +10736,7 @@ function renderCompetitorView() {
       </div>
       ${buildCompTopAnalysis(autoMetrics)}
       <div style="overflow-x:auto">${allMetrics.length ? buildCompMetricsTable(allMetrics, ownMetrics[0]?.nm_id) : '<div class="empty" style="padding:24px">Нет строк в выбранных отчётах — график бренда выше, если недели нашлись.</div>'}</div>
+      <div id="compStocksBlock">${allMetrics.length ? buildCompStocksBlock(allMetrics) : ''}</div>
     </div>`;
   if(COMP_BRAND_FILTER) loadCompBrandWeeks();
 }
@@ -10810,6 +10920,10 @@ function buildCompMetricsTable(metrics, ownNm) {
       ['СПП, %',['spp'],false],
       ['Позиция в поиске',['avg_position'],true],
     ],
+    'Остатки': [
+      ['Остатки по складам, шт',['stock_total'],false],
+      ['Складов с остатком',['stock_wh_count'],false],
+    ],
     'Воронка продаж': [
       ['Показы',['views'],false],
       ['Переходы в карточку',['card_opens','open_card'],false],
@@ -10828,6 +10942,12 @@ function buildCompMetricsTable(metrics, ownNm) {
     if(fields.includes('spp')) {
       const s = compSppOf(m);
       return s;
+    }
+    if(fields.includes('stock_total') || fields.includes('stock_wh_count')) {
+      const st = compStockOf(m.nm_id);
+      if(!st) return null;
+      if(fields.includes('stock_total')) return Number(st.total || 0);
+      return Number(st.warehouse_count != null ? st.warehouse_count : (st.warehouses || []).length) || 0;
     }
     for(const f of fields) {
       if(m[f] !== null && m[f] !== undefined) return m[f];
@@ -10858,14 +10978,21 @@ function buildCompMetricsTable(metrics, ownNm) {
         }
         const isStr = fieldArr.includes('delivery_time') || fieldArr.includes('name');
         let display = '—';
-        if(raw !== null && raw !== undefined) {
+        if(fieldArr.includes('stock_total')) {
+          display = COMP_STOCKS_META.loading && !compStockOf(m.nm_id)
+            ? '<span style="color:var(--wb-faint)">…</span>'
+            : compStockTipHtml(compStockOf(m.nm_id));
+        } else if(raw !== null && raw !== undefined) {
           if(isStr) display = raw;
           else if(fieldArr.includes('spp')) display = compSppFmt(num);
           else if(fieldArr.includes('client_price') || fieldArr.includes('median_price') || fieldArr.includes('price'))
             display = Number.isFinite(num) ? Math.round(num).toLocaleString('ru-RU') : '—';
           else display = Number.isInteger(num) ? fmt(num) : num;
+        } else if(fieldArr.includes('stock_wh_count') && COMP_STOCKS_META.loading) {
+          display = '<span style="color:var(--wb-faint)">…</span>';
         }
-        rows += `<td class="${m.is_own?'own-col':''}"><span class="${rankCls}">${display}</span></td>`;
+        const wrapRank = fieldArr.includes('stock_total') ? display : `<span class="${rankCls}">${display}</span>`;
+        rows += `<td class="${m.is_own?'own-col':''}">${wrapRank}</td>`;
       });
       rows += '</tr>';
     }
@@ -12131,13 +12258,130 @@ function refreshActiveShelf() {
   if(SHELF_ACTIVE) loadShelfFor(SHELF_ACTIVE, true);
 }
 
+function wbBasketCardUrl(nmId) {
+  nmId = Number(nmId);
+  if(!nmId) return '';
+  const vol = Math.floor(nmId / 100000);
+  const part = Math.floor(nmId / 1000);
+  const ranges = [143,287,431,719,1007,1061,1115,1169,1313,1601,1655,1919,2045,2189,2405,2621,2837,3053,3269,3485,3701,3917,4133,4349,4565,4877,5189,5501,5813,6125,6437,6749,7061,7373,7685,7997,8309,8741,9173,9605,10373,11141,11909,12677,13445,14213];
+  let basket = 47;
+  for(let i=0;i<ranges.length;i++){ if(vol <= ranges[i]){ basket = i+1; break; } }
+  return `https://basket-${String(basket).padStart(2,'0')}.wbbasket.ru/vol${vol}/part${part}/${nmId}/info/ru/card.json`;
+}
+
+async function fetchBasketCardBrief(nmId) {
+  try {
+    const r = await fetch(wbBasketCardUrl(nmId), {credentials:'omit'});
+    if(!r.ok) return null;
+    const d = await r.json();
+    const selling = d && d.selling && typeof d.selling === 'object' ? d.selling : {};
+    return {
+      nm_id: Number(nmId),
+      brand: selling.brand_name || d.brand || '',
+      name: d.imt_name || d.name || '',
+      supplier: selling.supplier_name || '',
+      thumb: wbThumbUrl(nmId),
+      url: wbCatalogUrl(nmId),
+    };
+  } catch(_) { return null; }
+}
+
+async function fetchShelfDataFromBrowser(nmId, dest, limit=15) {
+  // Браузер пользователя часто проходит WBAAS, сервер — нет. CORS у recom отражает Origin, у similar/basket — *.
+  const headers = {Accept:'*/*'};
+  let products = [];
+  let source = null;
+  const recomUrls = [
+    `https://recom.wb.ru/recom/ru/common/v8/search?appType=1&curr=rub&dest=${dest}&resultset=catalog&query=${nmId}&suppressSpellcheck=false`,
+    `https://u-recom.wb.ru/recom/ru/common/v8/search?appType=1&curr=rub&dest=${dest}&resultset=catalog&query=${nmId}&suppressSpellcheck=false`,
+    `https://recom.wb.ru/related/ru/common/v8/search?appType=1&curr=rub&dest=${dest}&resultset=catalog&query=${nmId}`,
+  ];
+  for(const u of recomUrls) {
+    try {
+      const r = await fetch(u, {headers, credentials:'omit'});
+      if(!r.ok) continue;
+      const d = await r.json();
+      const arr = d.products || (d.data && d.data.products) || [];
+      if(arr.length) { products = arr; source = 'recom-browser'; break; }
+    } catch(_) {}
+  }
+  let similarIds = [];
+  if(!products.length) {
+    try {
+      const r = await fetch(`https://in-similar.wildberries.ru/?nm=${nmId}`, {headers, credentials:'omit'});
+      if(r.ok) {
+        const raw = await r.json();
+        similarIds = (Array.isArray(raw) ? raw : []).map(Number).filter(n => n && n !== Number(nmId)).slice(0, limit);
+      }
+    } catch(_) {}
+    if(similarIds.length) {
+      const briefs = await Promise.all(similarIds.map(id => fetchBasketCardBrief(id)));
+      products = similarIds.map((id, i) => ({
+        id,
+        brand: (briefs[i] && briefs[i].brand) || '',
+        name: (briefs[i] && briefs[i].name) || '',
+        supplier: (briefs[i] && briefs[i].supplier) || '',
+      }));
+      source = 'similar-browser';
+    }
+  }
+  if(!products.length) throw new Error('WB закрыл витрину (403)');
+  const items = products.slice(0, limit).map((p, i) => {
+    const pid = Number(p.id || p.nmId || p.nmID || similarIds[i]);
+    return {
+      position: i+1,
+      nm_id: pid,
+      brand: p.brand || '',
+      name: p.name || '',
+      supplier: p.supplier || '',
+      rating: p.reviewRating || p.rating || null,
+      feedbacks: p.feedbacks || null,
+      thumb: wbThumbUrl(pid),
+      url: wbCatalogUrl(pid),
+      client_price: null,
+      sale_price: null,
+      spp: null,
+    };
+  }).filter(it => it.nm_id);
+  const competitor = await fetchBasketCardBrief(nmId) || {
+    nm_id: Number(nmId), brand:'', name:'', thumb: wbThumbUrl(nmId), url: wbCatalogUrl(nmId),
+  };
+  return {
+    nm_id: Number(nmId),
+    dest,
+    city: '',
+    limit,
+    competitor,
+    items,
+    total: items.length,
+    source,
+    error: null,
+    browser_fallback: true,
+  };
+}
+
 async function fetchShelfData(nmId) {
   const dest = shelfDest();
-  const r = await fetch(`${RAILWAY_URL}/api/competitor-shelf?nm_id=${nmId}&dest=${dest}&limit=15`);
-  const d = await r.json().catch(() => ({}));
-  if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
-  if(d.error && !(d.items||[]).length) throw new Error(d.error);
-  return d;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/competitor-shelf?nm_id=${nmId}&dest=${dest}&limit=15`);
+    const d = await r.json().catch(() => ({}));
+    if(r.ok && (d.items||[]).length) return d;
+    // сервер упёрся в 403/пустую полку — пробуем с браузера пользователя
+    const browser = await fetchShelfDataFromBrowser(nmId, dest, 15);
+    // подмешаем suggest/share с бэка, если пришли
+    if(d && typeof d === 'object') {
+      if(d.suggest) browser.suggest = d.suggest;
+      if(d.share) browser.share = d.share;
+      if(d.city) browser.city = d.city;
+    }
+    return browser;
+  } catch(e) {
+    try {
+      return await fetchShelfDataFromBrowser(nmId, dest, 15);
+    } catch(_) {
+      throw e;
+    }
+  }
 }
 
 async function loadShelfFor(nmId, force) {
