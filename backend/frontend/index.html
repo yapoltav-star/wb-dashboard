@@ -1816,6 +1816,45 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
     <div id="posPresencePanel" style="display:none;margin-top:12px"></div>
   </div>
 
+  <div id="posExportPanel" style="padding:14px 20px 16px;border-bottom:1px solid var(--wb-border);background:#FAFAF8">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+      <div>
+        <div style="font-size:13px;font-weight:600">Выгрузка для другой программы</div>
+        <div id="posExportMeta" style="font-size:12px;color:var(--wb-muted);margin-top:2px">Добавь наши артикулы WB — строки появятся ниже</div>
+      </div>
+      <button type="button" class="action-btn" id="posExportCopyBtn" onclick="copyPosExport()">Скопировать</button>
+    </div>
+    <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-bottom:10px">
+      <div style="position:relative;min-width:240px;flex:1">
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px">Наш артикул WB</div>
+        <input id="posExportArtSearch" placeholder="Артикул продавца или nmID" autocomplete="off"
+          style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:100%;box-sizing:border-box"
+          oninput="searchPosExportArticles(this.value)" onfocus="searchPosExportArticles(this.value)"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();addPosExportFromSearch();}">
+        <div id="posExportArtDropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--wb-surface);border:1px solid var(--wb-border);border-radius:var(--rs);z-index:120;max-height:240px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.1)"></div>
+        <div id="posExportChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;min-height:28px"></div>
+      </div>
+      <div style="min-width:220px;flex:1">
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px">Ключ</div>
+        <input id="posExportKeyword" list="posExportKeywordList" placeholder="смарт часы"
+          style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:100%;box-sizing:border-box;background:#fff"
+          oninput="onPosExportKeywordInput()">
+        <datalist id="posExportKeywordList"></datalist>
+        <div id="posExportPresets" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"></div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px">Количество корзин</div>
+        <input id="posExportCarts" type="number" min="0" max="9999" step="1"
+          style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:110px"
+          oninput="onPosExportCartsInput()">
+      </div>
+    </div>
+    <textarea id="posExportText" readonly rows="6"
+      style="width:100%;box-sizing:border-box;border:1px solid var(--wb-border);border-radius:8px;padding:10px 12px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;background:#fff;color:var(--wb-text)"
+      placeholder="Строки появятся после добавления артикулов"></textarea>
+    <div style="font-size:11px;color:var(--wb-muted);margin-top:6px">Столбцы через Tab: артикул ВБ · ключ · количество корзин. Вставляй в Excel или другую платформу.</div>
+  </div>
+
   <div id="posRoot" style="overflow:auto">
     <div class="empty" style="padding:40px 20px">Загрузка ключей…</div>
   </div>
@@ -11025,6 +11064,7 @@ async function renderPositionsPage() {
   updatePosArtChip();
   updatePosCheckBtn();
   updatePosGenderBtns();
+  initPosExportControls();
   if(!POS_LOADED) await loadPosKeywords();
   else drawPosTable();
 }
@@ -11060,6 +11100,7 @@ async function loadPosKeywords() {
     }
     if(meta) meta.textContent = `${POS_KEYWORDS.length} ключей из аналитики` + (d.updated ? ` · ${d.updated}` : '');
     updatePosGenderBtns();
+    fillPosExportKeywordList();
     drawPosTable();
   } catch(e) {
     if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка загрузки ключей: ${e.message}</div>`;
@@ -11148,7 +11189,232 @@ document.addEventListener('click', e => {
   const dd = document.getElementById('posArtDropdown');
   if(dd && !e.target.closest('#posArtSearch') && !e.target.closest('#posArtDropdown'))
     dd.style.display = 'none';
+  const edd = document.getElementById('posExportArtDropdown');
+  if(edd && !e.target.closest('#posExportArtSearch') && !e.target.closest('#posExportArtDropdown'))
+    edd.style.display = 'none';
 });
+
+let POS_EXPORT_ARTICLES = JSON.parse(localStorage.getItem('pos_export_articles') || '[]');
+if(!Array.isArray(POS_EXPORT_ARTICLES)) POS_EXPORT_ARTICLES = [];
+const POS_EXPORT_PRESETS = ['смарт часы', 'смарт часы женские', 'смарт часы мужские'];
+
+function savePosExportArticles() {
+  localStorage.setItem('pos_export_articles', JSON.stringify(POS_EXPORT_ARTICLES));
+}
+
+function posExportKeywordValue() {
+  const inp = document.getElementById('posExportKeyword');
+  const v = ((inp && inp.value) || localStorage.getItem('pos_export_keyword') || 'смарт часы').trim();
+  return v || 'смарт часы';
+}
+
+function posExportCartsValue() {
+  const inp = document.getElementById('posExportCarts');
+  const raw = inp ? inp.value : (localStorage.getItem('pos_export_carts') || '5');
+  let n = Number(raw);
+  if(!Number.isFinite(n) || n < 0) n = 0;
+  return Math.min(9999, Math.round(n));
+}
+
+function initPosExportControls() {
+  const kw = document.getElementById('posExportKeyword');
+  if(kw && !kw.dataset.ready) {
+    kw.value = localStorage.getItem('pos_export_keyword') || 'смарт часы';
+    kw.dataset.ready = '1';
+  }
+  const carts = document.getElementById('posExportCarts');
+  if(carts && !carts.dataset.ready) {
+    const saved = localStorage.getItem('pos_export_carts');
+    const n = saved == null || saved === '' ? 5 : Number(saved);
+    carts.value = String(Number.isFinite(n) && n >= 0 ? Math.min(9999, Math.round(n)) : 5);
+    carts.dataset.ready = '1';
+  }
+  renderPosExportPresets();
+  renderPosExportChips();
+  fillPosExportKeywordList();
+  syncPosExportText();
+}
+
+function renderPosExportPresets() {
+  const el = document.getElementById('posExportPresets');
+  if(!el) return;
+  const cur = posExportKeywordValue();
+  el.innerHTML = POS_EXPORT_PRESETS.map(k => {
+    const on = cur === k;
+    return `<button type="button" class="filter-btn${on?' on':''}" style="font-size:11px;padding:4px 8px"
+      data-kw="${escapeHtml(k)}" onclick="setPosExportKeyword(this.getAttribute('data-kw'))">${escapeHtml(k)}</button>`;
+  }).join('') + `<span style="font-size:11px;color:var(--wb-faint);align-self:center">или любой свой ключ</span>`;
+}
+
+function setPosExportKeyword(k) {
+  const inp = document.getElementById('posExportKeyword');
+  if(inp) inp.value = k;
+  localStorage.setItem('pos_export_keyword', k);
+  renderPosExportPresets();
+  syncPosExportText();
+}
+
+function onPosExportKeywordInput() {
+  const v = posExportKeywordValue();
+  localStorage.setItem('pos_export_keyword', v);
+  renderPosExportPresets();
+  syncPosExportText();
+}
+
+function onPosExportCartsInput() {
+  const n = posExportCartsValue();
+  localStorage.setItem('pos_export_carts', String(n));
+  syncPosExportText();
+}
+
+function fillPosExportKeywordList() {
+  const dl = document.getElementById('posExportKeywordList');
+  if(!dl) return;
+  const seen = new Set();
+  const opts = [];
+  const push = (q) => {
+    const s = String(q || '').trim();
+    if(!s || seen.has(s)) return;
+    seen.add(s);
+    opts.push(s);
+  };
+  POS_EXPORT_PRESETS.forEach(push);
+  (POS_KEYWORDS || []).forEach(k => push(k && k.query));
+  dl.innerHTML = opts.map(q => `<option value="${escapeHtml(q)}"></option>`).join('');
+}
+
+function renderPosExportChips() {
+  const el = document.getElementById('posExportChips');
+  if(!el) return;
+  if(!POS_EXPORT_ARTICLES.length) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--wb-faint)">Пока пусто — добавь наш артикул</span>';
+    return;
+  }
+  el.innerHTML = POS_EXPORT_ARTICLES.map(a => {
+    const nm = Number(a.nm_id);
+    const vc = escapeHtml(a.vendor_code || String(nm));
+    return `<div style="display:inline-flex;align-items:center;gap:5px;padding:4px 8px;background:var(--wb-purple-light);border:1px solid var(--wb-purple);border-radius:6px;font-size:12px">
+      <b>${vc}</b>
+      <span style="color:var(--wb-faint)">${nm}</span>
+      <span style="cursor:pointer;color:var(--wb-faint);margin-left:2px" onclick="removePosExportArticle(${nm})" title="Убрать">✕</span>
+    </div>`;
+  }).join('');
+}
+
+function addPosExportArticle(nmId, vendorCode) {
+  const nm = Number(nmId);
+  if(!nm) return;
+  const dd = document.getElementById('posExportArtDropdown');
+  if(dd) dd.style.display = 'none';
+  const inp = document.getElementById('posExportArtSearch');
+  if(inp) inp.value = '';
+  if(!POS_EXPORT_ARTICLES.some(a => Number(a.nm_id) === nm)) {
+    POS_EXPORT_ARTICLES.push({nm_id: nm, vendor_code: vendorCode || String(nm)});
+    savePosExportArticles();
+  }
+  renderPosExportChips();
+  syncPosExportText();
+}
+
+function removePosExportArticle(nmId) {
+  POS_EXPORT_ARTICLES = POS_EXPORT_ARTICLES.filter(a => Number(a.nm_id) !== Number(nmId));
+  savePosExportArticles();
+  renderPosExportChips();
+  syncPosExportText();
+}
+
+async function searchPosExportArticles(q) {
+  const dd = document.getElementById('posExportArtDropdown');
+  if(!dd) return;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/search-own-articles?q=${encodeURIComponent((q||'').trim())}`);
+    const results = await r.json();
+    if(!Array.isArray(results) || !results.length) {
+      dd.style.display = (q||'').trim() ? 'block' : 'none';
+      dd.innerHTML = (q||'').trim()
+        ? `<div style="padding:10px 12px;font-size:12px;color:var(--wb-muted)">Ничего не найдено</div>`
+        : '';
+      return;
+    }
+    const prefix = (q||'').trim().replace(/\.+$/,'').toLowerCase();
+    dd.style.display = 'block';
+    dd.innerHTML = results.map(a => {
+      const vc = String(a.vendor_code || '');
+      let label = vc;
+      if(prefix && vc.toLowerCase().startsWith(prefix)) {
+        label = `<span style="color:var(--wb-purple)">${escapeHtml(vc.slice(0, prefix.length))}</span>${escapeHtml(vc.slice(prefix.length))}`;
+      } else {
+        label = `<b>${escapeHtml(vc)}</b>`;
+      }
+      const safeVc = vc.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      return `<div style="padding:8px 12px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--wb-border)"
+        onmousedown="addPosExportArticle(${a.nm_id},'${safeVc}')"
+        onmouseover="this.style.background='var(--wb-bg)'" onmouseout="this.style.background=''">
+        <b>${label}</b> <span style="color:var(--wb-faint)">${a.nm_id}</span>
+      </div>`;
+    }).join('');
+  } catch(e) { dd.style.display = 'none'; }
+}
+
+function addPosExportFromSearch() {
+  const inp = document.getElementById('posExportArtSearch');
+  const q = ((inp && inp.value) || '').trim();
+  if(!q) return;
+  const dd = document.getElementById('posExportArtDropdown');
+  const first = dd && dd.querySelector('[onmousedown^="addPosExportArticle"]');
+  if(first) { first.dispatchEvent(new MouseEvent('mousedown', {bubbles:true})); return; }
+  if(/^\d{5,}$/.test(q)) addPosExportArticle(Number(q), q);
+}
+
+function buildPosExportTsv() {
+  const keyword = posExportKeywordValue();
+  const carts = posExportCartsValue();
+  const header = ['артикул ВБ', 'ключ', 'количество корзин'].join('\t');
+  if(!POS_EXPORT_ARTICLES.length) return header;
+  const rows = POS_EXPORT_ARTICLES.map(a => [Number(a.nm_id), keyword, carts].join('\t'));
+  return [header, ...rows].join('\n');
+}
+
+function syncPosExportText() {
+  const ta = document.getElementById('posExportText');
+  const meta = document.getElementById('posExportMeta');
+  const text = buildPosExportTsv();
+  if(ta) ta.value = text;
+  if(meta) {
+    const n = POS_EXPORT_ARTICLES.length;
+    meta.textContent = n
+      ? `${n} строк · ключ «${posExportKeywordValue()}» · корзин ${posExportCartsValue()}`
+      : 'Добавь наши артикулы WB — строки появятся ниже';
+  }
+}
+
+async function copyPosExport() {
+  syncPosExportText();
+  const ta = document.getElementById('posExportText');
+  const text = (ta && ta.value) || '';
+  if(!text || text.split('\n').length < 2) {
+    alert('Нет строк для копирования — добавь артикул WB');
+    return;
+  }
+  try {
+    if(navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else if(ta) {
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+    }
+    const btn = document.getElementById('posExportCopyBtn');
+    if(btn) {
+      const prev = btn.textContent;
+      btn.textContent = 'Скопировано';
+      setTimeout(() => { btn.textContent = prev; }, 1200);
+    }
+  } catch(e) {
+    if(ta) { ta.focus(); ta.select(); }
+    alert('Не удалось скопировать автоматически — выдели текст и Ctrl+C');
+  }
+}
 
 function togglePosPin(query) {
   const k = String(query||'').toLowerCase();
