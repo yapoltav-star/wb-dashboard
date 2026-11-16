@@ -12796,8 +12796,35 @@ async function fetchBasketCardBrief(nmId) {
   return null;
 }
 
+function shelfVendorByNm(nm) {
+  nm = Number(nm);
+  const pools = [
+    COMP_OWN_ARTICLES,
+    (typeof MY_SHELF_CARDS !== 'undefined' ? MY_SHELF_CARDS : []),
+    (typeof POS_EXPORT_ARTICLES !== 'undefined' ? POS_EXPORT_ARTICLES : []),
+  ];
+  for(const list of pools) {
+    const hit = (list || []).find(a => Number(a && a.nm_id) === nm);
+    if(hit && hit.vendor_code) return String(hit.vendor_code);
+  }
+  return '';
+}
+
+function shelfKnownOwnSet() {
+  const ownSet = new Set((COMP_OWN_ARTICLES || []).map(a => Number(a.nm_id)));
+  if(typeof POS_ARTICLE !== 'undefined' && POS_ARTICLE && POS_ARTICLE.nm_id) ownSet.add(Number(POS_ARTICLE.nm_id));
+  (typeof MY_SHELF_CARDS !== 'undefined' ? MY_SHELF_CARDS : []).forEach(a => {
+    if(a && a.nm_id) ownSet.add(Number(a.nm_id));
+  });
+  (typeof POS_EXPORT_ARTICLES !== 'undefined' ? POS_EXPORT_ARTICLES : []).forEach(a => {
+    if(a && a.nm_id) ownSet.add(Number(a.nm_id));
+  });
+  return ownSet;
+}
+
 async function fetchShelfDataFromBrowser(nmId, dest, limit=15) {
   // Браузер пользователя часто проходит WBAAS, сервер — нет. CORS у recom отражает Origin, у similar/basket — *.
+  const scanLimit = 100;
   const headers = {Accept:'*/*'};
   let products = [];
   let source = null;
@@ -12821,22 +12848,28 @@ async function fetchShelfDataFromBrowser(nmId, dest, limit=15) {
       const r = await fetch(`https://in-similar.wildberries.ru/?nm=${nmId}`, {headers, credentials:'omit'});
       if(r.ok) {
         const raw = await r.json();
-        similarIds = (Array.isArray(raw) ? raw : []).map(Number).filter(n => n && n !== Number(nmId)).slice(0, limit);
+        similarIds = (Array.isArray(raw) ? raw : []).map(Number).filter(n => n && n !== Number(nmId)).slice(0, scanLimit);
       }
     } catch(_) {}
     if(similarIds.length) {
-      const briefs = await Promise.all(similarIds.map(id => fetchBasketCardBrief(id)));
-      products = similarIds.map((id, i) => ({
+      const ownSet = shelfKnownOwnSet();
+      const hydrateIds = similarIds.filter((id, i) => i < limit || ownSet.has(Number(id)));
+      const briefs = await Promise.all(hydrateIds.map(id => fetchBasketCardBrief(id)));
+      const briefById = {};
+      hydrateIds.forEach((id, i) => { briefById[id] = briefs[i]; });
+      products = similarIds.map(id => ({
         id,
-        brand: (briefs[i] && briefs[i].brand) || '',
-        name: (briefs[i] && briefs[i].name) || '',
-        supplier: (briefs[i] && briefs[i].supplier) || '',
+        brand: (briefById[id] && briefById[id].brand) || '',
+        name: (briefById[id] && briefById[id].name) || '',
+        supplier: (briefById[id] && briefById[id].supplier) || '',
       }));
       source = 'similar-browser';
     }
   }
   if(!products.length) throw new Error('WB закрыл витрину (403)');
-  const items = products.slice(0, limit).map((p, i) => {
+  const scanned = products.slice(0, scanLimit);
+  const ownSet = shelfKnownOwnSet();
+  const items = scanned.slice(0, limit).map((p, i) => {
     const pid = Number(p.id || p.nmId || p.nmID || similarIds[i]);
     return {
       position: i+1,
@@ -12853,6 +12886,23 @@ async function fetchShelfDataFromBrowser(nmId, dest, limit=15) {
       spp: null,
     };
   }).filter(it => it.nm_id);
+  const ownOnShelf = [];
+  scanned.forEach((p, i) => {
+    const pid = Number(p.id || p.nmId || p.nmID);
+    if(!pid) return;
+    const brand = p.brand || '';
+    if(!ownSet.has(pid) && String(brand).toUpperCase() !== 'PVS') return;
+    ownOnShelf.push({
+      position: i + 1,
+      nm_id: pid,
+      vendor_code: shelfVendorByNm(pid),
+      brand,
+      name: p.name || '',
+      supplier: p.supplier || '',
+      thumb: wbThumbUrl(pid),
+      url: wbCatalogUrl(pid),
+    });
+  });
   const competitor = await fetchBasketCardBrief(nmId) || {
     nm_id: Number(nmId), brand:'', name:'', thumb: wbThumbUrl(nmId), url: wbCatalogUrl(nmId),
   };
@@ -12863,7 +12913,9 @@ async function fetchShelfDataFromBrowser(nmId, dest, limit=15) {
     limit,
     competitor,
     items,
-    total: items.length,
+    total: scanned.length,
+    own_on_shelf: ownOnShelf,
+    own_scan_depth: scanned.length,
     source,
     error: null,
     browser_fallback: true,
@@ -12883,6 +12935,9 @@ async function fetchShelfData(nmId) {
       if(d.suggest) browser.suggest = d.suggest;
       if(d.share) browser.share = d.share;
       if(d.city) browser.city = d.city;
+      if(Array.isArray(d.own_on_shelf)) browser.own_on_shelf = d.own_on_shelf;
+      if(d.own_scan_depth) browser.own_scan_depth = d.own_scan_depth;
+      if(Array.isArray(d.own_nm_ids)) browser.own_nm_ids = d.own_nm_ids;
     }
     return browser;
   } catch(e) {
@@ -12935,8 +12990,12 @@ async function loadShelfFor(nmId, force) {
       const srcLabel = src.includes('similar') ? ' · похожие'
         : (src.includes('recom') ? ' · смотрите также' : '');
       const via = d.browser_fallback ? ' · с вашего браузера' : '';
+      const ownN = (d.own_on_shelf || []).length;
+      const depth = Number(d.own_scan_depth) || 0;
       status.textContent = `${c.brand || ''} ${nmId}` + (c.name ? ` · ${c.name}` : '') +
-        ` · топ-${(d.items||[]).length}` + srcLabel + via +
+        ` · топ-${(d.items||[]).length}` +
+        (depth ? ` · наших ${ownN} в первых ${depth}` : '') +
+        srcLabel + via +
         (d.city ? ` · ${d.city}` : '');
     }
   } catch(e) {
@@ -13616,6 +13675,59 @@ function renderShelfShareWow(liveData, liveShares) {
   </div>`;
 }
 
+function buildShelfOwnPositionsPanel(data) {
+  const depth = Number(data.own_scan_depth) || (data.items || []).length || 15;
+  const topLimit = Number(data.limit) || 15;
+  const ownSet = shelfKnownOwnSet();
+  (data.own_nm_ids || []).forEach(n => ownSet.add(Number(n)));
+  const rows = (Array.isArray(data.own_on_shelf)
+    ? data.own_on_shelf
+    : (data.items || []).filter(it => isShelfMine(it, ownSet)))
+    .slice()
+    .sort((a, b) => Number(a.position) - Number(b.position));
+  const body = rows.length
+    ? rows.map(it => {
+        const pos = Number(it.position) || 0;
+        const deep = pos > topLimit;
+        const vc = it.vendor_code || shelfVendorByNm(it.nm_id);
+        const wbUrl = it.url || wbCatalogUrl(it.nm_id);
+        const thumb = it.thumb || wbThumbUrl(it.nm_id);
+        return `<tr style="${deep ? 'background:rgba(155,81,224,.07)' : ''}">
+          <td style="font-weight:700;font-variant-numeric:tabular-nums;color:${deep ? 'var(--wb-purple)' : 'inherit'}">${pos}</td>
+          <td><a href="${wbUrl}" target="_blank" rel="noopener">
+            <img src="${thumb}" alt="" width="36" height="36" loading="lazy"
+              style="border-radius:4px;object-fit:cover;background:#f3f3f3;display:block"
+              onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(it.nm_id,'jpg')}';}else{this.style.display='none'}">
+          </a></td>
+          <td>
+            <div style="font-weight:600">${vc ? escapeHtml(vc) : it.nm_id}</div>
+            <div style="font-size:11px;color:var(--wb-muted);font-variant-numeric:tabular-nums">${it.nm_id}${deep ? ' · дальше топ-'+topLimit : ''}</div>
+          </td>
+          <td>${escapeHtml(it.brand || '—')}</td>
+          <td style="font-size:12px"><a href="${wbUrl}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${escapeHtml(it.name || '')}</a></td>
+        </tr>`;
+      }).join('')
+    : `<tr><td colspan="5" style="color:var(--wb-muted);font-size:12px;padding:12px 8px">Среди первых ${depth} мест наших артикулов нет</td></tr>`;
+  return `<div style="padding:14px 20px;border-bottom:1px solid var(--wb-border)">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+      <div style="font-size:13px;font-weight:600">Наши артикулы на этой полке</div>
+      <div style="font-size:12px;color:var(--wb-muted)">${rows.length} шт · места в первых ${depth}</div>
+    </div>
+    <div style="overflow:auto">
+      <table class="comp-tbl" style="width:100%">
+        <thead><tr>
+          <th style="width:64px">Место</th>
+          <th style="width:48px">Фото</th>
+          <th style="width:180px">Артикул</th>
+          <th style="width:140px">Бренд</th>
+          <th>Название</th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
 function drawShelfTable(data, opts) {
   opts = opts || {};
   const root = document.getElementById(opts.rootId || 'shelfRoot');
@@ -13741,6 +13853,8 @@ function drawShelfTable(data, opts) {
       <div style="display:flex;height:14px;border-radius:7px;overflow:hidden;background:#EEE;margin-bottom:12px">${barHtml}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">${shareCards}</div>
     </div>
+
+    ${showSuggest ? buildShelfOwnPositionsPanel(data) : ''}
 
     ${showSuggest
       ? `<div style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(280px,.9fr);gap:16px;padding:14px 20px;align-items:start">

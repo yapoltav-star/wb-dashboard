@@ -14348,9 +14348,62 @@ def _wb_shelf_err_text(err) -> str:
     return s or "unknown"
 
 
-def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
-    """Полка у карточки: «Смотрите также» (recom), при 403 — «Похожие» + CDN."""
+SHELF_OWN_SCAN_LIMIT = 100
+
+
+def _own_shelf_positions(ordered_ids: list, own_map: dict | None, items_by_id: dict | None = None) -> list:
+    """Наши артикулы в порядке полки: место — позиция в ordered_ids, не в топ-15."""
+    own_map = own_map or {}
+    items_by_id = items_by_id or {}
+    rows = []
+    seen = set()
+    for pos, raw in enumerate(ordered_ids, 1):
+        try:
+            nid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if nid < 1 or nid in seen:
+            continue
+        seen.add(nid)
+        it = items_by_id.get(nid) or {}
+        brand = str(it.get("brand") or "")
+        if nid not in own_map and brand.strip().upper() != "PVS":
+            continue
+        rows.append({
+            "position": pos,
+            "nm_id": nid,
+            "vendor_code": str(own_map.get(nid) or ""),
+            "brand": brand,
+            "name": it.get("name") or "",
+            "supplier": it.get("supplier") or "",
+            "thumb": it.get("thumb") or wb_product_thumb_url(nid),
+            "url": it.get("url") or f"https://www.wildberries.ru/catalog/{nid}/detail.aspx",
+            "client_price": it.get("client_price"),
+            "sale_price": it.get("sale_price"),
+            "spp": it.get("spp"),
+        })
+    return rows
+
+
+def fetch_wb_see_also_shelf(
+    nm_id: int,
+    dest: int = -1257786,
+    limit: int = 15,
+    own_map: dict | None = None,
+    scan_limit: int = SHELF_OWN_SCAN_LIMIT,
+):
+    """Полка у карточки: «Смотрите также» (recom), при 403 — «Похожие» + CDN.
+
+    items — топ limit. Если передан own_map, отдельно смотрим первые scan_limit
+    мест и кладём наши артикулы в own_on_shelf вместе с их позицией.
+    """
     limit = max(1, min(int(limit or 15), 30))
+    want_own = own_map is not None
+    own_map = own_map or {}
+    if want_own:
+        scan_limit = max(limit, min(int(scan_limit or SHELF_OWN_SCAN_LIMIT), 200))
+    else:
+        scan_limit = limit
     headers = _wb_shelf_headers(nm_id)
     last_err = None
     # query=<nm> — полка see-also. spp не передаём: иначе WB рисует виртуальную скидку.
@@ -14381,13 +14434,33 @@ def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
             last_err = err or f"http {code}"
             continue
         products = data.get("products") or (data.get("data") or {}).get("products") or []
-        items = _shelf_items_ordered(products, limit)
+        scanned = _shelf_items_ordered(products, scan_limit)
+        items = scanned[:limit]
         if items:
-            return {"items": items, "total": len(products), "error": None, "source": "recom"}
+            by_id = {}
+            ordered = []
+            for it in scanned:
+                try:
+                    nid = int(it.get("nm_id"))
+                except (TypeError, ValueError):
+                    continue
+                by_id[nid] = it
+                ordered.append(nid)
+            own_rows = _own_shelf_positions(ordered, own_map, by_id) if want_own else []
+            return {
+                "items": items,
+                "total": len(products),
+                "error": None,
+                "source": "recom",
+                "own_on_shelf": own_rows,
+                "own_scan_depth": len(ordered),
+            }
         last_err = "empty"
     try:
         similar_ids = _fetch_similar_nm_ids(nm_id, headers)
-        take = similar_ids[:limit]
+        scan_ids = similar_ids[:scan_limit]
+        take = scan_ids[:limit]
+        own_deep = [n for n in scan_ids[limit:] if int(n) in own_map] if want_own else []
         products = _hydrate_shelf_products(take, dest, headers)
         items = _shelf_items_ordered(products, limit, order_ids=take)
         if not items and take:
@@ -14409,16 +14482,42 @@ def fetch_wb_see_also_shelf(nm_id: int, dest: int = -1257786, limit: int = 15):
                     "spp": None,
                 })
         if items:
+            by_id = {}
+            for it in items:
+                try:
+                    by_id[int(it.get("nm_id"))] = it
+                except (TypeError, ValueError):
+                    continue
+            if own_deep:
+                for it in _shelf_items_ordered(
+                    _hydrate_shelf_from_basket(own_deep),
+                    len(own_deep),
+                    order_ids=own_deep,
+                ):
+                    try:
+                        by_id[int(it.get("nm_id"))] = it
+                    except (TypeError, ValueError):
+                        continue
+            own_rows = _own_shelf_positions(scan_ids, own_map, by_id) if want_own else []
             return {
                 "items": items,
                 "total": len(similar_ids),
                 "error": None,
                 "source": "similar",
+                "own_on_shelf": own_rows,
+                "own_scan_depth": len(scan_ids),
             }
         last_err = last_err or "empty similar"
     except Exception as e:
         last_err = last_err or str(e)[:160]
-    return {"items": [], "total": 0, "error": _wb_shelf_err_text(last_err), "source": None}
+    return {
+        "items": [],
+        "total": 0,
+        "error": _wb_shelf_err_text(last_err),
+        "source": None,
+        "own_on_shelf": [],
+        "own_scan_depth": 0,
+    }
 
 
 def _watch_shape(vendor_code: str = "", name: str = "", brand: str = "") -> str:
@@ -14691,9 +14790,10 @@ def _own_top_sellers_week(top_n: int = 20, days: int = 7) -> list:
     return items
 
 
-def _shelf_suggest_add(competitor: dict, shelf_items: list, top_n: int = 20) -> dict:
+def _shelf_suggest_add(competitor: dict, shelf_items: list, top_n: int = 20, own_map: dict | None = None) -> dict:
     """Какие наши топ-продажи ещё не стоят в полке конкурента (с учётом формы)."""
-    own_map = _own_nm_vendor_map()
+    if own_map is None:
+        own_map = _own_nm_vendor_map()
     own_set = set(own_map.keys())
     shelf_nms = set()
     already = []
@@ -14996,7 +15096,8 @@ def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15, top:
         dest = -1257786
 
     card = fetch_wb_card_brief(nm_id, dest=dest)
-    shelf = fetch_wb_see_also_shelf(nm_id, dest=dest, limit=limit)
+    own_map = _own_nm_vendor_map()
+    shelf = fetch_wb_see_also_shelf(nm_id, dest=dest, limit=limit, own_map=own_map)
     city_name = next((c["name"] for c in WB_SEARCH_CITIES if c["dest"] == dest), str(dest))
     competitor = card or {
         "nm_id": nm_id,
@@ -15006,7 +15107,7 @@ def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15, top:
         "url": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
     }
     items = shelf.get("items") or []
-    suggest = _shelf_suggest_add(competitor=competitor, shelf_items=items, top_n=top)
+    suggest = _shelf_suggest_add(competitor=competitor, shelf_items=items, top_n=top, own_map=own_map)
     own_set = set(suggest.get("own_nm_ids") or [])
     share = _shelf_mine_share(items, own_set)
     snap = None
@@ -15026,6 +15127,8 @@ def get_competitor_shelf(nm_id: int, dest: int = -1257786, limit: int = 15, top:
         "shelf_total": shelf.get("total") or 0,
         "error": shelf.get("error"),
         "source": shelf.get("source"),
+        "own_on_shelf": shelf.get("own_on_shelf") or [],
+        "own_scan_depth": shelf.get("own_scan_depth") or 0,
         "mine_share": share,
         "share_week": snap,
         **suggest,
