@@ -11373,10 +11373,8 @@ function addPosExportFromSearch() {
 function buildPosExportTsv() {
   const keyword = posExportKeywordValue();
   const carts = posExportCartsValue();
-  const header = ['артикул ВБ', 'ключ', 'количество корзин'].join('\t');
-  if(!POS_EXPORT_ARTICLES.length) return header;
-  const rows = POS_EXPORT_ARTICLES.map(a => [Number(a.nm_id), keyword, carts].join('\t'));
-  return [header, ...rows].join('\n');
+  if(!POS_EXPORT_ARTICLES.length) return '';
+  return POS_EXPORT_ARTICLES.map(a => [Number(a.nm_id), keyword, carts].join('\t')).join('\n');
 }
 
 function syncPosExportText() {
@@ -11396,7 +11394,7 @@ async function copyPosExport() {
   syncPosExportText();
   const ta = document.getElementById('posExportText');
   const text = (ta && ta.value) || '';
-  if(!text || text.split('\n').length < 2) {
+  if(!text.trim()) {
     alert('Нет строк для копирования — добавь артикул WB');
     return;
   }
