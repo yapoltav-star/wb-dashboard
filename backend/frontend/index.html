@@ -12004,6 +12004,145 @@ function refreshShelfSuggestPanel() {
   }
 }
 
+const SHELF_EXPORT_KEYWORDS = [
+  'смарт часы',
+  'смарт часы женские',
+  'смарт часы мужские',
+];
+
+function shelfExportKeyword() {
+  const saved = localStorage.getItem('shelf_export_keyword') || 'смарт часы';
+  return SHELF_EXPORT_KEYWORDS.includes(saved) ? saved : 'смарт часы';
+}
+
+function shelfExportCarts() {
+  const n = Number(localStorage.getItem('shelf_export_carts') || 5);
+  if(!Number.isFinite(n) || n < 0) return 5;
+  return Math.min(9999, Math.round(n));
+}
+
+function onShelfExportKeywordChange() {
+  const sel = document.getElementById('shelfExportKeyword');
+  if(!sel) return;
+  localStorage.setItem('shelf_export_keyword', sel.value);
+  syncShelfExportText();
+}
+
+function onShelfExportCartsChange() {
+  const inp = document.getElementById('shelfExportCarts');
+  if(!inp) return;
+  let n = Number(inp.value);
+  if(!Number.isFinite(n) || n < 0) n = 0;
+  n = Math.min(9999, Math.round(n));
+  inp.value = String(n);
+  localStorage.setItem('shelf_export_carts', String(n));
+  syncShelfExportText();
+}
+
+function shelfExportOwnNmIds(compNm) {
+  // Только «Добавленные» для этого конкурента — тот список, который копируют в другую программу
+  const seen = new Set();
+  const out = [];
+  shelfSuggestAddedList(compNm).forEach(x => {
+    const n = Number(x && x.nm_id);
+    if(!n || seen.has(n)) return;
+    seen.add(n);
+    out.push(n);
+  });
+  return out;
+}
+
+function buildShelfExportTsv(compNm) {
+  const keyword = shelfExportKeyword();
+  const carts = shelfExportCarts();
+  const own = shelfExportOwnNmIds(compNm);
+  const header = ['артикул товара Клиента', 'артикул товара другого продавца', 'ключевой запрос', 'количество корзин'].join('\t');
+  if(!compNm || !own.length) return header;
+  const rows = own.map(nm => [nm, compNm, keyword, carts].join('\t'));
+  return [header, ...rows].join('\n');
+}
+
+function syncShelfExportText() {
+  const ta = document.getElementById('shelfExportText');
+  const meta = document.getElementById('shelfExportMeta');
+  const compNm = Number(SHELF_ACTIVE || 0);
+  const text = buildShelfExportTsv(compNm);
+  if(ta) ta.value = text;
+  if(meta) {
+    const n = shelfExportOwnNmIds(compNm).length;
+    meta.textContent = n
+      ? `${n} строк · конкурент ${compNm} · ключ «${shelfExportKeyword()}» · корзин ${shelfExportCarts()}`
+      : 'Добавь наши артикулы справа («Добавленные») — строки появятся здесь';
+  }
+}
+
+async function copyShelfExport() {
+  syncShelfExportText();
+  const ta = document.getElementById('shelfExportText');
+  const text = (ta && ta.value) || '';
+  if(!text || text.split('\n').length < 2) {
+    alert('Нет строк для копирования — добавь наши артикулы в «Добавленные»');
+    return;
+  }
+  try {
+    if(navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else if(ta) {
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+    }
+    const btn = document.getElementById('shelfExportCopyBtn');
+    if(btn) {
+      const prev = btn.textContent;
+      btn.textContent = 'Скопировано';
+      setTimeout(() => { btn.textContent = prev; }, 1200);
+    }
+  } catch(e) {
+    if(ta) { ta.focus(); ta.select(); }
+    alert('Не удалось скопировать автоматически — выдели текст и Ctrl+C');
+  }
+}
+
+function buildShelfExportPanel(data) {
+  const compNm = Number((data && data.nm_id) || SHELF_ACTIVE || 0) || 0;
+  const kw = shelfExportKeyword();
+  const carts = shelfExportCarts();
+  const opts = SHELF_EXPORT_KEYWORDS.map(k =>
+    `<option value="${escapeHtml(k)}"${k === kw ? ' selected' : ''}>${escapeHtml(k)}</option>`
+  ).join('');
+  return `<div style="padding:14px 20px 18px;border-top:1px solid var(--wb-border);background:var(--wb-surface)">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+      <div>
+        <div style="font-size:13px;font-weight:600">Выгрузка для другой программы</div>
+        <div id="shelfExportMeta" style="font-size:12px;color:var(--wb-muted);margin-top:2px">Готовлю строки…</div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div>
+          <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px">Ключевой запрос</div>
+          <select id="shelfExportKeyword" onchange="onShelfExportKeywordChange()"
+            style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;min-width:200px;background:#fff">
+            ${opts}
+          </select>
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px">Корзин у конкурента</div>
+          <input id="shelfExportCarts" type="number" min="0" max="9999" step="1" value="${carts}"
+            onchange="onShelfExportCartsChange()" oninput="onShelfExportCartsChange()"
+            style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:100px">
+        </div>
+        <button type="button" class="action-btn" id="shelfExportCopyBtn" onclick="copyShelfExport()">Скопировать</button>
+      </div>
+    </div>
+    <textarea id="shelfExportText" readonly rows="8"
+      style="width:100%;box-sizing:border-box;border:1px solid var(--wb-border);border-radius:8px;padding:10px 12px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;background:#FAFAFA;color:var(--wb-text)"
+      placeholder="Строки появятся после добавления наших артикулов"></textarea>
+    <div style="font-size:11px;color:var(--wb-muted);margin-top:6px">
+      Столбцы через Tab: наш nmID · nmID конкурента ${compNm || '—'} · ключ · корзины. Вставляй прямо в Excel / другую платформу.
+    </div>
+  </div>`;
+}
+
 function saveShelfCompetitors() {
   localStorage.setItem('shelf_competitors', JSON.stringify(SHELF_COMPETITORS));
   if(SHELF_ACTIVE) localStorage.setItem('shelf_active_nm', String(SHELF_ACTIVE));
@@ -13156,9 +13295,13 @@ function drawShelfTable(data, opts) {
           <div style="overflow:auto">${shelfTable}</div>
           ${suggestHtml}
         </div>
+        ${buildShelfExportPanel(data)}
         <div id="shelfShareWow"></div>`
       : shelfTable}`;
-  if(showSuggest) loadShelfShareWow(data, shares);
+  if(showSuggest) {
+    loadShelfShareWow(data, shares);
+    syncShelfExportText();
+  }
 }
 
 // ─────────── Полки у моих карточек ───────────
