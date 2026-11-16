@@ -13428,16 +13428,16 @@ SEARCH_KEYWORDS_PATH = Path(__file__).resolve().parent / "data" / "search_keywor
 
 # dest — регион выдачи витрины WB (как у покупателя). Москва по умолчанию.
 WB_SEARCH_CITIES = [
-    {"id": "moscow", "name": "Москва", "dest": -1257786},
-    {"id": "spb", "name": "Санкт-Петербург", "dest": -1124448},
+    {"id": "moscow", "name": "Москва", "dest": 1259570991},
+    {"id": "spb", "name": "Санкт-Петербург", "dest": -1198055},
     {"id": "kazan", "name": "Казань", "dest": -2133462},
-    {"id": "ekb", "name": "Екатеринбург", "dest": -1113276},
-    {"id": "nsk", "name": "Новосибирск", "dest": -140294},
-    {"id": "nn", "name": "Нижний Новгород", "dest": -1190344},
-    {"id": "krasnodar", "name": "Краснодар", "dest": -1221148},
-    {"id": "rostov", "name": "Ростов-на-Дону", "dest": -1197210},
-    {"id": "samara", "name": "Самара", "dest": -1235864},
-    {"id": "chelyabinsk", "name": "Челябинск", "dest": -1382589},
+    {"id": "ekb", "name": "Екатеринбург", "dest": -5818883},
+    {"id": "nsk", "name": "Новосибирск", "dest": -364764},
+    {"id": "nn", "name": "Нижний Новгород", "dest": 12358579},
+    {"id": "krasnodar", "name": "Краснодар", "dest": 12358062},
+    {"id": "rostov", "name": "Ростов-на-Дону", "dest": -2228342},
+    {"id": "samara", "name": "Самара", "dest": -283781},
+    {"id": "chelyabinsk", "name": "Челябинск", "dest": -1581743},
 ]
 
 _wb_search_lock = threading.Lock()
@@ -13830,7 +13830,7 @@ def get_search_keywords():
         **data,
         "cities": WB_SEARCH_CITIES,
         "default_city": "moscow",
-        "default_dest": -1257786,
+        "default_dest": 1259570991,
     }
 
 

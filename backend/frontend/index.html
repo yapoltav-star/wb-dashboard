@@ -1780,7 +1780,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
         <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Город</div>
         <select id="posCity" onchange="onPosCityChange()"
           style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;min-width:200px;background:#fff">
-          <option value="-1257786">Москва</option>
+          <option value="1259570991">Москва</option>
         </select>
       </div>
 
@@ -1812,7 +1812,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
         </div>
       </div>
     </div>
-    <div id="posStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Поиск как в инкогнито (без персонализации) · кликни ключ — доли брендов в топ-100 · тяни строки за ⋮⋮</div>
+    <div id="posStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Позиция как на сайте WB в инкогнито · кликни ключ — доли брендов в топ-100 · тяни строки за ⋮⋮</div>
     <div id="posPresencePanel" style="display:none;margin-top:12px"></div>
   </div>
 
@@ -11093,7 +11093,11 @@ async function loadPosKeywords() {
 
     const sel = document.getElementById('posCity');
     if(sel && POS_CITIES.length) {
-      const saved = localStorage.getItem('pos_dest') || String(d.default_dest || -1257786);
+      let saved = localStorage.getItem('pos_dest') || String(d.default_dest || 1259570991);
+      if(!POS_CITIES.some(c => String(c.dest) === String(saved))) {
+        saved = String(d.default_dest || POS_CITIES[0].dest);
+        localStorage.setItem('pos_dest', saved);
+      }
       sel.innerHTML = POS_CITIES.map(c =>
         `<option value="${c.dest}"${String(c.dest)===String(saved)?' selected':''}>${c.name}</option>`
       ).join('');
@@ -11529,7 +11533,7 @@ function posPresenceCacheKey(query, dest) {
 }
 
 function posDest() {
-  return Number((document.getElementById('posCity')||{}).value || -1257786);
+  return Number((document.getElementById('posCity')||{}).value || 1259570991);
 }
 
 function posCityName() {
@@ -11751,6 +11755,82 @@ function stopPositionCheck() {
 
 function sleepPos(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+async function wbSiteSearchPage(query, dest, page) {
+  const params = new URLSearchParams({
+    ab_testing: 'false',
+    appType: '1',
+    curr: 'rub',
+    dest: String(dest),
+    lang: 'ru',
+    page: String(page),
+    query: String(query || ''),
+    resultset: 'catalog',
+    sort: 'popular',
+    spp: '30',
+    suppressSpellcheck: 'false',
+  });
+  const hosts = [
+    'https://u-search.wb.ru/exactmatch/ru/common/v18/search',
+    'https://search.wb.ru/exactmatch/ru/common/v18/search',
+  ];
+  let lastStatus = 0;
+  for(const host of hosts) {
+    const r = await fetch(host + '?' + params.toString(), {
+      credentials: 'omit',
+      headers: {Accept: '*/*'},
+    });
+    lastStatus = r.status;
+    if(r.status === 429) {
+      const err = new Error('429');
+      err.status = 429;
+      throw err;
+    }
+    if(!r.ok) continue;
+    const d = await r.json();
+    let products = d.products || (d.data && d.data.products) || [];
+    const total = d.total != null ? d.total : (d.data && d.data.total);
+    const meta = d.metadata || (d.data && d.data.metadata) || {};
+    if(!products.length && meta && meta.catalog_value && meta.name) {
+      const shard = String(meta.name).replace(/^\/+/, '');
+      const extra = new URLSearchParams({
+        appType: '1', curr: 'rub', dest: String(dest), page: String(page), sort: 'popular', spp: '30',
+      });
+      const catUrl = `https://catalog.wb.ru/catalog/${shard}/v2/catalog?${meta.catalog_value}&${extra}`;
+      const cr = await fetch(catUrl, {credentials: 'omit', headers: {Accept: '*/*'}});
+      if(cr.ok) {
+        const cd = await cr.json();
+        products = cd.products || (cd.data && cd.data.products) || [];
+      }
+    }
+    if(products.length || total != null) return {products, total, source: 'site'};
+  }
+  const err = new Error(lastStatus === 403 ? '403' : ('http ' + (lastStatus || 'fail')));
+  err.status = lastStatus;
+  throw err;
+}
+
+async function findNmOnWbSite(nmId, query, dest, maxPages) {
+  nmId = Number(nmId);
+  let seen = 0;
+  let total = null;
+  for(let page = 1; page <= maxPages; page++) {
+    const d = await wbSiteSearchPage(query, dest, page);
+    total = d.total;
+    const products = d.products || [];
+    for(let i = 0; i < products.length; i++) {
+      const id = Number(products[i].id || products[i].nmId || products[i].nmID);
+      if(id === nmId) {
+        return {query, position: seen + i + 1, page, total, error: null, source: 'site'};
+      }
+    }
+    seen += products.length;
+    if(!products.length || products.length < 100) {
+      return {query, position: null, page: null, total, error: null, not_found: true, source: 'site'};
+    }
+  }
+  return {query, position: null, page: null, total, error: null, not_found: true, source: 'site'};
+}
+
 async function runPositionCheck() {
   if(!POS_ARTICLE || POS_RUNNING) return;
   const rows = filteredPosKeywords();
@@ -11758,7 +11838,7 @@ async function runPositionCheck() {
     alert('Нет ключей по текущему фильтру');
     return;
   }
-  const dest = Number((document.getElementById('posCity')||{}).value || -1257786);
+  const dest = Number((document.getElementById('posCity')||{}).value || 1259570991);
   const maxPages = Number((document.getElementById('posMaxPages')||{}).value || 3);
   const status = document.getElementById('posStatus');
   const stopBtn = document.getElementById('posStopBtn');
@@ -11770,54 +11850,30 @@ async function runPositionCheck() {
   if(stopBtn) stopBtn.style.display = '';
   if(checkBtn) checkBtn.textContent = 'Проверяю…';
 
-  // маленькие пачки + пауза — иначе WB отвечает 429 («ошибка» / «лимит WB»)
-  const batchSize = 2;
+  // По одному ключу с браузера: search.wb.ru с сервера закрыт, а старый napi врёт позицию.
   const total = rows.length;
   const retries = {};
   const queue = rows.map(k => ({query: k.query}));
-  let processed = 0;
 
   try {
     while(queue.length && !POS_STOP) {
-      const batch = queue.splice(0, batchSize);
-      const queries = batch.map(k => k.query);
-      processed += batch.length;
-      if(status) status.textContent = `Проверяю… осталось ${queue.length} · всего ${total} (инкогнито · паузы против лимита WB)`;
+      const item = queue.shift();
+      const key = posKey(item);
+      if(status) status.textContent = `Проверяю на сайте WB… осталось ${queue.length} · всего ${total}`;
       try {
-        const r = await fetch(`${RAILWAY_URL}/api/search-positions`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            nm_id: POS_ARTICLE.nm_id,
-            dest,
-            queries,
-            max_pages: maxPages,
-          }),
-        });
-        const d = await r.json().catch(() => ({}));
-        if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
-        for(const res of (d.results || [])) {
-          const key = (res.query || '').toLowerCase();
-          POS_RESULTS[key] = res;
-          if(res.error === '429' && res.position == null) {
-            retries[key] = (retries[key] || 0) + 1;
-            if(retries[key] <= 2) {
-              queue.push({query: res.query});
-              await sleepPos(3000);
-            }
-          }
-        }
+        const res = await findNmOnWbSite(POS_ARTICLE.nm_id, item.query, dest, maxPages);
+        POS_RESULTS[key] = res;
       } catch(e) {
-        for(const k of batch) {
-          const key = posKey(k);
-          POS_RESULTS[key] = {query: k.query, position: null, error: String(e.message||e)};
-          retries[key] = (retries[key] || 0) + 1;
-          if(retries[key] <= 2) queue.push(k);
+        const msg = String(e.message || e);
+        POS_RESULTS[key] = {query: item.query, position: null, error: msg === '429' ? '429' : msg};
+        retries[key] = (retries[key] || 0) + 1;
+        if(retries[key] <= 2 && (msg === '429' || msg === '403' || msg.startsWith('http '))) {
+          queue.push(item);
+          await sleepPos(msg === '429' ? 2500 : 800);
         }
-        await sleepPos(3000);
       }
       drawPosTable();
-      if(queue.length && !POS_STOP) await sleepPos(1500);
+      if(queue.length && !POS_STOP) await sleepPos(350);
     }
     const withPos = Object.values(POS_RESULTS).filter(x => x && x.position != null).length;
     const lim = Object.values(POS_RESULTS).filter(x => x && x.error === '429' && x.position == null).length;
