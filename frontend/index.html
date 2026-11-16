@@ -12463,6 +12463,137 @@ function buildShelfExportPanel(data) {
   </div>`;
 }
 
+let MY_SHELF_EXPORT_OWN = new Set();
+
+function myShelfExportOthers(data, ownSet) {
+  const ownNm = Number((data && (data.nm_id || (data.competitor && data.competitor.nm_id))) || 0);
+  const seen = new Set();
+  const others = [];
+  (data && data.items || []).forEach(it => {
+    const n = Number(it && it.nm_id);
+    if(!n || n === ownNm || seen.has(n)) return;
+    if(ownSet && typeof isShelfMine === 'function' && isShelfMine(it, ownSet)) return;
+    seen.add(n);
+    others.push(n);
+  });
+  return { ownNm, others };
+}
+
+function buildMyShelfExportTsv(data, ownSet) {
+  const keyword = shelfExportKeyword();
+  const carts = shelfExportCarts();
+  const { ownNm, others } = myShelfExportOthers(data, ownSet || MY_SHELF_EXPORT_OWN);
+  if(!ownNm || !others.length) return '';
+  return others.map(nm => [ownNm, nm, keyword, carts].join('\t')).join('\n');
+}
+
+function syncMyShelfExportText() {
+  const ta = document.getElementById('myShelfExportText');
+  const meta = document.getElementById('myShelfExportMeta');
+  if(!ta && !meta) return;
+  const data = (typeof MY_SHELF_CACHE !== 'undefined' && MY_SHELF_ACTIVE) ? MY_SHELF_CACHE[MY_SHELF_ACTIVE] : null;
+  const text = data ? buildMyShelfExportTsv(data, MY_SHELF_EXPORT_OWN) : '';
+  if(ta) ta.value = text;
+  if(meta) {
+    const n = text ? text.split('\n').filter(Boolean).length : 0;
+    const ownNm = data ? myShelfExportOthers(data, MY_SHELF_EXPORT_OWN).ownNm : 0;
+    meta.textContent = n
+      ? `${n} строк · наша карточка ${ownNm} · ключ «${shelfExportKeyword()}» · корзин ${shelfExportCarts()}`
+      : 'На этой полке нет чужих карточек — копировать нечего';
+  }
+}
+
+function onMyShelfExportKeywordChange() {
+  const sel = document.getElementById('myShelfExportKeyword');
+  if(!sel) return;
+  localStorage.setItem('shelf_export_keyword', sel.value);
+  syncMyShelfExportText();
+}
+
+function onMyShelfExportCartsChange() {
+  const inp = document.getElementById('myShelfExportCarts');
+  if(!inp) return;
+  let n = Number(inp.value);
+  if(!Number.isFinite(n) || n < 0) n = 0;
+  n = Math.min(9999, Math.round(n));
+  inp.value = String(n);
+  localStorage.setItem('shelf_export_carts', String(n));
+  syncMyShelfExportText();
+}
+
+async function copyMyShelfExport() {
+  syncMyShelfExportText();
+  const ta = document.getElementById('myShelfExportText');
+  const text = (ta && ta.value) || '';
+  if(!text.trim()) {
+    alert('Нет строк для копирования — на полке нет чужих карточек');
+    return;
+  }
+  try {
+    if(navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else if(ta) {
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+    }
+    const btn = document.getElementById('myShelfExportCopyBtn');
+    if(btn) {
+      const prev = btn.textContent;
+      btn.textContent = 'Скопировано';
+      setTimeout(() => { btn.textContent = prev; }, 1200);
+    }
+  } catch(e) {
+    if(ta) { ta.focus(); ta.select(); }
+    alert('Не удалось скопировать автоматически — выдели текст и Ctrl+C');
+  }
+}
+
+function buildMyShelfExportPanel(data, ownSet) {
+  MY_SHELF_EXPORT_OWN = new Set(ownSet || []);
+  const kw = shelfExportKeyword();
+  const carts = shelfExportCarts();
+  const text = buildMyShelfExportTsv(data, MY_SHELF_EXPORT_OWN);
+  const n = text ? text.split('\n').filter(Boolean).length : 0;
+  const ownNm = myShelfExportOthers(data, MY_SHELF_EXPORT_OWN).ownNm;
+  const opts = SHELF_EXPORT_KEYWORDS.map(k =>
+    `<option value="${escapeHtml(k)}"${k === kw ? ' selected' : ''}>${escapeHtml(k)}</option>`
+  ).join('');
+  const meta = n
+    ? `${n} строк · наша карточка ${ownNm} · ключ «${escapeHtml(kw)}» · корзин ${carts}`
+    : 'На этой полке нет чужих карточек — копировать нечего';
+  return `<div style="padding:14px 20px 18px;border-top:1px solid var(--wb-border);background:var(--wb-surface)">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+      <div>
+        <div style="font-size:13px;font-weight:600">Выгрузка для другой программы</div>
+        <div id="myShelfExportMeta" style="font-size:12px;color:var(--wb-muted);margin-top:2px">${meta}</div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div>
+          <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px">Ключевой запрос</div>
+          <select id="myShelfExportKeyword" onchange="onMyShelfExportKeywordChange()"
+            style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;min-width:200px;background:#fff">
+            ${opts}
+          </select>
+        </div>
+        <div>
+          <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px">Количество корзин</div>
+          <input id="myShelfExportCarts" type="number" min="0" max="9999" step="1" value="${carts}"
+            onchange="onMyShelfExportCartsChange()" oninput="onMyShelfExportCartsChange()"
+            style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:110px">
+        </div>
+        <button type="button" class="action-btn" id="myShelfExportCopyBtn" onclick="copyMyShelfExport()">Скопировать</button>
+      </div>
+    </div>
+    <textarea id="myShelfExportText" readonly rows="8"
+      style="width:100%;box-sizing:border-box;border:1px solid var(--wb-border);border-radius:8px;padding:10px 12px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;background:#FAFAFA;color:var(--wb-text)"
+      placeholder="Строки появятся, когда на полке есть чужие карточки">${escapeHtml(text)}</textarea>
+    <div style="font-size:11px;color:var(--wb-muted);margin-top:6px">
+      Столбцы через Tab: наша карточка ${ownNm || '—'} · артикул с полки · ключ · корзины. Вставляй в Excel или другую платформу.
+    </div>
+  </div>`;
+}
+
 function saveShelfCompetitors() {
   localStorage.setItem('shelf_competitors', JSON.stringify(SHELF_COMPETITORS));
   if(SHELF_ACTIVE) localStorage.setItem('shelf_active_nm', String(SHELF_ACTIVE));
@@ -13527,6 +13658,7 @@ function drawShelfTable(data, opts) {
 
   const showSuggest = !opts.rootId || opts.rootId === 'shelfRoot';
   const suggestHtml = showSuggest ? buildShelfSuggestPanel(data) : '';
+  const myExportHtml = opts.rootId === 'myShelfRoot' ? buildMyShelfExportPanel(data, ownSet) : '';
   const shelfPriceFmt = (v) => {
     if(v == null || v === '' || Number.isNaN(Number(v))) return '—';
     return Math.round(Number(v)).toLocaleString('ru-RU') + ' ₽';
@@ -13617,7 +13749,7 @@ function drawShelfTable(data, opts) {
         </div>
         ${buildShelfExportPanel(data)}
         <div id="shelfShareWow"></div>`
-      : shelfTable}`;
+      : `${shelfTable}${myExportHtml}`}`;
   if(showSuggest) {
     loadShelfShareWow(data, shares);
     syncShelfExportText();
