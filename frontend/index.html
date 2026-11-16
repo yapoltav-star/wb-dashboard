@@ -10835,6 +10835,13 @@ function buildCompMetricsTable(metrics, ownNm) {
     return null;
   };
 
+  const stockWbRfOf = (m) => {
+    const v = m && (m.stock_wb_rf != null ? m.stock_wb_rf : m.stockWbRf);
+    if(v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
   let rows = `<table class="comp-tbl"><thead><tr><th class="metric-col">Показатель</th>${thCells}</tr></thead><tbody>`;
   for(const [section, fields] of Object.entries(SECTIONS)) {
     rows += `<tr class="section-hdr"><td colspan="${arts.length+1}">${section}</td></tr>`;
@@ -10845,7 +10852,10 @@ function buildCompMetricsTable(metrics, ownNm) {
       });
       const validVals = vals.filter(v => v !== null);
       const sorted = [...validVals].sort((a,b) => lowerBetter ? a-b : b-a);
-      rows += `<tr><td class="metric-col">${label}</td>`;
+      const metricLabel = fieldArr.includes('orders')
+        ? `${label}<div style="font-size:10px;font-weight:400;color:var(--wb-faint);margin-top:2px">+ остаток Склад WB РФ</div>`
+        : label;
+      rows += `<tr><td class="metric-col">${metricLabel}</td>`;
       arts.forEach((m,i) => {
         const raw = getVal(m, fieldArr);
         const num = raw !== null && raw !== undefined ? parseFloat(raw) : null;
@@ -10865,7 +10875,16 @@ function buildCompMetricsTable(metrics, ownNm) {
             display = Number.isFinite(num) ? Math.round(num).toLocaleString('ru-RU') : '—';
           else display = Number.isInteger(num) ? fmt(num) : num;
         }
-        rows += `<td class="${m.is_own?'own-col':''}"><span class="${rankCls}">${display}</span></td>`;
+        if(fieldArr.includes('orders')) {
+          const st = stockWbRfOf(m);
+          const stockBit = st != null
+            ? `<div style="font-size:11px;color:var(--wb-muted);margin-top:3px" title="Остаток на Склад WB РФ из отчёта">WB РФ: <b style="color:var(--wb-text)">${fmt(st)}</b></div>`
+            : `<div style="font-size:10px;color:var(--wb-faint);margin-top:3px">WB РФ: —</div>`;
+          display = `<span class="${rankCls}">${display}</span>${stockBit}`;
+          rows += `<td class="${m.is_own?'own-col':''}">${display}</td>`;
+        } else {
+          rows += `<td class="${m.is_own?'own-col':''}"><span class="${rankCls}">${display}</span></td>`;
+        }
       });
       rows += '</tr>';
     }
@@ -10924,7 +10943,10 @@ async function uploadCompetitorReport(file) {
         period_end: result.period_end,
         brands: result.brands || [],
       });
-      status.textContent = `✅ Загружено: ${label}, ${result.articles} артикулов`;
+      const stockN = Number(result.stock_wb_rf_articles || 0);
+      status.textContent = stockN
+        ? `✅ Загружено: ${label}, ${result.articles} артикулов · остаток WB РФ у ${stockN}`
+        : `✅ Загружено: ${label}, ${result.articles} артикулов`;
       COMP_DATA = null;
       COMP_SELECTED_NMS = new Set();
       saveCompSelectedNms();

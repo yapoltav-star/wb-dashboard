@@ -6377,9 +6377,162 @@ async def upload_ratings(file: UploadFile = File(...)):
         logger.error(f"Upload error: {e}")
         return {"error": str(e)}
 
+def _comp_norm_label(v) -> str:
+    s = str(v or "").replace("\xa0", " ").strip().lower().replace("ё", "е")
+    return re.sub(r"\s+", " ", s)
+
+
+def _comp_wb_rf_stock_tier(label: str) -> int:
+    """0 = не то; 1 = legacy «Склад WB»; 2 = явное «Склад WB РФ» / остатки WB РФ."""
+    s = _comp_norm_label(label)
+    if not s:
+        return 0
+    if "сгт" in s:
+        return 0
+    if "свой склад" in s or "склад продавца" in s:
+        return 0
+    if "не в рф" in s or "за пределами" in s:
+        return 0
+    if "склад wb рф" in s or "склад вб рф" in s:
+        return 2
+    if ("остат" in s) and ("wb рф" in s or "вб рф" in s):
+        return 2
+    if ("остат" in s) and ("склад wb рф" in s or "склад вб рф" in s):
+        return 2
+    # legacy до переименования (только точное имя)
+    if s in ("склад wb", "склад вб"):
+        return 1
+    return 0
+
+
+def _comp_is_wb_rf_stock_label(label: str) -> bool:
+    return _comp_wb_rf_stock_tier(label) > 0
+
+
+def _comp_parse_qty(v):
+    if v is None:
+        return None
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        try:
+            return int(v)
+        except Exception:
+            return None
+    s = str(v).strip().replace("\xa0", "").replace(" ", "")
+    if s in ("", "-", "—", "nan", "None", "NaT"):
+        return None
+    s = s.replace(",", ".")
+    m = re.match(r"^>?(\d+)(?:\.0+)?$", s)
+    if m:
+        return int(m.group(1))
+    try:
+        return int(float(s.replace("%", "")))
+    except Exception:
+        return None
+
+
+def _comp_art_cols_from_headers(headers) -> list:
+    out = []
+    for j, h in enumerate(headers or []):
+        hs = str(h or "")
+        if "Артикул WB" not in hs and "артикул wb" not in hs.lower():
+            continue
+        low = hs.lower()
+        if "предыдущий" in low or "разница" in low:
+            continue
+        m = re.search(r"(\d{7,12})", hs)
+        if m:
+            out.append((j, int(m.group(1))))
+    return out
+
+
+def parse_competitor_wb_rf_stocks(contents: bytes, art_cols: list | None = None) -> dict:
+    """Остаток на «Склад WB РФ» по nm_id из Excel «Сравнение карточек»."""
+    stocks = {}
+    try:
+        xls = pd.ExcelFile(io.BytesIO(contents))
+    except Exception as e:
+        logger.warning(f"competitor wb-rf stocks: cannot open excel: {e}")
+        return {}
+
+    preferred, other = [], []
+    for name in xls.sheet_names:
+        low = str(name).lower()
+        if "показател" in low or "склад" in low or "регион" in low or "остат" in low:
+            preferred.append(name)
+        else:
+            other.append(name)
+
+    def absorb_row_layout(df, forced_arts=None):
+        if df is None or len(df) < 2:
+            return
+        arts = forced_arts
+        header_i = None
+        for hi in (1, 0, 2):
+            if hi >= len(df):
+                continue
+            cand = _comp_art_cols_from_headers([str(v) for v in df.iloc[hi].values])
+            if cand:
+                header_i, arts = hi, cand
+                break
+        if not arts:
+            return
+        start = (header_i + 1) if header_i is not None else 0
+        explicit_rows, legacy_rows = [], []
+        for i in range(start, len(df)):
+            tier = _comp_wb_rf_stock_tier(str(df.iloc[i, 0]))
+            if tier >= 2:
+                explicit_rows.append(i)
+            elif tier == 1:
+                legacy_rows.append(i)
+        # если есть явное «WB РФ» — не суммируем legacy «Склад WB»
+        for i in (explicit_rows or legacy_rows):
+            for j, nm_id in arts:
+                if j >= df.shape[1]:
+                    continue
+                q = _comp_parse_qty(df.iloc[i, j])
+                if q is None:
+                    continue
+                stocks[nm_id] = int(stocks.get(nm_id, 0) or 0) + int(q)
+
+    for sheet in preferred + other:
+        try:
+            df = pd.read_excel(xls, sheet_name=sheet, header=None)
+        except Exception:
+            continue
+        absorb_row_layout(df, art_cols if str(sheet) == "Показатели" else None)
+
+    return stocks
+
+
+def _save_competitor_wb_rf_stocks(session_id: int, stocks: dict) -> None:
+    if not stocks:
+        return
+    key = "competitor_stock_wb_rf"
+    data = get_setting_json(key, {}) or {}
+    if not isinstance(data, dict):
+        data = {}
+    data[str(session_id)] = {str(k): int(v) for k, v in stocks.items() if v is not None}
+    save_setting_value(key, data)
+
+
+def _load_competitor_wb_rf_stocks(session_id: int) -> dict:
+    data = get_setting_json("competitor_stock_wb_rf", {}) or {}
+    if not isinstance(data, dict):
+        return {}
+    raw = data.get(str(session_id)) or {}
+    out = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            try:
+                out[int(k)] = int(v)
+            except Exception:
+                continue
+    return out
+
+
 @app.post("/api/upload-competitor-report")
 async def upload_competitor_report(file: UploadFile = File(...)):
-    """Принимает xlsx «Сравнение карточек» и парсит только лист Показатели."""
+    """Принимает xlsx «Сравнение карточек»: Показатели + остаток на Склад WB РФ."""
     try:
         import re as _re
         contents = await file.read()
@@ -6402,12 +6555,7 @@ async def upload_competitor_report(file: UploadFile = File(...)):
         headers = [str(v) for v in df.iloc[1].values]
 
         # Колонки артикулов (не Разница, не предыдущий)
-        art_cols = []
-        for j, h in enumerate(headers):
-            if 'Артикул WB' in h and 'предыдущий' not in h.lower() and 'Разница' not in h:
-                m = _re.search(r'(\d{7,10})', h)
-                if m:
-                    art_cols.append((j, int(m.group(1))))
+        art_cols = _comp_art_cols_from_headers(headers)
 
         if not art_cols:
             return {"error": "Не найдены артикулы в листе Показатели. Проверь формат файла."}
@@ -6467,6 +6615,8 @@ async def upload_competitor_report(file: UploadFile = File(...)):
                     row_idx["brand"] = i
                     break
 
+        wb_rf_stocks = parse_competitor_wb_rf_stocks(contents, art_cols)
+
         # ── Создаём сессию ──
         session_row = {"period_begin": period_begin, "period_end": period_end}
         sess_resp = httpx.post(
@@ -6496,16 +6646,34 @@ async def upload_competitor_report(file: UploadFile = File(...)):
                 else:
                     v = to_num(ri, j)
                     r[field] = int(v) if (v is not None and field in INT_FIELDS) else v
+            if nm_id in wb_rf_stocks:
+                r["stock_wb_rf"] = int(wb_rf_stocks[nm_id])
             rows.append(r)
 
         mr = httpx.post(f"{SUPABASE_URL}/rest/v1/competitor_metrics",
                         json=rows, headers=sb_headers(), timeout=20)
         if not mr.is_success:
-            return {"error": f"Ошибка сохранения ({mr.status_code}): {mr.text[:200]}"}
+            err_txt = (mr.text or "")[:300]
+            # Колонки stock_wb_rf может ещё не быть — сохраняем без неё + fallback в settings
+            if "stock_wb_rf" in err_txt or mr.status_code in (400, 415):
+                stripped = [{k: v for k, v in r.items() if k != "stock_wb_rf"} for r in rows]
+                mr2 = httpx.post(f"{SUPABASE_URL}/rest/v1/competitor_metrics",
+                                 json=stripped, headers=sb_headers(), timeout=20)
+                if not mr2.is_success:
+                    return {"error": f"Ошибка сохранения ({mr2.status_code}): {mr2.text[:200]}"}
+                _save_competitor_wb_rf_stocks(session_id, wb_rf_stocks)
+            else:
+                return {"error": f"Ошибка сохранения ({mr.status_code}): {err_txt[:200]}"}
+        elif wb_rf_stocks:
+            _save_competitor_wb_rf_stocks(session_id, wb_rf_stocks)
 
         brands = sorted({(r.get("brand") or "").strip() for r in rows if (r.get("brand") or "").strip()})
         period = f"{period_begin or '?'} — {period_end or '?'}"
-        logger.info(f"upload-competitor: session={session_id}, {len(rows)} articles, period={period}, brands={brands}")
+        with_stock = sum(1 for r in rows if r.get("stock_wb_rf") is not None)
+        logger.info(
+            f"upload-competitor: session={session_id}, {len(rows)} articles, "
+            f"period={period}, brands={brands}, stock_wb_rf={with_stock}"
+        )
         return {
             "status": "ok",
             "session_id": session_id,
@@ -6515,6 +6683,7 @@ async def upload_competitor_report(file: UploadFile = File(...)):
             "brands": brands,
             "articles": len(rows),
             "search_queries": 0,
+            "stock_wb_rf_articles": with_stock,
         }
 
     except Exception as e:
@@ -7220,6 +7389,21 @@ def get_competitor_data(session_id: int):
         )
         rows = metrics.json() if metrics.is_success else []
         if isinstance(rows, list) and rows:
+            # подмешиваем stock_wb_rf из settings, если колонки в БД ещё нет / пусто
+            fallback = _load_competitor_wb_rf_stocks(session_id)
+            if fallback:
+                merged = []
+                for m in rows:
+                    item = dict(m)
+                    if item.get("stock_wb_rf") is None:
+                        try:
+                            nm = int(item.get("nm_id"))
+                        except (TypeError, ValueError):
+                            nm = None
+                        if nm is not None and nm in fallback:
+                            item["stock_wb_rf"] = fallback[nm]
+                    merged.append(item)
+                rows = merged
             rows = _enrich_competitor_metrics_prices(rows)
         return {
             "metrics": rows,

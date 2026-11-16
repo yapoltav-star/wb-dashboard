@@ -159,6 +159,7 @@ create table public.competitor_metrics (
   buyouts         integer,
   buyout_pct      numeric,
   cancels         integer,
+  stock_wb_rf     integer,  -- остаток на «Склад WB РФ» из отчёта «Сравнение карточек»
   updated_at      timestamptz default now()
 );
 
