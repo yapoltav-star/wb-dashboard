@@ -1812,7 +1812,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
         </div>
       </div>
     </div>
-    <div id="posStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Клиентский поиск WB · кликни ключ — доли брендов в топ-100 · тяни строки за ⋮⋮</div>
+    <div id="posStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Поиск как в инкогнито (без персонализации) · кликни ключ — доли брендов в топ-100 · тяни строки за ⋮⋮</div>
     <div id="posPresencePanel" style="display:none;margin-top:12px"></div>
   </div>
 
@@ -11232,8 +11232,9 @@ function filteredPosKeywords() {
 function fmtPos(res) {
   if(!res) return '<span style="color:var(--wb-faint)">—</span>';
   if(res.error && res.position == null) {
-    const label = String(res.error) === '429' ? 'лимит WB' : 'ошибка';
-    return `<span style="color:var(--amber)" title="${escapeHtml(String(res.error))}">${label}</span>`;
+    const err = String(res.error);
+    const label = err === '429' ? 'лимит WB' : (err.includes('403') ? 'WB закрыл поиск' : 'ошибка');
+    return `<span style="color:var(--amber)" title="${escapeHtml(err)}">${label}</span>`;
   }
   if(res.position != null) {
     const p = res.position;
@@ -11515,7 +11516,7 @@ async function runPositionCheck() {
       const batch = queue.splice(0, batchSize);
       const queries = batch.map(k => k.query);
       processed += batch.length;
-      if(status) status.textContent = `Проверяю… осталось ${queue.length} · всего ${total} (паузы против лимита WB)`;
+      if(status) status.textContent = `Проверяю… осталось ${queue.length} · всего ${total} (инкогнито · паузы против лимита WB)`;
       try {
         const r = await fetch(`${RAILWAY_URL}/api/search-positions`, {
           method: 'POST',

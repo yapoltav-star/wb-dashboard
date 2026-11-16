@@ -13451,6 +13451,9 @@ WB_SEARCH_HOSTS = [
     "https://u-search.wb.ru/exactmatch/ru/common/v18/search",
 ]
 
+# Мобильный каталог без WBAAS: выдача как в инкогнито (без cookie / spp).
+WB_NAPI_SEARCH_URL = "https://napi.wildberries.ru/api/search/results"
+
 
 def _load_search_keywords():
     try:
@@ -13490,18 +13493,118 @@ def _wb_search_next_host():
 def _wb_search_headers() -> dict:
     return {
         "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1"
         ),
-        "Accept": "*/*",
+        "Accept": "application/json",
         "Accept-Language": "ru-RU,ru;q=0.9",
         "Origin": "https://www.wildberries.ru",
         "Referer": "https://www.wildberries.ru/",
     }
 
 
+def _napi_norm_products(raw) -> list:
+    """napi products → формат search.wb (id/brand/name), порядок сохранён."""
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for p in raw:
+        if not isinstance(p, dict):
+            continue
+        pid = p.get("cod1S") or p.get("id") or p.get("nmId") or p.get("nmID")
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            continue
+        if pid < 1:
+            continue
+        out.append({
+            "id": pid,
+            "nmId": pid,
+            "brand": p.get("brandName") or p.get("brand") or "",
+            "name": p.get("name") or "",
+            "supplier": p.get("supplier") or "",
+            "reviewRating": p.get("mark") or p.get("reviewRating"),
+            "feedbacks": p.get("feedbackCount") or p.get("feedbacks"),
+            "_napi": True,
+        })
+    return out
+
+
+def _fetch_napi_search_page(query: str, dest: int, page: int = 1) -> dict:
+    """Одна страница выдачи через napi (без cookie) — как инкогнито."""
+    query = (query or "").strip()
+    page = max(1, int(page or 1))
+    if not query:
+        return {"products": [], "total": None, "page_size": 0, "error": "bad input"}
+    params = {
+        "search": query,
+        "fromSearchInput": "True",
+        "dest": int(dest),
+        "page": page,
+        "pagesize": 100,
+        "sort": "popular",
+    }
+    last_err = None
+    for attempt in range(4):
+        _wb_search_throttle(0.55 + 0.2 * attempt)
+        try:
+            resp = httpx.get(
+                WB_NAPI_SEARCH_URL,
+                params=params,
+                headers=_wb_search_headers(),
+                timeout=25,
+                follow_redirects=True,
+            )
+        except Exception as e:
+            last_err = str(e)[:120]
+            time.sleep(0.6 * (attempt + 1))
+            continue
+        if resp.status_code == 429:
+            last_err = "429"
+            time.sleep(1.8 * (attempt + 1))
+            continue
+        if not resp.is_success:
+            last_err = f"http {resp.status_code}"
+            # datacenter часто режет search.wb, но napi обычно жив; на 403/498 — сразу стоп
+            if resp.status_code in (401, 403, 498):
+                break
+            time.sleep(0.4 * (attempt + 1))
+            continue
+        try:
+            data = resp.json() or {}
+        except Exception as e:
+            last_err = f"json {e}"
+            time.sleep(0.3)
+            continue
+        payload = data.get("data") if isinstance(data.get("data"), dict) else data
+        if not isinstance(payload, dict):
+            payload = {}
+        products = _napi_norm_products(payload.get("products") or [])
+        pager = payload.get("pager") if isinstance(payload.get("pager"), dict) else {}
+        total = pager.get("totalItems")
+        if total is None:
+            total = payload.get("total") or data.get("total")
+        if not products and page == 1:
+            # иногда первый ответ 200 с пустым products — пробуем ещё раз
+            last_err = "empty"
+            time.sleep(0.5 * (attempt + 1))
+            continue
+        return {
+            "products": products,
+            "total": total,
+            "page_size": int(pager.get("pageSize") or len(products) or 100),
+            "total_pages": pager.get("totalPages"),
+            "error": None,
+            "source": "napi",
+        }
+    return {"products": [], "total": None, "page_size": 0, "error": last_err or "napi empty", "source": "napi"}
+
+
 def fetch_wb_search_catalog(query: str, dest: int, max_pages: int = 1) -> dict:
-    """Клиентская выдача WB по запросу: товары по порядку + total/error."""
+    """Клиентская выдача WB по запросу: товары по порядку + total/error.
+    Сначала napi (инкогнито, без WBAAS), затем legacy search.wb.ru.
+    """
     query = (query or "").strip()
     max_pages = max(1, min(int(max_pages or 1), 5))
     if not query:
@@ -13509,12 +13612,34 @@ def fetch_wb_search_catalog(query: str, dest: int, max_pages: int = 1) -> dict:
     last_total = None
     last_err = None
     products = []
+    source = None
     try:
+        for page in range(1, max_pages + 1):
+            page_data = _fetch_napi_search_page(query, dest, page=page)
+            page_products = page_data.get("products") or []
+            if page_data.get("error") and not page_products:
+                last_err = page_data.get("error")
+                break
+            source = "napi"
+            last_err = None
+            last_total = page_data.get("total")
+            products.extend(page_products)
+            page_size = int(page_data.get("page_size") or 100)
+            total_pages = page_data.get("total_pages")
+            if len(page_products) < page_size:
+                break
+            if total_pages is not None and page >= int(total_pages):
+                break
+        if products:
+            return {"products": products, "total": last_total, "error": None, "source": source}
+
+        # fallback: старый search.wb.ru (часто 403 с серверных IP)
+        napi_err = last_err
         with httpx.Client(timeout=30, headers=_wb_search_headers(), follow_redirects=True) as client:
             for page in range(1, max_pages + 1):
                 page_ok = False
                 page_products = []
-                for attempt in range(5):
+                for attempt in range(4):
                     base = _wb_search_next_host()
                     _wb_search_throttle(0.85 + 0.15 * attempt)
                     try:
@@ -13527,7 +13652,9 @@ def fetch_wb_search_catalog(query: str, dest: int, max_pages: int = 1) -> dict:
                                 "query": query,
                                 "resultset": "catalog",
                                 "sort": "popular",
-                                "spp": 30,
+                                # spp=0 — без персональной скидки, ближе к инкогнито
+                                "spp": 0,
+                                "suppressSpellcheck": "false",
                                 "page": page,
                             },
                         )
@@ -13541,6 +13668,8 @@ def fetch_wb_search_catalog(query: str, dest: int, max_pages: int = 1) -> dict:
                         continue
                     if not resp.is_success:
                         last_err = f"http {resp.status_code}"
+                        if resp.status_code in (401, 403, 498):
+                            break
                         time.sleep(0.5 * (attempt + 1))
                         continue
                     try:
@@ -13555,6 +13684,7 @@ def fetch_wb_search_catalog(query: str, dest: int, max_pages: int = 1) -> dict:
                         last_total = (data.get("data") or {}).get("total")
                     page_ok = True
                     last_err = None
+                    source = "search.wb"
                     break
                 if not page_ok:
                     break
@@ -13563,10 +13693,13 @@ def fetch_wb_search_catalog(query: str, dest: int, max_pages: int = 1) -> dict:
                 products.extend(page_products)
                 if len(page_products) < 100:
                     break
-        return {"products": products, "total": last_total, "error": last_err}
+        # если legacy тоже пуст — вернём ошибку napi (она информативнее 403)
+        if not products and napi_err and (not last_err or "403" in str(last_err)):
+            last_err = napi_err if napi_err != "empty" else (last_err or "empty")
+        return {"products": products, "total": last_total, "error": last_err, "source": source or "napi"}
     except Exception as e:
         logger.exception(f"fetch_wb_search_catalog: {e}")
-        return {"products": products, "total": last_total, "error": str(e)[:160]}
+        return {"products": products, "total": last_total, "error": str(e)[:160], "source": source}
 
 
 def find_own_in_wb_search(query: str, dest: int, limit: int = 100) -> dict:
@@ -13627,112 +13760,56 @@ def find_own_in_wb_search(query: str, dest: int, limit: int = 100) -> dict:
         "brands": brands,
         "brand_count": len(brands),
         "error": cat.get("error"),
+        "source": cat.get("source"),
     }
 
 
 def find_nm_in_wb_search(nm_id: int, query: str, dest: int, max_pages: int = 3):
-    """Ищет nm_id в клиентской выдаче WB по запросу. Позиция с 1, None = не в топ max_pages*100."""
+    """Ищет nm_id в выдаче WB по запросу (как инкогнито: napi, без cookie/spp).
+    Позиция с 1, None = не в топ max_pages*100.
+    """
     query = (query or "").strip()
     if not query or not nm_id:
         return {"query": query, "position": None, "page": None, "total": None, "error": "bad input"}
 
-    # Важно: значения заголовков должны быть latin-1/ascii — кириллица в Referer валит httpx
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-        ),
-        "Accept": "*/*",
-        "Accept-Language": "ru-RU,ru;q=0.9",
-        "Origin": "https://www.wildberries.ru",
-        "Referer": "https://www.wildberries.ru/",
-    }
-    last_total = None
-    last_err = None
+    try:
+        nm_id = int(nm_id)
+    except (TypeError, ValueError):
+        return {"query": query, "position": None, "page": None, "total": None, "error": "bad input"}
+
     max_pages = max(1, min(int(max_pages or 3), 10))
 
     try:
-        with httpx.Client(timeout=30, headers=headers, follow_redirects=True) as client:
-            for page in range(1, max_pages + 1):
-                page_ok = False
-                for attempt in range(5):
-                    base = _wb_search_next_host()
-                    _wb_search_throttle(0.85 + 0.15 * attempt)
-                    try:
-                        resp = client.get(
-                            base,
-                            params={
-                                "appType": 1,
-                                "curr": "rub",
-                                "dest": dest,
-                                "query": query,
-                                "resultset": "catalog",
-                                "sort": "popular",
-                                "spp": 30,
-                                "page": page,
-                            },
-                        )
-                    except Exception as e:
-                        last_err = str(e)[:120]
-                        time.sleep(0.8 * (attempt + 1))
-                        continue
-
-                    if resp.status_code == 429:
-                        last_err = "429"
-                        time.sleep(2.0 * (attempt + 1))
-                        continue
-                    if not resp.is_success:
-                        last_err = f"http {resp.status_code}"
-                        time.sleep(0.5 * (attempt + 1))
-                        continue
-
-                    try:
-                        data = resp.json()
-                    except Exception as e:
-                        last_err = f"json {e}"
-                        time.sleep(0.4)
-                        continue
-
-                    products = data.get("products") or (data.get("data") or {}).get("products") or []
-                    last_total = data.get("total")
-                    if last_total is None:
-                        last_total = (data.get("data") or {}).get("total")
-                    page_ok = True
-                    last_err = None
-
-                    for i, p in enumerate(products):
-                        pid = p.get("id") or p.get("nmId") or p.get("nmID")
-                        if pid == nm_id or str(pid) == str(nm_id):
-                            return {
-                                "query": query,
-                                "position": (page - 1) * 100 + i + 1,
-                                "page": page,
-                                "total": last_total,
-                                "error": None,
-                            }
-
-                    if not products:
-                        return {
-                            "query": query,
-                            "position": None,
-                            "page": None,
-                            "total": last_total,
-                            "error": None,
-                            "not_found": True,
-                        }
-                    break
-
-                if not page_ok:
-                    # не смогли получить страницу — дальше нет смысла
-                    break
-
+        cat = fetch_wb_search_catalog(query, dest, max_pages=max_pages)
+        products = cat.get("products") or []
+        source = cat.get("source")
+        total = cat.get("total")
+        err = cat.get("error")
+        for i, p in enumerate(products):
+            if not isinstance(p, dict):
+                continue
+            pid = p.get("id") or p.get("nmId") or p.get("nmID")
+            try:
+                pid = int(pid)
+            except (TypeError, ValueError):
+                continue
+            if pid == nm_id:
+                return {
+                    "query": query,
+                    "position": i + 1,
+                    "page": (i // 100) + 1,
+                    "total": total,
+                    "error": None,
+                    "source": source,
+                }
         return {
             "query": query,
             "position": None,
             "page": None,
-            "total": last_total,
-            "error": last_err,
-            "not_found": last_err is None,
+            "total": total,
+            "error": err,
+            "not_found": err is None,
+            "source": source,
         }
     except Exception as e:
         logger.exception(f"find_nm_in_wb_search: {e}")
