@@ -1825,7 +1825,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
 <div class="page" id="page-shelves">
   <div class="toolbar">
     <span style="font-size:13px;font-weight:600">Полки у конкурентов</span>
-    <span style="font-size:12px;color:var(--wb-muted);margin-left:10px">«Смотрите также» · топ-15</span>
+    <span style="font-size:12px;color:var(--wb-muted);margin-left:10px">топ-15 · «Смотрите также» или «Похожие»</span>
     <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button class="action-btn" id="shelfRefreshBtn" onclick="refreshActiveShelf()" disabled>↻ Обновить полку</button>
     </div>
@@ -1854,7 +1854,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
       <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Сохранённые конкуренты</div>
       <div id="shelfCompChips" style="display:flex;gap:8px;flex-wrap:wrap;min-height:32px"></div>
     </div>
-    <div id="shelfStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Впиши nmID конкурента — сайт запомнит и покажет топ-15 полки «Смотрите также»</div>
+    <div id="shelfStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Впиши nmID конкурента — покажем топ-15. Если WB закрыл «Смотрите также», берём «Похожие»</div>
   </div>
 
   <div id="shelfRoot" style="overflow:auto">
@@ -10532,15 +10532,24 @@ async function triggerDailySync(days) {
 }
 
 // Мини-фото карточки WB по nmId (публичный CDN, без API)
+const WB_BASKET_RANGES = [143,287,431,719,1007,1061,1115,1169,1313,1601,1655,1919,2045,2189,2405,2621,2837,3053,3269,3485,3701,3917,4133,4349,4565,4877,5189,5501,5813,6125,6437,6749,7061,7373,7685,7997,8309,8741,9173,9605,10373,11141,11909,12677,13445,14213,14981,15749,16517,17285,18053,18788,19589,20357,21125];
+const WB_BASKET_VOL_CACHE = {};
+function wbBasketNum(nmId) {
+  const vol = Math.floor(Number(nmId) / 1e5);
+  if(WB_BASKET_VOL_CACHE[vol]) return WB_BASKET_VOL_CACHE[vol];
+  for(let i=0;i<WB_BASKET_RANGES.length;i++){ if(vol<=WB_BASKET_RANGES[i]) return i+1; }
+  return WB_BASKET_RANGES.length;
+}
+function wbBasketHostUrl(nmId, basket, pathTail) {
+  const nm = Number(nmId);
+  const vol = Math.floor(nm / 1e5);
+  const part = Math.floor(nm / 1e3);
+  return `https://basket-${String(basket).padStart(2,'0')}.wbbasket.ru/vol${vol}/part${part}/${nm}/${pathTail}`;
+}
 function wbThumbUrl(nmId, ext='webp') {
   const nm = Number(nmId);
   if(!nm) return '';
-  const vol = Math.floor(nm / 1e5);
-  const part = Math.floor(nm / 1e3);
-  const ranges = [143,287,431,719,1007,1061,1115,1169,1313,1601,1655,1919,2045,2189,2405,2621,2837,3053,3269,3485,3701,3917,4133,4349,4565,4877,5189,5501,5813,6125,6437,6749,7061,7373,7685,7997,8309,8741,9173,9605,10373,11141,11909,12677,13445,14213];
-  let basket = 47;
-  for(let i=0;i<ranges.length;i++){ if(vol<=ranges[i]){ basket=i+1; break; } }
-  return `https://basket-${String(basket).padStart(2,'0')}.wbbasket.ru/vol${vol}/part${part}/${nm}/images/tm/1.${ext}`;
+  return wbBasketHostUrl(nm, wbBasketNum(nm), `images/tm/1.${ext}`);
 }
 
 function wbCatalogUrl(nmId) {
@@ -12153,32 +12162,47 @@ function refreshActiveShelf() {
   if(SHELF_ACTIVE) loadShelfFor(SHELF_ACTIVE, true);
 }
 
-function wbBasketCardUrl(nmId) {
+function wbBasketCardUrl(nmId, basket) {
   nmId = Number(nmId);
   if(!nmId) return '';
-  const vol = Math.floor(nmId / 100000);
-  const part = Math.floor(nmId / 1000);
-  const ranges = [143,287,431,719,1007,1061,1115,1169,1313,1601,1655,1919,2045,2189,2405,2621,2837,3053,3269,3485,3701,3917,4133,4349,4565,4877,5189,5501,5813,6125,6437,6749,7061,7373,7685,7997,8309,8741,9173,9605,10373,11141,11909,12677,13445,14213];
-  let basket = 47;
-  for(let i=0;i<ranges.length;i++){ if(vol <= ranges[i]){ basket = i+1; break; } }
-  return `https://basket-${String(basket).padStart(2,'0')}.wbbasket.ru/vol${vol}/part${part}/${nmId}/info/ru/card.json`;
+  return wbBasketHostUrl(nmId, basket || wbBasketNum(nmId), 'info/ru/card.json');
 }
 
 async function fetchBasketCardBrief(nmId) {
-  try {
-    const r = await fetch(wbBasketCardUrl(nmId), {credentials:'omit'});
-    if(!r.ok) return null;
-    const d = await r.json();
-    const selling = d && d.selling && typeof d.selling === 'object' ? d.selling : {};
-    return {
-      nm_id: Number(nmId),
-      brand: selling.brand_name || d.brand || '',
-      name: d.imt_name || d.name || '',
-      supplier: selling.supplier_name || '',
-      thumb: wbThumbUrl(nmId),
-      url: wbCatalogUrl(nmId),
-    };
-  } catch(_) { return null; }
+  nmId = Number(nmId);
+  if(!nmId) return null;
+  const vol = Math.floor(nmId / 1e5);
+  let basket = wbBasketNum(nmId);
+  const tryOne = async (b) => {
+    try {
+      const r = await fetch(wbBasketCardUrl(nmId, b), {credentials:'omit'});
+      if(!r.ok) return r.status;
+      const d = await r.json();
+      if(!d || typeof d !== 'object') return 404;
+      const selling = d.selling && typeof d.selling === 'object' ? d.selling : {};
+      WB_BASKET_VOL_CACHE[vol] = b;
+      return {
+        nm_id: nmId,
+        brand: selling.brand_name || d.brand || '',
+        name: d.imt_name || d.name || '',
+        supplier: selling.supplier_name || '',
+        thumb: wbBasketHostUrl(nmId, b, 'images/tm/1.webp'),
+        url: wbCatalogUrl(nmId),
+      };
+    } catch(_) { return 0; }
+  };
+  let got = await tryOne(basket);
+  if(got && typeof got === 'object') return got;
+  if(got === 404) {
+    for(let d=1; d<=10; d++){
+      for(const b of [basket-d, basket+d]){
+        if(b < 1 || b > 80) continue;
+        got = await tryOne(b);
+        if(got && typeof got === 'object') return got;
+      }
+    }
+  }
+  return null;
 }
 
 async function fetchShelfDataFromBrowser(nmId, dest, limit=15) {
@@ -12316,8 +12340,12 @@ async function loadShelfFor(nmId, force) {
     drawShelfTable(d);
     if(status) {
       const c = d.competitor || {};
+      const src = String(d.source || '');
+      const srcLabel = src.includes('similar') ? ' · похожие'
+        : (src.includes('recom') ? ' · смотрите также' : '');
+      const via = d.browser_fallback ? ' · с вашего браузера' : '';
       status.textContent = `${c.brand || ''} ${nmId}` + (c.name ? ` · ${c.name}` : '') +
-        ` · топ-${(d.items||[]).length}` + (d.source === 'similar' ? ' · похожие' : '') +
+        ` · топ-${(d.items||[]).length}` + srcLabel + via +
         (d.city ? ` · ${d.city}` : '');
     }
   } catch(e) {

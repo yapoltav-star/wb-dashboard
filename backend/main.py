@@ -13845,16 +13845,29 @@ _WB_BASKET_RANGES = [
     2045, 2189, 2405, 2621, 2837, 3053, 3269, 3485, 3701, 3917, 4133,
     4349, 4565, 4877, 5189, 5501, 5813, 6125, 6437, 6749, 7061, 7373,
     7685, 7997, 8309, 8741, 9173, 9605, 10373, 11141, 11909, 12677,
-    13445, 14213,
+    13445, 14213, 14981, 15749, 16517, 17285, 18053, 18788, 19589, 20357, 21125,
 ]
+_WB_BASKET_VOL_CACHE: dict[int, int] = {}
 
 
 def _wb_basket_num(nm_id: int) -> int:
     vol = int(nm_id) // 100000
+    cached = _WB_BASKET_VOL_CACHE.get(vol)
+    if cached:
+        return cached
     for i, r in enumerate(_WB_BASKET_RANGES):
         if vol <= r:
             return i + 1
-    return 47
+    return len(_WB_BASKET_RANGES)
+
+
+def _wb_basket_url(nm_id: int, basket: int, kind: str = "card") -> str:
+    vol = int(nm_id) // 100000
+    part = int(nm_id) // 1000
+    host = f"https://basket-{int(basket):02d}.wbbasket.ru/vol{vol}/part{part}/{int(nm_id)}"
+    if kind == "thumb":
+        return f"{host}/images/tm/1.webp"
+    return f"{host}/info/ru/card.json"
 
 
 def wb_product_thumb_url(nm_id: int) -> str:
@@ -13863,10 +13876,7 @@ def wb_product_thumb_url(nm_id: int) -> str:
         nm_id = int(nm_id)
     except (TypeError, ValueError):
         return ""
-    vol = nm_id // 100000
-    part = nm_id // 1000
-    basket = _wb_basket_num(nm_id)
-    return f"https://basket-{basket:02d}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/images/tm/1.webp"
+    return _wb_basket_url(nm_id, _wb_basket_num(nm_id), "thumb")
 
 
 def wb_product_card_json_url(nm_id: int) -> str:
@@ -13875,10 +13885,43 @@ def wb_product_card_json_url(nm_id: int) -> str:
         nm_id = int(nm_id)
     except (TypeError, ValueError):
         return ""
+    return _wb_basket_url(nm_id, _wb_basket_num(nm_id), "card")
+
+
+def _probe_wb_basket_num(nm_id: int, start: int | None = None) -> int | None:
+    """Если таблица vol→basket устарела — ищем рабочий хост рядом и кэшируем."""
+    try:
+        nm_id = int(nm_id)
+    except (TypeError, ValueError):
+        return None
     vol = nm_id // 100000
-    part = nm_id // 1000
-    basket = _wb_basket_num(nm_id)
-    return f"https://basket-{basket:02d}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json"
+    guess = int(start or _wb_basket_num(nm_id) or 1)
+    order = [guess]
+    for d in range(1, 12):
+        order.extend([guess - d, guess + d])
+    seen = set()
+    for b in order:
+        if b < 1 or b > 80 or b in seen:
+            continue
+        seen.add(b)
+        url = _wb_basket_url(nm_id, b, "card")
+        try:
+            resp = httpx.get(
+                url,
+                headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
+                timeout=6,
+            )
+        except Exception:
+            continue
+        if resp.is_success:
+            try:
+                data = resp.json()
+            except Exception:
+                continue
+            if isinstance(data, dict) and (data.get("imt_name") or data.get("nm_id") or data.get("selling")):
+                _WB_BASKET_VOL_CACHE[vol] = b
+                return b
+    return None
 
 
 def _wb_curl_get(url: str, headers: dict | None = None, timeout: int = 25):
@@ -13962,14 +14005,24 @@ def _basket_card_brief(nm_id: int) -> dict | None:
         nm_id = int(nm_id)
     except (TypeError, ValueError):
         return None
-    url = wb_product_card_json_url(nm_id)
-    if not url:
-        return None
+    basket = _wb_basket_num(nm_id)
+    url = _wb_basket_url(nm_id, basket, "card")
     data = None
     try:
         resp = httpx.get(url, headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"}, timeout=10)
         if resp.is_success:
             data = resp.json()
+        elif resp.status_code == 404:
+            probed = _probe_wb_basket_num(nm_id, start=basket)
+            if probed:
+                basket = probed
+                resp = httpx.get(
+                    _wb_basket_url(nm_id, basket, "card"),
+                    headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
+                    timeout=10,
+                )
+                if resp.is_success:
+                    data = resp.json()
     except Exception as e:
         logger.debug(f"basket card {nm_id}: {e}")
         data = None
@@ -13988,7 +14041,7 @@ def _basket_card_brief(nm_id: int) -> dict | None:
         "brand": str(brand or ""),
         "name": str(name or ""),
         "supplier": str(selling.get("supplier_name") or ""),
-        "thumb": wb_product_thumb_url(nm_id),
+        "thumb": _wb_basket_url(nm_id, basket, "thumb"),
         "url": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
         "client_price": None,
         "sale_price": None,
