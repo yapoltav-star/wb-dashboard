@@ -16532,6 +16532,11 @@ def _orders_geo_parse_ribbon_df(df: "pd.DataFrame") -> list:
             date_str = dt.strftime("%Y-%m-%d")
             wh = str(r.get("warehouse") or "").strip() or "Не указан"
             wtype = str(r.get("warehouse_type") or "").strip()
+            src_region = str(r.get("src_region") or "").strip()
+            if src_region.lower() in ("nan", "none", "nat"):
+                src_region = ""
+            if wtype.lower() in ("nan", "none", "nat"):
+                wtype = ""
             channel = _orders_geo_normalize_channel(wtype, wh)
             try:
                 price = float(r.get("price") or 0)
@@ -16543,12 +16548,19 @@ def _orders_geo_parse_ribbon_df(df: "pd.DataFrame") -> list:
                 nm = int(r.get("nm_id") or 0)
             except (TypeError, ValueError):
                 nm = 0
+            oid = str(r.get("order_id") or "").strip()
+            if oid.lower() in ("nan", "none", "nat"):
+                oid = ""
             records.append({
-                "order_id": str(r.get("order_id") or ""),
+                "order_id": oid,
                 "date": date_str,
                 "dt": dt.strftime("%Y-%m-%d %H:%M:%S"),
                 "channel": channel,
                 "warehouse": wh,
+                "warehouse_type": wtype,
+                "src_region": src_region,
+                "src_warehouse": wh,
+                "seller_warehouse": "",
                 "dest_region": str(r.get("dest_region") or "").strip() or "Не указан",
                 "dest_city": str(r.get("dest_city") or "").strip() or "Не указан",
                 "article": str(r.get("article") or "").strip(),
@@ -16849,12 +16861,26 @@ def _orders_geo_city_note(source: str) -> str:
     return ""
 
 
-def fetch_fbs_office_cities(days: int = 30) -> dict:
-    """Город сдачи заказа FBS: Marketplace API v3 отдаёт offices — куда везём заказ.
-    Statistics API для FBS пишет обезличенный «Склад WB РФ», поэтому этим уточняем склад
-    отгрузки. Ключ — rid (он же srid в Statistics API)."""
+def fetch_fbs_shipment_map(days: int = 30) -> dict:
+    """FBS-заказ → наш склад продавца и офис сдачи.
+
+    Marketplace API v3: warehouseId — склад продавца, offices[0] — куда везём сдачу.
+    Ключ — rid (он же srid в Statistics API).
+    """
     if not WB_TOKEN:
         return {}
+    names = {}
+    try:
+        whs, _err = fetch_seller_fbs_warehouses()
+        for w in whs or []:
+            try:
+                names[int(w.get("id"))] = str(w.get("name") or "").strip()
+            except (TypeError, ValueError):
+                continue
+    except Exception as e:
+        logger.warning(f"orders ribbon seller warehouses: {e}")
+    uniq = [n for n in names.values() if n]
+    single = uniq[0] if len(set(uniq)) == 1 else ""
     date_from_ts = int((datetime.now(timezone.utc) - timedelta(days=max(1, min(int(days), 90)))).timestamp())
     out = {}
     try:
@@ -16875,19 +16901,171 @@ def fetch_fbs_office_cities(days: int = 30) -> dict:
                 break
             for o in batch:
                 offices = o.get("offices") or []
-                city = str(offices[0]).strip() if offices else ""
-                if not city:
+                office = str(offices[0]).strip() if offices else ""
+                wid = o.get("warehouseId")
+                seller = ""
+                try:
+                    if wid is not None:
+                        seller = names.get(int(wid)) or ""
+                except (TypeError, ValueError):
+                    seller = ""
+                if not seller and single:
+                    seller = single
+                if not seller and not office:
                     continue
+                info = {"seller_warehouse": seller, "office": office, "warehouse_id": wid}
                 for key in (o.get("rid"), o.get("orderUid"), o.get("id")):
                     if key:
-                        out[str(key)] = city
+                        out[str(key)] = info
             next_val = data.get("next", 0) if isinstance(data, dict) else 0
             if not next_val or len(batch) < 1000:
                 break
     except Exception as e:
         logger.warning(f"orders_geo fbs offices exception: {e}")
-    logger.info(f"orders_geo fbs offices: {len(out)} rids with city")
+    logger.info(f"orders ribbon fbs map: {len(out)} rids")
     return out
+
+
+def fetch_fbs_office_cities(days: int = 30) -> dict:
+    """Город сдачи заказа FBS. Ключ — rid."""
+    return {
+        k: v.get("office")
+        for k, v in fetch_fbs_shipment_map(days).items()
+        if v.get("office")
+    }
+
+
+def _attach_seller_warehouses(records: list) -> list:
+    """Для FBS без явного склада продавца подставляет имя нашего склада, если он один или совпал по названию."""
+    if not records or not WB_TOKEN:
+        return records
+    try:
+        whs, _err = fetch_seller_fbs_warehouses()
+    except Exception as e:
+        logger.warning(f"attach seller warehouses: {e}")
+        return records
+    names = [str(w.get("name") or "").strip() for w in (whs or []) if str(w.get("name") or "").strip()]
+    by_fold = {n.casefold(): n for n in names}
+    single = names[0] if len(set(names)) == 1 else ""
+    for r in records:
+        if str(r.get("seller_warehouse") or "").strip():
+            continue
+        src = str(r.get("src_warehouse") or r.get("warehouse") or "").strip()
+        hit = by_fold.get(src.casefold())
+        if hit:
+            r["seller_warehouse"] = hit
+        elif (r.get("channel") or "").upper() == "FBS" and single:
+            r["seller_warehouse"] = single
+    return records
+
+
+def _order_ribbon_key(r: dict) -> str:
+    oid = str(r.get("order_id") or "").strip()
+    if oid.lower() in ("", "nan", "none", "nat"):
+        oid = ""
+    if oid:
+        return oid[:180]
+    import hashlib
+    raw = "|".join([
+        str(r.get("dt") or r.get("date") or ""),
+        str(r.get("nm_id") or ""),
+        str(r.get("article") or ""),
+        str(r.get("src_warehouse") or r.get("warehouse") or ""),
+        str(r.get("dest_city") or ""),
+        str(r.get("price") or ""),
+        str(r.get("status") or ""),
+    ])
+    return "h:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def _order_ribbon_from_label(r: dict) -> str:
+    seller = str(r.get("seller_warehouse") or "").strip()
+    src = str(r.get("src_warehouse") or r.get("warehouse") or "").strip()
+    if seller and (not src or src.startswith("Сдача:")):
+        return seller
+    return src or seller or "Не указан"
+
+
+def _save_order_ribbon(records: list, source: str) -> dict:
+    """Пишет строки ленты в public.order_ribbon. Таблицу создаёт supabase/order_ribbon.sql."""
+    if not records:
+        return {"saved": 0, "error": None, "total": 0}
+    if not SUPABASE_URL:
+        return {"saved": 0, "error": "SUPABASE_URL не задан", "total": len(records)}
+    rows = []
+    seen = set()
+    now = datetime.now(timezone.utc).isoformat()
+    for r in records:
+        key = _order_ribbon_key(r)
+        if key in seen:
+            continue
+        seen.add(key)
+        dt = str(r.get("dt") or "").strip()
+        ordered = None
+        if dt and dt.lower() not in ("nat", "nan", "none"):
+            ordered = dt.replace(" ", "T")
+            if "+" not in ordered and not ordered.endswith("Z"):
+                ordered += "+03:00"
+        nm = r.get("nm_id")
+        try:
+            nm = int(nm) if nm not in (None, "") else None
+        except (TypeError, ValueError):
+            nm = None
+        if nm == 0:
+            nm = None
+        rows.append({
+            "order_id": key,
+            "ordered_at": ordered,
+            "order_date": r.get("date") or None,
+            "article": r.get("article") or "",
+            "nm_id": nm,
+            "name": r.get("name") or "",
+            "channel": r.get("channel") or "",
+            "warehouse_type": r.get("warehouse_type") or "",
+            "src_region": r.get("src_region") or "",
+            "src_warehouse": r.get("src_warehouse") or r.get("warehouse") or "",
+            "seller_warehouse": r.get("seller_warehouse") or "",
+            "dest_region": r.get("dest_region") or "",
+            "dest_city": r.get("dest_city") or "",
+            "price": r.get("price") or 0,
+            "status": r.get("status") or "",
+            "source": source or "",
+            "updated_at": now,
+        })
+    saved = 0
+    err = None
+    url = f"{SUPABASE_URL}/rest/v1/order_ribbon?on_conflict=order_id"
+    for i in range(0, len(rows), 400):
+        batch = rows[i:i + 400]
+        try:
+            resp = httpx.post(url, json=batch, headers=sb_headers(), timeout=40)
+        except Exception as e:
+            err = str(e)[:200]
+            break
+        if not resp.is_success:
+            err = f"HTTP {resp.status_code}: {resp.text[:180]}"
+            break
+        saved += len(batch)
+    if err:
+        logger.warning(f"order_ribbon save: {err}")
+    else:
+        logger.info(f"order_ribbon saved {saved}")
+    return {"saved": saved, "error": err, "total": len(rows)}
+
+
+def _order_ribbon_routes(orders: list) -> list:
+    bucket = {}
+    for o in orders or []:
+        src = _order_ribbon_from_label(o)
+        city = str(o.get("dest_city") or "").strip() or "Не указан"
+        reg = str(o.get("dest_region") or "").strip() or "Не указан"
+        ch = (o.get("channel") or "").upper() or "—"
+        key = (src, city, reg, ch)
+        slot = bucket.setdefault(key, {"from_warehouse": src, "to_city": city, "to_region": reg, "channel": ch, "orders": 0})
+        slot["orders"] += 1
+    rows = list(bucket.values())
+    rows.sort(key=lambda x: -x["orders"])
+    return rows[:40]
 
 
 def sync_orders_geo_from_statistics(days: int = 30) -> dict:
@@ -16903,31 +17081,40 @@ def sync_orders_geo_from_statistics(days: int = 30) -> dict:
         cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=max(1, min(int(days), 90)))
         date_from = cutoff.strftime("%Y-%m-%dT00:00:00")
         raw = fetch_supplier_feed("/api/v1/supplier/orders", date_from, max_pages=5)
-        fbs_cities = fetch_fbs_office_cities(days=days)
+        fbs_map = fetch_fbs_shipment_map(days=days)
         records = []
         for o in raw or []:
             d = parse_wb_dt(o.get("date") or "")
             if d is None or d < cutoff:
                 continue
-            wh = str(o.get("warehouseName") or "").strip() or "Не указан"
+            raw_wh = str(o.get("warehouseName") or "").strip() or "Не указан"
             # Statistics API: warehouseType / склад продавца ≈ FBS
             wtype = str(o.get("warehouseType") or o.get("orderType") or "")
-            channel = _orders_geo_normalize_channel(wtype, wh)
-            if "seller" in wh.lower() or "продав" in wh.lower():
+            channel = _orders_geo_normalize_channel(wtype, raw_wh)
+            if "seller" in raw_wh.lower() or "продав" in raw_wh.lower():
                 channel = "FBS"
             price = float(o.get("finishedPrice") or o.get("priceWithDisc") or o.get("totalPrice") or 0)
             srid = str(o.get("srid") or "")
-            # Для FBS Statistics API пишет обезличенный склад — берём город сдачи из Marketplace.
-            if channel == "FBS" and srid:
-                office = fbs_cities.get(srid)
-                if office:
-                    wh = f"Сдача: {office}"
+            ship = fbs_map.get(srid) or {}
+            seller = str(ship.get("seller_warehouse") or "").strip()
+            office = str(ship.get("office") or "").strip()
+            src_wh = seller or raw_wh
+            # Для географии FBS по-прежнему показываем точку сдачи, если склада продавца нет.
+            wh = raw_wh
+            if channel == "FBS" and office and not seller:
+                wh = f"Сдача: {office}"
+            elif seller:
+                wh = seller
             records.append({
                 "order_id": srid or str(o.get("gNumber") or ""),
                 "date": d.strftime("%Y-%m-%d"),
                 "dt": d.strftime("%Y-%m-%d %H:%M:%S"),
                 "channel": channel,
                 "warehouse": wh,
+                "warehouse_type": wtype,
+                "src_region": "",
+                "src_warehouse": src_wh,
+                "seller_warehouse": seller,
                 "dest_region": str(o.get("oblastOkrugName") or o.get("regionName") or "").strip() or "Не указан",
                 "dest_city": str(o.get("regionName") or "").strip() or "Не указан",
                 "article": str(o.get("supplierArticle") or "").strip(),
@@ -16936,6 +17123,8 @@ def sync_orders_geo_from_statistics(days: int = 30) -> dict:
                 "price": round(price, 2),
                 "status": "Отменён" if o.get("isCancel") else "Заказ",
             })
+        _attach_seller_warehouses(records)
+        ribbon_db = _save_order_ribbon(records, "statistics_api")
         with _ORDERS_GEO_LOCK:
             # если уже есть лента с городами — не затираем, а дополняем только новые даты API
             existing = ORDERS_GEO_CACHE.get("orders") or []
@@ -17016,6 +17205,84 @@ def get_orders_geo(
     )
 
 
+def _order_ribbon_from_db(limit: int = 400) -> tuple:
+    if not SUPABASE_URL:
+        return [], "SUPABASE_URL не задан"
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/order_ribbon",
+            headers=sb_headers(),
+            params={
+                "select": "*",
+                "order": "order_date.desc,ordered_at.desc",
+                "limit": str(max(1, min(int(limit or 400), 1000))),
+            },
+            timeout=25,
+        )
+    except Exception as e:
+        return [], str(e)[:200]
+    if not resp.is_success:
+        return [], f"HTTP {resp.status_code}: {resp.text[:180]}"
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = []
+    rows = payload if isinstance(payload, list) else []
+    orders = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        orders.append({
+            "order_id": r.get("order_id") or "",
+            "date": str(r.get("order_date") or "")[:10],
+            "dt": r.get("ordered_at") or "",
+            "article": r.get("article") or "",
+            "nm_id": r.get("nm_id") or 0,
+            "name": r.get("name") or "",
+            "channel": r.get("channel") or "",
+            "warehouse_type": r.get("warehouse_type") or "",
+            "src_region": r.get("src_region") or "",
+            "src_warehouse": r.get("src_warehouse") or "",
+            "seller_warehouse": r.get("seller_warehouse") or "",
+            "warehouse": r.get("src_warehouse") or "",
+            "dest_region": r.get("dest_region") or "",
+            "dest_city": r.get("dest_city") or "",
+            "price": r.get("price") or 0,
+            "status": r.get("status") or "",
+            "source": r.get("source") or "",
+        })
+    return orders, None
+
+
+@app.get("/api/order-ribbon")
+def get_order_ribbon(limit: int = 400):
+    """Лента заказов: откуда (склад) и куда (город/регион). Сначала таблица Supabase, иначе кэш."""
+    limit = max(1, min(int(limit or 400), 1000))
+    orders, db_error = _order_ribbon_from_db(limit)
+    source = "supabase"
+    if not orders:
+        cached = list(_orders_geo_ensure_loaded() or [])
+        cached.sort(key=lambda o: (o.get("date") or "", o.get("dt") or ""), reverse=True)
+        orders = cached[:limit]
+        source = "cache" if orders else "empty"
+    routes = _order_ribbon_routes(orders)
+    warehouses = sorted({_order_ribbon_from_label(o) for o in orders if _order_ribbon_from_label(o)})
+    return {
+        "orders": orders,
+        "routes": routes,
+        "summary": {
+            "orders": len(orders),
+            "warehouses": len(warehouses),
+            "routes": len(routes),
+        },
+        "meta": {
+            "source": source,
+            "db_error": db_error,
+            "sql": "supabase/order_ribbon.sql",
+        },
+    }
+
+
 @app.post("/api/orders-geo/upload")
 async def upload_orders_geo(file: UploadFile = File(...)):
     """Загрузка Excel «Лента заказов» WB для раздела географии."""
@@ -17026,6 +17293,8 @@ async def upload_orders_geo(file: UploadFile = File(...)):
         records = parse_orders_geo_excel(content, filename=file.filename or "")
         if not records:
             return {"error": "Не удалось разобрать файл. Нужна вкладка «Все заказы» из ленты заказов WB."}
+        _attach_seller_warehouses(records)
+        ribbon_db = _save_order_ribbon(records, "ribbon")
         with _ORDERS_GEO_LOCK:
             ORDERS_GEO_CACHE["orders"] = records
             ORDERS_GEO_CACHE["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -17042,6 +17311,8 @@ async def upload_orders_geo(file: UploadFile = File(...)):
             "date_min": dates[0] if dates else None,
             "date_max": dates[-1] if dates else None,
             "filename": file.filename,
+            "db_saved": ribbon_db.get("saved") or 0,
+            "db_error": ribbon_db.get("error"),
         }
     except Exception as e:
         logger.error(f"upload_orders_geo: {e}")

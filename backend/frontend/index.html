@@ -1052,6 +1052,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   <div class="sn-item" onclick="showPage('supply-recs',this)">Рекомендации поставок</div>
   <div class="sn-item" onclick="showPage('own-warehouse',this)">Наш склад</div>
   <div class="sn-item" onclick="showPage('orders-geo',this)">География FBS/FBW</div>
+  <div class="sn-item" onclick="showPage('order-ribbon',this)">Лента заказов</div>
 </div>
 <div class="subnav" id="subnav-analytics" style="display:none">
   <div class="sn-item on" onclick="showPage('competitors',this)">Сравнение карточек</div>
@@ -1443,6 +1444,28 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
     <div id="geoArtTable" style="padding:12px 16px;overflow:auto;max-height:420px"></div>
   </div>
   <div id="geoRoot"><div class="empty" style="padding:40px 20px">Загрузи Excel «Лента заказов» (вкладка «Все заказы») или нажми «С WB»</div></div>
+</div>
+
+<!-- ЛЕНТА ЗАКАЗОВ: откуда наш склад → куда город -->
+<div class="page" id="page-order-ribbon">
+  <div class="upload-banner hint">
+    <span>Лента заказов: с какого склада уехал товар и куда. Excel «Лента заказов» WB пишет точный город. «С WB» берёт склад продавца и регион из API. Строки сохраняются в таблицу <b>order_ribbon</b>.</span>
+  </div>
+  <div class="toolbar" style="flex-wrap:wrap;gap:8px">
+    <div class="search">
+      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
+      <input id="ribSearch" placeholder="Артикул, склад, город..." oninput="drawOrderRibbon()">
+    </div>
+    <span id="ribInfo" style="font-size:12px;color:var(--wb-muted)"></span>
+    <div class="ml-auto" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="action-btn" onclick="document.getElementById('ribFileInput').click()">⬆ Лента заказов</button>
+      <input type="file" id="ribFileInput" accept=".xlsx,.xls" style="display:none" onchange="uploadOrderRibbon(this.files[0])">
+      <button class="action-btn" id="ribSyncBtn" onclick="syncOrderRibbon()">↻ С WB</button>
+    </div>
+  </div>
+  <div class="cards" id="ribCards"></div>
+  <div id="ribRoutes" style="padding:12px 16px;border-bottom:1px solid var(--wb-border);overflow:auto"></div>
+  <div id="ribRoot"><div class="empty" style="padding:40px 20px">Загрузи Excel «Лента заказов» или нажми «С WB»</div></div>
 </div>
 
 <style>
@@ -2399,6 +2422,7 @@ function showPage(id, btn) {
   }
   if(id === 'own-warehouse') renderOwnWarehouse(true);
   if(id === 'orders-geo') renderOrdersGeoPage(true);
+  if(id === 'order-ribbon') renderOrderRibbonPage();
   if(id === 'ads') loadAdsPage();
   if(id === 'competitors') {
     renderCompetitors();
@@ -4447,6 +4471,169 @@ async function syncOrdersGeo() {
         if(btn) btn.disabled = false;
       }
     }, 4000);
+  } catch(e) {
+    if(info) info.textContent = 'Ошибка sync';
+    if(btn) btn.disabled = false;
+  }
+}
+
+let RIBBON = null;
+
+function renderOrderRibbonPage() {
+  loadOrderRibbon();
+}
+
+async function loadOrderRibbon() {
+  const info = document.getElementById('ribInfo');
+  const root = document.getElementById('ribRoot');
+  if(info) info.textContent = 'Загружаю ленту…';
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/order-ribbon?limit=500`);
+    const d = await r.json();
+    if(!r.ok || d.detail) throw new Error(d.detail || d.error || ('HTTP ' + r.status));
+    RIBBON = d;
+    drawOrderRibbon();
+  } catch(e) {
+    if(root) root.innerHTML = `<div class="empty" style="padding:40px 20px">Ошибка: ${escapeHtml(e.message)}</div>`;
+    if(info) info.textContent = 'Ошибка загрузки';
+  }
+}
+
+function drawOrderRibbon() {
+  const d = RIBBON || {};
+  const info = document.getElementById('ribInfo');
+  const cards = document.getElementById('ribCards');
+  const routesEl = document.getElementById('ribRoutes');
+  const root = document.getElementById('ribRoot');
+  const q = ((document.getElementById('ribSearch') || {}).value || '').trim().toLowerCase();
+  const orders = (d.orders || []).filter(o => {
+    if(!q) return true;
+    const blob = [o.article, o.nm_id, o.name, o.src_warehouse, o.seller_warehouse, o.src_region, o.dest_city, o.dest_region, o.channel, o.status].join(' ').toLowerCase();
+    return blob.includes(q);
+  });
+  const srcName = (o) => {
+    const seller = String(o.seller_warehouse || '').trim();
+    const src = String(o.src_warehouse || o.warehouse || '').trim();
+    if(seller && (!src || src.startsWith('Сдача:'))) return seller;
+    return src || seller || '—';
+  };
+  if(info) {
+    const meta = d.meta || {};
+    const dbNote = meta.db_error ? ` · база: ${meta.db_error}` : (meta.source === 'supabase' ? ' · в базе order_ribbon' : '');
+    info.textContent = `${(d.summary && d.summary.orders) || 0} заказов · ${meta.source || '—'}${dbNote}`;
+  }
+  if(cards) {
+    const s = d.summary || {};
+    cards.innerHTML = [
+      ['Заказов', s.orders || 0],
+      ['Складов отправки', s.warehouses || 0],
+      ['Маршрутов', s.routes || 0],
+    ].map(([l, v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="font-size:18px">${v}</div></div>`).join('');
+  }
+  const routes = (d.routes || []).filter(rt => {
+    if(!q) return true;
+    return [rt.from_warehouse, rt.to_city, rt.to_region, rt.channel].join(' ').toLowerCase().includes(q);
+  }).slice(0, 20);
+  if(routesEl) {
+    routesEl.innerHTML = routes.length ? `
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px">Куда уезжает со склада</div>
+      <table class="comp-tbl" style="width:100%">
+        <thead><tr>
+          <th style="text-align:left">Откуда</th>
+          <th style="text-align:left">Куда</th>
+          <th>Канал</th>
+          <th style="text-align:right">Заказов</th>
+        </tr></thead>
+        <tbody>
+          ${routes.map(rt => `<tr>
+            <td style="font-weight:600">${escapeHtml(rt.from_warehouse || '—')}</td>
+            <td>${escapeHtml(rt.to_city || '—')}${rt.to_region && rt.to_region !== rt.to_city ? ' · ' + escapeHtml(rt.to_region) : ''}</td>
+            <td>${escapeHtml(rt.channel || '—')}</td>
+            <td style="text-align:right;font-variant-numeric:tabular-nums">${rt.orders}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>` : '';
+  }
+  if(!root) return;
+  if(!orders.length) {
+    const hint = (d.meta && d.meta.db_error)
+      ? `<div style="margin-top:8px;font-size:12px">Если таблицы ещё нет, выполни <b>supabase/order_ribbon.sql</b> в SQL Editor.</div>`
+      : '';
+    root.innerHTML = `<div class="empty" style="padding:40px 20px">Нет строк по фильтру. Загрузи Excel «Лента заказов» или нажми «С WB».${hint}</div>`;
+    return;
+  }
+  root.innerHTML = `<table class="comp-tbl" style="width:100%">
+    <thead><tr>
+      <th style="text-align:left">Дата</th>
+      <th style="text-align:left">Артикул</th>
+      <th style="text-align:left">Откуда</th>
+      <th style="text-align:left">Куда</th>
+      <th>Канал</th>
+      <th style="text-align:left">Статус</th>
+    </tr></thead>
+    <tbody>
+      ${orders.slice(0, 500).map(o => {
+        const from = srcName(o);
+        const seller = String(o.seller_warehouse || '').trim();
+        const src = String(o.src_warehouse || '').trim();
+        const fromSub = seller && seller !== from ? seller : (o.src_region || '');
+        const where = [o.dest_city, o.dest_region].filter((x, i, a) => x && a.indexOf(x) === i).join(' · ') || '—';
+        return `<tr>
+          <td style="white-space:nowrap;font-variant-numeric:tabular-nums">${escapeHtml(String(o.date || '').slice(0, 10))}</td>
+          <td>
+            <div style="font-weight:600">${escapeHtml(o.article || String(o.nm_id || '—'))}</div>
+            <div style="font-size:11px;color:var(--wb-muted);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(o.name || '')}</div>
+          </td>
+          <td>
+            <div style="font-weight:600">${escapeHtml(from)}</div>
+            ${fromSub ? `<div style="font-size:11px;color:var(--wb-muted)">${escapeHtml(fromSub)}</div>` : ''}
+            ${src && src !== from ? `<div style="font-size:11px;color:var(--wb-faint)">${escapeHtml(src)}</div>` : ''}
+          </td>
+          <td>${escapeHtml(where)}</td>
+          <td>${escapeHtml(o.channel || '—')}</td>
+          <td style="font-size:12px">${escapeHtml(o.status || '—')}</td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table>`;
+}
+
+async function uploadOrderRibbon(file) {
+  if(!file) return;
+  const info = document.getElementById('ribInfo');
+  if(info) info.textContent = 'Разбираю ленту…';
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch(`${RAILWAY_URL}/api/orders-geo/upload`, { method: 'POST', body: fd });
+    const d = await r.json();
+    if(d.error) {
+      if(info) info.textContent = 'Ошибка: ' + d.error;
+      return;
+    }
+    if(info) {
+      info.textContent = `Разобрано ${d.total}` + (d.db_saved ? ` · в базе ${d.db_saved}` : '') + (d.db_error ? ` · база: ${d.db_error}` : '');
+    }
+    await loadOrderRibbon();
+  } catch(e) {
+    if(info) info.textContent = 'Ошибка загрузки файла';
+  } finally {
+    const inp = document.getElementById('ribFileInput');
+    if(inp) inp.value = '';
+  }
+}
+
+async function syncOrderRibbon() {
+  const btn = document.getElementById('ribSyncBtn');
+  const info = document.getElementById('ribInfo');
+  if(btn) btn.disabled = true;
+  if(info) info.textContent = 'Тяну заказы с WB…';
+  try {
+    await fetch(`${RAILWAY_URL}/api/orders-geo/sync?days=30`, { method: 'POST' });
+    setTimeout(async () => {
+      await loadOrderRibbon();
+      if(btn) btn.disabled = false;
+    }, 6000);
   } catch(e) {
     if(info) info.textContent = 'Ошибка sync';
     if(btn) btn.disabled = false;
