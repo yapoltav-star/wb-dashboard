@@ -13606,13 +13606,28 @@ async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, compe
   const preview = kind === 'cart_warmup'
     ? `Прогрев корзинами "${ownVendor || ownNm}" и ${ownNm}, через этого конкурента "${competitorNm}".`
     : `Раздача "${ownVendor || ownNm}" и ${ownNm}, через этого конкурента "${competitorNm}".`;
+  let plan = 0;
+  if(kind === 'shelf') {
+    const raw = prompt(
+      `Сколько штук в плане?\n${ownVendor || ownNm} · через конкурента ${competitorNm}`,
+      ''
+    );
+    if(raw === null) return;
+    plan = parseInt(String(raw).replace(/\s/g, ''), 10);
+    if(!plan || plan < 1) {
+      alert('Нужно число штук в плане');
+      return;
+    }
+  }
   const already = shelfRazdachiAlready(kind, ownNm, competitorNm);
-  let ask = `Отправить в ${who}?\n\n${preview}`;
+  let ask = plan
+    ? `Проверь и поставь на доску.\n\n${ownVendor || ownNm}\n${ownNm}\nЧерез конкурента: ${competitorNm}\nОт: Босс\n\nПлан ${plan} · пока 0`
+    : `Отправить в ${who}?\n\n${preview}`;
   if(already) {
-    ask = `Уже отправляли в ${who}` +
+    ask = `Уже ставили` +
       (already.task_id ? ` (#${already.task_id})` : '') +
       (shelfSentWhen(already) ? ` ${shelfSentWhen(already)}` : '') +
-      `.\nОтправить ещё раз?\n\n${preview}`;
+      `.\nПоставить ещё раз?\n\n` + ask;
   }
   if(!confirm(ask)) return;
   const prev = btn ? btn.textContent : '';
@@ -13628,6 +13643,7 @@ async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, compe
         competitor_nm_id: Number(competitorNm),
         competitor_brand: competitorBrand || '',
         competitor_name: competitorName || '',
+        plan: plan || undefined,
       }),
     });
     const d = await r.json().catch(() => ({}));
@@ -13646,15 +13662,22 @@ async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, compe
         }
       } catch(e) {}
       const w = window.open(d.open_url, '_blank', 'noopener');
+      const cardLine = d.card
+        ? `Карточка: ${d.card.title}, через конкурента ${d.card.competitor_nm_id}, план ${d.card.plan}. `
+        : '';
       alert(w
-        ? `Открыл ${who}. Текст уже в поле — отправь его сам, бот примет сообщение как раньше.`
-        : `Текст задачи скопирован. Открой ${who} и отправь его.`);
+        ? `${cardLine}Открыл ${who}. Текст уже в поле — нажми «Отправить».`
+        : `${cardLine}Текст задачи скопирован. Открой ${who} и отправь его.`);
       if(btn) { btn.disabled = false; btn.textContent = prev; }
       return;
     }
     if(d.delivered) {
       const n = Number(d.sent_count) || 0;
-      alert(n > 1 ? `Задача ушла в ${who} · ${n} чата` : `Задача ушла в ${who}`);
+      const card = d.card;
+      const head = card
+        ? `Карточка: ${card.title}, через конкурента ${card.competitor_nm_id}, план ${card.plan}.`
+        : `Задача ушла в ${who}`;
+      alert(n > 1 ? `${head} · ${n} чата` : head);
     } else if(d.open_url) {
       try {
         if(d.text && navigator.clipboard && navigator.clipboard.writeText) {
