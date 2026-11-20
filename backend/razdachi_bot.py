@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import html
 import json
 import logging
@@ -29,7 +31,7 @@ logger = logging.getLogger("razdachi")
 MOSCOW = ZoneInfo("Europe/Moscow")
 STATE_KEY = "razdachi_bot_state"
 STATE_PATH = Path(__file__).resolve().parent / "data" / "razdachi_state.json"
-SETTER_NAMES = ("елизавета", "диля", "босс")
+SETTER_NAMES = ("елизавета", "диля", "диле", "босс")
 MENU = ("Новая раздача", "Доска", "Кто раздал", "Команда", "Закрытые", "Имя")
 PLAN_MAX = 500
 NM_RE = re.compile(r"catalog/(\d{6,12})")
@@ -42,6 +44,7 @@ _STARTED = False
 _POLLING = False
 _CONFLICT = False
 _USERNAME = ""
+_MODE = ""
 
 
 class Conflict(Exception):
@@ -61,7 +64,26 @@ def normalize_name(value: str) -> str:
 
 
 def is_setter(name: str) -> bool:
-    return normalize_name(name) in SETTER_NAMES
+    return canon(name) in SETTER_NAMES
+
+
+def canon(value: str) -> str:
+    text = (value or "").replace("\xa0", " ").replace("ё", "е").replace("Ё", "е")
+    return " ".join(text.split()).casefold()
+
+
+def menu_key(value: str) -> str:
+    key = canon(value)
+    if "новая раздача" in key:
+        return "Новая раздача"
+    aliases = {
+        "доска": "Доска",
+        "кто раздал": "Кто раздал",
+        "команда": "Команда",
+        "закрытые": "Закрытые",
+        "имя": "Имя",
+    }
+    return aliases.get(key, "")
 
 
 def is_username(value: str) -> bool:
@@ -143,28 +165,90 @@ def board_line(task: dict) -> str:
     return f"{prefix}{task.get('title') or ''} {done}/{plan} {channel_line(task, short=True)}".strip()
 
 
-def card_text(task: dict, *, preview: bool = False) -> str:
+def wb_link(nm: str) -> str:
+    safe = esc(nm)
+    return f'<a href="https://www.wildberries.ru/catalog/{safe}/detail.aspx">{safe}</a>'
+
+
+def plan_line(task: dict) -> str:
+    plan = int(task.get("plan") or 0)
     done = total_qty(task)
+    if done <= 0:
+        return f"План {plan} · пока 0"
+    return f"План {plan} · раздали {done} · ещё {max(plan - done, 0)}"
+
+
+def channel_html(task: dict) -> str:
+    query = str(task.get("query") or "")
+    if task.get("channel") == "keyword":
+        return f"По ключу: {esc(query)}"
+    if re.fullmatch(r"\d{6,12}", query):
+        return f"Через конкурента: {wb_link(query)}"
+    return f"Через конкурента: {esc(query)}"
+
+
+def notice_text(task: dict, header: str, *, show_from: bool = False) -> str:
+    """Короткая строка в чат: что случилось, название, артикул, канал и план."""
+    lines = [
+        esc(header),
+        esc(task.get("title")),
+        wb_link(str(task.get("nm") or "")),
+        channel_html(task),
+        plan_line(task),
+    ]
+    if show_from:
+        lines.append(f"От: {esc(task.get('setter'))}")
+    return "\n".join(lines)
+
+
+def posted_text(task: dict, header: str | None = None) -> str:
+    """Карточка по схеме: название над артикулом, канал, кто поставил, план, кто отметил."""
+    if header is None:
+        header = "Закрыта" if task.get("status") == "closed" else "Новая раздача"
+    lines = [
+        esc(header),
+        esc(task.get("title")),
+        wb_link(str(task.get("nm") or "")),
+        channel_html(task),
+        f"От: {esc(task.get('setter'))}",
+        plan_line(task),
+    ]
+    marks = [mark for mark in task.get("marks") or [] if int(mark.get("qty") or 0) > 0]
+    if marks:
+        lines.extend(f"{esc(mark.get('name'))} {int(mark.get('qty') or 0)}" for mark in marks)
+    else:
+        lines.append("Пока никто не отметил")
+    return "\n".join(lines)
+
+
+def detail_text(task: dict) -> str:
     lines = []
-    if preview:
-        lines.extend(["Проверь и поставь на доску.", ""])
-    elif task.get("status") == "closed":
+    if task.get("status") == "closed":
         lines.append("Закрыта")
     lines.extend([
-        f"<b>{esc(task.get('title'))}</b>",
-        esc(task.get("nm")),
-        esc(channel_line(task, short=False)),
+        esc(task.get("title")),
+        wb_link(str(task.get("nm") or "")),
+        channel_html(task),
         f"От: {esc(task.get('setter'))}",
         "",
-        f"План {int(task.get('plan') or 0)} · пока {done}",
+        plan_line(task),
     ])
-    if not preview:
-        marks = [mark for mark in task.get("marks") or [] if int(mark.get("qty") or 0) > 0]
-        if marks:
-            lines.extend(f"{esc(mark.get('name'))} {int(mark.get('qty') or 0)}" for mark in marks)
-        else:
-            lines.append("Пока никто не отметил")
+    marks = [mark for mark in task.get("marks") or [] if int(mark.get("qty") or 0) > 0]
+    if marks:
+        lines.extend(f"{esc(mark.get('name'))} {int(mark.get('qty') or 0)}" for mark in marks)
+    else:
+        lines.append("Пока никто не отметил")
     return "\n".join(lines)
+
+
+def card_text(task: dict, *, preview: bool = False) -> str:
+    if preview:
+        return notice_text(task, "Новая раздача", show_from=True)
+    return detail_text(task)
+
+
+def open_markup(task: dict) -> dict:
+    return inline([[("Открыть", f"card:{task['id']}")]])
 
 
 def over_plan(plan: int) -> str:
@@ -180,7 +264,7 @@ def clip(value: str, limit: int = 60) -> str:
 
 def reply_kb(name: str) -> dict:
     if is_setter(name):
-        rows = [["Новая раздача", "Доска"], ["Кто раздал", "Команда"], ["Закрытые", "Имя"]]
+        rows = [["Доска", "Кто раздал"], ["Новая раздача", "Команда"], ["Закрытые", "Имя"]]
     else:
         rows = [["Доска", "Закрытые"], ["Имя"]]
     return {
@@ -448,7 +532,7 @@ def refresh(store: Store, task: dict) -> list:
             continue
         user = store.user(chat_id)
         name = user["name"] if user else ""
-        actions.append(edit(chat_id, int(message_id), card_text(task), card_markup(task, name)))
+        actions.append(edit(chat_id, int(message_id), posted_text(task), card_markup(task, name)))
     return actions
 
 
@@ -467,10 +551,17 @@ def accept_name(store: Store, sessions: dict, chat_id: int, text: str) -> list:
         return [send(chat_id, "Юзернейм не приму. Напиши имя, например Маша.")]
     name = clean_name(text)
     if not name:
-        return [send(chat_id, "Напиши имя, как подписать в отметках. Например: Маша.")]
+        return [send(chat_id, "Напиши имя, как подписать в отметках. Например: Маша. Юзернейм не приму.")]
+    pending = (_session(sessions, chat_id).get("draft") or {}).get("next")
     store.set_name(chat_id, name)
     _clear(sessions, chat_id)
-    return [send(chat_id, f"Привет, {esc(name)}.", reply_kb(name))]
+    actions = [send(chat_id, f"Привет, {esc(name)}.", reply_kb(name))]
+    if pending == "new" and is_setter(name):
+        sessions[chat_id] = {"step": "title", "draft": {}}
+        actions.append(send(chat_id, "Своё название, например 046 Black."))
+    elif pending == "new":
+        actions.append(send(chat_id, "Ставить задачи могут Елизавета, Диля и Босс."))
+    return actions
 
 
 def list_tasks(store: Store, chat_id: int, status: str) -> list:
@@ -479,9 +570,17 @@ def list_tasks(store: Store, chat_id: int, status: str) -> list:
     if not tasks:
         text = "Доска пустая." if status == "open" else "Закрытых нет."
         return [send(chat_id, text)]
-    rows = [[(clip(board_line(task)), f"card:{task['id']}")] for task in tasks[:30]]
-    title = "Доска" if status == "open" else "Закрытые"
-    return [send(chat_id, title, inline(rows))]
+    user = store.user(chat_id)
+    name = user["name"] if user else ""
+    actions = []
+    for task in tasks[:20]:
+        actions.append(send(
+            chat_id,
+            posted_text(task),
+            card_markup(task, name),
+            remember=task["id"],
+        ))
+    return actions
 
 
 def today_text(store: Store) -> str:
@@ -541,6 +640,16 @@ def on_menu(store: Store, sessions: dict, chat_id: int, text: str) -> list:
         markup = reply_kb(user["name"]) if user else None
         return [send(chat_id, "Отменил.", markup)]
 
+    if label == "Новая раздача":
+        user = store.user(chat_id)
+        if not user:
+            sessions[chat_id] = {"step": "name", "draft": {"next": "new"}}
+            return [send(chat_id, "Напиши имя, как подписать в отметках. Например: Маша.")]
+        if not is_setter(user["name"]):
+            return [send(chat_id, "Ставить задачи могут Елизавета, Диля и Босс.")]
+        sessions[chat_id] = {"step": "title", "draft": {}}
+        return [send(chat_id, "Своё название, например 046 Black.")]
+
     user, missing = _require_user(store, sessions, chat_id)
     if missing:
         return missing
@@ -563,11 +672,6 @@ def on_menu(store: Store, sessions: dict, chat_id: int, text: str) -> list:
             return [send(chat_id, "Команду смотрят те, кто ставит задачи.")]
         _clear(sessions, chat_id)
         return [send(chat_id, team_text(store))]
-    if label == "Новая раздача":
-        if not is_setter(user["name"]):
-            return [send(chat_id, "Ставить задачи могут Елизавета, Диля и Босс.")]
-        sessions[chat_id] = {"step": "title", "draft": {}}
-        return [send(chat_id, "Своё название. Например: 046 Black.")]
     return [send(chat_id, "Нажми кнопку внизу или /start.")]
 
 
@@ -581,7 +685,7 @@ def _require_user(store: Store, sessions: dict, chat_id: int) -> tuple[dict | No
 
 def _query_prompt(channel: str) -> str:
     if channel == "keyword":
-        return "Напиши ключ."
+        return "Напиши само слово."
     return "Артикул конкурента: цифры или ссылка."
 
 
@@ -617,7 +721,7 @@ def on_step(store: Store, sessions: dict, chat_id: int, text: str, message_id: i
     if current == "title":
         title = " ".join(text.split())
         if not title or title.startswith("/") or len(title) > 80:
-            return [send(chat_id, "Напиши название. Например: 046 Black.")]
+            return [send(chat_id, "Своё название, например 046 Black.")]
         draft["title"] = title
         step["step"] = "nm"
         return [send(chat_id, "Артикул Wildberries: цифры или ссылка на карточку.")]
@@ -643,7 +747,7 @@ def on_step(store: Store, sessions: dict, chat_id: int, text: str, message_id: i
         return [send(chat_id, _query_prompt(channel))]
     if current in ("query", "edit_query"):
         if not _apply_query(draft, text):
-            hint = "Напиши ключ." if draft.get("channel") == "keyword" else "Нужны цифры артикула конкурента или ссылка."
+            hint = _query_prompt(draft.get("channel") or "")
             return [send(chat_id, hint)]
         if current == "edit_query":
             task = store.task(draft.get("task_id") or "")
@@ -672,7 +776,7 @@ def on_step(store: Store, sessions: dict, chat_id: int, text: str, message_id: i
             "marks": [],
             "status": "open",
         }
-        return [send(chat_id, card_text(preview, preview=True), inline([
+        return [send(chat_id, posted_text(preview, "Новая раздача"), inline([
             [("Поставить", "post")],
             [("Отмена", "drop")],
         ]))]
@@ -741,6 +845,7 @@ def _add_mark(store, sessions, chat_id, task, count, message_id, name) -> list:
     _clear(sessions, chat_id)
     note = f"Записал: {esc(name)} {new_qty}. На карточке {total_qty(task)}/{plan}."
     actions = refresh(store, task)
+    actions.extend(_mark_notice(store, task, f"{name} · +{count} шт"))
     if message_id:
         actions.append(edit(chat_id, message_id, note, inline([])))
     else:
@@ -766,6 +871,12 @@ def _set_mark(store, sessions, chat_id, task, count, message_id, name) -> list:
     else:
         actions.append(send(chat_id, note))
     return actions
+
+
+def _mark_notice(store: Store, task: dict, header: str) -> list:
+    text = notice_text(task, header, show_from=False)
+    markup = open_markup(task)
+    return [send(int(user["chat_id"]), text, markup) for user in store.users.values()]
 
 
 def _open_card(store: Store, chat_id: int, task: dict, name: str) -> list:
@@ -802,18 +913,24 @@ def on_callback(store: Store, sessions: dict, chat_id: int, data: str, message_i
             return [alert("Ставить задачи могут Елизавета, Диля и Босс.", True)]
         task = store.create_task(chat_id=chat_id, name=user["name"], draft=draft)
         _clear(sessions, chat_id)
+        text = posted_text(task, "Новая раздача")
         actions = []
         if message_id:
             actions.append(edit(
-                chat_id, message_id, card_text(task), card_markup(task, user["name"]), remember=task["id"],
+                chat_id, message_id, text, card_markup(task, user["name"]), remember=task["id"],
             ))
         else:
-            actions.append(send(chat_id, card_text(task), card_markup(task, user["name"]), remember=task["id"]))
+            actions.append(send(
+                chat_id, text, card_markup(task, user["name"]), remember=task["id"],
+            ))
         for other in store.users.values():
             if int(other["chat_id"]) == int(chat_id):
                 continue
             actions.append(send(
-                int(other["chat_id"]), card_text(task), card_markup(task, other["name"]), remember=task["id"],
+                int(other["chat_id"]),
+                text,
+                card_markup(task, other["name"]),
+                remember=task["id"],
             ))
         actions.append(alert("Поставил.", False))
         return actions
@@ -964,8 +1081,9 @@ def reduce(store: Store, sessions: dict, event: dict) -> list:
     if not text.strip():
         return [send(chat_id, "Напиши текстом.")]
     label = text.strip()
-    if command_of(label) or label in MENU:
-        return on_menu(store, sessions, chat_id, label)
+    known = menu_key(label)
+    if command_of(label) or known:
+        return on_menu(store, sessions, chat_id, known or label)
     if not store.user(chat_id):
         return accept_name(store, sessions, chat_id, label)
     return on_step(store, sessions, chat_id, label, message_id)
@@ -1051,6 +1169,8 @@ def _apply(token: str, store: Store, event: dict, actions: list) -> None:
             "chat_id": action["chat_id"],
             "text": action["text"] or "Пусто.",
             "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+            "link_preview_options": {"is_disabled": True},
         }
         if action.get("markup") is not None:
             payload["reply_markup"] = action["markup"]
@@ -1126,6 +1246,59 @@ def _poll_loop() -> None:
         _POLLING = False
 
 
+def _public_base() -> str:
+    explicit = (os.getenv("RAZDACHI_WEBHOOK_BASE") or "").strip().rstrip("/")
+    if explicit:
+        return explicit if explicit.startswith("http") else f"https://{explicit}"
+    domain = (os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip()
+    if domain:
+        return f"https://{domain}"
+    return ""
+
+
+def webhook_secret() -> str:
+    token = _token()
+    if not token:
+        return ""
+    return hashlib.sha256(f"razdachi-webhook:{token}".encode()).hexdigest()[:32]
+
+
+def webhook_ok(header: str | None) -> bool:
+    secret = webhook_secret()
+    if not secret or not header or len(header) != len(secret):
+        return False
+    return hmac.compare_digest(secret, header)
+
+
+def handle_webhook(update: dict) -> None:
+    if not isinstance(update, dict) or _STORE is None:
+        return
+    try:
+        _handle_update(update)
+    except Exception as exc:
+        logger.error("razdachi webhook: %s", _safe(exc, _token()))
+
+
+def _arm_webhook(token: str) -> bool:
+    global _POLLING, _USERNAME, _MODE
+    base = _public_base()
+    if not base:
+        return False
+    me = _tg(token, "getMe", timeout=15).get("result") or {}
+    _USERNAME = me.get("username") or ""
+    url = f"{base}/api/razdachi-webhook"
+    _tg(token, "setWebhook", {
+        "url": url,
+        "secret_token": webhook_secret(),
+        "allowed_updates": ["message", "callback_query"],
+        "drop_pending_updates": False,
+    }, timeout=15)
+    _POLLING = True
+    _MODE = "webhook"
+    logger.info("razdachi: бот @%s слушает сайт", _USERNAME)
+    return True
+
+
 def status() -> dict:
     store = _STORE
     tasks = store.tasks if store else []
@@ -1133,6 +1306,7 @@ def status() -> dict:
         "token_set": bool(_token()),
         "token_tail": _token()[-4:] if _token() else None,
         "username": _USERNAME or None,
+        "mode": _MODE or None,
         "polling": _POLLING,
         "conflict": _CONFLICT,
         "users": len(store.users) if store else 0,
@@ -1142,7 +1316,7 @@ def status() -> dict:
 
 
 def start() -> bool:
-    global _STARTED, _STORE
+    global _STARTED, _STORE, _MODE
     if os.environ.get("RAZDACHI_START_DONE") == "1":
         return False
     os.environ["RAZDACHI_START_DONE"] = "1"
@@ -1156,5 +1330,11 @@ def start() -> bool:
         return False
     _STORE = load_store()
     _STARTED = True
+    try:
+        if _arm_webhook(token):
+            return True
+    except Exception as exc:
+        logger.warning("razdachi webhook не встал, читаю сам: %s", _safe(exc, token))
+    _MODE = "poll"
     threading.Thread(target=_poll_loop, daemon=True, name="razdachi-bot").start()
     return True

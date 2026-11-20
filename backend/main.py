@@ -12,9 +12,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone, date
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import pandas as pd
 from pathlib import Path
@@ -17746,6 +17746,20 @@ except Exception as e:
 # Бот «Раздачи». Другой токен, чем у бота дашборда. Окно на компьютере закрыто.
 try:
     import razdachi_bot
+
+    @app.post("/api/razdachi-webhook")
+    async def razdachi_webhook(request: Request):
+        """Телеграм зовёт сюда сам. Пароль сайта не нужен, секрет в заголовке."""
+        secret = request.headers.get("x-telegram-bot-api-secret-token")
+        if not razdachi_bot.webhook_ok(secret):
+            return JSONResponse({"ok": False}, status_code=403)
+        try:
+            update = await request.json()
+        except Exception:
+            update = {}
+        if isinstance(update, dict):
+            razdachi_bot.handle_webhook(update)
+        return {"ok": True}
 
     razdachi_bot.start()
 
