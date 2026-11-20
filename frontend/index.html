@@ -1297,6 +1297,11 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
         <h3 id="wbPeriodTitle" style="margin:0">Сравнить периоды</h3>
         <button type="button" class="action-btn" onclick="closeWbProdCompareModal()" aria-label="Закрыть">✕</button>
       </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+        <button type="button" class="filter-btn" onclick="setWbProdWeekdayPreset('mon-thu')" title="Последние завершённые понедельник–четверг и те же дни неделей раньше">Пн–Чт</button>
+        <button type="button" class="filter-btn" onclick="setWbProdWeekdayPreset('weekend')" title="Последние завершённые суббота–воскресенье и предыдущие выходные">Выходные</button>
+        <span style="font-size:12px;color:var(--wb-muted);align-self:center">Последний полный период ↔ неделей раньше</span>
+      </div>
       <div class="wb-period-ranges">
         <button type="button" class="wb-period-range" id="wbProdCurrentRange" onclick="toggleWbProdDatePicker('current')">Выбрать период <span>▦</span></button>
         <span class="wb-period-caption">Сравнение<br>с периодом:</span>
@@ -2394,6 +2399,32 @@ function toggleWbProdDatePicker(which) {
   document.getElementById('wbProdCurrentPicker').hidden = which !== 'current';
   document.getElementById('wbProdPreviousPicker').hidden = which !== 'previous';
 }
+function wbProdWeekdayPresetDates(preset, today) {
+  const end = new Date(today + 'T12:00:00Z');
+  const endWeekday = preset === 'weekend' ? 0 : 4;
+  // The end must precede today: an unfinished Thursday/Sunday is excluded.
+  const daysBack = (end.getUTCDay() - endWeekday + 7) % 7 || 7;
+  end.setUTCDate(end.getUTCDate() - daysBack);
+  const shift = offset => {
+    const date = new Date(end);
+    date.setUTCDate(date.getUTCDate() + offset);
+    return date.toISOString().slice(0,10);
+  };
+  const length = preset === 'weekend' ? 2 : 4;
+  return [shift(1-length), shift(0), shift(1-length-7), shift(-7)];
+}
+function setWbProdWeekdayPreset(preset) {
+  const today = new Intl.DateTimeFormat('sv-SE', {timeZone:'Europe/Moscow'}).format(new Date());
+  const dates = wbProdWeekdayPresetDates(preset, today);
+  ['CurrentFrom','CurrentTo','PreviousFrom','PreviousTo'].forEach((key,i) => {
+    document.getElementById('wbProd'+key).value = dates[i];
+  });
+  updateWbProdRangeLabels();
+  document.getElementById('wbProdCurrentPicker').hidden = true;
+  document.getElementById('wbProdPreviousPicker').hidden = true;
+  document.getElementById('wbProdModalError').textContent = '';
+}
+
 function openWbProdCompareModal() {
   const today = new Intl.DateTimeFormat('sv-SE', {timeZone:'Europe/Moscow'}).format(new Date());
   const days = WB_PROD_SALES_PERIOD === 'custom' ? 7 : Number(WB_PROD_SALES_PERIOD);
