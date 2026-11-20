@@ -1361,6 +1361,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
       Грузи отгрузки/поставки WB и Ozon — остаток общий.
       FBS Ozon: PDF «Лист подбора» (как из кабинета) или Excel.
       <b>В пятницу:</b> сотрудник правит реальные остатки в таблице → жмёт «Инвентаризация» — оверлеи уходят в архив по дате, активные сбрасываются.
+      <span id="ownWhZeroNote"></span>
     </span>
   </div>
   <div class="toolbar">
@@ -1384,6 +1385,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
       <button class="action-btn" onclick="startOwnWhUpload('ozon_fbs')" title="Лист подбора Ozon PDF или Excel">📦 FBS Ozon</button>
       <input type="file" id="ownWhShipInput" accept=".xlsx,.xls,.pdf" multiple style="display:none" onchange="uploadOwnWhShipments(this.files)">
       <input type="file" id="ownWhReceiptInput" accept=".xlsx,.xls" multiple style="display:none" onchange="uploadOwnWhReceipts(this.files)">
+      <button class="action-btn" id="ownWhZeroBtn" onclick="toggleOwnWhZero()" title="Остаток 0 по всем артикулам. Таблицу Google Sheets не меняет">Обнулить остатки</button>
       <button class="action-btn" style="background:#ECFDF5;border-color:#059669;color:#047857" onclick="runOwnWhFridayReset()" title="После пересчёта в Sheets: архив оверлеев + сброс">🗓 Инвентаризация</button>
       <button class="action-btn" id="ownWhSyncBtn" onclick="triggerOwnWarehouseSync()">↻ Обновить</button>
     </div>
@@ -4735,6 +4737,7 @@ function applyOwnWhPayload(d) {
     channel_summaries: d.channel_summaries || OWN_WH.channel_summaries,
     archives: d.archives != null ? d.archives : (OWN_WH.archives || []),
     sku_aliases: d.sku_aliases != null ? d.sku_aliases : (OWN_WH.sku_aliases || {}),
+    zeroed: d.zeroed != null ? !!d.zeroed : !!OWN_WH.zeroed,
     as_of: d.as_of || OWN_WH.as_of,
     updated_at: d.updated_at || OWN_WH.updated_at,
     error: null,
@@ -5219,11 +5222,54 @@ async function loadOwnWhArchiveDetail(id) {
   }
 }
 
+function syncOwnWhZeroUi() {
+  const zeroBtn = document.getElementById('ownWhZeroBtn');
+  const zeroNote = document.getElementById('ownWhZeroNote');
+  const on = !!OWN_WH.zeroed;
+  if(zeroBtn) {
+    zeroBtn.textContent = on ? 'Вернуть из таблицы' : 'Обнулить остатки';
+    zeroBtn.style.background = on ? '#ECFDF5' : '#FEF2F2';
+    zeroBtn.style.borderColor = on ? '#059669' : '#B42318';
+    zeroBtn.style.color = on ? '#047857' : '#B42318';
+  }
+  if(zeroNote) {
+    zeroNote.innerHTML = on
+      ? '<br><b>Остатки обнулены.</b> По всем артикулам сейчас 0. Google Sheets не менялся — цифра таблицы написана под нулём. Поступления и отгрузки в остаток не входят, пока не нажмёшь «Вернуть из таблицы».'
+      : '';
+  }
+}
+
+async function toggleOwnWhZero() {
+  const on = !OWN_WH.zeroed;
+  const msg = on
+    ? 'Обнулить весь раздел остатков?\n\nПо всем артикулам остаток станет 0.\nGoogle Sheets не меняем.\nАктивные поступления и отгрузки уйдут в архив и в остаток не войдут.\nВернуть цифры — кнопкой «Вернуть из таблицы».'
+    : 'Вернуть остатки из Google Sheets?\nОстаток снова станет: таблица + поступления − отгрузки.';
+  if(!confirm(msg)) return;
+  const info = document.getElementById('ownWhInfo');
+  if(info) info.textContent = on ? 'Обнуляем остатки…' : 'Возвращаем остатки из таблицы…';
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/own-warehouse-zero`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({on}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
+    applyOwnWhPayload(d);
+    OWN_WH.zeroed = !!d.zeroed;
+    drawOwnWarehouse();
+  } catch(e) {
+    alert((on ? 'Не удалось обнулить: ' : 'Не удалось вернуть: ') + e.message);
+    if(info) info.textContent = 'Ошибка';
+  }
+}
+
 function drawOwnWarehouse() {
   const info = document.getElementById('ownWhInfo');
   const root = document.getElementById('ownWhRoot');
   const cards = document.getElementById('ownWhCards');
   if(!root) return;
+  syncOwnWhZeroUi();
   drawOwnWhWeekly();
   drawOwnWhChannelTables();
   drawOwnWhShipLog();
@@ -5235,6 +5281,7 @@ function drawOwnWarehouse() {
     if(info) info.textContent = 'Обновляем…';
   } else {
     const bits = [];
+    if(OWN_WH.zeroed) bits.push('обнулено');
     if(OWN_WH.as_of) bits.push('остатки на ' + OWN_WH.as_of);
     else if(OWN_WH.title) bits.push(OWN_WH.title);
     if(OWN_WH.updated_at) bits.push('подтянуто ' + OWN_WH.updated_at);
@@ -5315,7 +5362,9 @@ function drawOwnWarehouse() {
         <div id="owModelEdit_${safeVc}"></div>`
       : `<div style="text-align:left;font-weight:600">${escapeHtml(modelLabel)}</div>`;
     const overlayBits = [];
-    if(sheetQty != null && (shipped || received)) {
+    if(OWN_WH.zeroed && sheetQty != null) {
+      overlayBits.push(`<div style="font-size:10px;color:var(--wb-muted)">в таблице ${fmt(sheetQty)}</div>`);
+    } else if(sheetQty != null && (shipped || received)) {
       let line = `Sheets ${fmt(sheetQty)}`;
       if(received) line += ` + ${fmt(received)}`;
       if(shipped) line += ` − ${fmt(shipped)}`;
@@ -15580,6 +15629,7 @@ function drawFinance() {
   const m = d.meta || {};
   if(meta) {
     const bits = [];
+    if(d.own_zeroed) bits.push('наш склад обнулён');
     if(m.uploaded_at) bits.push('себестоимость от ' + m.uploaded_at + (m.filename ? ' · ' + m.filename : ''));
     bits.push((d.costs_count || 0) + ' арт. с ценой');
     if(d.nm_mapped) bits.push(d.nm_mapped + ' SKU');
@@ -15672,7 +15722,10 @@ function drawFinanceTable() {
   );
 
   if(!rows.length) {
-    root.innerHTML = `<div class="empty">${FIN_TAB === 'miss' ? 'Все артикулы с остатком имеют себес и понятную семью' : 'Нет строк'}</div>`;
+    const emptyText = (FIN_TAB === 'own' && d.own_zeroed)
+      ? 'Наш склад обнулён: остаток 0 по всем артикулам. Вернуть цифры — кнопка «Вернуть из таблицы» на вкладке «Наш склад».'
+      : (FIN_TAB === 'miss' ? 'Все артикулы с остатком имеют себес и понятную семью' : 'Нет строк');
+    root.innerHTML = `<div class="empty">${emptyText}</div>`;
     return;
   }
 
