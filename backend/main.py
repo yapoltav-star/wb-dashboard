@@ -1,7 +1,6 @@
 import httpx
 import os
 import io
-import csv
 import json
 import html
 import gzip
@@ -10,7 +9,6 @@ import time
 import logging
 import re
 import threading
-from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone, date
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -15825,18 +15823,11 @@ def crm_shelf_boost_sent(competitor_nm_id: int = 0, scan: bool = False):
     return {"ok": True, "items": items}
 
 
-SHELVES_SHEET_ID = "1H3zW6WIP0ttL14j5ChN06mM64uIhXmyCUx0o89wnhtk"
-_SHELVES_SHEET_LOCK = threading.Lock()
-_SHELVES_SHEET_CACHE = {"at": 0.0, "data": None}
-_SHELVES_SHEET_TTL = 120
-
-
-def _catalog_nm(url: str) -> str:
-    text = (url or "").strip()
-    marker = "/catalog/"
-    if marker in text:
-        return text.split(marker, 1)[1].split("/", 1)[0].strip()
-    return text if text.isdigit() else ""
+SHELF_BOARD_KEY = "shelf_board"
+SHELF_BOARD_SEED = Path(__file__).resolve().parent.parent / "data" / "shelf_board_seed.json"
+_SHELF_BOARD_LOCK = threading.Lock()
+_SHELF_BOARD_MEM = None
+_NM_FILE_RE = re.compile(r"\d{6,12}")
 
 
 def _sheet_date_sort_key(value: str):
@@ -15847,77 +15838,313 @@ def _sheet_date_sort_key(value: str):
     return (0, 0, 0)
 
 
-def parse_shelves_sheet_csv(text: str) -> dict:
-    """Таблица «База»: карточки конкурентов, места наших артикулов, список артикулов."""
-    rows = csv.reader(io.StringIO(text or ""))
-    cards = []
-    places = []
+def _moscow_shelf_date() -> str:
+    return datetime.now(timezone(timedelta(hours=3))).strftime("%d.%m.%Y")
+
+
+def _nm_from_filename(name: str) -> str:
+    runs = _NM_FILE_RE.findall(name or "")
+    dated = [run for run in runs if not (len(run) == 8 and run.startswith("20"))]
+    pool = dated or runs
+    if not pool:
+        return ""
+    pool.sort(key=len, reverse=True)
+    return pool[0]
+
+
+def _shelf_board_normalize(data: dict | None) -> dict:
+    data = data if isinstance(data, dict) else {}
+    competitors = []
+    seen = set()
+    for raw in data.get("competitors") or data.get("cards") or []:
+        if not isinstance(raw, dict):
+            continue
+        nm = str(raw.get("nm") or raw.get("nm_id") or "").strip()
+        if not nm.isdigit() or nm in seen:
+            continue
+        seen.add(nm)
+        competitors.append({
+            "nm": nm,
+            "brand": str(raw.get("brand") or "").strip(),
+            "link": str(raw.get("link") or raw.get("url") or f"https://www.wildberries.ru/catalog/{nm}/detail.aspx"),
+            "photo": str(raw.get("photo") or raw.get("thumb") or ""),
+        })
     articles = []
-    seen_cards = set()
     seen_articles = set()
-    for raw in rows:
-        row = list(raw) + [""] * (10 - len(raw))
-        nm, brand, link, photo, _empty, date, comp, article, place, own = [
-            str(cell or "").strip() for cell in row[:10]
-        ]
-        if nm and brand and link and nm not in seen_cards:
-            seen_cards.add(nm)
-            cards.append({"nm": nm, "brand": brand, "link": link, "photo": photo})
-        comp_nm = _catalog_nm(comp)
-        if date and article and place and comp_nm:
+    for raw in data.get("articles") or []:
+        name = str(raw or "").strip()
+        if name and name not in seen_articles:
+            seen_articles.add(name)
+            articles.append(name)
+    checks = {}
+    raw_checks = data.get("checks") if isinstance(data.get("checks"), dict) else {}
+    for date, rows in raw_checks.items():
+        day = str(date or "").strip()
+        if not day or not isinstance(rows, list):
+            continue
+        clean = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            nm = str(row.get("nm") or "").strip()
+            article = str(row.get("article") or "").strip()
+            place = str(row.get("place") or "").strip()
+            if nm and article and place:
+                clean.append({"nm": nm, "article": article, "place": place})
+        if clean:
+            checks[day] = clean
+    if not checks and isinstance(data.get("places"), list):
+        for row in data["places"]:
+            if not isinstance(row, dict):
+                continue
+            day = str(row.get("date") or "").strip()
+            nm = str(row.get("nm") or "").strip()
+            article = str(row.get("article") or "").strip()
+            place = str(row.get("place") or "").strip()
+            if day and nm and article and place:
+                checks.setdefault(day, []).append({"nm": nm, "article": article, "place": place})
+    dates = sorted(checks, key=_sheet_date_sort_key)
+    if len(dates) > 60:
+        for day in dates[:-60]:
+            checks.pop(day, None)
+    return {"competitors": competitors, "articles": articles, "checks": checks}
+
+
+def _shelf_board_seed() -> dict:
+    try:
+        raw = json.loads(SHELF_BOARD_SEED.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning(f"shelf board seed: {exc}")
+        raw = {}
+    return _shelf_board_normalize(raw)
+
+
+def load_shelf_board() -> dict:
+    global _SHELF_BOARD_MEM
+    with _SHELF_BOARD_LOCK:
+        if _SHELF_BOARD_MEM is not None:
+            return _SHELF_BOARD_MEM
+    stored = get_setting_json(SHELF_BOARD_KEY, None)
+    board = _shelf_board_normalize(stored) if isinstance(stored, dict) and stored.get("competitors") else _shelf_board_seed()
+    with _SHELF_BOARD_LOCK:
+        if _SHELF_BOARD_MEM is None:
+            _SHELF_BOARD_MEM = board
+        return _SHELF_BOARD_MEM
+
+
+def save_shelf_board(board: dict) -> dict:
+    global _SHELF_BOARD_MEM
+    board = _shelf_board_normalize(board)
+    with _SHELF_BOARD_LOCK:
+        _SHELF_BOARD_MEM = board
+    if not save_setting_value(SHELF_BOARD_KEY, board):
+        logger.warning("shelf board: не записал в settings, держу в памяти процесса")
+    return board
+
+
+def shelf_board_view(board: dict | None = None) -> dict:
+    board = board or load_shelf_board()
+    places = []
+    for date, rows in (board.get("checks") or {}).items():
+        for row in rows:
             places.append({
                 "date": date,
-                "nm": comp_nm,
-                "article": article,
-                "place": place,
+                "nm": row["nm"],
+                "article": row["article"],
+                "place": row["place"],
             })
-        if own and own not in seen_articles:
-            seen_articles.add(own)
-            articles.append(own)
-    dates = sorted({item["date"] for item in places}, key=_sheet_date_sort_key)
-    return {"dates": dates, "cards": cards, "places": places, "articles": articles}
+    dates = sorted((board.get("checks") or {}), key=_sheet_date_sort_key)
+    return {
+        "dates": dates,
+        "cards": board.get("competitors") or [],
+        "places": places,
+        "articles": board.get("articles") or [],
+        "stored": True,
+    }
 
 
-def fetch_shelves_sheet(force: bool = False) -> dict:
-    now = time.time()
-    with _SHELVES_SHEET_LOCK:
-        cached = _SHELVES_SHEET_CACHE.get("data")
-        fresh = cached and not force and now - float(_SHELVES_SHEET_CACHE.get("at") or 0) < _SHELVES_SHEET_TTL
-    if fresh:
-        return cached
-    url = (
-        "https://docs.google.com/spreadsheets/d/"
-        + SHELVES_SHEET_ID
-        + "/gviz/tq?tqx=out:csv&sheet="
-        + quote("База")
-        + "&range=A2:J400"
-    )
+def _positions_on_client_shelf(nm_id: int, own_map: dict) -> list:
+    """Места наших артикулов на полке карточки: похожие с клиентского WB, глубина 100."""
+    headers = _wb_shelf_headers(nm_id)
+    ids = []
     try:
-        resp = httpx.get(url, headers={"User-Agent": "wb-shelves"}, timeout=40, follow_redirects=True)
-        resp.raise_for_status()
-        text = resp.text
-        if text.lstrip().startswith("<"):
-            raise RuntimeError("Google отдал страницу вместо CSV")
-        payload = parse_shelves_sheet_csv(text)
-    except Exception:
-        if cached:
-            return cached
-        raise
-    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
-    with _SHELVES_SHEET_LOCK:
-        _SHELVES_SHEET_CACHE["at"] = time.time()
-        _SHELVES_SHEET_CACHE["data"] = payload
-    return payload
+        ids = _fetch_similar_nm_ids(nm_id, headers)[:SHELF_OWN_SCAN_LIMIT]
+    except Exception as exc:
+        logger.info(f"shelf similar nm={nm_id}: {exc}")
+    if ids:
+        return _own_shelf_positions(ids, own_map, {})
+    shelf = fetch_wb_see_also_shelf(
+        nm_id, own_map=own_map, limit=15, scan_limit=SHELF_OWN_SCAN_LIMIT
+    )
+    if shelf.get("error") and not shelf.get("own_on_shelf"):
+        raise RuntimeError(shelf.get("error") or "пустая полка")
+    return shelf.get("own_on_shelf") or []
+
+
+def check_shelf_board() -> dict:
+    board = load_shelf_board()
+    own_map = _own_nm_vendor_map()
+    view = shelf_board_view(board)
+    if not own_map:
+        view["error"] = "Не вижу наши артикулы в базе, позиции на WB не сверял"
+        return view
+    date = _moscow_shelf_date()
+    found = []
+    ok_nms = set()
+    errors = []
+
+    def one(comp: dict):
+        nm = int(comp["nm"])
+        try:
+            return nm, _positions_on_client_shelf(nm, own_map), None
+        except Exception as exc:
+            return nm, [], str(exc)[:160]
+
+    competitors = board.get("competitors") or []
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(one, comp) for comp in competitors]
+        for fut in as_completed(futures):
+            nm, rows, err = fut.result()
+            if err:
+                errors.append({"nm": str(nm), "error": err})
+                continue
+            ok_nms.add(str(nm))
+            for row in rows:
+                article = str(row.get("vendor_code") or "").strip()
+                if not article:
+                    continue
+                found.append({
+                    "nm": str(nm),
+                    "article": article,
+                    "place": str(row.get("position") or ""),
+                })
+    checks = dict(board.get("checks") or {})
+    prev = [row for row in (checks.get(date) or []) if str(row.get("nm")) not in ok_nms]
+    checks[date] = prev + [row for row in found if row.get("place")]
+    articles = list(board.get("articles") or [])
+    have = set(articles)
+    for row in found:
+        if row["article"] not in have:
+            have.add(row["article"])
+            articles.append(row["article"])
+    board = save_shelf_board({
+        "competitors": board.get("competitors") or [],
+        "articles": articles,
+        "checks": checks,
+    })
+    view = shelf_board_view(board)
+    view["checked_at"] = date
+    view["checked"] = len(ok_nms)
+    view["found"] = len(found)
+    if errors:
+        view["warning"] = f"Не открылись {len(errors)} из {len(competitors)}"
+    return view
+
+
+def add_shelf_competitor(nm_id: int, photo: str = "") -> dict:
+    nm = str(int(nm_id))
+    board = load_shelf_board()
+    competitors = list(board.get("competitors") or [])
+    if any(comp["nm"] == nm for comp in competitors):
+        return shelf_board_view(board)
+    try:
+        brief = _basket_card_brief(int(nm)) or {}
+    except Exception as exc:
+        logger.info(f"shelf board card {nm}: {exc}")
+        brief = {}
+    competitors.append({
+        "nm": nm,
+        "brand": str(brief.get("brand") or "").strip(),
+        "link": brief.get("url") or f"https://www.wildberries.ru/catalog/{nm}/detail.aspx",
+        "photo": photo or brief.get("thumb") or wb_product_thumb_url(int(nm)),
+    })
+    board = save_shelf_board({
+        "competitors": competitors,
+        "articles": board.get("articles") or [],
+        "checks": board.get("checks") or {},
+    })
+    return shelf_board_view(board)
+
+
+def remove_shelf_competitor(nm_id: int) -> dict:
+    nm = str(int(nm_id))
+    board = load_shelf_board()
+    competitors = [comp for comp in (board.get("competitors") or []) if comp["nm"] != nm]
+    checks = {}
+    for date, rows in (board.get("checks") or {}).items():
+        left = [row for row in rows if str(row.get("nm")) != nm]
+        if left:
+            checks[date] = left
+    board = save_shelf_board({
+        "competitors": competitors,
+        "articles": board.get("articles") or [],
+        "checks": checks,
+    })
+    return shelf_board_view(board)
+
+
+@app.get("/api/shelves-board")
+def shelves_board():
+    """Сохранённые конкуренты и последние места наших артикулов на их полках."""
+    return shelf_board_view()
 
 
 @app.get("/api/shelves-sheet")
 def shelves_sheet(refresh: bool = False):
-    """Матрица полок из публичной таблицы «База»: карточка конкурента × наш артикул × место."""
+    """Старое имя. Данные уже на сайте, Google-таблица не читается."""
+    if refresh:
+        return check_shelf_board()
+    return shelf_board_view()
+
+
+@app.post("/api/shelves-board/check")
+def shelves_board_check():
+    """Пройти полки конкурентов на клиентском WB и записать места наших артикулов."""
+    return check_shelf_board()
+
+
+@app.post("/api/shelves-board/competitors")
+def shelves_board_add(request: dict):
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
     try:
-        return fetch_shelves_sheet(force=refresh)
-    except Exception as exc:
-        logger.warning(f"shelves sheet: {exc}")
-        raise HTTPException(status_code=502, detail=str(exc))
+        nm_id = int(request.get("nm") or request.get("nm_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="nm required")
+    if nm_id < 1:
+        raise HTTPException(status_code=400, detail="nm required")
+    return add_shelf_competitor(nm_id)
+
+
+@app.post("/api/shelves-board/remove")
+def shelves_board_remove(request: dict):
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    try:
+        nm_id = int(request.get("nm") or request.get("nm_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="nm required")
+    return remove_shelf_competitor(nm_id)
+
+
+@app.post("/api/shelves-board/photos")
+async def shelves_board_photos(files: list[UploadFile] = File(...)):
+    """Папка с фото: артикул WB берём из имени файла и добавляем карточку."""
+    added = []
+    skipped = []
+    for upload in files or []:
+        nm = _nm_from_filename(upload.filename or "")
+        if not nm:
+            skipped.append(upload.filename or "")
+            continue
+        before = {comp["nm"] for comp in (load_shelf_board().get("competitors") or [])}
+        add_shelf_competitor(int(nm))
+        if nm not in before:
+            added.append(nm)
+    view = shelf_board_view()
+    view["added"] = added
+    view["skipped"] = skipped
+    return view
 
 
 @app.post("/api/shelf-presence")

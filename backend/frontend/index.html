@@ -63,6 +63,7 @@ table.shelf-sheet td.place span{display:block;padding:10px 6px}
 table.shelf-sheet td.place.good{background:#e8f8ee;color:#067647}
 table.shelf-sheet td.place.mid{background:#fff6e8;color:#b54708}
 table.shelf-sheet td.place.far{color:var(--wb-muted);font-weight:500}
+table.shelf-sheet button.x{border:0;background:transparent;color:var(--wb-faint);cursor:pointer;font-size:14px;line-height:1;padding:0 8px 8px}
 
 /* Upload banner */
 .upload-banner{background:#FFFBEB;border:1px solid #FDE68A;border-radius:var(--r);padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px;font-size:13px}
@@ -1996,7 +1997,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   </div>
 </div>
 
-<!-- СВОДКА ПОЛОК: матрица из таблицы «База» -->
+<!-- СВОДКА ПОЛОК: конкуренты лежат на сайте, места смотрим на клиентском WB -->
 <div class="page" id="page-shelf-sheet">
   <div class="toolbar">
     <span style="font-size:13px;font-weight:600">Сводка полок</span>
@@ -2004,14 +2005,20 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
     <label style="font-size:12px;color:var(--wb-muted);display:flex;align-items:center;gap:6px;margin-left:12px">Дата
       <select id="shelfSheetDate" style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;background:#fff"></select>
     </label>
+    <input id="shelfSheetNm" placeholder="Артикул WB" inputmode="numeric"
+      style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;width:140px"
+      onkeydown="if(event.key==='Enter') addShelfSheetCompetitor()">
+    <button class="action-btn" type="button" onclick="addShelfSheetCompetitor()">Добавить</button>
+    <button class="action-btn" type="button" onclick="document.getElementById('shelfSheetPhotos').click()">Папка с фото</button>
+    <input id="shelfSheetPhotos" type="file" accept="image/*" multiple webkitdirectory style="display:none" onchange="uploadShelfSheetPhotos(this.files)">
     <div class="ml-auto">
-      <button class="action-btn" type="button" onclick="loadShelfSheet(true)">↻ Обновить</button>
+      <button class="action-btn primary" id="shelfSheetCheckBtn" type="button" onclick="checkShelfSheet()">Проверить на WB</button>
     </div>
   </div>
   <div class="shelf-sheet-filters" id="shelfSheetFilters"></div>
-  <div class="shelf-sheet-status" id="shelfSheetStatus">Загрузка таблицы…</div>
+  <div class="shelf-sheet-status" id="shelfSheetStatus">Загрузка карточек…</div>
   <div id="shelfSheetRoot" style="flex:1;min-height:0;display:flex;flex-direction:column">
-    <div class="empty" style="padding:40px 20px">Открой вкладку — подтянем таблицу «База»</div>
+    <div class="empty" style="padding:40px 20px">Конкуренты сохранены на сайте. «Проверить на WB» смотрит полку на клиентском сайте.</div>
   </div>
 </div>
 
@@ -14284,35 +14291,121 @@ function renderShelfSheetPage() {
   else drawShelfSheet();
 }
 
-async function loadShelfSheet(force) {
+function applyShelfSheet(data) {
+  SHELF_SHEET = data || {dates: [], cards: [], places: [], articles: []};
+  SHELF_SHEET_LOADED = true;
+  const dates = SHELF_SHEET.dates || [];
+  if(!SHELF_SHEET_DATE || dates.indexOf(SHELF_SHEET_DATE) < 0) {
+    SHELF_SHEET_DATE = dates[dates.length - 1] || '';
+  }
+  if(!Array.isArray(SHELF_SHEET_CHOSEN) || SHELF_SHEET_CHOSEN.length !== SHELF_SHEET_ROWS) {
+    const found = [];
+    (SHELF_SHEET.places || []).forEach(p => {
+      if(p.article && found.indexOf(p.article) < 0) found.push(p.article);
+    });
+    const pool = found.concat((SHELF_SHEET.articles || []).filter(a => found.indexOf(a) < 0));
+    SHELF_SHEET_CHOSEN = Array.from({length: SHELF_SHEET_ROWS}, (_, i) => pool[i] || '');
+  }
+  drawShelfSheet();
+}
+
+async function loadShelfSheet() {
   const root = document.getElementById('shelfSheetRoot');
   const st = document.getElementById('shelfSheetStatus');
-  if(st) st.textContent = 'Загружаем таблицу…';
+  if(st) st.textContent = 'Загружаем карточки…';
   if(root && !SHELF_SHEET_LOADED) {
-    root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Читаем таблицу полок…</span></div>';
+    root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Читаем сохранённых конкурентов…</span></div>';
   }
   try {
-    const r = await fetch(`${RAILWAY_URL}/api/shelves-sheet?refresh=${force ? '1' : '0'}`);
+    const r = await fetch(`${RAILWAY_URL}/api/shelves-board`);
     const data = await r.json();
-    if(!r.ok || data.error) throw new Error(data.detail || data.error || ('HTTP ' + r.status));
-    SHELF_SHEET = data;
-    SHELF_SHEET_LOADED = true;
-    const dates = data.dates || [];
-    if(!SHELF_SHEET_DATE || dates.indexOf(SHELF_SHEET_DATE) < 0) {
-      SHELF_SHEET_DATE = dates[dates.length - 1] || '';
-    }
-    if(!Array.isArray(SHELF_SHEET_CHOSEN) || SHELF_SHEET_CHOSEN.length !== SHELF_SHEET_ROWS) {
-      const found = [];
-      (data.places || []).forEach(p => {
-        if(p.article && found.indexOf(p.article) < 0) found.push(p.article);
-      });
-      const pool = found.concat((data.articles || []).filter(a => found.indexOf(a) < 0));
-      SHELF_SHEET_CHOSEN = Array.from({length: SHELF_SHEET_ROWS}, (_, i) => pool[i] || '');
-    }
-    drawShelfSheet();
+    if(!r.ok || data.error && !(data.cards || []).length) throw new Error(data.detail || data.error || ('HTTP ' + r.status));
+    applyShelfSheet(data);
   } catch(e) {
-    if(st) st.textContent = 'Не удалось прочитать таблицу: ' + e.message;
-    if(root) root.innerHTML = '<div class="empty" style="padding:40px 20px">Таблица «База» недоступна</div>';
+    if(st) st.textContent = 'Не удалось открыть карточки: ' + e.message;
+    if(root) root.innerHTML = '<div class="empty" style="padding:40px 20px">Сохранённые конкуренты недоступны</div>';
+  }
+}
+
+async function checkShelfSheet() {
+  const btn = document.getElementById('shelfSheetCheckBtn');
+  const st = document.getElementById('shelfSheetStatus');
+  if(btn) btn.disabled = true;
+  if(st) st.textContent = 'Смотрю полки на клиентском WB…';
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/shelves-board/check`, {method: 'POST'});
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.detail || data.error || ('HTTP ' + r.status));
+    applyShelfSheet(data);
+    if(data.checked_at) SHELF_SHEET_DATE = data.checked_at;
+    drawShelfSheet();
+    if(st && data.error) st.textContent = data.error;
+    else if(st && data.warning) st.textContent = (st.textContent ? st.textContent + ' · ' : '') + data.warning;
+  } catch(e) {
+    if(st) st.textContent = 'WB не открылся: ' + e.message;
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+
+async function addShelfSheetCompetitor() {
+  const input = document.getElementById('shelfSheetNm');
+  const nm = String((input && input.value) || '').replace(/\D/g, '');
+  if(!nm) return;
+  const st = document.getElementById('shelfSheetStatus');
+  if(st) st.textContent = 'Добавляю ' + nm + '…';
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/shelves-board/competitors`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({nm: Number(nm)}),
+    });
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.detail || data.error || ('HTTP ' + r.status));
+    if(input) input.value = '';
+    applyShelfSheet(data);
+  } catch(e) {
+    if(st) st.textContent = 'Не добавил: ' + e.message;
+  }
+}
+
+async function uploadShelfSheetPhotos(files) {
+  const list = Array.from(files || []);
+  const input = document.getElementById('shelfSheetPhotos');
+  if(input) input.value = '';
+  if(!list.length) return;
+  const st = document.getElementById('shelfSheetStatus');
+  if(st) st.textContent = 'Смотрю имена файлов…';
+  const body = new FormData();
+  list.forEach(file => body.append('files', file, file.webkitRelativePath || file.name));
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/shelves-board/photos`, {method: 'POST', body});
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.detail || data.error || ('HTTP ' + r.status));
+    applyShelfSheet(data);
+    const added = (data.added || []).length;
+    const skipped = (data.skipped || []).length;
+    if(st) {
+      st.textContent = `Из папки добавил ${added}` + (skipped ? `. Пропустил ${skipped}: в имени файла нет артикула WB` : '');
+    }
+  } catch(e) {
+    if(st) st.textContent = 'Папка не разобралась: ' + e.message;
+  }
+}
+
+async function removeShelfSheetCompetitor(nm) {
+  const st = document.getElementById('shelfSheetStatus');
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/shelves-board/remove`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({nm: Number(nm)}),
+    });
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.detail || data.error || ('HTTP ' + r.status));
+    applyShelfSheet(data);
+  } catch(e) {
+    if(st) st.textContent = 'Не убрал: ' + e.message;
   }
 }
 
@@ -14360,10 +14453,14 @@ function drawShelfSheet() {
   const options = '<option value="">—</option>' + (data.articles || []).map(a =>
     `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`
   ).join('');
-  const head = cards.map(c =>
-    `<th class="card"><img alt="" src="${escapeHtml(c.photo || '')}" /><div class="brand">${escapeHtml(c.brand || '')}</div>` +
-    `<a class="nm" href="${escapeHtml(c.link || '#')}" target="_blank" rel="noopener">${escapeHtml(c.nm)}</a></th>`
-  ).join('');
+  const head = cards.map(c => {
+    const photo = c.photo || (typeof wbThumbUrl === 'function' ? wbThumbUrl(c.nm) : '');
+    const fallback = typeof wbThumbUrl === 'function' ? wbThumbUrl(c.nm) : '';
+    return `<th class="card"><img alt="" src="${escapeHtml(photo)}" ${fallback ? `data-fallback="${escapeHtml(fallback)}"` : ''} />` +
+      `<div class="brand">${escapeHtml(c.brand || '')}</div>` +
+      `<a class="nm" href="${escapeHtml(c.link || '#')}" target="_blank" rel="noopener">${escapeHtml(c.nm)}</a>` +
+      `<button type="button" class="x" data-nm="${escapeHtml(c.nm)}" title="Убрать карточку">×</button></th>`;
+  }).join('');
   const body = (SHELF_SHEET_CHOSEN || []).map((article, i) => {
     const cells = cards.map(c => {
       const place = shelfSheetPlace(c.nm, article);
@@ -14382,11 +14479,20 @@ function drawShelfSheet() {
         drawShelfSheet();
       };
     });
+    root.querySelectorAll('button.x').forEach(btn => {
+      btn.onclick = () => removeShelfSheetCompetitor(btn.dataset.nm);
+    });
+    root.querySelectorAll('th.card img').forEach(img => {
+      img.onerror = () => {
+        const next = img.dataset.fallback;
+        if(next && img.src !== next) img.src = next;
+      };
+    });
   }
   const st = document.getElementById('shelfSheetStatus');
   if(st) {
     const nPlaces = (data.places || []).filter(p => p.date === SHELF_SHEET_DATE).length;
-    st.textContent = `${cards.length} карточек на экране · ${nPlaces} мест на ${SHELF_SHEET_DATE || '—'} · зелёное — топ-15, жёлтое — до 40`;
+    st.textContent = `${cards.length} карточек на сайте · ${nPlaces} мест на ${SHELF_SHEET_DATE || '—'} · зелёное — топ-15, жёлтое — до 40`;
   }
 }
 
