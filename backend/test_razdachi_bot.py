@@ -59,8 +59,9 @@ class RazdachiBotTest(unittest.TestCase):
         self.assertIn("Юзернейм не приму", latin[0]["text"])
         hello = say(self.store, self.sessions, 1, "Босс")
         self.assertEqual(hello[0]["text"], "Привет, Босс.")
-        self.assertIn("Новая раздача", reply_labels(hello[0]["markup"]))
-        self.assertIn("Кто раздал", reply_labels(hello[0]["markup"]))
+        self.assertEqual(reply_labels(hello[0]["markup"]), [
+            "Доска", "Кто раздал", "Новая раздача", "Команда", "Закрытые", "Имя",
+        ])
 
     def test_marker_has_no_setter_buttons(self):
         hello = self.join(2, "Маша")
@@ -77,16 +78,23 @@ class RazdachiBotTest(unittest.TestCase):
         tap(self.store, self.sessions, 1, "ch:c")
         say(self.store, self.sessions, 1, "1421308560")
         preview = say(self.store, self.sessions, 1, "3")
-        self.assertIn("Проверь и поставь на доску.", preview[0]["text"])
-        self.assertIn("Через конкурента: 1421308560", preview[0]["text"])
+        self.assertTrue(preview[0]["text"].startswith("Новая раздача\n048 блэк\n"))
+        self.assertIn("catalog/2219327613", preview[0]["text"])
+        self.assertIn("Через конкурента: ", preview[0]["text"])
+        self.assertIn("catalog/1421308560", preview[0]["text"])
+        self.assertIn("План 3 · пока 0", preview[0]["text"])
         self.assertIn("От: Босс", preview[0]["text"])
-        self.assertIn("Поставить", labels(preview[0]["markup"]))
-        tap(self.store, self.sessions, 1, "post", message_id=20)
+        self.assertEqual(labels(preview[0]["markup"]), ["Поставить", "Отмена"])
+        posted = tap(self.store, self.sessions, 1, "post", message_id=20)
         task = self.store.tasks[0]
         self.assertEqual(bot.board_line(task), "048 блэк 0/3 конк. 1421308560")
         self.assertIn("Пока никто не отметил", bot.card_text(task))
+        edited = next(item for item in posted if item["op"] == "edit")
+        self.assertEqual(labels(edited["markup"]), ["Открыть"])
+        self.assertIn("План 3 · пока 0", edited["text"])
         board = say(self.store, self.sessions, 1, "Доска")
-        self.assertEqual(labels(board[0]["markup"]), ["048 блэк 0/3 конк. 1421308560"])
+        self.assertTrue(board[0]["text"].startswith("Новая раздача"))
+        self.assertEqual(labels(board[0]["markup"]), ["Открыть"])
 
     def test_keyword_line_and_broadcast_to_marker(self):
         self.join(2, "Маша")
@@ -103,9 +111,12 @@ class RazdachiBotTest(unittest.TestCase):
         chats = [item["chat_id"] for item in posted if item["op"] == "send"]
         self.assertIn(2, chats)
         marker = next(item for item in posted if item["op"] == "send" and item["chat_id"] == 2)
-        self.assertIn("Я раздала", labels(marker["markup"]))
-        self.assertNotIn("Закрыть", labels(marker["markup"]))
-        boss = next(item for item in posted if item["op"] == "edit")
+        self.assertEqual(labels(marker["markup"]), ["Открыть"])
+        self.assertIn("По ключу: смарт часы женские", marker["text"])
+        self.assertIn("План 3 · пока 0", marker["text"])
+        opened = tap(self.store, self.sessions, 1, f"card:{task['id']}")
+        boss = next(item for item in opened if item["op"] == "send")
+        self.assertIn("Я раздала", labels(boss["markup"]))
         self.assertIn("Закрыть", labels(boss["markup"]))
         self.assertIn("Удалить", labels(boss["markup"]))
 
@@ -123,6 +134,8 @@ class RazdachiBotTest(unittest.TestCase):
         tap(self.store, self.sessions, 2, f"give:{task_id}")
         added = tap(self.store, self.sessions, 2, f"add:{task_id}:2")
         self.assertTrue(any("Записал" in item["text"] for item in added))
+        self.assertTrue(any(item["text"].startswith("Маша · +2 шт") for item in added))
+        self.assertTrue(any("План 3 · раздали 2 · ещё 1" in item["text"] for item in added))
         self.assertEqual(bot.total_qty(self.store.tasks[0]), 2)
         again = tap(self.store, self.sessions, 2, f"add:{task_id}:2")
         self.assertTrue(any(item["text"] == "В плане 3. Больше не записываю." for item in again))
@@ -184,7 +197,10 @@ class RazdachiBotTest(unittest.TestCase):
         tap(self.store, self.sessions, 1, f"close:{task_id}")
         self.assertEqual(self.store.tasks[0]["status"], "closed")
         closed = say(self.store, self.sessions, 1, "Закрытые")
-        self.assertIn("048 блэк 1/2", labels(closed[0]["markup"])[0])
+        self.assertTrue(closed[0]["text"].startswith("Закрыта"))
+        self.assertIn("048 блэк", closed[0]["text"])
+        self.assertIn("План 2 · раздали 1 · ещё 1", closed[0]["text"])
+        self.assertEqual(labels(closed[0]["markup"]), ["Открыть"])
         tap(self.store, self.sessions, 1, f"back:{task_id}")
         self.assertEqual(self.store.tasks[0]["status"], "open")
 
@@ -206,6 +222,13 @@ class RazdachiBotTest(unittest.TestCase):
             loaded = bot.Store(__import__("json").loads(raw))
             self.assertEqual(loaded.user(1)["name"], "Босс")
             self.assertEqual(bot.board_line(loaded.tasks[0]), "048 блэк 0/3 конк. 1421308560")
+
+    def test_new_button_asks_name_then_title(self):
+        asked = say(self.store, self.sessions, 7, "Новая раздача")
+        self.assertIn("Босс", asked[0]["text"])
+        followed = say(self.store, self.sessions, 7, "Босс")
+        self.assertTrue(any("Своё название" in item["text"] for item in followed))
+        self.assertEqual(self.sessions[7]["step"], "title")
 
     def test_team_lists_roles(self):
         self.join(1, "Босс")

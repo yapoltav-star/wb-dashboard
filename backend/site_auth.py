@@ -15,7 +15,7 @@ COOKIE = "wb_dash"
 TTL_SEC = 30 * 24 * 3600
 FAIL_WINDOW = 15 * 60
 FAIL_MAX = 8
-PUBLIC = {"/api/login", "/api/logout"}
+PUBLIC = {"/api/login", "/api/logout", "/api/razdachi-webhook"}
 
 _fails: dict[str, list[float]] = defaultdict(list)
 
