@@ -15668,6 +15668,153 @@ def _crm_find_employee(employees: list, aliases: tuple) -> dict | None:
     return None
 
 
+RAZDACHI_BOT_USERNAME = "razdachi_team_bot"
+RAZDACHI_CHAT_ID = (os.getenv("RAZDACHI_CHAT_ID") or "").strip()
+
+
+def razdachi_task_text(
+    *,
+    kind: str,
+    own_vc: str,
+    own_nm: int,
+    competitor_nm: int,
+    comp_brand: str = "",
+    comp_name: str = "",
+) -> str:
+    """Текст задачи, который уходит в @razdachi_team_bot."""
+    if kind == "cart_warmup":
+        head = (
+            f'Прогрев корзинами "{own_vc}" и {own_nm}, '
+            f'через этого конкурента "{competitor_nm}".'
+        )
+        extra = "Класть в корзину, как на выкупах."
+    else:
+        head = (
+            f'Раздача "{own_vc}" и {own_nm}, '
+            f'через этого конкурента "{competitor_nm}".'
+        )
+        extra = "Раздача через этого конкурента."
+    comp_bits = []
+    if comp_brand:
+        comp_bits.append(comp_brand)
+    if comp_name:
+        comp_bits.append(comp_name)
+    comp_bits.append(str(competitor_nm))
+    return "\n".join([
+        head,
+        extra,
+        f"Наш: {own_vc}",
+        f"https://www.wildberries.ru/catalog/{own_nm}/detail.aspx",
+        "Конкурент: " + " · ".join(comp_bits),
+        f"https://www.wildberries.ru/catalog/{competitor_nm}/detail.aspx",
+    ])
+
+
+def razdachi_open_url(text: str) -> str:
+    from urllib.parse import quote
+    return f"https://t.me/{RAZDACHI_BOT_USERNAME}?text={quote(text or '', safe='')}"
+
+
+def _razdachi_try_send(text: str) -> dict:
+    """Если задан RAZDACHI_CHAT_ID, шлём текст ботом дашборда в этот чат.
+    В личку @razdachi_team_bot бот писать не может — тогда кнопка открывает черновик.
+    """
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat = RAZDACHI_CHAT_ID
+    if not token or not chat:
+        return {"delivered": False, "reason": "нет RAZDACHI_CHAT_ID"}
+    try:
+        resp = httpx.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": chat,
+                "text": (text or "")[:4000],
+                "disable_web_page_preview": True,
+            },
+            timeout=20,
+        )
+        data = {}
+        try:
+            data = resp.json() or {}
+        except Exception:
+            data = {}
+        if resp.is_success and data.get("ok"):
+            mid = (data.get("result") or {}).get("message_id")
+            return {"delivered": True, "message_id": mid}
+        desc = data.get("description") or f"HTTP {resp.status_code}"
+        return {"delivered": False, "reason": str(desc)[:200]}
+    except Exception as e:
+        return {"delivered": False, "reason": str(e)[:200]}
+
+
+@app.post("/api/razdachi-task")
+async def razdachi_task(request: dict):
+    """Задача с полки конкурента в @razdachi_team_bot.
+
+    Body: {kind?: shelf|cart_warmup, own_vendor_code, own_nm_id,
+           competitor_nm_id, competitor_brand?, competitor_name?}
+    """
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=400, detail="invalid body")
+    kind = str(request.get("kind") or "shelf").strip().lower()
+    if kind not in ("shelf", "cart_warmup"):
+        return {"ok": False, "error": "kind: shelf или cart_warmup"}
+    own_vc = str(request.get("own_vendor_code") or "").strip()
+    try:
+        own_nm = int(request.get("own_nm_id"))
+        competitor_nm = int(request.get("competitor_nm_id"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "нужны own_nm_id и competitor_nm_id"}
+    if not own_vc:
+        own_vc = str(own_nm)
+    if own_nm < 1 or competitor_nm < 1:
+        return {"ok": False, "error": "некорректные nm_id"}
+    comp_brand = str(request.get("competitor_brand") or "").strip()
+    comp_name = str(request.get("competitor_name") or "").strip()
+    text = razdachi_task_text(
+        kind=kind,
+        own_vc=own_vc,
+        own_nm=own_nm,
+        competitor_nm=competitor_nm,
+        comp_brand=comp_brand,
+        comp_name=comp_name,
+    )
+    sent_tg = _razdachi_try_send(text)
+    try:
+        rec = _crm_sent_record(
+            "razdachi",
+            kind,
+            own_nm,
+            competitor_nm,
+            sent_tg.get("message_id"),
+            "@" + RAZDACHI_BOT_USERNAME,
+        )
+    except Exception as e:
+        logger.warning(f"razdachi sent record: {e}")
+        rec = {
+            "key": _crm_sent_key("razdachi", kind, own_nm, competitor_nm),
+            "manager": "razdachi",
+            "kind": kind,
+            "own_nm_id": own_nm,
+            "competitor_nm_id": competitor_nm,
+            "task_id": sent_tg.get("message_id"),
+            "assignee_name": "@" + RAZDACHI_BOT_USERNAME,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+    return {
+        "ok": True,
+        "delivered": bool(sent_tg.get("delivered")),
+        "text": text,
+        "open_url": razdachi_open_url(text),
+        "bot": "@" + RAZDACHI_BOT_USERNAME,
+        "task_id": sent_tg.get("message_id"),
+        "assignee_name": "@" + RAZDACHI_BOT_USERNAME,
+        "notify_error": None if sent_tg.get("delivered") else sent_tg.get("reason"),
+        "kind": kind,
+        "sent": rec,
+    }
+
+
 @app.post("/api/crm-shelf-boost-task")
 async def crm_shelf_boost_task(request: dict):
     """Создать в Team CRM задачу на менеджера.
