@@ -232,6 +232,30 @@ class RazdachiBotTest(unittest.TestCase):
         self.assertTrue(any("Своё название" in item["text"] for item in followed))
         self.assertEqual(self.sessions[7]["step"], "title")
 
+    def test_shelf_button_posts_competitor_card(self):
+        self.join(2, "Маша")
+        self.join(1, "Босс")
+        bot._STORE = self.store
+        try:
+            result = bot.publish_competitor_task(
+                title="048 блэк",
+                nm="2219327613",
+                competitor_nm="1421308560",
+                plan=3,
+            )
+        finally:
+            bot._STORE = None
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["line"], "048 блэк 0/3 конк. 1421308560")
+        self.assertEqual(result["sent"], 2)
+        task = self.store.tasks[0]
+        self.assertEqual(task["channel"], "competitor")
+        self.assertEqual(task["setter"], "Босс")
+        self.assertIn("Пока никто не отметил", bot.posted_text(task))
+        self.assertEqual(bot.publish_competitor_task(
+            title="", nm="2219327613", competitor_nm="1421308560", plan=3,
+        )["ok"], False)
+
     def test_team_lists_roles(self):
         self.join(1, "Босс")
         self.join(2, "Маша")

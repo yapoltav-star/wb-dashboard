@@ -17858,6 +17858,18 @@ try:
             razdachi_bot.handle_webhook(update)
         return {"ok": True}
 
+    @app.post("/api/razdachi-from-shelf")
+    async def razdachi_from_shelf(request: dict):
+        """Кнопка «Новая раздача» на полке конкурента. Та же карточка, что в боте."""
+        if not isinstance(request, dict):
+            raise HTTPException(status_code=400, detail="invalid body")
+        return razdachi_bot.publish_competitor_task(
+            title=str(request.get("title") or request.get("own_vendor_code") or ""),
+            nm=str(request.get("nm_id") or request.get("own_nm_id") or ""),
+            competitor_nm=str(request.get("competitor_nm_id") or ""),
+            plan=request.get("plan") or 0,
+        )
+
     razdachi_bot.start()
 
     @app.get("/api/razdachi-bot-status")

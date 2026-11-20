@@ -13497,6 +13497,7 @@ function shelfSuggestItemRow(t, compNm, compBrand, compName, opts) {
       <button class="filter-btn" onclick="copyShelfNm(${t.nm_id})" style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Скопировать nmID">копир.</button>
       <a href="${wbCatalogUrl(t.nm_id)}" target="_blank" rel="noopener"
         style="font-size:11px;color:var(--wb-purple);flex-shrink:0">WB</a>
+      <button class="filter-btn" onclick="sendShelfRazdacha('${vcJs}',${t.nm_id},${compNm},this)" style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Новая раздача через этого конкурента">Новая раздача</button>
       ${shelfTaskBtnHtml('afina','shelf','Афине','Задача в CRM: прокачать полки',vcJs,t.nm_id,compNm,compBrand,compName)}
       ${shelfTaskBtnHtml('zaira','shelf','Заире','Задача в CRM: прокачать полки',vcJs,t.nm_id,compNm,compBrand,compName)}
       ${shelfTaskBtnHtml('olga','shelf','Ольге','Задача в CRM: прокачать полки (раздача)',vcJs,t.nm_id,compNm,compBrand,compName)}
@@ -13628,6 +13629,49 @@ function removeShelfSuggestArticle(nmId) {
   const list = shelfSuggestAddedList(SHELF_ACTIVE).filter(x => Number(x.nm_id) !== Number(nmId));
   saveShelfSuggestAdded(SHELF_ACTIVE, list);
   refreshShelfSuggestPanel();
+}
+
+async function sendShelfRazdacha(ownVendor, ownNm, competitorNm, btn) {
+  if(!ownNm || !competitorNm) {
+    alert('Нет артикулов для раздачи');
+    return;
+  }
+  const title = ownVendor || String(ownNm);
+  const raw = prompt('Новая раздача «' + title + '» через конкурента ' + competitorNm + '.\nСколько штук в плане?', '3');
+  if(raw == null) return;
+  const plan = parseInt(String(raw).trim(), 10);
+  if(!plan || plan < 1) {
+    alert('Напиши число штук, например 3.');
+    return;
+  }
+  const prev = btn ? btn.textContent : '';
+  if(btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/razdachi-from-shelf`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        title,
+        nm_id: ownNm,
+        competitor_nm_id: competitorNm,
+        plan,
+        setter: 'Босс',
+      }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok || !d.ok) {
+      alert(d.error || 'Не поставил раздачу');
+      return;
+    }
+    if(btn) btn.textContent = '✓ Новая раздача';
+    const where = d.sent ? ('В телеграм: ' + d.sent) : 'На доске. В телеграм уйдёт после /start.';
+    alert('Поставил.\n' + (d.line || '') + '\n' + where);
+  } catch(e) {
+    alert('Не поставил раздачу');
+  } finally {
+    if(btn) btn.disabled = false;
+    if(btn && btn.textContent === '…') btn.textContent = prev;
+  }
 }
 
 async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, competitorBrand, competitorName, btn, kind) {

@@ -1315,6 +1315,57 @@ def status() -> dict:
     }
 
 
+def publish_competitor_task(
+    *,
+    title: str,
+    nm: str,
+    competitor_nm: str,
+    plan: int,
+    setter: str = "Босс",
+) -> dict:
+    """Карточка «Через конкурента» с сайта: та же доска, что у кнопки «Поставить»."""
+    if _STORE is None:
+        return {"ok": False, "error": "Бот раздач не запущен. Нужен RAZDACHI_BOT_TOKEN."}
+    title = " ".join(str(title or "").split())
+    nm = parse_nm(str(nm or "")) or (str(nm or "").strip() if re.fullmatch(r"\d{6,12}", str(nm or "").strip()) else "")
+    competitor_nm = parse_nm(str(competitor_nm or "")) or (
+        str(competitor_nm or "").strip() if re.fullmatch(r"\d{6,12}", str(competitor_nm or "").strip()) else ""
+    )
+    try:
+        plan = int(plan)
+    except (TypeError, ValueError):
+        plan = 0
+    if not title:
+        return {"ok": False, "error": "Нужно своё название."}
+    if not nm or not competitor_nm:
+        return {"ok": False, "error": "Нужны артикул и артикул конкурента."}
+    if plan < 1 or plan > PLAN_MAX:
+        return {"ok": False, "error": "Напиши число штук, например 3."}
+    with _LOCK:
+        task = _STORE.create_task(
+            chat_id=0,
+            name=setter,
+            draft={
+                "title": title[:80],
+                "nm": nm,
+                "channel": "competitor",
+                "query": competitor_nm,
+                "plan": plan,
+            },
+        )
+        text = posted_text(task, "Новая раздача")
+        actions = [
+            send(int(user["chat_id"]), text, card_markup(task, user.get("name") or ""), remember=task["id"])
+            for user in _STORE.users.values()
+        ]
+        task_id = task["id"]
+        line = board_line(task)
+    token = _token()
+    if token and actions:
+        _apply(token, _STORE, {}, actions)
+    return {"ok": True, "id": task_id, "sent": len(actions), "line": line}
+
+
 def start() -> bool:
     global _STARTED, _STORE, _MODE
     if os.environ.get("RAZDACHI_START_DONE") == "1":
