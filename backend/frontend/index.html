@@ -13639,8 +13639,16 @@ async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, compe
       if(btn) { btn.disabled = false; btn.textContent = prev; }
       return;
     }
-    if(d.reason === 'no_chats') {
-      alert('Бот уже в дашборде. Пусть команда напишет @razdachi_team_bot любое сообщение — после этого задачи будут приходить туда сами.');
+    if(d.reason === 'no_chats' && d.open_url) {
+      try {
+        if(d.text && navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(d.text);
+        }
+      } catch(e) {}
+      const w = window.open(d.open_url, '_blank', 'noopener');
+      alert(w
+        ? `Открыл ${who}. Текст уже в поле — отправь его сам, бот примет сообщение как раньше.`
+        : `Текст задачи скопирован. Открой ${who} и отправь его.`);
       if(btn) { btn.disabled = false; btn.textContent = prev; }
       return;
     }
