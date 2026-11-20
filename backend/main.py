@@ -10037,6 +10037,18 @@ WB_PRODUCTS_CACHE = {
 }
 
 
+def _catalog_comparison_add(slot, day, today, qty):
+    """Completed Moscow calendar days; today is excluded from both windows."""
+    age = (today - day).days
+    comparisons = slot.setdefault("comparisons", {})
+    for days in (1, 2, 3, 7, 28):
+        period = comparisons.setdefault(str(days), {"current": 0, "previous": 0})
+        if 1 <= age <= days:
+            period["current"] += qty
+        elif days < age <= days * 2:
+            period["previous"] += qty
+
+
 def _fetch_orders_sales_periods_fast() -> dict:
     """Только Supabase article_daily_stats (без медленного Statistics API)."""
     now = _msk_now()
@@ -10046,16 +10058,23 @@ def _fetch_orders_sales_periods_fast() -> dict:
     start_28 = today - timedelta(days=27)
     out = {}
     try:
-        dt_from = start_28.isoformat()
-        resp = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/article_daily_stats"
-            f"?dt=gte.{dt_from}&select=nm_id,dt,orders&limit=50000",
-            headers=sb_headers(),
-            timeout=30,
-        )
-        rows = resp.json() if resp.is_success else []
-        if not isinstance(rows, list):
-            return out
+        dt_from = (today - timedelta(days=56)).isoformat()
+        rows = []
+        offset = 0
+        while True:
+            resp = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/article_daily_stats"
+                f"?dt=gte.{dt_from}&select=nm_id,dt,orders&order=dt,nm_id&limit=1000&offset={offset}",
+                headers=sb_headers(), timeout=30,
+            )
+            resp.raise_for_status()
+            page = resp.json()
+            if not isinstance(page, list):
+                raise ValueError("Invalid daily statistics response")
+            rows.extend(page)
+            if len(page) < 1000:
+                break
+            offset += len(page)
         for row in rows:
             try:
                 nm = int(row.get("nm_id"))
@@ -10069,6 +10088,7 @@ def _fetch_orders_sales_periods_fast() -> dict:
             if qty <= 0:
                 continue
             slot = out.setdefault(nm, {"yesterday": 0, "d7": 0, "d28": 0})
+            _catalog_comparison_add(slot, d, today, qty)
             if d == yest:
                 slot["yesterday"] += qty
             if start_7 <= d <= today:
@@ -10095,7 +10115,7 @@ def _fetch_orders_sales_periods() -> dict:
     if not WB_TOKEN:
         return out
     try:
-        date_from = start_28.strftime("%Y-%m-%dT00:00:00")
+        date_from = (today - timedelta(days=56)).strftime("%Y-%m-%dT00:00:00")
         orders = fetch_supplier_feed("/api/v1/supplier/orders", date_from, max_pages=5)
         for o in orders or []:
             nm = o.get("nmId")
@@ -10109,9 +10129,10 @@ def _fetch_orders_sales_periods() -> dict:
             if d is None:
                 continue
             day = d.date() if hasattr(d, "date") else d
-            if day < start_28 or day > today:
+            if day < today - timedelta(days=56) or day > today:
                 continue
             slot = out.setdefault(nm, {"yesterday": 0, "d7": 0, "d28": 0})
+            _catalog_comparison_add(slot, day, today, 1)
             if day == yest:
                 slot["yesterday"] += 1
             if start_7 <= day <= today:
@@ -10251,6 +10272,10 @@ def build_wb_products_catalog(sales_by_nm: dict | None = None) -> dict:
             "warehouse_count": len(wh_list),
             "warehouses": wh_list,
             "channels": channels,
+            "sales_comparisons": sales.get("comparisons") or (
+                {str(days): {"current": 0, "previous": 0} for days in (1, 2, 3, 7, 28)}
+                if any(v.get("comparisons") for v in sales_norm.values()) else {}
+            ),
             "sales_yesterday": int(sales.get("yesterday") or 0),
             "sales_7d": int(sales.get("d7") or 0),
             "sales_28d": int(sales.get("d28") or 0),
@@ -10313,7 +10338,7 @@ def refresh_wb_products_catalog(sync_sources: bool = False):
                 logger.error(f"wb-products sales: {e}")
         elif not WB_PRODUCTS_CACHE.get("sales_by_nm"):
             try:
-                sales = _fetch_orders_sales_periods_fast()
+                sales = _fetch_orders_sales_periods()
                 WB_PRODUCTS_CACHE["sales_by_nm"] = sales
                 if sales:
                     WB_PRODUCTS_CACHE["sales_updated_at"] = _msk_now().strftime("%d.%m.%Y %H:%M")

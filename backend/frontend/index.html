@@ -1267,14 +1267,17 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
     <button class="filter-btn" id="wbProdFltFbs" onclick="setWbProdFilter('fbs')">FBS</button>
     <span style="width:1px;height:22px;background:var(--wb-border);margin:0 4px"></span>
     <span style="font-size:12px;color:var(--wb-muted)">Продажи:</span>
-    <button class="filter-btn" id="wbProdSales1" onclick="setWbProdSalesPeriod('1')">Вчера</button>
-    <button class="filter-btn on" id="wbProdSales7" onclick="setWbProdSalesPeriod('7')">7 дн</button>
+    <button class="filter-btn on" id="wbProdSales1" onclick="setWbProdSalesPeriod('1')">Вчера</button>
+    <button class="filter-btn" id="wbProdSales2" onclick="setWbProdSalesPeriod('2')">2 дня</button>
+    <button class="filter-btn" id="wbProdSales3" onclick="setWbProdSalesPeriod('3')">3 дня</button>
+    <button class="filter-btn" id="wbProdSales7" onclick="setWbProdSalesPeriod('7')">7 дн</button>
     <button class="filter-btn" id="wbProdSales28" onclick="setWbProdSalesPeriod('28')">28 дн</button>
     <span id="wbProdInfo" style="font-size:12px;color:var(--wb-muted);margin-left:8px"></span>
     <div class="ml-auto">
       <button class="action-btn primary" id="wbProdSyncBtn" onclick="triggerWbProductsSync()">↻ Обновить товары</button>
     </div>
   </div>
+  <div id="wbProdCompareDates" class="section-sub" style="margin-bottom:12px"></div>
   <div class="cards" id="wbProdCards"></div>
   <div id="wbProdRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить товары» — подтянем цены, остатки и продажи</div></div>
 </div>
@@ -2270,7 +2273,7 @@ function showSection(sec, btn, updateHistory = true) {
 let WB_PRODUCTS = {products: [], syncing: false, error: null};
 let WB_PRODUCTS_LOADED = false;
 let WB_PROD_FILTER = 'all';
-let WB_PROD_SALES_PERIOD = '7'; // 1 = вчера, 7, 28
+let WB_PROD_SALES_PERIOD = '1'; // Completed days, compared with the preceding equal window
 let wbProdPoll = null;
 
 function setWbProdFilter(f) {
@@ -2285,23 +2288,37 @@ function setWbProdFilter(f) {
 
 function setWbProdSalesPeriod(p) {
   WB_PROD_SALES_PERIOD = String(p);
-  ['1','7','28'].forEach(k => {
+  ['1','2','3','7','28'].forEach(k => {
     const el = document.getElementById('wbProdSales' + k);
     if(el) el.classList.toggle('on', k === WB_PROD_SALES_PERIOD);
   });
   drawWbProducts();
 }
 
-function wbProdSalesOf(p) {
-  if(WB_PROD_SALES_PERIOD === '1') return Number(p.sales_yesterday || 0);
-  if(WB_PROD_SALES_PERIOD === '28') return Number(p.sales_28d || 0);
-  return Number(p.sales_7d || 0);
+function wbProdComparison(p) {
+  return (p.sales_comparisons || {})[WB_PROD_SALES_PERIOD] || null;
 }
-
+function wbProdSalesOf(p) {
+  return wbProdComparison(p)?.current ?? 0;
+}
 function wbProdSalesLabel() {
-  if(WB_PROD_SALES_PERIOD === '1') return 'Продажи · вчера';
-  if(WB_PROD_SALES_PERIOD === '28') return 'Продажи · 28 дн';
-  return 'Продажи · 7 дн';
+  return WB_PROD_SALES_PERIOD === '1' ? 'Заказы · вчера' : `Заказы · ${WB_PROD_SALES_PERIOD} дн`;
+}
+function wbProdChangeHtml(current, previous) {
+  if(current == null || previous == null) return '—';
+  if(!previous) return current ? 'Новые заказы' : '0%';
+  const change = (current - previous) / previous * 100;
+  return `<span style="color:${change > 0 ? 'var(--green)' : change < 0 ? 'var(--red)' : 'var(--wb-muted)'}">${change > 0 ? '+' : ''}${change.toLocaleString('ru-RU', {maximumFractionDigits:1})}%</span>`;
+}
+function wbProdComparisonDates() {
+  const today = new Intl.DateTimeFormat('sv-SE', {timeZone:'Europe/Moscow'}).format(new Date());
+  const days = Number(WB_PROD_SALES_PERIOD);
+  const date = offset => {
+    const d = new Date(today + 'T12:00:00Z');
+    d.setUTCDate(d.getUTCDate() - offset);
+    return d.toLocaleDateString('ru-RU', {timeZone:'UTC'});
+  };
+  return `${date(days)} — ${date(1)} сравниваем с ${date(days * 2)} — ${date(days + 1)} · полные дни, МСК`;
 }
 
 async function triggerWbProductsSync() {
@@ -2395,6 +2412,8 @@ function drawWbProducts() {
     return (b.stock || 0) - (a.stock || 0);
   });
 
+  const dates = document.getElementById('wbProdCompareDates');
+  if(dates) dates.textContent = wbProdComparisonDates();
   const all = WB_PRODUCTS.products || [];
   const withStock = all.filter(p => (p.stock || 0) > 0).length;
   const withPrice = all.filter(p => p.client_price != null).length;
@@ -2404,7 +2423,7 @@ function drawWbProducts() {
       ['Товаров', fmt(all.length)],
       ['В наличии', fmt(withStock)],
       ['С ценой покупателя', fmt(withPrice)],
-      [wbProdSalesLabel(), fmt(salesSum)],
+      [wbProdSalesLabel(), rows.some(p => wbProdComparison(p)) ? fmt(salesSum) : '—'],
     ].map(([l,v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v">${v}</div></div>`).join('');
   }
 
@@ -2419,7 +2438,8 @@ function drawWbProducts() {
     const price = p.client_price != null
       ? `${fmt(Math.round(Number(p.client_price)))} ₽`
       : '<span style="color:var(--wb-faint)">—</span>';
-    const sales = wbProdSalesOf(p);
+    const comparison = wbProdComparison(p);
+    const sales = comparison ? fmt(comparison.current) : '—';
     const ch = (p.channels || []).map(c =>
       `<span class="wb-ch${c === 'FBS' ? ' fbs' : ''}">${c}</span>`
     ).join('') || '<span style="color:var(--wb-faint)">—</span>';
@@ -2435,7 +2455,9 @@ function drawWbProducts() {
         <a class="wb-prod-art" href="${url}" target="_blank" rel="noopener">${art}</a>
         ${sub}
       </td>
-      <td class="num" style="font-weight:700">${fmt(sales)}</td>
+      <td class="num" style="font-weight:700">${sales}</td>
+      <td class="num">${comparison ? fmt(comparison.previous) : '—'}</td>
+      <td class="num">${wbProdChangeHtml(comparison?.current, comparison?.previous)}</td>
       <td class="num">${price}</td>
       <td class="num">${wbProdStockTipHtml(p)}</td>
       <td>${ch}</td>
@@ -2448,6 +2470,8 @@ function drawWbProducts() {
         <th></th>
         <th>Артикул</th>
         <th class="num">${wbProdSalesLabel()}</th>
+        <th class="num">Предыдущий период</th>
+        <th class="num">Изменение, %</th>
         <th class="num">Цена покупателя</th>
         <th class="num">Остаток</th>
         <th>Канал</th>
