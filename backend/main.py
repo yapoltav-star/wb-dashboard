@@ -15815,9 +15815,7 @@ def _razdachi_send_one(chat_id: int, text: str) -> dict:
 
 
 def _razdachi_try_send(text: str) -> dict:
-    """Шлёт задачу от @razdachi_team_bot в известные чаты.
-    Входящие сообщения бота дашборд не читает: писать ему можно как раньше.
-    """
+    """Шлёт задачу от @razdachi_team_bot тем, кто ему уже написал, и в чаты из RAZDACHI_CHAT_IDS."""
     if not _razdachi_token():
         return {"delivered": False, "reason": "no_token", "sent_count": 0}
     chats = _razdachi_chat_ids()
@@ -15846,6 +15844,54 @@ def _razdachi_try_send(text: str) -> dict:
         "sent_count": 0,
         "error": "; ".join(errors)[:200],
     }
+
+
+def _razdachi_poll_loop():
+    """@razdachi_team_bot живёт в этом же процессе. Кто напишет боту — получит задачи с полок."""
+    if not _razdachi_token():
+        return
+    try:
+        _razdachi_api("deleteWebhook", {"drop_pending_updates": False}, timeout=15)
+        me = _razdachi_api("getMe", timeout=15)
+        if me and me[1].get("ok"):
+            username = (me[1].get("result") or {}).get("username") or RAZDACHI_BOT_USERNAME
+            logger.info(f"razdachi: бот @{username} в дашборде")
+    except Exception as e:
+        logger.warning(f"razdachi getMe: {e}")
+    offset = None
+    backoff = 1
+    while True:
+        try:
+            payload = {"timeout": 25, "allowed_updates": ["message"]}
+            if offset is not None:
+                payload["offset"] = offset
+            got = _razdachi_api("getUpdates", payload, timeout=40)
+            backoff = 1
+            if not got:
+                time.sleep(2)
+                continue
+            resp, data = got
+            if not (resp.is_success and data.get("ok")):
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60)
+                continue
+            for upd in data.get("result") or []:
+                offset = int(upd.get("update_id") or 0) + 1
+                msg = upd.get("message") or {}
+                chat = msg.get("chat") or {}
+                if chat.get("id") is None:
+                    continue
+                _razdachi_remember_chat(chat)
+                text = str(msg.get("text") or "").strip()
+                if text.lower().startswith("/start"):
+                    _razdachi_send_one(
+                        int(chat["id"]),
+                        "Бот раздач на связи. Задачи с полок дашборда будут приходить сюда.",
+                    )
+        except Exception as e:
+            logger.warning(f"razdachi poll: {e}")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
 
 
 @app.post("/api/razdachi-task")
@@ -17954,6 +18000,8 @@ def _warm_caches_after_start():
 
 threading.Thread(target=_warm_caches_after_start, daemon=True, name="warmup").start()
 threading.Thread(target=sync_promo_calendar, daemon=True, name="promo-cal-boot").start()
+if _razdachi_token():
+    threading.Thread(target=_razdachi_poll_loop, daemon=True, name="razdachi-bot").start()
 
 
 # ---------- Телеграм-бот (только чтение) ----------
