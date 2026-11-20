@@ -41,6 +41,28 @@ body{font-family:'Inter',sans-serif;background:var(--wb-bg);color:var(--wb-text)
 .sn-item.on{color:var(--wb-purple);border-bottom-color:var(--wb-purple);font-weight:500}
 
 .page{display:none;padding:24px}.page.on{display:block}
+#page-shelf-sheet.on{padding:0;display:flex;flex-direction:column;height:calc(100vh - 92px);min-height:480px}
+#page-shelf-sheet .toolbar{margin:0;padding:12px 20px;border-bottom:1px solid var(--wb-border);background:var(--wb-surface)}
+.shelf-sheet-filters{display:flex;flex-wrap:wrap;gap:8px;padding:10px 20px;background:var(--wb-surface);border-bottom:1px solid var(--wb-border)}
+.shelf-sheet-chip{border:1px solid var(--wb-border);background:#fff;border-radius:16px;padding:4px 12px;cursor:pointer;font:inherit;font-size:12px;color:var(--wb-text)}
+.shelf-sheet-chip.on{background:var(--wb-purple);color:#fff;border-color:var(--wb-purple)}
+.shelf-sheet-status{padding:8px 20px;font-size:12px;color:var(--wb-muted);background:var(--wb-bg)}
+.shelf-sheet-wrap{flex:1;min-height:0;overflow:auto}
+table.shelf-sheet{border-collapse:separate;border-spacing:0;background:#fff;width:max-content}
+table.shelf-sheet th,table.shelf-sheet td{border-right:1px solid var(--wb-border);border-bottom:1px solid var(--wb-border);padding:0;vertical-align:top;background:#fff}
+table.shelf-sheet th.corner,table.shelf-sheet td.art{position:sticky;left:0;z-index:2;background:#fff}
+table.shelf-sheet thead th{position:sticky;top:0;z-index:3;background:#fff}
+table.shelf-sheet th.corner{left:0;z-index:4;background:var(--wb-bg);text-align:left;font-size:12px;font-weight:600;padding:8px 10px;min-width:200px}
+table.shelf-sheet th.card{width:108px;background:#fff}
+table.shelf-sheet th.card img{width:108px;height:132px;object-fit:cover;display:block;background:#f1f3f4}
+table.shelf-sheet .brand{padding:6px 8px 0;font-size:11px;color:var(--wb-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+table.shelf-sheet a.nm{display:block;padding:2px 8px 8px;color:var(--wb-purple);font-size:12px;font-weight:600;text-decoration:none}
+table.shelf-sheet td.art select{border:0;background:transparent;font:inherit;font-size:12px;padding:10px 8px;width:100%;min-width:200px}
+table.shelf-sheet td.place{text-align:center;font-variant-numeric:tabular-nums;font-size:16px;font-weight:600;min-width:72px;height:42px}
+table.shelf-sheet td.place span{display:block;padding:10px 6px}
+table.shelf-sheet td.place.good{background:#e8f8ee;color:#067647}
+table.shelf-sheet td.place.mid{background:#fff6e8;color:#b54708}
+table.shelf-sheet td.place.far{color:var(--wb-muted);font-weight:500}
 
 /* Upload banner */
 .upload-banner{background:#FFFBEB;border:1px solid #FDE68A;border-radius:var(--r);padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px;font-size:13px}
@@ -1062,6 +1084,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   <div class="sn-item on" onclick="showPage('positions',this)">Позиции в поиске</div>
   <div class="sn-item" onclick="showPage('shelves',this)">Полки у конкурентов</div>
   <div class="sn-item" onclick="showPage('my-shelves',this)">Полки у моих карточек</div>
+  <div class="sn-item" onclick="showPage('shelf-sheet',this)">Сводка полок</div>
   <div class="sn-item" onclick="showPage('rec-agg',this)">Рекомендации</div>
 </div>
 
@@ -1973,6 +1996,25 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   </div>
 </div>
 
+<!-- СВОДКА ПОЛОК: матрица из таблицы «База» -->
+<div class="page" id="page-shelf-sheet">
+  <div class="toolbar">
+    <span style="font-size:13px;font-weight:600">Сводка полок</span>
+    <span style="font-size:12px;color:var(--wb-muted);margin-left:10px">место нашего артикула на полке конкурента</span>
+    <label style="font-size:12px;color:var(--wb-muted);display:flex;align-items:center;gap:6px;margin-left:12px">Дата
+      <select id="shelfSheetDate" style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;background:#fff"></select>
+    </label>
+    <div class="ml-auto">
+      <button class="action-btn" type="button" onclick="loadShelfSheet(true)">↻ Обновить</button>
+    </div>
+  </div>
+  <div class="shelf-sheet-filters" id="shelfSheetFilters"></div>
+  <div class="shelf-sheet-status" id="shelfSheetStatus">Загрузка таблицы…</div>
+  <div id="shelfSheetRoot" style="flex:1;min-height:0;display:flex;flex-direction:column">
+    <div class="empty" style="padding:40px 20px">Открой вкладку — подтянем таблицу «База»</div>
+  </div>
+</div>
+
 <!-- РЕКОМЕНДАЦИИ: сводка «Продавец рекомендует» (настройки продавца в КТ) -->
 <div class="page" id="page-rec-agg">
   <div class="toolbar">
@@ -2439,6 +2481,7 @@ function showPage(id, btn) {
   if(id === 'positions') renderPositionsPage();
   if(id === 'shelves') renderShelvesPage();
   if(id === 'my-shelves') renderMyShelvesPage();
+  if(id === 'shelf-sheet') renderShelfSheetPage();
   if(id === 'rec-agg') renderRecAggPage();
   if(id === 'finance') renderFinance();
   if(id === 'wb-chats') loadWbChatAutoreply();
@@ -14223,6 +14266,127 @@ function drawShelfTable(data, opts) {
   if(showSuggest) {
     loadShelfShareWow(data, shares);
     syncShelfExportText();
+  }
+}
+
+// ─────────── Сводка полок (таблица «База») ───────────
+const SHELF_SHEET_ROWS = 15;
+const SHELF_SHEET_KEY = 'shelf_sheet_rows';
+let SHELF_SHEET = {dates: [], cards: [], places: [], articles: []};
+let SHELF_SHEET_BRAND = localStorage.getItem('shelf_sheet_brand') || 'smartX';
+let SHELF_SHEET_DATE = '';
+let SHELF_SHEET_CHOSEN = null;
+try { SHELF_SHEET_CHOSEN = JSON.parse(localStorage.getItem(SHELF_SHEET_KEY) || 'null'); } catch(e) { SHELF_SHEET_CHOSEN = null; }
+let SHELF_SHEET_LOADED = false;
+
+function renderShelfSheetPage() {
+  if(!SHELF_SHEET_LOADED) loadShelfSheet(false);
+  else drawShelfSheet();
+}
+
+async function loadShelfSheet(force) {
+  const root = document.getElementById('shelfSheetRoot');
+  const st = document.getElementById('shelfSheetStatus');
+  if(st) st.textContent = 'Загружаем таблицу…';
+  if(root && !SHELF_SHEET_LOADED) {
+    root.innerHTML = '<div class="loading"><div class="spinner"></div><span>Читаем таблицу полок…</span></div>';
+  }
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/shelves-sheet?refresh=${force ? '1' : '0'}`);
+    const data = await r.json();
+    if(!r.ok || data.error) throw new Error(data.detail || data.error || ('HTTP ' + r.status));
+    SHELF_SHEET = data;
+    SHELF_SHEET_LOADED = true;
+    const dates = data.dates || [];
+    if(!SHELF_SHEET_DATE || dates.indexOf(SHELF_SHEET_DATE) < 0) {
+      SHELF_SHEET_DATE = dates[dates.length - 1] || '';
+    }
+    if(!Array.isArray(SHELF_SHEET_CHOSEN) || SHELF_SHEET_CHOSEN.length !== SHELF_SHEET_ROWS) {
+      const found = [];
+      (data.places || []).forEach(p => {
+        if(p.article && found.indexOf(p.article) < 0) found.push(p.article);
+      });
+      const pool = found.concat((data.articles || []).filter(a => found.indexOf(a) < 0));
+      SHELF_SHEET_CHOSEN = Array.from({length: SHELF_SHEET_ROWS}, (_, i) => pool[i] || '');
+    }
+    drawShelfSheet();
+  } catch(e) {
+    if(st) st.textContent = 'Не удалось прочитать таблицу: ' + e.message;
+    if(root) root.innerHTML = '<div class="empty" style="padding:40px 20px">Таблица «База» недоступна</div>';
+  }
+}
+
+function shelfSheetPlace(nm, article) {
+  if(!article) return '';
+  const hit = (SHELF_SHEET.places || []).find(p => p.nm === String(nm) && p.article === article && p.date === SHELF_SHEET_DATE);
+  return hit ? String(hit.place) : '';
+}
+
+function shelfSheetPlaceClass(place) {
+  const n = Number(String(place).replace(',', '.'));
+  if(!place || !isFinite(n)) return '';
+  if(n <= 15) return ' good';
+  if(n <= 40) return ' mid';
+  return ' far';
+}
+
+function drawShelfSheet() {
+  const data = SHELF_SHEET;
+  const brands = Array.from(new Set((data.cards || []).map(c => c.brand).filter(Boolean)));
+  if(SHELF_SHEET_BRAND !== 'все' && brands.indexOf(SHELF_SHEET_BRAND) < 0) {
+    SHELF_SHEET_BRAND = brands.indexOf('smartX') >= 0 ? 'smartX' : (brands[0] || 'все');
+  }
+  const filters = document.getElementById('shelfSheetFilters');
+  if(filters) {
+    filters.innerHTML = ['все'].concat(brands).map(b =>
+      `<button type="button" class="shelf-sheet-chip${b === SHELF_SHEET_BRAND ? ' on' : ''}" data-brand="${escapeHtml(b)}">${escapeHtml(b)}</button>`
+    ).join('');
+    filters.querySelectorAll('.shelf-sheet-chip').forEach(btn => {
+      btn.onclick = () => {
+        SHELF_SHEET_BRAND = btn.dataset.brand;
+        localStorage.setItem('shelf_sheet_brand', SHELF_SHEET_BRAND);
+        drawShelfSheet();
+      };
+    });
+  }
+  const dateBox = document.getElementById('shelfSheetDate');
+  if(dateBox) {
+    dateBox.innerHTML = (data.dates || []).map(d =>
+      `<option${d === SHELF_SHEET_DATE ? ' selected' : ''}>${escapeHtml(d)}</option>`
+    ).join('');
+    dateBox.onchange = () => { SHELF_SHEET_DATE = dateBox.value; drawShelfSheet(); };
+  }
+  const cards = (data.cards || []).filter(c => SHELF_SHEET_BRAND === 'все' || c.brand === SHELF_SHEET_BRAND);
+  const options = '<option value="">—</option>' + (data.articles || []).map(a =>
+    `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`
+  ).join('');
+  const head = cards.map(c =>
+    `<th class="card"><img alt="" src="${escapeHtml(c.photo || '')}" /><div class="brand">${escapeHtml(c.brand || '')}</div>` +
+    `<a class="nm" href="${escapeHtml(c.link || '#')}" target="_blank" rel="noopener">${escapeHtml(c.nm)}</a></th>`
+  ).join('');
+  const body = (SHELF_SHEET_CHOSEN || []).map((article, i) => {
+    const cells = cards.map(c => {
+      const place = shelfSheetPlace(c.nm, article);
+      return `<td class="place${shelfSheetPlaceClass(place)}"><span>${place ? escapeHtml(place) : ''}</span></td>`;
+    }).join('');
+    return `<tr><td class="art"><select data-row="${i}">${options}</select></td>${cells}</tr>`;
+  }).join('');
+  const root = document.getElementById('shelfSheetRoot');
+  if(root) {
+    root.innerHTML = `<div class="shelf-sheet-wrap"><table class="shelf-sheet"><thead><tr><th class="corner">Артикул</th>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+    root.querySelectorAll('td.art select').forEach(sel => {
+      sel.value = SHELF_SHEET_CHOSEN[Number(sel.dataset.row)] || '';
+      sel.onchange = () => {
+        SHELF_SHEET_CHOSEN[Number(sel.dataset.row)] = sel.value;
+        localStorage.setItem(SHELF_SHEET_KEY, JSON.stringify(SHELF_SHEET_CHOSEN));
+        drawShelfSheet();
+      };
+    });
+  }
+  const st = document.getElementById('shelfSheetStatus');
+  if(st) {
+    const nPlaces = (data.places || []).filter(p => p.date === SHELF_SHEET_DATE).length;
+    st.textContent = `${cards.length} карточек на экране · ${nPlaces} мест на ${SHELF_SHEET_DATE || '—'} · зелёное — топ-15, жёлтое — до 40`;
   }
 }
 

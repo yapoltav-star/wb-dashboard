@@ -1,6 +1,7 @@
 import httpx
 import os
 import io
+import csv
 import json
 import html
 import gzip
@@ -9,6 +10,7 @@ import time
 import logging
 import re
 import threading
+from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone, date
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -15821,6 +15823,101 @@ def crm_shelf_boost_sent(competitor_nm_id: int = 0, scan: bool = False):
     if competitor_nm_id:
         items = [i for i in items if int(i.get("competitor_nm_id") or 0) == int(competitor_nm_id)]
     return {"ok": True, "items": items}
+
+
+SHELVES_SHEET_ID = "1H3zW6WIP0ttL14j5ChN06mM64uIhXmyCUx0o89wnhtk"
+_SHELVES_SHEET_LOCK = threading.Lock()
+_SHELVES_SHEET_CACHE = {"at": 0.0, "data": None}
+_SHELVES_SHEET_TTL = 120
+
+
+def _catalog_nm(url: str) -> str:
+    text = (url or "").strip()
+    marker = "/catalog/"
+    if marker in text:
+        return text.split(marker, 1)[1].split("/", 1)[0].strip()
+    return text if text.isdigit() else ""
+
+
+def _sheet_date_sort_key(value: str):
+    parts = str(value or "").strip().split(".")
+    if len(parts) == 3 and all(part.isdigit() for part in parts):
+        day, month, year = (int(part) for part in parts)
+        return (year, month, day)
+    return (0, 0, 0)
+
+
+def parse_shelves_sheet_csv(text: str) -> dict:
+    """Таблица «База»: карточки конкурентов, места наших артикулов, список артикулов."""
+    rows = csv.reader(io.StringIO(text or ""))
+    cards = []
+    places = []
+    articles = []
+    seen_cards = set()
+    seen_articles = set()
+    for raw in rows:
+        row = list(raw) + [""] * (10 - len(raw))
+        nm, brand, link, photo, _empty, date, comp, article, place, own = [
+            str(cell or "").strip() for cell in row[:10]
+        ]
+        if nm and brand and link and nm not in seen_cards:
+            seen_cards.add(nm)
+            cards.append({"nm": nm, "brand": brand, "link": link, "photo": photo})
+        comp_nm = _catalog_nm(comp)
+        if date and article and place and comp_nm:
+            places.append({
+                "date": date,
+                "nm": comp_nm,
+                "article": article,
+                "place": place,
+            })
+        if own and own not in seen_articles:
+            seen_articles.add(own)
+            articles.append(own)
+    dates = sorted({item["date"] for item in places}, key=_sheet_date_sort_key)
+    return {"dates": dates, "cards": cards, "places": places, "articles": articles}
+
+
+def fetch_shelves_sheet(force: bool = False) -> dict:
+    now = time.time()
+    with _SHELVES_SHEET_LOCK:
+        cached = _SHELVES_SHEET_CACHE.get("data")
+        fresh = cached and not force and now - float(_SHELVES_SHEET_CACHE.get("at") or 0) < _SHELVES_SHEET_TTL
+    if fresh:
+        return cached
+    url = (
+        "https://docs.google.com/spreadsheets/d/"
+        + SHELVES_SHEET_ID
+        + "/gviz/tq?tqx=out:csv&sheet="
+        + quote("База")
+        + "&range=A2:J400"
+    )
+    try:
+        resp = httpx.get(url, headers={"User-Agent": "wb-shelves"}, timeout=40, follow_redirects=True)
+        resp.raise_for_status()
+        text = resp.text
+        if text.lstrip().startswith("<"):
+            raise RuntimeError("Google отдал страницу вместо CSV")
+        payload = parse_shelves_sheet_csv(text)
+    except Exception:
+        if cached:
+            return cached
+        raise
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    with _SHELVES_SHEET_LOCK:
+        _SHELVES_SHEET_CACHE["at"] = time.time()
+        _SHELVES_SHEET_CACHE["data"] = payload
+    return payload
+
+
+@app.get("/api/shelves-sheet")
+def shelves_sheet(refresh: bool = False):
+    """Матрица полок из публичной таблицы «База»: карточка конкурента × наш артикул × место."""
+    try:
+        return fetch_shelves_sheet(force=refresh)
+    except Exception as exc:
+        logger.warning(f"shelves sheet: {exc}")
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @app.post("/api/shelf-presence")
