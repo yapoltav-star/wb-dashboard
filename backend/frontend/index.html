@@ -1026,6 +1026,16 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
 @media (max-width: 980px){
   .gv-wrap,.gv-cols{grid-template-columns:1fr}
 }
+.wb-period-modal{width:860px;max-width:94vw}
+.wb-period-ranges{display:flex;align-items:center;gap:20px}
+.wb-period-range{flex:1;display:flex;align-items:center;justify-content:space-between;gap:18px;background:#fff;border:1px solid var(--wb-border);border-radius:12px;padding:18px;font:inherit;font-size:17px;cursor:pointer;white-space:nowrap;color:var(--wb-text)}
+.wb-period-range:hover{border-color:var(--wb-purple)}
+.wb-period-range span{color:var(--wb-faint);font-size:24px}
+.wb-period-caption{color:var(--wb-muted);font-size:14px;line-height:1.4}
+.wb-period-picker:not([hidden]){display:flex;gap:18px;flex-wrap:wrap;background:var(--wb-bg);padding:18px;border-radius:10px;margin-top:16px}
+.wb-period-picker label{display:flex;gap:10px;align-items:center;font-size:13px;color:var(--wb-muted)}
+.wb-period-picker input{font:inherit;padding:9px;border:1px solid var(--wb-border);border-radius:8px;background:#fff;color:var(--wb-text)}
+@media(max-width:700px){.wb-period-ranges{flex-direction:column;align-items:stretch;gap:10px}.wb-period-caption br{display:none}.wb-period-range{font-size:15px}}
 </style>
 </head>
 <body>
@@ -1277,14 +1287,36 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
       <button class="action-btn primary" id="wbProdSyncBtn" onclick="triggerWbProductsSync()">↻ Обновить товары</button>
     </div>
   </div>
-  <form class="toolbar" style="flex-wrap:wrap" onsubmit="event.preventDefault(); applyWbProdCustomDates()">
-    <label>Период: <input type="date" id="wbProdCurrentFrom" required aria-label="Начало периода"></label>
-    <label>— <input type="date" id="wbProdCurrentTo" required aria-label="Конец периода"></label>
-    <label>Сравнить с: <input type="date" id="wbProdPreviousFrom" required aria-label="Начало периода сравнения"></label>
-    <label>— <input type="date" id="wbProdPreviousTo" required aria-label="Конец периода сравнения"></label>
-    <button class="action-btn" type="submit">Сравнить</button>
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+    <button class="action-btn" id="wbProdCompareButton" onclick="openWbProdCompareModal()">Сравнить периоды</button>
     <span id="wbProdCustomStatus" role="status" style="font-size:12px;color:var(--wb-muted)"></span>
-  </form>
+  </div>
+  <div class="modal-overlay" id="wbProdCompareModal" onclick="if(event.target===this) closeWbProdCompareModal()">
+    <form class="modal wb-period-modal" role="dialog" aria-modal="true" aria-labelledby="wbPeriodTitle" onsubmit="event.preventDefault(); applyWbProdCustomDates()">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
+        <h3 id="wbPeriodTitle" style="margin:0">Сравнить периоды</h3>
+        <button type="button" class="action-btn" onclick="closeWbProdCompareModal()" aria-label="Закрыть">✕</button>
+      </div>
+      <div class="wb-period-ranges">
+        <button type="button" class="wb-period-range" id="wbProdCurrentRange" onclick="toggleWbProdDatePicker('current')">Выбрать период <span>▦</span></button>
+        <span class="wb-period-caption">Сравнение<br>с периодом:</span>
+        <button type="button" class="wb-period-range" id="wbProdPreviousRange" onclick="toggleWbProdDatePicker('previous')">Выбрать период <span>▦</span></button>
+      </div>
+      <div id="wbProdCurrentPicker" class="wb-period-picker" hidden>
+        <label>Начало <input type="date" id="wbProdCurrentFrom" onchange="updateWbProdRangeLabels()"></label>
+        <label>Конец <input type="date" id="wbProdCurrentTo" onchange="updateWbProdRangeLabels()"></label>
+      </div>
+      <div id="wbProdPreviousPicker" class="wb-period-picker" hidden>
+        <label>Начало сравнения <input type="date" id="wbProdPreviousFrom" onchange="updateWbProdRangeLabels()"></label>
+        <label>Конец сравнения <input type="date" id="wbProdPreviousTo" onchange="updateWbProdRangeLabels()"></label>
+      </div>
+      <div id="wbProdModalError" role="alert" style="color:var(--red);font-size:12px;margin-top:12px"></div>
+      <div class="modal-btns" style="margin-top:24px">
+        <button type="button" class="action-btn" onclick="closeWbProdCompareModal()">Отмена</button>
+        <button type="submit" class="action-btn primary">Сравнить</button>
+      </div>
+    </form>
+  </div>
   <div id="wbProdCompareDates" class="section-sub" style="margin-bottom:12px"></div>
   <div class="cards" id="wbProdCards"></div>
   <div id="wbProdRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить товары» — подтянем цены, остатки и продажи</div></div>
@@ -2294,11 +2326,13 @@ function setWbProdFilter(f) {
   drawWbProducts();
 }
 
+let WB_PROD_COMPARE_ENABLED = false;
 let WB_PROD_CUSTOM = null;
 let WB_PROD_CUSTOM_DATES = null;
 let wbProdCustomRequest = 0;
 let wbProdCustomPoll = null;
 function setWbProdSalesPeriod(p) {
+  WB_PROD_COMPARE_ENABLED = false;
   ++wbProdCustomRequest;
   clearTimeout(wbProdCustomPoll);
   WB_PROD_CUSTOM = null;
@@ -2348,15 +2382,63 @@ function wbProdComparisonDates() {
   return `${date(days)} — ${date(1)} сравниваем с ${date(days * 2)} — ${date(days + 1)} · полные дни, МСК`;
 }
 
+function updateWbProdRangeLabels() {
+  const format = value => value ? value.split('-').reverse().join('.') : '…';
+  for(const [range, from, to] of [['Current','CurrentFrom','CurrentTo'], ['Previous','PreviousFrom','PreviousTo']]) {
+    const start = document.getElementById('wbProd'+from).value;
+    const end = document.getElementById('wbProd'+to).value;
+    document.getElementById('wbProd'+range+'Range').innerHTML = `${format(start)} - ${format(end)} <span>▦</span>`;
+  }
+}
+function toggleWbProdDatePicker(which) {
+  document.getElementById('wbProdCurrentPicker').hidden = which !== 'current';
+  document.getElementById('wbProdPreviousPicker').hidden = which !== 'previous';
+}
+function openWbProdCompareModal() {
+  const today = new Intl.DateTimeFormat('sv-SE', {timeZone:'Europe/Moscow'}).format(new Date());
+  const days = WB_PROD_SALES_PERIOD === 'custom' ? 7 : Number(WB_PROD_SALES_PERIOD);
+  const shift = offset => {
+    const date = new Date(today+'T12:00:00Z');
+    date.setUTCDate(date.getUTCDate()-offset);
+    return date.toISOString().slice(0,10);
+  };
+  const dates = WB_PROD_CUSTOM_DATES || [shift(days),shift(1),shift(days*2),shift(days+1)];
+  ['CurrentFrom','CurrentTo','PreviousFrom','PreviousTo'].forEach((key,i) => {
+    const input = document.getElementById('wbProd'+key);
+    input.value = dates[i]; input.max = today;
+  });
+  updateWbProdRangeLabels();
+  document.getElementById('wbProdCurrentPicker').hidden = true;
+  document.getElementById('wbProdPreviousPicker').hidden = true;
+  document.getElementById('wbProdModalError').textContent = '';
+  document.getElementById('wbProdCompareModal').classList.add('on');
+  document.getElementById('wbProdCurrentRange').focus();
+}
+function closeWbProdCompareModal() {
+  document.getElementById('wbProdCompareModal').classList.remove('on');
+  document.getElementById('wbProdCompareButton').focus();
+}
+document.getElementById('wbProdCompareModal').addEventListener('keydown', event => {
+  if(event.key === 'Escape') closeWbProdCompareModal();
+  if(event.key === 'Tab') {
+    const controls = [...event.currentTarget.querySelectorAll('button,input')].filter(el => !el.closest('[hidden]'));
+    const first = controls[0], last = controls[controls.length-1];
+    if(event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if(!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  }
+});
+
 async function applyWbProdCustomDates() {
   const ids = ['wbProdCurrentFrom','wbProdCurrentTo','wbProdPreviousFrom','wbProdPreviousTo'];
   const dates = ids.map(id => document.getElementById(id).value);
   const status = document.getElementById('wbProdCustomStatus');
   const today = new Intl.DateTimeFormat('sv-SE', {timeZone:'Europe/Moscow'}).format(new Date());
   if(dates.some(value => !value || value > today) || dates[0] > dates[1] || dates[2] > dates[3]) {
-    status.textContent = 'Проверьте границы обоих периодов';
+    document.getElementById('wbProdModalError').textContent = 'Проверьте границы обоих периодов';
     return;
   }
+  closeWbProdCompareModal();
+  WB_PROD_COMPARE_ENABLED = true;
   const request = ++wbProdCustomRequest;
   clearTimeout(wbProdCustomPoll);
   WB_PROD_CUSTOM_DATES = dates;
@@ -2478,7 +2560,7 @@ function drawWbProducts() {
   });
 
   const dates = document.getElementById('wbProdCompareDates');
-  if(dates) dates.textContent = wbProdComparisonDates();
+  if(dates) { dates.textContent = WB_PROD_COMPARE_ENABLED ? wbProdComparisonDates() : ''; dates.hidden = !WB_PROD_COMPARE_ENABLED; }
   const all = WB_PRODUCTS.products || [];
   const withStock = all.filter(p => (p.stock || 0) > 0).length;
   const withPrice = all.filter(p => p.client_price != null).length;
@@ -2521,8 +2603,8 @@ function drawWbProducts() {
         ${sub}
       </td>
       <td class="num" style="font-weight:700">${sales}</td>
-      <td class="num">${comparison ? fmt(comparison.previous) : '—'}</td>
-      <td class="num">${wbProdChangeHtml(comparison?.current, comparison?.previous)}</td>
+      ${WB_PROD_COMPARE_ENABLED ? `<td class="num">${comparison ? fmt(comparison.previous) : '—'}</td>
+      <td class="num">${wbProdChangeHtml(comparison?.current, comparison?.previous)}</td>` : ''}
       <td class="num">${price}</td>
       <td class="num">${wbProdStockTipHtml(p)}</td>
       <td>${ch}</td>
@@ -2535,8 +2617,7 @@ function drawWbProducts() {
         <th></th>
         <th>Артикул</th>
         <th class="num">${wbProdSalesLabel()}</th>
-        <th class="num">Предыдущий период</th>
-        <th class="num">Изменение, %</th>
+        ${WB_PROD_COMPARE_ENABLED ? '<th class="num">Предыдущий период</th><th class="num">Изменение, %</th>' : ''}
         <th class="num">Цена покупателя</th>
         <th class="num">Остаток</th>
         <th>Канал</th>
