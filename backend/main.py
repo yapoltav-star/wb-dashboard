@@ -15675,6 +15675,87 @@ _RAZDACHI_CHATS = {"loaded": False, "ids": []}
 _RAZDACHI_CHATS_LOCK = threading.RLock()
 
 
+RAZDACHI_BOARD_KEY = "razdachi_board"
+
+
+def razdachi_board_card(
+    *,
+    kind: str,
+    own_vc: str,
+    own_nm: int,
+    competitor_nm: int,
+    comp_brand: str = "",
+    comp_name: str = "",
+    plan: int = 0,
+) -> dict:
+    """Карточка в той же схеме, что «Новая раздача» → «Через конкурента» в боте.
+
+    Название, артикул, канал, кто поставил, план. Людей заранее не приписываем.
+    """
+    title = (own_vc or str(own_nm)).strip()
+    channel = "competitor" if kind != "cart_warmup" else "cart"
+    channel_label = "Через конкурента" if channel == "competitor" else "Корзины"
+    return {
+        "id": f"{int(time.time())}-{own_nm}-{competitor_nm}",
+        "title": title,
+        "nm_id": int(own_nm),
+        "link": f"https://www.wildberries.ru/catalog/{own_nm}/detail.aspx",
+        "channel": channel,
+        "channel_label": channel_label,
+        "keyword": "",
+        "competitor_nm_id": int(competitor_nm),
+        "competitor_brand": comp_brand or "",
+        "competitor_name": comp_name or "",
+        "competitor_link": f"https://www.wildberries.ru/catalog/{competitor_nm}/detail.aspx",
+        "plan": int(plan or 0),
+        "setter": "Дашборд",
+        "marks": [],
+        "status": "open",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def razdachi_board_text(card: dict) -> str:
+    """Текст карточки, как её показывает «Доска» бота."""
+    title = card.get("title") or ""
+    nm = card.get("nm_id") or ""
+    channel = card.get("channel_label") or "Через конкурента"
+    comp = card.get("competitor_nm_id") or ""
+    bits = [card.get("competitor_brand") or "", card.get("competitor_name") or "", str(comp)]
+    comp_label = " · ".join(b for b in bits if b)
+    plan = int(card.get("plan") or 0)
+    lines = [
+        str(title),
+        str(nm),
+        card.get("link") or "",
+        f"{channel}: {comp_label}" if comp_label else channel,
+        card.get("competitor_link") or "",
+        f"Поставил: {card.get('setter') or 'Дашборд'}",
+    ]
+    if plan > 0:
+        lines.append(f"План: {plan}")
+    marks = card.get("marks") or []
+    if marks:
+        lines.append("Отметили: " + ", ".join(
+            f"{m.get('name')} {m.get('count')}" for m in marks if isinstance(m, dict)
+        ))
+    else:
+        lines.append("Пока никто не отметил")
+    return "\n".join(line for line in lines if line)
+
+
+def _razdachi_board_tasks() -> list:
+    raw = get_setting_json(RAZDACHI_BOARD_KEY, {}) or {}
+    tasks = raw.get("tasks") if isinstance(raw, dict) else []
+    return [t for t in (tasks or []) if isinstance(t, dict)]
+
+
+def _razdachi_board_add(card: dict) -> bool:
+    tasks = _razdachi_board_tasks()
+    tasks.append(card)
+    return bool(save_setting_value(RAZDACHI_BOARD_KEY, {"tasks": tasks[-400:]}))
+
+
 def razdachi_task_text(
     *,
     kind: str,
@@ -15683,20 +15764,24 @@ def razdachi_task_text(
     competitor_nm: int,
     comp_brand: str = "",
     comp_name: str = "",
+    plan: int = 0,
 ) -> str:
     """Текст задачи, который уходит в @razdachi_team_bot."""
-    if kind == "cart_warmup":
-        head = (
-            f'Прогрев корзинами "{own_vc}" и {own_nm}, '
-            f'через этого конкурента "{competitor_nm}".'
-        )
-        extra = "Класть в корзину, как на выкупах."
-    else:
-        head = (
-            f'Раздача "{own_vc}" и {own_nm}, '
-            f'через этого конкурента "{competitor_nm}".'
-        )
-        extra = "Раздача через этого конкурента."
+    if kind != "cart_warmup":
+        return razdachi_board_text(razdachi_board_card(
+            kind=kind,
+            own_vc=own_vc,
+            own_nm=own_nm,
+            competitor_nm=competitor_nm,
+            comp_brand=comp_brand,
+            comp_name=comp_name,
+            plan=plan,
+        ))
+    head = (
+        f'Прогрев корзинами "{own_vc}" и {own_nm}, '
+        f'через этого конкурента "{competitor_nm}".'
+    )
+    extra = "Класть в корзину, как на выкупах."
     comp_bits = []
     if comp_brand:
         comp_bits.append(comp_brand)
@@ -15872,13 +15957,37 @@ async def razdachi_task(request: dict):
         return {"ok": False, "error": "некорректные nm_id"}
     comp_brand = str(request.get("competitor_brand") or "").strip()
     comp_name = str(request.get("competitor_name") or "").strip()
-    text = razdachi_task_text(
+    plan = 0
+    if kind == "shelf":
+        try:
+            plan = int(request.get("plan"))
+        except (TypeError, ValueError):
+            plan = 0
+        if plan < 1:
+            return {"ok": False, "error": "нужен план: сколько штук"}
+    card = razdachi_board_card(
         kind=kind,
         own_vc=own_vc,
         own_nm=own_nm,
         competitor_nm=competitor_nm,
         comp_brand=comp_brand,
         comp_name=comp_name,
+        plan=plan,
+    )
+    saved = False
+    if kind == "shelf":
+        try:
+            saved = _razdachi_board_add(card)
+        except Exception as e:
+            logger.warning(f"razdachi board save: {e}")
+    text = razdachi_board_text(card) if kind == "shelf" else razdachi_task_text(
+        kind=kind,
+        own_vc=own_vc,
+        own_nm=own_nm,
+        competitor_nm=competitor_nm,
+        comp_brand=comp_brand,
+        comp_name=comp_name,
+        plan=plan,
     )
     sent_tg = _razdachi_try_send(text)
     rec = None
@@ -15916,8 +16025,22 @@ async def razdachi_task(request: dict):
         "assignee_name": "@" + RAZDACHI_BOT_USERNAME,
         "notify_error": None if sent_tg.get("delivered") else (sent_tg.get("error") or sent_tg.get("reason")),
         "kind": kind,
+        "plan": plan,
+        "card": card if kind == "shelf" else None,
+        "board_saved": saved,
         "sent": rec,
     }
+
+
+@app.get("/api/razdachi-board")
+def razdachi_board(status: str = "open"):
+    """Карточки раздач в схеме бота: название, артикул, канал, план, отметки."""
+    tasks = _razdachi_board_tasks()
+    want = (status or "").strip().lower()
+    if want in ("open", "closed"):
+        tasks = [t for t in tasks if str(t.get("status") or "") == want]
+    tasks = list(reversed(tasks))
+    return {"ok": True, "tasks": tasks, "count": len(tasks)}
 
 
 @app.post("/api/crm-shelf-boost-task")
