@@ -17743,6 +17743,21 @@ except Exception as e:
     logger.warning(f"telegram bot не поднялся: {e}")
 
 
+# Бот «Раздачи». Другой токен, чем у бота дашборда. Окно на компьютере закрыто.
+try:
+    import razdachi_bot
+
+    razdachi_bot.start()
+
+    @app.get("/api/razdachi-bot-status")
+    def razdachi_bot_status():
+        """Жив ли бот раздач. Секреты не отдаёт."""
+        return razdachi_bot.status()
+
+except Exception as e:
+    logger.warning(f"razdachi bot не поднялся: {e}")
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8080))

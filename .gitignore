@@ -8,4 +8,5 @@ __pycache__/
 venv/
 node_modules/
 data/orders_geo_cache.json
+backend/data/razdachi_state.json
 tmp/
