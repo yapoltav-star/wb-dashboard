@@ -2322,7 +2322,7 @@ async function triggerWbProductsSync() {
 async function renderWbProducts(force) {
   if(force || !WB_PRODUCTS_LOADED) {
     try {
-      const r = await fetch(`${RAILWAY_URL}/api/wb-products?refresh=${force ? 'true' : 'false'}`);
+      const r = await fetch(`${RAILWAY_URL}/api/wb-products`);
       WB_PRODUCTS = await r.json();
       WB_PRODUCTS_LOADED = true;
     } catch(e) {
@@ -2467,7 +2467,7 @@ function showPage(id, btn) {
   }
   page.classList.add('on');
   if(btn) btn.classList.add('on');
-  if(id === 'wb-products') renderWbProducts(true);
+  if(id === 'wb-products') renderWbProducts(false);
   if(id === 'groups') renderGroupManager();
   if(id === 'products') renderProducts();
   if(id === 'new-stock') renderNewStock(true);
@@ -17466,10 +17466,10 @@ function openSectionFromLocation() {
   showSection(section, button || document.querySelector('.tb-nav-item'), false);
 }
 window.addEventListener('popstate', openSectionFromLocation);
-loadData().then(() => {
-  history.replaceState({section: sectionFromPath()}, '', location.href);
-  openSectionFromLocation();
-});
+// Open the requested page independently of reviews/ratings and other dashboard data.
+history.replaceState({section: sectionFromPath()}, '', location.href);
+openSectionFromLocation();
+loadData();
 </script>
 </body>
 </html>

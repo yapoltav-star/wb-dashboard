@@ -10023,6 +10023,8 @@ def _filter_live_warehouses(wh_list: list) -> list:
     return out
 
 
+_WB_PRODUCTS_REFRESH_LOCK = threading.Lock()
+
 WB_PRODUCTS_CACHE = {
     "products": [],
     "updated_at": None,
@@ -10330,21 +10332,17 @@ def refresh_wb_products_catalog(sync_sources: bool = False):
 def get_wb_products(refresh: bool = False):
     """Товары WB: цена покупателя, остаток (склады), канал FBW/FBS, продажи."""
     need = refresh or not WB_PRODUCTS_CACHE.get("products")
-    if need and not WB_PRODUCTS_CACHE.get("syncing"):
+    if need and not WB_PRODUCTS_CACHE.get("syncing") and _WB_PRODUCTS_REFRESH_LOCK.acquire(blocking=False):
+        def refresh_in_background():
+            try:
+                refresh_wb_products_catalog(sync_sources=False)
+            finally:
+                _WB_PRODUCTS_REFRESH_LOCK.release()
         try:
-            # продажи: только быстрый daily_stats; полный orders — через sync-wb-products
-            if not WB_PRODUCTS_CACHE.get("sales_by_nm"):
-                try:
-                    sales = _fetch_orders_sales_periods_fast()
-                    if sales:
-                        WB_PRODUCTS_CACHE["sales_by_nm"] = sales
-                        WB_PRODUCTS_CACHE["sales_updated_at"] = _msk_now().strftime("%d.%m.%Y %H:%M")
-                except Exception:
-                    pass
-            data = build_wb_products_catalog(WB_PRODUCTS_CACHE.get("sales_by_nm") or {})
-            WB_PRODUCTS_CACHE.update({**data, "syncing": False, "error": None})
-        except Exception as e:
-            WB_PRODUCTS_CACHE["error"] = str(e)
+            threading.Thread(target=refresh_in_background, daemon=True).start()
+        except Exception:
+            _WB_PRODUCTS_REFRESH_LOCK.release()
+            raise
     return {
         "products": WB_PRODUCTS_CACHE.get("products") or [],
         "count": WB_PRODUCTS_CACHE.get("count") or len(WB_PRODUCTS_CACHE.get("products") or []),
@@ -10353,7 +10351,7 @@ def get_wb_products(refresh: bool = False):
         "stock_updated_at": WB_PRODUCTS_CACHE.get("stock_updated_at"),
         "prices_updated_at": WB_PRODUCTS_CACHE.get("prices_updated_at"),
         "sales_updated_at": WB_PRODUCTS_CACHE.get("sales_updated_at"),
-        "syncing": WB_PRODUCTS_CACHE.get("syncing", False),
+        "syncing": WB_PRODUCTS_CACHE.get("syncing", False) or _WB_PRODUCTS_REFRESH_LOCK.locked(),
         "error": WB_PRODUCTS_CACHE.get("error"),
     }
 
