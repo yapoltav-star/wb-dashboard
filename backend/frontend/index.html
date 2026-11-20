@@ -13412,7 +13412,9 @@ async function loadShelfSent() {
 
 function shelfTaskBtnHtml(manager, kind, label, title, vcJs, ownNm, compNm, compBrand, compName) {
   kind = kind || 'shelf';
-  const sent = shelfSentOf(manager, kind, ownNm, compNm);
+  const sent = manager === 'razdachi'
+    ? shelfRazdachiAlready(kind, ownNm, compNm)
+    : shelfSentOf(manager, kind, ownNm, compNm);
   const kindArg = kind === 'shelf' ? '' : `,'${kind}'`;
   const click = `sendShelfBoostTask('${manager}','${vcJs}',${ownNm},${compNm},'${compBrand}','${compName}',this${kindArg})`;
   if(sent) {
@@ -13432,10 +13434,8 @@ function shelfSuggestItemRow(t, compNm, compBrand, compName, opts) {
   if(t.shape_label) metaBits.push(String(t.shape_label));
   if(opts.inShelf) metaBits.push('уже в полке');
   const sentBits = [];
-  if(shelfSentOf('afina','shelf', t.nm_id, compNm)) sentBits.push('Афине');
-  if(shelfSentOf('zaira','shelf', t.nm_id, compNm)) sentBits.push('Заире');
-  if(shelfSentOf('olga','shelf', t.nm_id, compNm)) sentBits.push('Ольге');
-  if(shelfSentOf('dilya','cart_warmup', t.nm_id, compNm)) sentBits.push('Диле');
+  if(shelfRazdachiAlready('shelf', t.nm_id, compNm)) sentBits.push('раздача');
+  if(shelfRazdachiAlready('cart_warmup', t.nm_id, compNm)) sentBits.push('корзины');
   if(sentBits.length) metaBits.push('задачи: ' + sentBits.join(', '));
   const removeBtn = opts.removable
     ? `<span style="cursor:pointer;color:var(--wb-faint);font-size:14px;flex-shrink:0" title="Убрать из списка"
@@ -13454,10 +13454,8 @@ function shelfSuggestItemRow(t, compNm, compBrand, compName, opts) {
       <button class="filter-btn" onclick="copyShelfNm(${t.nm_id})" style="padding:4px 8px;font-size:11px;flex-shrink:0" title="Скопировать nmID">копир.</button>
       <a href="${wbCatalogUrl(t.nm_id)}" target="_blank" rel="noopener"
         style="font-size:11px;color:var(--wb-purple);flex-shrink:0">WB</a>
-      ${shelfTaskBtnHtml('afina','shelf','Афине','Задача в CRM: прокачать полки',vcJs,t.nm_id,compNm,compBrand,compName)}
-      ${shelfTaskBtnHtml('zaira','shelf','Заире','Задача в CRM: прокачать полки',vcJs,t.nm_id,compNm,compBrand,compName)}
-      ${shelfTaskBtnHtml('olga','shelf','Ольге','Задача в CRM: прокачать полки (раздача)',vcJs,t.nm_id,compNm,compBrand,compName)}
-      ${shelfTaskBtnHtml('dilya','cart_warmup','Диле · корзины','Задача Диле: прогрев корзинами',vcJs,t.nm_id,compNm,compBrand,compName)}
+      ${shelfTaskBtnHtml('razdachi','shelf','Раздача','Задача в @razdachi_team_bot: раздача через этого конкурента',vcJs,t.nm_id,compNm,compBrand,compName)}
+      ${shelfTaskBtnHtml('razdachi','cart_warmup','Корзины','Задача в @razdachi_team_bot: прогрев корзинами',vcJs,t.nm_id,compNm,compBrand,compName)}
     </div>`;
 }
 
@@ -13587,10 +13585,20 @@ function removeShelfSuggestArticle(nmId) {
   refreshShelfSuggestPanel();
 }
 
+function shelfRazdachiAlready(kind, ownNm, compNm) {
+  const direct = shelfSentOf('razdachi', kind, ownNm, compNm);
+  if(direct) return direct;
+  if(kind === 'cart_warmup') return shelfSentOf('dilya', 'cart_warmup', ownNm, compNm);
+  return shelfSentOf('afina','shelf', ownNm, compNm)
+    || shelfSentOf('zaira','shelf', ownNm, compNm)
+    || shelfSentOf('olga','shelf', ownNm, compNm)
+    || null;
+}
+
 async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, competitorBrand, competitorName, btn, kind) {
   kind = kind || 'shelf';
-  const whoMap = { zaira: 'Заире', olga: 'Ольге', dilya: 'Диле', afina: 'Афине' };
-  const who = whoMap[manager] || 'Афине';
+  manager = 'razdachi';
+  const who = '@razdachi_team_bot';
   if(!ownNm || !competitorNm) {
     alert('Нет артикулов для задачи');
     return;
@@ -13598,23 +13606,22 @@ async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, compe
   const preview = kind === 'cart_warmup'
     ? `Прогрев корзинами "${ownVendor || ownNm}" и ${ownNm}, через этого конкурента "${competitorNm}".`
     : `Раздача "${ownVendor || ownNm}" и ${ownNm}, через этого конкурента "${competitorNm}".`;
-  const already = shelfSentOf(manager, kind, ownNm, competitorNm);
-  let ask = `Отправить задачу ${who}?\n\n${preview}`;
+  const already = shelfRazdachiAlready(kind, ownNm, competitorNm);
+  let ask = `Отправить в ${who}?\n\n${preview}`;
   if(already) {
-    ask = `Уже ставили ${who}` +
+    ask = `Уже отправляли в ${who}` +
       (already.task_id ? ` (#${already.task_id})` : '') +
       (shelfSentWhen(already) ? ` ${shelfSentWhen(already)}` : '') +
-      `.\nПоставить ещё одну?\n\n${preview}`;
+      `.\nОтправить ещё раз?\n\n${preview}`;
   }
   if(!confirm(ask)) return;
   const prev = btn ? btn.textContent : '';
   if(btn) { btn.disabled = true; btn.textContent = '…'; }
   try {
-    const r = await fetch(`${RAILWAY_URL}/api/crm-shelf-boost-task`, {
+    const r = await fetch(`${RAILWAY_URL}/api/razdachi-task`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        manager,
         kind,
         own_vendor_code: ownVendor || String(ownNm),
         own_nm_id: Number(ownNm),
@@ -13627,20 +13634,49 @@ async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, compe
     if(!r.ok || !d.ok) {
       throw new Error(d.error || d.detail || `HTTP ${r.status}`);
     }
-    let msg = `Задача #${d.task_id} → ${d.assignee_name || who}`;
-    if(d.notified === false) {
-      msg += `\nTelegram: ${d.notify_error || 'не ушло — пусть нажмёт /start у бота'}`;
+    if(d.reason === 'no_token') {
+      alert('Добавь @razdachi_team_bot в дашборд: в Railway переменная RAZDACHI_BOT_TOKEN, токен этого бота из @BotFather.');
+      if(btn) { btn.disabled = false; btn.textContent = prev; }
+      return;
     }
-    alert(msg);
-    if(d.sent && d.sent.key) SHELF_SENT[d.sent.key] = d.sent;
-    else {
-      SHELF_SENT[shelfSentKey(manager, kind, ownNm, competitorNm)] = {
-        key: shelfSentKey(manager, kind, ownNm, competitorNm),
-        manager, kind, own_nm_id: Number(ownNm), competitor_nm_id: Number(competitorNm),
-        task_id: d.task_id, at: new Date().toISOString(),
-      };
+    if(d.reason === 'no_chats') {
+      alert('Бот уже в дашборде. Пусть команда напишет @razdachi_team_bot любое сообщение — после этого задачи будут приходить туда сами.');
+      if(btn) { btn.disabled = false; btn.textContent = prev; }
+      return;
     }
-    refreshShelfSuggestPanel();
+    if(d.delivered) {
+      const n = Number(d.sent_count) || 0;
+      alert(n > 1 ? `Задача ушла в ${who} · ${n} чата` : `Задача ушла в ${who}`);
+    } else if(d.open_url) {
+      try {
+        if(d.text && navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(d.text);
+        }
+      } catch(e) {}
+      const w = window.open(d.open_url, '_blank', 'noopener');
+      alert(w
+        ? `Открыл ${who}. Текст задачи уже в поле — нажми «Отправить».`
+        : `Текст задачи скопирован. Открой ${who} и вставь его.`);
+    }
+    if(d.delivered) {
+      if(d.sent && d.sent.key) SHELF_SENT[d.sent.key] = d.sent;
+      else {
+        SHELF_SENT[shelfSentKey(manager, kind, ownNm, competitorNm)] = {
+          key: shelfSentKey(manager, kind, ownNm, competitorNm),
+          manager, kind, own_nm_id: Number(ownNm), competitor_nm_id: Number(competitorNm),
+          task_id: d.task_id, at: new Date().toISOString(),
+        };
+      }
+      refreshShelfSuggestPanel();
+      if(btn && btn.isConnected) {
+        btn.disabled = false;
+        btn.classList.add('on');
+        btn.textContent = '✓ ' + (kind === 'cart_warmup' ? 'Корзины' : 'Раздача');
+      }
+    } else if(btn) {
+      btn.disabled = false;
+      btn.textContent = prev;
+    }
   } catch(e) {
     alert('Не отправилось: ' + (e.message || e));
     if(btn) { btn.disabled = false; btn.textContent = prev; }
