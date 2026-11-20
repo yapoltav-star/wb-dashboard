@@ -984,6 +984,9 @@ OWN_WH_RECEIPTS_KEY = "own_wh_receipts"
 OWN_WH_ARCHIVE_KEY = "own_wh_archive"
 OWN_WH_SKU_ALIASES_KEY = "own_wh_sku_aliases"  # {alias_sku: canonical_vendor_code}
 OWN_WH_STOCK_SNAPSHOT_KEY = "own_wh_stock_snapshot"  # общий снимок для WB+Ozon
+OWN_WH_ZEROED_KEY = "own_wh_zeroed"  # раздел «Остатки» обнулён: в остаток не входят Sheets и оверлеи
+_OWN_WH_ZERO_LOCK = threading.Lock()
+_OWN_WH_ZERO_MEM = {"mode": None}  # True / False, если settings уже читали
 OWN_WH_DOCS_KEEP = 200
 OWN_WH_ARCHIVE_KEEP = 60
 OWN_WH_CHANNELS = ("fbw", "fbs", "ozon_fbo", "ozon_fbs")
@@ -1207,6 +1210,127 @@ def _apply_own_wh_deductions(personal_sheet: dict) -> dict:
         base = int(out.get(vc, 0))
         out[vc] = max(0, base + int(received.get(vc, 0)) - int(shipped.get(vc, 0)))
     return out
+
+
+def _own_wh_parse_zero_flag(raw):
+    payload = raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.lower() in ("0", "false", "off", "no"):
+            return False
+        if text.lower() in ("1", "true", "on", "yes"):
+            return True
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return True
+    if isinstance(payload, dict):
+        return bool(payload.get("on", True))
+    if isinstance(payload, (bool, int, float)):
+        return bool(payload)
+    return True
+
+
+def _own_wh_zero_record():
+    """('missing'|'on'|'off'|'error', payload). Ошибка сети не считается «ключа нет»."""
+    if not SUPABASE_URL:
+        return "error", None
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/settings?key=eq.{OWN_WH_ZEROED_KEY}&select=value",
+            headers=sb_headers(),
+            timeout=10,
+        )
+    except Exception as e:
+        logger.warning(f"own-wh zero read: {e}")
+        return "error", None
+    if not resp.is_success:
+        logger.warning(f"own-wh zero read HTTP {resp.status_code}")
+        return "error", None
+    rows = resp.json() or []
+    if not rows:
+        return "missing", None
+    return ("on" if _own_wh_parse_zero_flag(rows[0].get("value")) else "off"), rows[0].get("value")
+
+
+def _own_wh_commit_zero(note: str = "Обнуление раздела остатки", archive: bool = True) -> dict:
+    """Включает обнуление. Активные поступления и отгрузки уходят в архив."""
+    with _OWN_WH_ZERO_LOCK:
+        archived = None
+        if archive:
+            ships = _own_wh_shipments()
+            receipts = _own_wh_receipts()
+            if ships or receipts:
+                archived = _own_wh_archive_active(
+                    reason="zero",
+                    note=note or "Обнуление раздела остатки",
+                )
+                if not _save_own_wh_shipments([]):
+                    raise RuntimeError("Не удалось очистить отгрузки")
+                if not _save_own_wh_receipts([]):
+                    raise RuntimeError("Не удалось очистить поступления")
+                OWN_WAREHOUSE_CACHE["shipments"] = []
+                OWN_WAREHOUSE_CACHE["receipts"] = []
+                OWN_WAREHOUSE_CACHE["archives"] = _own_wh_archives()
+        payload = {
+            "on": True,
+            "note": note or "Обнуление раздела остатки",
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        if not save_setting_value(OWN_WH_ZEROED_KEY, payload):
+            raise RuntimeError("Не удалось сохранить обнуление")
+        _OWN_WH_ZERO_MEM["mode"] = True
+        OWN_WAREHOUSE_CACHE["zeroed"] = True
+        return {"archived": archived}
+
+
+def _own_wh_commit_restore() -> dict:
+    """Снимает обнуление: остаток снова считается из Google Sheets и активных документов."""
+    with _OWN_WH_ZERO_LOCK:
+        payload = {
+            "on": False,
+            "note": "Возврат остатков из таблицы",
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        if not save_setting_value(OWN_WH_ZEROED_KEY, payload):
+            raise RuntimeError("Не удалось снять обнуление")
+        _OWN_WH_ZERO_MEM["mode"] = False
+        OWN_WAREHOUSE_CACHE["zeroed"] = False
+        return {"restored": True}
+
+
+def _own_wh_balances_zeroed() -> bool:
+    """True — в разделе остаток 0. Ключа ещё нет: включаем обнуление один раз."""
+    state, _payload = _own_wh_zero_record()
+    if state == "error":
+        mem = _OWN_WH_ZERO_MEM.get("mode")
+        return bool(mem)
+    if state == "off":
+        _OWN_WH_ZERO_MEM["mode"] = False
+        OWN_WAREHOUSE_CACHE["zeroed"] = False
+        return False
+    if state == "missing":
+        try:
+            # Цифры становятся 0. Документы не трогаем — «Вернуть из таблицы» поднимает их обратно.
+            _own_wh_commit_zero(note="Обнуление раздела остатки", archive=False)
+        except Exception as e:
+            logger.error(f"own-wh auto zero: {e}")
+            _OWN_WH_ZERO_MEM["mode"] = True
+            OWN_WAREHOUSE_CACHE["zeroed"] = True
+        return True
+    _OWN_WH_ZERO_MEM["mode"] = True
+    OWN_WAREHOUSE_CACHE["zeroed"] = True
+    return True
+
+
+def _own_wh_mask_personal(personal_sheet: dict, personal: dict) -> dict:
+    """Пока раздел обнулён, штуки в остатке — 0. Цифры таблицы остаются в stock_sheet."""
+    if not _own_wh_balances_zeroed():
+        OWN_WAREHOUSE_CACHE["zeroed"] = False
+        return personal
+    keys = set(personal_sheet or {}) | set(personal or {})
+    OWN_WAREHOUSE_CACHE["zeroed"] = True
+    return {str(k): 0 for k in keys}
 
 
 def _own_wh_parse_doc_dt(doc: dict):
@@ -1498,9 +1622,10 @@ def fetch_own_warehouse_stock() -> dict:
             continue
         personal[vc] = personal.get(vc, 0) + (row["stock"] or 0)
 
-    # База из Google Sheets; отгрузки Excel списывают поверх (см. own_wh_shipments)
+    # База из Google Sheets; отгрузки Excel списывают поверх (см. own_wh_shipments).
+    # Обнуление раздела затирает остаток нулём, stock_sheet не трогает.
     personal_sheet = dict(personal)
-    personal = _apply_own_wh_deductions(personal_sheet)
+    personal = _own_wh_mask_personal(personal_sheet, _apply_own_wh_deductions(personal_sheet))
 
     # Семьи: основной (есть имя или ячейка остатка) + следующие «голые» артикулы без имени
     # Пример: 044_LK_GT5Pro_black_O (380) → 037_G7Pro_black_O (пусто) делят 380
@@ -1594,17 +1719,20 @@ def fetch_own_warehouse_stock() -> dict:
         display_name = row["name"]
         if no_sales and not display_name:
             display_name = "товар без продаж"
+        zeroed = bool(OWN_WAREHOUSE_CACHE.get("zeroed"))
+        live_stock = meta.get("stock", row["stock"] or 0) if vc else (row["stock"] or 0)
+        live_family = meta.get("family_stock", row["stock"] or 0) if vc else (row["stock"] or 0)
         out.append({
             "vendor_code": vc,
             "name": display_name,
             "model_name": meta.get("model_name") or display_name,
             "model_root": meta.get("root"),
             "model_manual": bool(vc and vc in model_map),
-            "stock": meta.get("stock", row["stock"] or 0) if vc else (row["stock"] or 0),
+            "stock": 0 if zeroed else live_stock,
             "stock_sheet": sheet_qty,
             "shipped": shipped_map.get(vc, 0) if vc else 0,
             "received": received_map.get(vc, 0) if vc else 0,
-            "family_stock": meta.get("family_stock", row["stock"] or 0) if vc else (row["stock"] or 0),
+            "family_stock": 0 if zeroed else live_family,
             "family": meta.get("family", [vc] if vc else []),
             "note": row["note"],
             "no_sales": no_sales,
@@ -1626,6 +1754,7 @@ def fetch_own_warehouse_stock() -> dict:
         "weekly_ledger": _own_wh_weekly_ledger(),
         "updated_at": datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M"),
         "error": None,
+        "zeroed": bool(OWN_WAREHOUSE_CACHE.get("zeroed")),
     }
 
 
@@ -1721,7 +1850,7 @@ def _rebuild_own_wh_from_cache():
     personal_sheet = OWN_WAREHOUSE_CACHE.get("personal_sheet")
     if personal_sheet is None:
         personal_sheet = OWN_WAREHOUSE_CACHE.get("personal") or {}
-    personal = _apply_own_wh_deductions(personal_sheet)
+    personal = _own_wh_mask_personal(personal_sheet, _apply_own_wh_deductions(personal_sheet))
     name_by_vc = OWN_WAREHOUSE_CACHE.get("name_by_vc") or {}
     if not auto and not personal_sheet and not personal:
         return False
@@ -1745,17 +1874,20 @@ def _rebuild_own_wh_from_cache():
     for row in rows:
         vc = row.get("vendor_code")
         meta = by_vendor.get(vc, {}) if vc else {}
-        sheet_qty = personal_sheet.get(vc, row.get("stock_sheet", row.get("stock") or 0)) if vc else (row.get("stock") or 0)
+        sheet_qty = personal_sheet.get(vc, row.get("stock_sheet", row.get("stock") or 0)) if vc else (row.get("stock_sheet", row.get("stock") or 0))
+        zeroed = bool(OWN_WAREHOUSE_CACHE.get("zeroed"))
+        live_stock = meta.get("stock", row.get("stock") or 0) if vc else (row.get("stock_sheet", row.get("stock") or 0))
+        live_family = meta.get("family_stock", row.get("stock") or 0) if vc else live_stock
         new_rows.append({
             **row,
             "model_name": meta.get("model_name") or row.get("name"),
             "model_root": meta.get("root"),
             "model_manual": bool(vc and vc in model_map),
-            "stock": meta.get("stock", row.get("stock") or 0),
+            "stock": 0 if zeroed else live_stock,
             "stock_sheet": sheet_qty,
             "shipped": shipped_map.get(vc, 0) if vc else 0,
             "received": received_map.get(vc, 0) if vc else 0,
-            "family_stock": meta.get("family_stock", row.get("stock") or 0),
+            "family_stock": 0 if zeroed else live_family,
             "family": meta.get("family", [vc] if vc else []),
         })
     OWN_WAREHOUSE_CACHE["rows"] = new_rows
@@ -1838,6 +1970,7 @@ def get_own_warehouse_stock(refresh: bool = False):
         "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
         "error": OWN_WAREHOUSE_CACHE.get("error"),
         "syncing": OWN_WAREHOUSE_CACHE.get("syncing", False),
+        "zeroed": bool(OWN_WAREHOUSE_CACHE.get("zeroed")),
     }
 
 @app.post("/api/own-warehouse-set-model")
@@ -2394,6 +2527,7 @@ def _own_wh_response_payload() -> dict:
         "sku_aliases": OWN_WAREHOUSE_CACHE.get("sku_aliases") or _own_wh_sku_aliases(),
         "shared_stock": True,
         "marketplaces": ["wb", "ozon"],
+        "zeroed": bool(OWN_WAREHOUSE_CACHE.get("zeroed")),
         "rows": OWN_WAREHOUSE_CACHE.get("rows") or [],
         "by_vendor": OWN_WAREHOUSE_CACHE.get("by_vendor") or {},
         "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
@@ -2754,6 +2888,42 @@ async def own_warehouse_friday_reset(request: dict = None):
             "receipts_files": (archived or {}).get("receipts_files", 0),
         } if archived else None,
         "note": "База = Google Sheets. Активные отгрузки/поступления ушли в архив.",
+        **_own_wh_response_payload(),
+    }
+
+
+@app.post("/api/own-warehouse-zero")
+async def own_warehouse_zero(request: dict = None):
+    """Обнулить остатки всего склада или вернуть цифры из Google Sheets.
+    on=true: остаток 0 по всем артикулам, таблицу не меняем, активные документы в архив.
+    on=false: остаток снова = Sheets + поступления − отгрузки."""
+    request = request or {}
+    raw_on = request.get("on", True)
+    if isinstance(raw_on, str):
+        on = raw_on.strip().lower() not in ("0", "false", "off", "no", "")
+    else:
+        on = bool(raw_on)
+    note = str(request.get("note") or "").strip()
+    try:
+        if on:
+            info = _own_wh_commit_zero(note=note or "Обнуление раздела остатки", archive=True)
+        else:
+            info = _own_wh_commit_restore()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not _rebuild_own_wh_from_cache():
+        refresh_own_warehouse_stock()
+    archived = (info or {}).get("archived") or {}
+    return {
+        "status": "ok",
+        "zeroed": bool(on),
+        "archived": {
+            "id": archived.get("id"),
+            "archived_at": archived.get("archived_at"),
+            "shipments_qty": archived.get("shipments_qty", 0),
+            "receipts_qty": archived.get("receipts_qty", 0),
+        } if archived else None,
+        "note": "Остаток обнулён. Google Sheets не менялся." if on else "Остаток снова из Google Sheets.",
         **_own_wh_response_payload(),
     }
 
@@ -11119,6 +11289,7 @@ def get_finance():
             "as_of": OWN_WAREHOUSE_CACHE.get("as_of"),
             "updated_at": OWN_WAREHOUSE_CACHE.get("updated_at"),
         },
+        "own_zeroed": bool(OWN_WAREHOUSE_CACHE.get("zeroed")),
         "grand_total": round(wb_sum["total_value"] + own_sum["total_value"], 2),
         "costs": sorted(
             [
@@ -17483,6 +17654,10 @@ def _warm_caches_after_start():
         sync_new_stock()
     except Exception as e:
         logger.warning(f"warmup new_stock: {e}")
+    try:
+        refresh_own_warehouse_stock()
+    except Exception as e:
+        logger.warning(f"warmup own_warehouse: {e}")
 
 
 threading.Thread(target=_warm_caches_after_start, daemon=True, name="warmup").start()
