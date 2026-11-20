@@ -10023,6 +10023,72 @@ def _filter_live_warehouses(wh_list: list) -> list:
     return out
 
 
+_CATALOG_CUSTOM = {}
+_CATALOG_CUSTOM_LOCK = threading.Lock()
+_CATALOG_CUSTOM_WORKER = threading.Lock()
+
+
+def _catalog_custom_orders(start, end):
+    orders = {}
+    offset = 0
+    while True:
+        response = httpx.post(
+            f"{WB_ANALYTICS_URL}/api/analytics/v3/sales-funnel/products",
+            headers=wb_headers(), timeout=40,
+            json={"selectedPeriod": {"start": start, "end": end},
+                  "nmIds": [], "brandNames": [], "subjectIds": [], "tagIds": [],
+                  "orderBy": {"field": "orderCount", "mode": "desc"},
+                  "limit": 1000, "offset": offset})
+        response.raise_for_status()
+        products = response.json()["data"]["products"]
+        for item in products:
+            orders[str(item["product"]["nmId"])] = int(item["statistic"]["selected"].get("orderCount") or 0)
+        if len(products) < 1000:
+            return orders
+        offset += len(products)
+        time.sleep(21)
+
+
+def _catalog_custom_refresh(key):
+    with _CATALOG_CUSTOM_WORKER:
+        try:
+            current = _catalog_custom_orders(key[0], key[1])
+            time.sleep(21)
+            previous = _catalog_custom_orders(key[2], key[3])
+            result = {"syncing": False, "current": current, "previous": previous}
+        except Exception:
+            logger.exception("Catalog custom period comparison failed")
+            result = {"syncing": False, "error": "Не удалось получить заказы WB. Попробуйте позже или выберите меньший период."}
+        with _CATALOG_CUSTOM_LOCK:
+            _CATALOG_CUSTOM[key] = (time.time(), result)
+
+
+@app.get("/api/wb-products/comparison")
+def get_catalog_custom_comparison(current_from: str, current_to: str, previous_from: str, previous_to: str):
+    raw = (current_from, current_to, previous_from, previous_to)
+    try:
+        dates = [datetime.strptime(value, "%Y-%m-%d").date() for value in raw]
+    except ValueError:
+        raise HTTPException(400, "Укажите все четыре даты")
+    if dates[0] > dates[1] or dates[2] > dates[3] or max(dates) > _msk_now().date():
+        raise HTTPException(400, "Проверьте даты: начало должно быть не позже конца, будущие даты недоступны")
+    if not WB_TOKEN:
+        raise HTTPException(503, "Токен WB не настроен")
+    key = tuple(d.isoformat() for d in dates)
+    with _CATALOG_CUSTOM_LOCK:
+        cached = _CATALOG_CUSTOM.get(key)
+        if cached and (cached[1].get("syncing") or time.time() - cached[0] < 300):
+            return cached[1]
+        # Bound completed cache entries while preserving running jobs.
+        if len(_CATALOG_CUSTOM) >= 100:
+            for old_key, (_, value) in list(_CATALOG_CUSTOM.items()):
+                if not value.get("syncing"):
+                    del _CATALOG_CUSTOM[old_key]
+        _CATALOG_CUSTOM[key] = (time.time(), {"syncing": True})
+        threading.Thread(target=_catalog_custom_refresh, args=(key,), daemon=True).start()
+    return {"syncing": True}
+
+
 _WB_PRODUCTS_REFRESH_LOCK = threading.Lock()
 
 WB_PRODUCTS_CACHE = {

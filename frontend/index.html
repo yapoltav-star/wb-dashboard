@@ -1277,6 +1277,14 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
       <button class="action-btn primary" id="wbProdSyncBtn" onclick="triggerWbProductsSync()">↻ Обновить товары</button>
     </div>
   </div>
+  <form class="toolbar" style="flex-wrap:wrap" onsubmit="event.preventDefault(); applyWbProdCustomDates()">
+    <label>Период: <input type="date" id="wbProdCurrentFrom" required aria-label="Начало периода"></label>
+    <label>— <input type="date" id="wbProdCurrentTo" required aria-label="Конец периода"></label>
+    <label>Сравнить с: <input type="date" id="wbProdPreviousFrom" required aria-label="Начало периода сравнения"></label>
+    <label>— <input type="date" id="wbProdPreviousTo" required aria-label="Конец периода сравнения"></label>
+    <button class="action-btn" type="submit">Сравнить</button>
+    <span id="wbProdCustomStatus" role="status" style="font-size:12px;color:var(--wb-muted)"></span>
+  </form>
   <div id="wbProdCompareDates" class="section-sub" style="margin-bottom:12px"></div>
   <div class="cards" id="wbProdCards"></div>
   <div id="wbProdRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить товары» — подтянем цены, остатки и продажи</div></div>
@@ -2286,7 +2294,16 @@ function setWbProdFilter(f) {
   drawWbProducts();
 }
 
+let WB_PROD_CUSTOM = null;
+let WB_PROD_CUSTOM_DATES = null;
+let wbProdCustomRequest = 0;
+let wbProdCustomPoll = null;
 function setWbProdSalesPeriod(p) {
+  ++wbProdCustomRequest;
+  clearTimeout(wbProdCustomPoll);
+  WB_PROD_CUSTOM = null;
+  WB_PROD_CUSTOM_DATES = null;
+  document.getElementById('wbProdCustomStatus').textContent = '';
   WB_PROD_SALES_PERIOD = String(p);
   ['1','2','3','7','28'].forEach(k => {
     const el = document.getElementById('wbProdSales' + k);
@@ -2296,12 +2313,17 @@ function setWbProdSalesPeriod(p) {
 }
 
 function wbProdComparison(p) {
+  if(WB_PROD_SALES_PERIOD === 'custom') {
+    if(!WB_PROD_CUSTOM) return null;
+    return {current: WB_PROD_CUSTOM.current[String(p.nm_id)] || 0, previous: WB_PROD_CUSTOM.previous[String(p.nm_id)] || 0};
+  }
   return (p.sales_comparisons || {})[WB_PROD_SALES_PERIOD] || null;
 }
 function wbProdSalesOf(p) {
   return wbProdComparison(p)?.current ?? 0;
 }
 function wbProdSalesLabel() {
+  if(WB_PROD_SALES_PERIOD === 'custom') return 'Заказы · выбранный период';
   return WB_PROD_SALES_PERIOD === '1' ? 'Заказы · вчера' : `Заказы · ${WB_PROD_SALES_PERIOD} дн`;
 }
 function wbProdChangeHtml(current, previous) {
@@ -2311,6 +2333,11 @@ function wbProdChangeHtml(current, previous) {
   return `<span style="color:${change > 0 ? 'var(--green)' : change < 0 ? 'var(--red)' : 'var(--wb-muted)'}">${change > 0 ? '+' : ''}${change.toLocaleString('ru-RU', {maximumFractionDigits:1})}%</span>`;
 }
 function wbProdComparisonDates() {
+  if(WB_PROD_SALES_PERIOD === 'custom' && WB_PROD_CUSTOM_DATES) {
+    const [a,b,c,d] = WB_PROD_CUSTOM_DATES;
+    const format = value => value.split('-').reverse().join('.');
+    return `${format(a)} — ${format(b)} сравниваем с ${format(c)} — ${format(d)} · даты включительно, МСК`;
+  }
   const today = new Intl.DateTimeFormat('sv-SE', {timeZone:'Europe/Moscow'}).format(new Date());
   const days = Number(WB_PROD_SALES_PERIOD);
   const date = offset => {
@@ -2319,6 +2346,44 @@ function wbProdComparisonDates() {
     return d.toLocaleDateString('ru-RU', {timeZone:'UTC'});
   };
   return `${date(days)} — ${date(1)} сравниваем с ${date(days * 2)} — ${date(days + 1)} · полные дни, МСК`;
+}
+
+async function applyWbProdCustomDates() {
+  const ids = ['wbProdCurrentFrom','wbProdCurrentTo','wbProdPreviousFrom','wbProdPreviousTo'];
+  const dates = ids.map(id => document.getElementById(id).value);
+  const status = document.getElementById('wbProdCustomStatus');
+  const today = new Intl.DateTimeFormat('sv-SE', {timeZone:'Europe/Moscow'}).format(new Date());
+  if(dates.some(value => !value || value > today) || dates[0] > dates[1] || dates[2] > dates[3]) {
+    status.textContent = 'Проверьте границы обоих периодов';
+    return;
+  }
+  const request = ++wbProdCustomRequest;
+  clearTimeout(wbProdCustomPoll);
+  WB_PROD_CUSTOM_DATES = dates;
+  WB_PROD_CUSTOM = null;
+  WB_PROD_SALES_PERIOD = 'custom';
+  ['1','2','3','7','28'].forEach(key => document.getElementById('wbProdSales'+key).classList.remove('on'));
+  drawWbProducts();
+  const params = new URLSearchParams(Object.fromEntries(['current_from','current_to','previous_from','previous_to'].map((key,i) => [key,dates[i]])));
+  async function poll() {
+    try {
+      const response = await fetch(`${RAILWAY_URL}/api/wb-products/comparison?${params}`);
+      const result = await response.json();
+      if(request !== wbProdCustomRequest) return;
+      if(!response.ok || result.error) throw new Error(result.error || result.detail || 'Ошибка загрузки');
+      if(result.syncing) {
+        status.textContent = 'Получаем заказы WB… Это может занять несколько минут.';
+        wbProdCustomPoll = setTimeout(poll, 3000);
+        return;
+      }
+      WB_PROD_CUSTOM = result;
+      status.textContent = 'Сравнение загружено';
+      drawWbProducts();
+    } catch(error) {
+      if(request === wbProdCustomRequest) status.textContent = error.message;
+    }
+  }
+  await poll();
 }
 
 async function triggerWbProductsSync() {
