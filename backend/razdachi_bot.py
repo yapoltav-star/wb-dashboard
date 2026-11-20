@@ -188,7 +188,7 @@ def channel_html(task: dict) -> str:
 
 
 def notice_text(task: dict, header: str, *, show_from: bool = False) -> str:
-    """Короткая карточка в чат, как раньше: заголовок, название, ссылки, план и «Открыть»."""
+    """Короткая строка в чат: что случилось, название, артикул, канал и план."""
     lines = [
         esc(header),
         esc(task.get("title")),
@@ -198,6 +198,26 @@ def notice_text(task: dict, header: str, *, show_from: bool = False) -> str:
     ]
     if show_from:
         lines.append(f"От: {esc(task.get('setter'))}")
+    return "\n".join(lines)
+
+
+def posted_text(task: dict, header: str | None = None) -> str:
+    """Карточка по схеме: название над артикулом, канал, кто поставил, план, кто отметил."""
+    if header is None:
+        header = "Закрыта" if task.get("status") == "closed" else "Новая раздача"
+    lines = [
+        esc(header),
+        esc(task.get("title")),
+        wb_link(str(task.get("nm") or "")),
+        channel_html(task),
+        f"От: {esc(task.get('setter'))}",
+        plan_line(task),
+    ]
+    marks = [mark for mark in task.get("marks") or [] if int(mark.get("qty") or 0) > 0]
+    if marks:
+        lines.extend(f"{esc(mark.get('name'))} {int(mark.get('qty') or 0)}" for mark in marks)
+    else:
+        lines.append("Пока никто не отметил")
     return "\n".join(lines)
 
 
@@ -512,7 +532,7 @@ def refresh(store: Store, task: dict) -> list:
             continue
         user = store.user(chat_id)
         name = user["name"] if user else ""
-        actions.append(edit(chat_id, int(message_id), card_text(task), card_markup(task, name)))
+        actions.append(edit(chat_id, int(message_id), posted_text(task), card_markup(task, name)))
     return actions
 
 
@@ -531,19 +551,16 @@ def accept_name(store: Store, sessions: dict, chat_id: int, text: str) -> list:
         return [send(chat_id, "Юзернейм не приму. Напиши имя, например Маша.")]
     name = clean_name(text)
     if not name:
-        return [send(chat_id, "Напиши имя, как подписать в отметках. Например: Маша.")]
+        return [send(chat_id, "Напиши имя, как подписать в отметках. Например: Маша. Юзернейм не приму.")]
     pending = (_session(sessions, chat_id).get("draft") or {}).get("next")
     store.set_name(chat_id, name)
     _clear(sessions, chat_id)
     actions = [send(chat_id, f"Привет, {esc(name)}.", reply_kb(name))]
     if pending == "new" and is_setter(name):
         sessions[chat_id] = {"step": "title", "draft": {}}
-        actions.append(send(chat_id, "Своё название. Например: 046 Black."))
+        actions.append(send(chat_id, "Своё название, например 046 Black."))
     elif pending == "new":
-        actions.append(send(
-            chat_id,
-            "Ставить задачи могут Елизавета, Диля и Босс. Нажми «Имя» и напиши одно из этих имён.",
-        ))
+        actions.append(send(chat_id, "Ставить задачи могут Елизавета, Диля и Босс."))
     return actions
 
 
@@ -553,10 +570,16 @@ def list_tasks(store: Store, chat_id: int, status: str) -> list:
     if not tasks:
         text = "Доска пустая." if status == "open" else "Закрытых нет."
         return [send(chat_id, text)]
+    user = store.user(chat_id)
+    name = user["name"] if user else ""
     actions = []
     for task in tasks[:20]:
-        header = "Закрыта" if status == "closed" else "Новая раздача"
-        actions.append(send(chat_id, notice_text(task, header, show_from=True), open_markup(task)))
+        actions.append(send(
+            chat_id,
+            posted_text(task),
+            card_markup(task, name),
+            remember=task["id"],
+        ))
     return actions
 
 
@@ -621,14 +644,11 @@ def on_menu(store: Store, sessions: dict, chat_id: int, text: str) -> list:
         user = store.user(chat_id)
         if not user:
             sessions[chat_id] = {"step": "name", "draft": {"next": "new"}}
-            return [send(chat_id, "Напиши имя, как подписать в отметках. Например: Босс.")]
+            return [send(chat_id, "Напиши имя, как подписать в отметках. Например: Маша.")]
         if not is_setter(user["name"]):
-            return [send(
-                chat_id,
-                "Ставить задачи могут Елизавета, Диля и Босс. Нажми «Имя» и напиши одно из этих имён.",
-            )]
+            return [send(chat_id, "Ставить задачи могут Елизавета, Диля и Босс.")]
         sessions[chat_id] = {"step": "title", "draft": {}}
-        return [send(chat_id, "Своё название. Например: 046 Black.")]
+        return [send(chat_id, "Своё название, например 046 Black.")]
 
     user, missing = _require_user(store, sessions, chat_id)
     if missing:
@@ -665,7 +685,7 @@ def _require_user(store: Store, sessions: dict, chat_id: int) -> tuple[dict | No
 
 def _query_prompt(channel: str) -> str:
     if channel == "keyword":
-        return "Напиши ключ."
+        return "Напиши само слово."
     return "Артикул конкурента: цифры или ссылка."
 
 
@@ -701,7 +721,7 @@ def on_step(store: Store, sessions: dict, chat_id: int, text: str, message_id: i
     if current == "title":
         title = " ".join(text.split())
         if not title or title.startswith("/") or len(title) > 80:
-            return [send(chat_id, "Напиши название. Например: 046 Black.")]
+            return [send(chat_id, "Своё название, например 046 Black.")]
         draft["title"] = title
         step["step"] = "nm"
         return [send(chat_id, "Артикул Wildberries: цифры или ссылка на карточку.")]
@@ -727,7 +747,7 @@ def on_step(store: Store, sessions: dict, chat_id: int, text: str, message_id: i
         return [send(chat_id, _query_prompt(channel))]
     if current in ("query", "edit_query"):
         if not _apply_query(draft, text):
-            hint = "Напиши ключ." if draft.get("channel") == "keyword" else "Нужны цифры артикула конкурента или ссылка."
+            hint = _query_prompt(draft.get("channel") or "")
             return [send(chat_id, hint)]
         if current == "edit_query":
             task = store.task(draft.get("task_id") or "")
@@ -756,7 +776,7 @@ def on_step(store: Store, sessions: dict, chat_id: int, text: str, message_id: i
             "marks": [],
             "status": "open",
         }
-        return [send(chat_id, notice_text(preview, "Новая раздача", show_from=True), inline([
+        return [send(chat_id, posted_text(preview, "Новая раздача"), inline([
             [("Поставить", "post")],
             [("Отмена", "drop")],
         ]))]
@@ -893,17 +913,25 @@ def on_callback(store: Store, sessions: dict, chat_id: int, data: str, message_i
             return [alert("Ставить задачи могут Елизавета, Диля и Босс.", True)]
         task = store.create_task(chat_id=chat_id, name=user["name"], draft=draft)
         _clear(sessions, chat_id)
-        text = notice_text(task, "Новая раздача", show_from=True)
-        markup = open_markup(task)
+        text = posted_text(task, "Новая раздача")
         actions = []
         if message_id:
-            actions.append(edit(chat_id, message_id, text, markup))
+            actions.append(edit(
+                chat_id, message_id, text, card_markup(task, user["name"]), remember=task["id"],
+            ))
         else:
-            actions.append(send(chat_id, text, markup))
+            actions.append(send(
+                chat_id, text, card_markup(task, user["name"]), remember=task["id"],
+            ))
         for other in store.users.values():
             if int(other["chat_id"]) == int(chat_id):
                 continue
-            actions.append(send(int(other["chat_id"]), text, markup))
+            actions.append(send(
+                int(other["chat_id"]),
+                text,
+                card_markup(task, other["name"]),
+                remember=task["id"],
+            ))
         actions.append(alert("Поставил.", False))
         return actions
 

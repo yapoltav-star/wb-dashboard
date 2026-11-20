@@ -90,11 +90,14 @@ class RazdachiBotTest(unittest.TestCase):
         self.assertEqual(bot.board_line(task), "048 блэк 0/3 конк. 1421308560")
         self.assertIn("Пока никто не отметил", bot.card_text(task))
         edited = next(item for item in posted if item["op"] == "edit")
-        self.assertEqual(labels(edited["markup"]), ["Открыть"])
+        self.assertIn("Я раздала", labels(edited["markup"]))
+        self.assertIn("Закрыть", labels(edited["markup"]))
+        self.assertIn("Пока никто не отметил", edited["text"])
         self.assertIn("План 3 · пока 0", edited["text"])
         board = say(self.store, self.sessions, 1, "Доска")
         self.assertTrue(board[0]["text"].startswith("Новая раздача"))
-        self.assertEqual(labels(board[0]["markup"]), ["Открыть"])
+        self.assertIn("Пока никто не отметил", board[0]["text"])
+        self.assertIn("Я раздала", labels(board[0]["markup"]))
 
     def test_keyword_line_and_broadcast_to_marker(self):
         self.join(2, "Маша")
@@ -111,11 +114,10 @@ class RazdachiBotTest(unittest.TestCase):
         chats = [item["chat_id"] for item in posted if item["op"] == "send"]
         self.assertIn(2, chats)
         marker = next(item for item in posted if item["op"] == "send" and item["chat_id"] == 2)
-        self.assertEqual(labels(marker["markup"]), ["Открыть"])
+        self.assertEqual(labels(marker["markup"]), ["Я раздала"])
         self.assertIn("По ключу: смарт часы женские", marker["text"])
-        self.assertIn("План 3 · пока 0", marker["text"])
-        opened = tap(self.store, self.sessions, 1, f"card:{task['id']}")
-        boss = next(item for item in opened if item["op"] == "send")
+        self.assertIn("Пока никто не отметил", marker["text"])
+        boss = next(item for item in posted if item["op"] == "edit")
         self.assertIn("Я раздала", labels(boss["markup"]))
         self.assertIn("Закрыть", labels(boss["markup"]))
         self.assertIn("Удалить", labels(boss["markup"]))
@@ -200,7 +202,7 @@ class RazdachiBotTest(unittest.TestCase):
         self.assertTrue(closed[0]["text"].startswith("Закрыта"))
         self.assertIn("048 блэк", closed[0]["text"])
         self.assertIn("План 2 · раздали 1 · ещё 1", closed[0]["text"])
-        self.assertEqual(labels(closed[0]["markup"]), ["Открыть"])
+        self.assertEqual(labels(closed[0]["markup"]), ["Вернуть в работу"])
         tap(self.store, self.sessions, 1, f"back:{task_id}")
         self.assertEqual(self.store.tasks[0]["status"], "open")
 
@@ -225,7 +227,7 @@ class RazdachiBotTest(unittest.TestCase):
 
     def test_new_button_asks_name_then_title(self):
         asked = say(self.store, self.sessions, 7, "Новая раздача")
-        self.assertIn("Босс", asked[0]["text"])
+        self.assertIn("Маша", asked[0]["text"])
         followed = say(self.store, self.sessions, 7, "Босс")
         self.assertTrue(any("Своё название" in item["text"] for item in followed))
         self.assertEqual(self.sessions[7]["step"], "title")
