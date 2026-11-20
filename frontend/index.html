@@ -2237,7 +2237,12 @@ function rc(v) {
   return '#F04438';
 }
 
-function showSection(sec, btn) {
+function showSection(sec, btn, updateHistory = true) {
+  // Keep the existing section intact; its URL can also be opened directly.
+  if(updateHistory) {
+    const path = sec === 'growth' ? '/rnp' : '/';
+    history.pushState({section: sec}, '', path);
+  }
   document.querySelectorAll('.tb-nav-item').forEach(t => t.classList.remove('on'));
   btn.classList.add('on');
   document.getElementById('subnav-products').style.display = sec === 'products' ? 'flex' : 'none';
@@ -17453,10 +17458,18 @@ async function saveCfoSnapshot() {
   }
 }
 
+function sectionFromPath() {
+  return location.pathname.replace(/\/$/, '').toLowerCase() === '/rnp' ? 'growth' : 'catalog';
+}
+function openSectionFromLocation() {
+  const section = history.state?.section || sectionFromPath();
+  const button = document.querySelector(`.tb-nav-item[onclick*="'${section}'"]`);
+  showSection(section, button || document.querySelector('.tb-nav-item'), false);
+}
+window.addEventListener('popstate', openSectionFromLocation);
 loadData().then(() => {
-  // Стартовая вкладка — Товары
-  const catalogBtn = document.querySelector('.tb-nav-item[onclick*="catalog"]');
-  showSection('catalog', catalogBtn || document.querySelector('.tb-nav-item'));
+  history.replaceState({section: sectionFromPath()}, '', location.href);
+  openSectionFromLocation();
 });
 </script>
 </body>

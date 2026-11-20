@@ -9879,6 +9879,8 @@ _HTML_NO_CACHE = {
 
 
 @app.get("/")
+@app.get("/rnp")
+@app.get("/RNP", include_in_schema=False)
 def root():
     index = FRONTEND_DIR / "index.html"
     if index.exists():
