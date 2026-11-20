@@ -7811,7 +7811,7 @@ function paceStockBadge(a) {
     label = names ? ('склад 0: ' + names) : 'склад обнулился';
     tip = 'Падение при обнулении склада — вероятно вырос срок доставки';
   } else if(geo === 'narrow' && a.stock_flag !== 'oos') {
-    label = `узко ${a.wh_live||0} скл.`;
+    label = `${a.wh_live||0} скл.`;
     tip = 'Падение при узкой географии складов';
   }
   return ` <span class="cfo-pill bad" title="${escapeHtml(tip)}">${escapeHtml(label)}</span>`;
