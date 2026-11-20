@@ -13620,12 +13620,14 @@ async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, compe
     }
   }
   const already = shelfRazdachiAlready(kind, ownNm, competitorNm);
-  let ask = `Отправить в ${who}?\n\n${preview}` + (plan ? `\nПлан: ${plan}` : '');
+  let ask = plan
+    ? `Проверь и поставь на доску.\n\n${ownVendor || ownNm}\n${ownNm}\nЧерез конкурента: ${competitorNm}\nОт: Босс\n\nПлан ${plan} · пока 0`
+    : `Отправить в ${who}?\n\n${preview}`;
   if(already) {
-    ask = `Уже отправляли в ${who}` +
+    ask = `Уже ставили` +
       (already.task_id ? ` (#${already.task_id})` : '') +
       (shelfSentWhen(already) ? ` ${shelfSentWhen(already)}` : '') +
-      `.\nОтправить ещё раз?\n\n${preview}` + (plan ? `\nПлан: ${plan}` : '');
+      `.\nПоставить ещё раз?\n\n` + ask;
   }
   if(!confirm(ask)) return;
   const prev = btn ? btn.textContent : '';

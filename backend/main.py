@@ -15708,40 +15708,55 @@ def razdachi_board_card(
         "competitor_name": comp_name or "",
         "competitor_link": f"https://www.wildberries.ru/catalog/{competitor_nm}/detail.aspx",
         "plan": int(plan or 0),
-        "setter": "Дашборд",
+        "setter": "Босс",
         "marks": [],
         "status": "open",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
-def razdachi_board_text(card: dict) -> str:
-    """Текст карточки, как её показывает «Доска» бота."""
-    title = card.get("title") or ""
-    nm = card.get("nm_id") or ""
-    channel = card.get("channel_label") or "Через конкурента"
-    comp = card.get("competitor_nm_id") or ""
-    bits = [card.get("competitor_brand") or "", card.get("competitor_name") or "", str(comp)]
-    comp_label = " · ".join(b for b in bits if b)
+def razdachi_board_line(card: dict) -> str:
+    """Строка на «Доске»: «048 блэк 0/3 конк. 1421308560»."""
     plan = int(card.get("plan") or 0)
-    lines = [
-        str(title),
-        str(nm),
-        card.get("link") or "",
-        f"{channel}: {comp_label}" if comp_label else channel,
-        card.get("competitor_link") or "",
-        f"Поставил: {card.get('setter') or 'Дашборд'}",
-    ]
-    if plan > 0:
-        lines.append(f"План: {plan}")
-    marks = card.get("marks") or []
-    if marks:
-        lines.append("Отметили: " + ", ".join(
-            f"{m.get('name')} {m.get('count')}" for m in marks if isinstance(m, dict)
-        ))
+    done = 0
+    for mark in card.get("marks") or []:
+        if isinstance(mark, dict):
+            try:
+                done += int(mark.get("count") or 0)
+            except (TypeError, ValueError):
+                pass
+    if card.get("channel") == "competitor":
+        via = f"конк. {card.get('competitor_nm_id') or ''}".strip()
     else:
-        lines.append("Пока никто не отметил")
-    return "\n".join(line for line in lines if line)
+        via = f"ключ {card.get('keyword') or card.get('competitor_name') or ''}".strip()
+    prefix = "✓ " if plan and done >= plan else ""
+    return f"{prefix}{card.get('title') or ''} {done}/{plan} {via}".strip()
+
+
+def razdachi_board_text(card: dict) -> str:
+    """Текст перед кнопкой «Поставить», как в боте."""
+    plan = int(card.get("plan") or 0)
+    done = 0
+    for mark in card.get("marks") or []:
+        if isinstance(mark, dict):
+            try:
+                done += int(mark.get("count") or 0)
+            except (TypeError, ValueError):
+                pass
+    if card.get("channel") == "competitor":
+        via = f"Через конкурента: {card.get('competitor_nm_id') or ''}"
+    else:
+        via = f"По ключу: {card.get('keyword') or card.get('competitor_name') or ''}"
+    return "\n".join([
+        "Проверь и поставь на доску.",
+        "",
+        str(card.get("title") or ""),
+        str(card.get("nm_id") or ""),
+        via,
+        f"От: {card.get('setter') or 'Босс'}",
+        "",
+        f"План {plan} · пока {done}",
+    ])
 
 
 def _razdachi_board_tasks() -> list:
@@ -16027,6 +16042,7 @@ async def razdachi_task(request: dict):
         "kind": kind,
         "plan": plan,
         "card": card if kind == "shelf" else None,
+        "board_line": razdachi_board_line(card) if kind == "shelf" else None,
         "board_saved": saved,
         "sent": rec,
     }
