@@ -15669,7 +15669,10 @@ def _crm_find_employee(employees: list, aliases: tuple) -> dict | None:
 
 
 RAZDACHI_BOT_USERNAME = "razdachi_team_bot"
+RAZDACHI_CHATS_KEY = "razdachi_bot_chats"
 RAZDACHI_CHAT_ID = (os.getenv("RAZDACHI_CHAT_ID") or "").strip()
+_RAZDACHI_CHATS = {"loaded": False, "ids": []}
+_RAZDACHI_CHATS_LOCK = threading.RLock()
 
 
 def razdachi_task_text(
@@ -15715,36 +15718,180 @@ def razdachi_open_url(text: str) -> str:
     return f"https://t.me/{RAZDACHI_BOT_USERNAME}?text={quote(text or '', safe='')}"
 
 
-def _razdachi_try_send(text: str) -> dict:
-    """Если задан RAZDACHI_CHAT_ID, шлём текст ботом дашборда в этот чат.
-    В личку @razdachi_team_bot бот писать не может — тогда кнопка открывает черновик.
-    """
-    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-    chat = RAZDACHI_CHAT_ID
-    if not token or not chat:
-        return {"delivered": False, "reason": "нет RAZDACHI_CHAT_ID"}
-    try:
-        resp = httpx.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={
-                "chat_id": chat,
-                "text": (text or "")[:4000],
-                "disable_web_page_preview": True,
-            },
-            timeout=20,
-        )
-        data = {}
+def _razdachi_token() -> str:
+    return (os.getenv("RAZDACHI_BOT_TOKEN") or "").strip()
+
+
+def _razdachi_env_chat_ids() -> list:
+    raw = (os.getenv("RAZDACHI_CHAT_IDS") or "").strip()
+    if RAZDACHI_CHAT_ID:
+        raw = f"{raw},{RAZDACHI_CHAT_ID}" if raw else RAZDACHI_CHAT_ID
+    ids = []
+    for part in raw.replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
         try:
-            data = resp.json() or {}
-        except Exception:
-            data = {}
-        if resp.is_success and data.get("ok"):
-            mid = (data.get("result") or {}).get("message_id")
-            return {"delivered": True, "message_id": mid}
-        desc = data.get("description") or f"HTTP {resp.status_code}"
-        return {"delivered": False, "reason": str(desc)[:200]}
+            ids.append(int(part))
+        except ValueError:
+            logger.warning(f"razdachi: не число в RAZDACHI_CHAT_IDS: {part!r}")
+    return ids
+
+
+def _razdachi_chat_ids() -> list:
+    with _RAZDACHI_CHATS_LOCK:
+        if not _RAZDACHI_CHATS["loaded"]:
+            ids = _razdachi_env_chat_ids()
+            try:
+                stored = get_setting_json(RAZDACHI_CHATS_KEY, {}) or {}
+                for row in stored.get("chats") or []:
+                    raw_id = row.get("id") if isinstance(row, dict) else row
+                    ids.append(int(raw_id))
+            except Exception as e:
+                logger.warning(f"razdachi chats load: {e}")
+            uniq = []
+            seen = set()
+            for cid in ids:
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                uniq.append(cid)
+            _RAZDACHI_CHATS["ids"] = uniq
+            _RAZDACHI_CHATS["loaded"] = True
+        return list(_RAZDACHI_CHATS["ids"])
+
+
+def _razdachi_remember_chat(chat: dict) -> None:
+    try:
+        cid = int((chat or {}).get("id"))
+    except (TypeError, ValueError):
+        return
+    if cid in _razdachi_chat_ids():
+        return
+    with _RAZDACHI_CHATS_LOCK:
+        ids = list(_RAZDACHI_CHATS.get("ids") or [])
+        if cid not in ids:
+            ids.append(cid)
+            _RAZDACHI_CHATS["ids"] = ids
+        env_ids = set(_razdachi_env_chat_ids())
+        rows = [{"id": known} for known in ids if known not in env_ids]
+    try:
+        save_setting_value(RAZDACHI_CHATS_KEY, {"chats": rows})
     except Exception as e:
-        return {"delivered": False, "reason": str(e)[:200]}
+        logger.warning(f"razdachi chats save: {e}")
+
+
+def _razdachi_api(method: str, payload: dict | None = None, timeout: float = 20):
+    token = _razdachi_token()
+    if not token:
+        return None
+    resp = httpx.post(
+        f"https://api.telegram.org/bot{token}/{method}",
+        json=payload or {},
+        timeout=timeout,
+    )
+    try:
+        data = resp.json() or {}
+    except Exception:
+        data = {}
+    return resp, data
+
+
+def _razdachi_send_one(chat_id: int, text: str) -> dict:
+    try:
+        got = _razdachi_api("sendMessage", {
+            "chat_id": chat_id,
+            "text": (text or "")[:4000],
+            "disable_web_page_preview": True,
+        })
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+    if not got:
+        return {"ok": False, "error": "no_token"}
+    resp, data = got
+    if resp.is_success and data.get("ok"):
+        return {"ok": True, "message_id": (data.get("result") or {}).get("message_id")}
+    return {"ok": False, "error": str(data.get("description") or f"HTTP {resp.status_code}")[:200]}
+
+
+def _razdachi_try_send(text: str) -> dict:
+    """Шлёт задачу от @razdachi_team_bot тем, кто ему уже написал, и в чаты из RAZDACHI_CHAT_IDS."""
+    if not _razdachi_token():
+        return {"delivered": False, "reason": "no_token", "sent_count": 0}
+    chats = _razdachi_chat_ids()
+    if not chats:
+        return {"delivered": False, "reason": "no_chats", "sent_count": 0}
+    sent = 0
+    last_id = None
+    errors = []
+    for cid in chats:
+        one = _razdachi_send_one(cid, text)
+        if one.get("ok"):
+            sent += 1
+            last_id = one.get("message_id")
+        else:
+            errors.append(f"{cid}: {one.get('error')}")
+    if sent:
+        return {
+            "delivered": True,
+            "message_id": last_id,
+            "sent_count": sent,
+            "reason": None,
+        }
+    return {
+        "delivered": False,
+        "reason": "send_failed",
+        "sent_count": 0,
+        "error": "; ".join(errors)[:200],
+    }
+
+
+def _razdachi_poll_loop():
+    """@razdachi_team_bot живёт в этом же процессе. Кто напишет боту — получит задачи с полок."""
+    if not _razdachi_token():
+        return
+    try:
+        _razdachi_api("deleteWebhook", {"drop_pending_updates": False}, timeout=15)
+        me = _razdachi_api("getMe", timeout=15)
+        if me and me[1].get("ok"):
+            username = (me[1].get("result") or {}).get("username") or RAZDACHI_BOT_USERNAME
+            logger.info(f"razdachi: бот @{username} в дашборде")
+    except Exception as e:
+        logger.warning(f"razdachi getMe: {e}")
+    offset = None
+    backoff = 1
+    while True:
+        try:
+            payload = {"timeout": 25, "allowed_updates": ["message"]}
+            if offset is not None:
+                payload["offset"] = offset
+            got = _razdachi_api("getUpdates", payload, timeout=40)
+            backoff = 1
+            if not got:
+                time.sleep(2)
+                continue
+            resp, data = got
+            if not (resp.is_success and data.get("ok")):
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60)
+                continue
+            for upd in data.get("result") or []:
+                offset = int(upd.get("update_id") or 0) + 1
+                msg = upd.get("message") or {}
+                chat = msg.get("chat") or {}
+                if chat.get("id") is None:
+                    continue
+                _razdachi_remember_chat(chat)
+                text = str(msg.get("text") or "").strip()
+                if text.lower().startswith("/start"):
+                    _razdachi_send_one(
+                        int(chat["id"]),
+                        "Бот раздач на связи. Задачи с полок дашборда будут приходить сюда.",
+                    )
+        except Exception as e:
+            logger.warning(f"razdachi poll: {e}")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
 
 
 @app.post("/api/razdachi-task")
@@ -15780,36 +15927,40 @@ async def razdachi_task(request: dict):
         comp_name=comp_name,
     )
     sent_tg = _razdachi_try_send(text)
-    try:
-        rec = _crm_sent_record(
-            "razdachi",
-            kind,
-            own_nm,
-            competitor_nm,
-            sent_tg.get("message_id"),
-            "@" + RAZDACHI_BOT_USERNAME,
-        )
-    except Exception as e:
-        logger.warning(f"razdachi sent record: {e}")
-        rec = {
-            "key": _crm_sent_key("razdachi", kind, own_nm, competitor_nm),
-            "manager": "razdachi",
-            "kind": kind,
-            "own_nm_id": own_nm,
-            "competitor_nm_id": competitor_nm,
-            "task_id": sent_tg.get("message_id"),
-            "assignee_name": "@" + RAZDACHI_BOT_USERNAME,
-            "at": datetime.now(timezone.utc).isoformat(),
-        }
+    rec = None
+    if sent_tg.get("delivered"):
+        try:
+            rec = _crm_sent_record(
+                "razdachi",
+                kind,
+                own_nm,
+                competitor_nm,
+                sent_tg.get("message_id"),
+                "@" + RAZDACHI_BOT_USERNAME,
+            )
+        except Exception as e:
+            logger.warning(f"razdachi sent record: {e}")
+            rec = {
+                "key": _crm_sent_key("razdachi", kind, own_nm, competitor_nm),
+                "manager": "razdachi",
+                "kind": kind,
+                "own_nm_id": own_nm,
+                "competitor_nm_id": competitor_nm,
+                "task_id": sent_tg.get("message_id"),
+                "assignee_name": "@" + RAZDACHI_BOT_USERNAME,
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
     return {
         "ok": True,
         "delivered": bool(sent_tg.get("delivered")),
+        "sent_count": int(sent_tg.get("sent_count") or 0),
+        "reason": sent_tg.get("reason"),
         "text": text,
         "open_url": razdachi_open_url(text),
         "bot": "@" + RAZDACHI_BOT_USERNAME,
         "task_id": sent_tg.get("message_id"),
         "assignee_name": "@" + RAZDACHI_BOT_USERNAME,
-        "notify_error": None if sent_tg.get("delivered") else sent_tg.get("reason"),
+        "notify_error": None if sent_tg.get("delivered") else (sent_tg.get("error") or sent_tg.get("reason")),
         "kind": kind,
         "sent": rec,
     }
@@ -17849,6 +18000,8 @@ def _warm_caches_after_start():
 
 threading.Thread(target=_warm_caches_after_start, daemon=True, name="warmup").start()
 threading.Thread(target=sync_promo_calendar, daemon=True, name="promo-cal-boot").start()
+if _razdachi_token():
+    threading.Thread(target=_razdachi_poll_loop, daemon=True, name="razdachi-bot").start()
 
 
 # ---------- Телеграм-бот (только чтение) ----------

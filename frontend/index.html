@@ -13634,8 +13634,19 @@ async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, compe
     if(!r.ok || !d.ok) {
       throw new Error(d.error || d.detail || `HTTP ${r.status}`);
     }
+    if(d.reason === 'no_token') {
+      alert('Добавь @razdachi_team_bot в дашборд: в Railway переменная RAZDACHI_BOT_TOKEN, токен этого бота из @BotFather.');
+      if(btn) { btn.disabled = false; btn.textContent = prev; }
+      return;
+    }
+    if(d.reason === 'no_chats') {
+      alert('Бот уже в дашборде. Пусть команда напишет @razdachi_team_bot любое сообщение — после этого задачи будут приходить туда сами.');
+      if(btn) { btn.disabled = false; btn.textContent = prev; }
+      return;
+    }
     if(d.delivered) {
-      alert(`Задача ушла в ${who}`);
+      const n = Number(d.sent_count) || 0;
+      alert(n > 1 ? `Задача ушла в ${who} · ${n} чата` : `Задача ушла в ${who}`);
     } else if(d.open_url) {
       try {
         if(d.text && navigator.clipboard && navigator.clipboard.writeText) {
@@ -13647,19 +13658,24 @@ async function sendShelfBoostTask(manager, ownVendor, ownNm, competitorNm, compe
         ? `Открыл ${who}. Текст задачи уже в поле — нажми «Отправить».`
         : `Текст задачи скопирован. Открой ${who} и вставь его.`);
     }
-    if(d.sent && d.sent.key) SHELF_SENT[d.sent.key] = d.sent;
-    else {
-      SHELF_SENT[shelfSentKey(manager, kind, ownNm, competitorNm)] = {
-        key: shelfSentKey(manager, kind, ownNm, competitorNm),
-        manager, kind, own_nm_id: Number(ownNm), competitor_nm_id: Number(competitorNm),
-        task_id: d.task_id, at: new Date().toISOString(),
-      };
-    }
-    refreshShelfSuggestPanel();
-    if(btn && btn.isConnected) {
+    if(d.delivered) {
+      if(d.sent && d.sent.key) SHELF_SENT[d.sent.key] = d.sent;
+      else {
+        SHELF_SENT[shelfSentKey(manager, kind, ownNm, competitorNm)] = {
+          key: shelfSentKey(manager, kind, ownNm, competitorNm),
+          manager, kind, own_nm_id: Number(ownNm), competitor_nm_id: Number(competitorNm),
+          task_id: d.task_id, at: new Date().toISOString(),
+        };
+      }
+      refreshShelfSuggestPanel();
+      if(btn && btn.isConnected) {
+        btn.disabled = false;
+        btn.classList.add('on');
+        btn.textContent = '✓ ' + (kind === 'cart_warmup' ? 'Корзины' : 'Раздача');
+      }
+    } else if(btn) {
       btn.disabled = false;
-      btn.classList.add('on');
-      btn.textContent = '✓ ' + (kind === 'cart_warmup' ? 'Корзины' : 'Раздача');
+      btn.textContent = prev;
     }
   } catch(e) {
     alert('Не отправилось: ' + (e.message || e));
