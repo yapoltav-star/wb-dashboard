@@ -13703,15 +13703,22 @@ def fetch_wb_search_catalog(query: str, dest: int, max_pages: int = 1) -> dict:
 
 
 def find_own_in_wb_search(query: str, dest: int, limit: int = 100) -> dict:
-    """Топ выдачи по ключу: доли брендов + наши карточки."""
+    """Топ выдачи по ключу: доли брендов + наши карточки.
+
+    Наша карточка — nm из склада/рейтингов или бренд PVS, как на полках.
+    Повтор nm в выдаче не сдвигает место: позиция — индекс в списке, первое вхождение.
+    Кабинет считает места в браузере по search.wb.ru: с сервера этот каталог закрыт,
+    а napi часто отдаёт другой порядок.
+    """
     query = (query or "").strip()
     limit = max(10, min(int(limit or 100), 500))
     pages = max(1, min((limit + 99) // 100, 5))
     cat = fetch_wb_search_catalog(query, dest, max_pages=pages)
-    own = _own_nm_vendor_map()
+    own = _own_nm_vendor_map_cached()
     hits = []
     brand_counts: dict[str, int] = {}
     checked = 0
+    seen_nm = set()
     own_brand_names = set()
     for p in (cat.get("products") or [])[:limit]:
         checked += 1
@@ -13722,9 +13729,13 @@ def find_own_in_wb_search(query: str, dest: int, limit: int = 100) -> dict:
             pid = int(pid)
         except (TypeError, ValueError):
             pid = None
-        brand = str(p.get("brand") or "").strip() or "без бренда"
+        brand = str(p.get("brand") or p.get("brandName") or "").strip() or "без бренда"
         brand_counts[brand] = brand_counts.get(brand, 0) + 1
-        if pid is None or pid not in own:
+        is_pvs = brand.strip().upper() == "PVS"
+        if pid is None or pid in seen_nm:
+            continue
+        seen_nm.add(pid)
+        if pid not in own and not is_pvs:
             continue
         own_brand_names.add(brand)
         hits.append({
@@ -13834,18 +13845,34 @@ def get_search_keywords():
     }
 
 
+@app.get("/api/own-nm-map")
+def own_nm_map():
+    """nm_id → артикул продавца. Тот же набор, по которому полки узнают наши карточки."""
+    mapped = _own_nm_vendor_map_cached()
+    articles = [
+        {"nm_id": int(nm), "vendor_code": vc}
+        for nm, vc in sorted(mapped.items(), key=lambda kv: (str(kv[1]).lower(), int(kv[0])))
+    ]
+    return {
+        "articles": articles,
+        "count": len(articles),
+        "ok": bool(_OWN_NM_MAP_CACHE.get("source_ok")),
+    }
+
+
 @app.post("/api/search-own-in-query")
 def search_own_in_query(request: dict):
-    """Топ-100 по ключу: доли брендов в выдаче. Body: {query, dest?, limit?}"""
+    """Наши карточки в топе ключа. Кабинет считает места в браузере; этот метод — запасной.
+    Body: {query, dest?, limit?}"""
     if not isinstance(request, dict):
         raise HTTPException(status_code=400, detail="invalid body")
     query = str(request.get("query") or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="query required")
     try:
-        dest = int(request.get("dest") if request.get("dest") is not None else -1257786)
+        dest = int(request.get("dest") if request.get("dest") is not None else 1259570991)
     except (TypeError, ValueError):
-        dest = -1257786
+        dest = 1259570991
     try:
         limit = int(request.get("limit") if request.get("limit") is not None else 100)
     except (TypeError, ValueError):
@@ -13860,7 +13887,7 @@ def search_own_in_query(request: dict):
 def search_positions(request: dict):
     """Позиции nm_id в клиентском поиске WB по списку запросов.
     Body: {nm_id, dest?, queries: [str], max_pages?}
-    dest по умолчанию Москва (-1257786).
+    dest по умолчанию Москва (1259570991).
     Пачки маленькие — иначе WB отвечает 429.
     """
     if not isinstance(request, dict):
@@ -13871,9 +13898,9 @@ def search_positions(request: dict):
         raise HTTPException(status_code=400, detail="nm_id required")
 
     try:
-        dest = int(request.get("dest") if request.get("dest") is not None else -1257786)
+        dest = int(request.get("dest") if request.get("dest") is not None else 1259570991)
     except (TypeError, ValueError):
-        dest = -1257786
+        dest = 1259570991
 
     max_pages = request.get("max_pages", 3)
     try:
@@ -14562,12 +14589,14 @@ _WATCH_SHAPE_LABEL = {
 def _own_nm_vendor_map() -> dict:
     """nm_id(int) → vendor_code для наших карточек."""
     out = {}
+    source_ok = False
     try:
         st = httpx.get(
             f"{SUPABASE_URL}/rest/v1/stock_totals?select=nm_id,vendor_code&limit=5000",
             headers=sb_headers(), timeout=15,
         )
         if st.is_success:
+            source_ok = True
             for r in st.json() or []:
                 nm = r.get("nm_id")
                 if nm is None:
@@ -14587,6 +14616,7 @@ def _own_nm_vendor_map() -> dict:
             headers=sb_headers(), timeout=15,
         )
         if rt.is_success:
+            source_ok = True
             for r in rt.json() or []:
                 nm = r.get("nm_id")
                 art = (r.get("article") or "").strip()
@@ -14600,21 +14630,31 @@ def _own_nm_vendor_map() -> dict:
                     out[nm] = art
     except Exception as e:
         logger.warning(f"own nm map ratings: {e}")
+    _OWN_NM_MAP_CACHE["source_ok"] = source_ok
     return out
 
 
 _SHELF_TOP_CACHE = {"ts": 0.0, "days": 0, "items": []}
-_OWN_NM_IDS_CACHE = {"ts": 0.0, "ids": set()}
+_OWN_NM_MAP_CACHE = {"ts": 0.0, "map": {}}
+
+
+def _own_nm_vendor_map_cached() -> dict:
+    now = time.time()
+    if (
+        _OWN_NM_MAP_CACHE.get("ready")
+        and _OWN_NM_MAP_CACHE.get("source_ok")
+        and now - float(_OWN_NM_MAP_CACHE.get("ts") or 0) < 300
+    ):
+        return _OWN_NM_MAP_CACHE.get("map") or {}
+    mapped = _own_nm_vendor_map()
+    _OWN_NM_MAP_CACHE["ts"] = now
+    _OWN_NM_MAP_CACHE["map"] = mapped
+    _OWN_NM_MAP_CACHE["ready"] = bool(_OWN_NM_MAP_CACHE.get("source_ok"))
+    return mapped
 
 
 def _own_nm_ids_cached() -> set:
-    now = time.time()
-    if _OWN_NM_IDS_CACHE["ids"] and now - _OWN_NM_IDS_CACHE["ts"] < 300:
-        return _OWN_NM_IDS_CACHE["ids"]
-    ids = set(_own_nm_vendor_map().keys())
-    _OWN_NM_IDS_CACHE["ts"] = now
-    _OWN_NM_IDS_CACHE["ids"] = ids
-    return ids
+    return set(_own_nm_vendor_map_cached().keys())
 
 
 def _own_top_sellers_week(top_n: int = 20, days: int = 7) -> list:

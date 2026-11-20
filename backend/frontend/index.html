@@ -1809,7 +1809,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
 
       <div>
         <div style="font-size:11px;font-weight:600;color:var(--wb-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">Глубина поиска</div>
-        <select id="posMaxPages"
+        <select id="posMaxPages" onchange="closePosPresence()"
           style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;background:#fff">
           <option value="1">Топ-100</option>
           <option value="3" selected>Топ-300</option>
@@ -1835,7 +1835,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
         </div>
       </div>
     </div>
-    <div id="posStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Позиция как на сайте WB в инкогнито · кликни ключ — доли брендов в топ-100 · тяни строки за ⋮⋮</div>
+    <div id="posStatus" style="margin-top:10px;font-size:12px;color:var(--wb-muted)">Позиция как на сайте WB в инкогнито · кликни ключ — наши карточки и места · тяни строки за ⋮⋮</div>
     <div id="posPresencePanel" style="display:none;margin-top:12px"></div>
   </div>
 
@@ -11713,8 +11713,79 @@ function fmtSok(n) {
   return Number(n).toFixed(2);
 }
 
+function posMaxPages() {
+  return Math.max(1, Math.min(10, Number((document.getElementById('posMaxPages')||{}).value || 3)));
+}
+
 function posPresenceCacheKey(query, dest) {
-  return `b2|${dest}|${String(query||'').toLowerCase()}`;
+  return `site|${dest}|${posMaxPages()}|${String(query||'').toLowerCase()}`;
+}
+
+let POS_OWN_MAP = null;
+
+async function loadPosOwnMap() {
+  if(POS_OWN_MAP) return POS_OWN_MAP;
+  const map = {};
+  const add = (nm, vc) => {
+    nm = Number(nm);
+    if(!nm) return;
+    const code = String(vc || '').trim();
+    if(map[nm] == null || (code && (map[nm] === '' || map[nm] === String(nm)))) map[nm] = code;
+  };
+  (COMP_OWN_ARTICLES || []).forEach(a => add(a && a.nm_id, a && a.vendor_code));
+  (typeof MY_SHELF_CARDS !== 'undefined' ? MY_SHELF_CARDS : []).forEach(a => add(a && a.nm_id, a && a.vendor_code));
+  (typeof POS_EXPORT_ARTICLES !== 'undefined' ? POS_EXPORT_ARTICLES : []).forEach(a => add(a && a.nm_id, a && a.vendor_code));
+  if(typeof POS_ARTICLE !== 'undefined' && POS_ARTICLE && POS_ARTICLE.nm_id) add(POS_ARTICLE.nm_id, POS_ARTICLE.vendor_code);
+  let ok = false;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/own-nm-map`);
+    const d = await r.json().catch(() => ({}));
+    if(r.ok && d && d.ok !== false && Array.isArray(d.articles)) {
+      d.articles.forEach(a => add(a && a.nm_id, a && a.vendor_code));
+      ok = true;
+    }
+  } catch(e) {}
+  if(!ok) {
+    try {
+      const r = await fetch(`${RAILWAY_URL}/api/own-articles-all`);
+      const d = await r.json().catch(() => ({}));
+      if(r.ok && d && !d.error && Array.isArray(d.articles)) {
+        d.articles.forEach(a => add(a && a.nm_id, a && a.vendor_code));
+        ok = true;
+      }
+    } catch(e) {}
+  }
+  const result = {map, ok, count: Object.keys(map).length};
+  if(ok) POS_OWN_MAP = result;
+  return result;
+}
+
+function posProductIsOurs(id, brand, ownMap) {
+  if(ownMap && Object.prototype.hasOwnProperty.call(ownMap, id)) return true;
+  return String(brand || '').trim().toUpperCase() === 'PVS';
+}
+
+function collectOwnInSearchPage(products, startIndex, ownMap, seen, ours) {
+  const list = products || [];
+  for(let i = 0; i < list.length; i++) {
+    const p = list[i] || {};
+    const id = Number(p.id || p.nmId || p.nmID);
+    const position = startIndex + i + 1;
+    if(!id || seen.has(id)) continue;
+    seen.add(id);
+    const brand = String(p.brand || p.brandName || '').trim();
+    if(!posProductIsOurs(id, brand, ownMap)) continue;
+    ours.push({
+      position,
+      nm_id: id,
+      vendor_code: (ownMap && ownMap[id]) || '',
+      brand,
+      name: p.name || '',
+      thumb: wbThumbUrl(id),
+      url: wbCatalogUrl(id),
+    });
+  }
+  return startIndex + list.length;
 }
 
 function posDest() {
@@ -11734,9 +11805,10 @@ function drawPosPresencePanel(query, payload, loading, err) {
   const q = String(query || '');
   const city = (payload && payload.city) || posCityName();
   if(loading) {
+    const msg = (payload && payload.progress) || 'Смотрю выдачу на сайте WB…';
     el.innerHTML = `<div style="border:1px solid var(--wb-border);border-radius:10px;padding:12px 14px;background:var(--wb-bg)">
       <div style="font-size:13px;font-weight:600">«${escapeHtml(q)}»</div>
-      <div style="font-size:12px;color:var(--wb-muted);margin-top:4px">Считаю доли брендов в топ-100 · ${escapeHtml(city)}…</div>
+      <div style="font-size:12px;color:var(--wb-muted);margin-top:4px">${escapeHtml(msg)} · ${escapeHtml(city)}</div>
     </div>`;
     return;
   }
@@ -11750,35 +11822,55 @@ function drawPosPresencePanel(query, payload, loading, err) {
     </div>`;
     return;
   }
-  const ours = (payload && payload.ours) || [];
-  const n = payload && payload.ours_count != null ? payload.ours_count : ours.length;
+  const ours = ((payload && payload.ours) || []).slice().sort((a, b) => Number(a.position) - Number(b.position));
   const checked = Number(payload && payload.checked) || 0;
-  const brands = (payload && payload.brands) || [];
-  const ownPct = checked ? Math.round(n * 1000 / checked) / 10 : 0;
-  const maxPct = brands.reduce((m, b) => Math.max(m, Number(b.pct) || 0), 0) || 1;
-  const brandRows = brands.map(b => {
-    const pct = Number(b.pct) || 0;
-    const w = Math.max(2, Math.round(pct / maxPct * 100));
-    const own = !!b.is_own;
-    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0">
-      <div style="width:140px;flex-shrink:0;font-size:12px;font-weight:${own?'700':'500'};color:${own?'var(--wb-purple)':'inherit'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(b.brand)}">${escapeHtml(b.brand)}${own?' · наш':''}</div>
-      <div style="flex:1;height:8px;background:#EEEAE6;border-radius:4px;overflow:hidden">
-        <div style="width:${w}%;height:100%;background:${own?'var(--wb-purple)':'#4A4540'};border-radius:4px"></div>
-      </div>
-      <div style="width:86px;flex-shrink:0;text-align:right;font-size:12px;font-variant-numeric:tabular-nums">${pct.toLocaleString('ru-RU')}% · ${b.count}</div>
-    </div>`;
-  }).join('');
+  const depthLabel = checked || Number(payload && payload.depth) || (posMaxPages() * 100);
+  const body = ours.length
+    ? ours.map(it => {
+        const pos = Number(it.position) || 0;
+        const vc = it.vendor_code || (typeof shelfVendorByNm === 'function' ? shelfVendorByNm(it.nm_id) : '');
+        const wbUrl = it.url || wbCatalogUrl(it.nm_id);
+        const thumb = it.thumb || wbThumbUrl(it.nm_id);
+        return `<tr>
+          <td style="font-weight:700;font-variant-numeric:tabular-nums">${pos}</td>
+          <td><a href="${wbUrl}" target="_blank" rel="noopener">
+            <img src="${thumb}" alt="" width="36" height="36" loading="lazy"
+              style="border-radius:4px;object-fit:cover;background:#f3f3f3;display:block"
+              onerror="if(!this.dataset.fb){this.dataset.fb=1;this.src='${wbThumbUrl(it.nm_id,'jpg')}';}else{this.style.display='none'}">
+          </a></td>
+          <td>
+            <div style="font-weight:600">${vc ? escapeHtml(vc) : it.nm_id}</div>
+            <div style="font-size:11px;color:var(--wb-muted);font-variant-numeric:tabular-nums">${it.nm_id}</div>
+          </td>
+          <td>${escapeHtml(it.brand || '—')}</td>
+          <td style="font-size:12px"><a href="${wbUrl}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${escapeHtml(it.name || '')}</a></td>
+        </tr>`;
+      }).join('')
+    : `<tr><td colspan="5" style="color:var(--wb-muted);font-size:12px;padding:12px 8px">Среди первых ${depthLabel} мест наших артикулов нет</td></tr>`;
+  const mapNote = payload && payload.map_ok === false
+    ? `<div style="font-size:12px;color:var(--wb-muted);margin-top:6px">Список артикулов с сервера не открылся — показаны карточки PVS и те, что уже выбраны в кабинете.</div>`
+    : '';
   el.innerHTML = `<div style="border:1px solid var(--wb-border);border-radius:10px;padding:12px 14px;background:var(--wb-bg)">
     <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;flex-wrap:wrap">
       <div>
-        <div style="font-size:13px;font-weight:600">«${escapeHtml(q)}»</div>
-        <div style="font-size:12px;color:var(--wb-muted);margin-top:2px">${escapeHtml(city)} · топ-${checked || 100} · брендов ${brands.length} · наших карточек ${n}${checked ? ` (${ownPct}%)` : ''}</div>
+        <div style="font-size:13px;font-weight:600">Наши карточки по ключу «${escapeHtml(q)}»</div>
+        <div style="font-size:12px;color:var(--wb-muted);margin-top:2px">${escapeHtml(city)} · ${ours.length} шт · места в первых ${depthLabel}</div>
       </div>
       <button type="button" class="filter-btn" onclick="closePosPresence()" style="font-size:11px">Закрыть</button>
     </div>
-    ${brandRows
-      ? `<div style="margin-top:10px;max-height:360px;overflow:auto">${brandRows}</div>`
-      : '<div style="font-size:12px;color:var(--wb-muted);margin-top:8px">В топ-100 нет карточек</div>'}
+    ${mapNote}
+    <div style="overflow:auto;margin-top:10px;max-height:420px">
+      <table class="comp-tbl" style="width:100%">
+        <thead><tr>
+          <th style="width:64px">Место</th>
+          <th style="width:48px">Фото</th>
+          <th style="width:180px">Артикул</th>
+          <th style="width:140px">Бренд</th>
+          <th>Название</th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
   </div>`;
 }
 
@@ -11788,10 +11880,26 @@ function closePosPresence() {
   if(el) { el.style.display = 'none'; el.innerHTML = ''; }
 }
 
+async function wbSiteSearchPageRetry(query, dest, page) {
+  let last;
+  for(let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await wbSiteSearchPage(query, dest, page);
+    } catch(e) {
+      last = e;
+      const msg = String(e.message || e);
+      if(attempt >= 2 || !(msg === '429' || msg === '403' || msg.startsWith('http '))) throw e;
+      await sleepPos(msg === '429' ? 2000 : 700);
+    }
+  }
+  throw last;
+}
+
 async function inspectPosKeyword(query) {
   query = String(query || '').trim();
   if(!query || POS_PRESENCE_LOADING) return;
   const dest = posDest();
+  const maxPages = posMaxPages();
   const cacheKey = posPresenceCacheKey(query, dest);
   POS_PRESENCE_KEY = cacheKey;
   if(POS_PRESENCE[cacheKey] && !POS_PRESENCE[cacheKey].error) {
@@ -11799,25 +11907,37 @@ async function inspectPosKeyword(query) {
     return;
   }
   POS_PRESENCE_LOADING = true;
-  drawPosPresencePanel(query, null, true, null);
+  drawPosPresencePanel(query, {progress: `Смотрю выдачу на сайте WB · топ-${maxPages * 100}…`}, true, null);
   try {
-    const r = await fetch(`${RAILWAY_URL}/api/search-own-in-query`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({query, dest, limit: 100}),
-    });
-    const d = await r.json().catch(() => ({}));
-    if(!r.ok) throw new Error(d.detail || d.error || `HTTP ${r.status}`);
-    if(d.error && !((d.brands || []).length || (d.ours || []).length)) {
-      const label = String(d.error) === '429' ? 'лимит WB, подожди и нажми ещё раз' : `WB: ${d.error}`;
-      POS_PRESENCE[cacheKey] = d;
-      if(POS_PRESENCE_KEY === cacheKey) drawPosPresencePanel(query, d, false, label);
-      return;
+    const own = await loadPosOwnMap();
+    if(POS_PRESENCE_KEY !== cacheKey) return;
+    const ours = [];
+    const seen = new Set();
+    let checked = 0;
+    let total = null;
+    for(let page = 1; page <= maxPages; page++) {
+      if(POS_PRESENCE_KEY !== cacheKey) return;
+      drawPosPresencePanel(query, {progress: `Смотрю выдачу на сайте WB · страница ${page} из ${maxPages}…`}, true, null);
+      const d = await wbSiteSearchPageRetry(query, dest, page);
+      total = d.total != null ? d.total : total;
+      const products = d.products || [];
+      checked = collectOwnInSearchPage(products, checked, own.map, seen, ours);
+      if(!products.length || products.length < 100) break;
+      if(page < maxPages) await sleepPos(280);
     }
-    POS_PRESENCE[cacheKey] = d;
-    if(POS_PRESENCE_KEY === cacheKey) drawPosPresencePanel(query, d, false, null);
+    const payload = {
+      query, dest, city: posCityName(), checked, total,
+      ours, ours_count: ours.length, source: 'site',
+      map_ok: own.ok, depth: maxPages * 100,
+    };
+    POS_PRESENCE[cacheKey] = payload;
+    if(POS_PRESENCE_KEY === cacheKey) drawPosPresencePanel(query, payload, false, null);
   } catch(e) {
-    if(POS_PRESENCE_KEY === cacheKey) drawPosPresencePanel(query, null, false, e.message || 'ошибка');
+    const msg = String((e && e.message) || e || 'ошибка');
+    const label = msg === '429'
+      ? 'лимит WB, подожди и нажми ещё раз'
+      : (msg === '403' ? 'WB закрыл выдачу (403) — нажми ключ ещё раз' : msg);
+    if(POS_PRESENCE_KEY === cacheKey) drawPosPresencePanel(query, null, false, label);
   } finally {
     POS_PRESENCE_LOADING = false;
   }
@@ -11874,7 +11994,7 @@ function drawPosTable() {
             <td style="text-align:center;cursor:pointer" onclick="togglePosPin('${safeQ}')" title="${pinned?'Открепить':'Закрепить'}">${pinned?'📌':'○'}</td>
             <td><button type="button" onclick="inspectPosKeyword('${safeQ}')"
               style="border:0;background:none;padding:0;font:inherit;color:var(--wb-purple);cursor:pointer;text-align:left"
-              title="Доли брендов в топ-100 по этому ключу">${escapeHtml(k.query||'')}</button></td>
+              title="Наши карточки и места по этому ключу">${escapeHtml(k.query||'')}</button></td>
             <td style="text-align:right;font-variant-numeric:tabular-nums">${fmtNum(k.freq)}</td>
             <td style="text-align:right">${fmtPct(k.cart_cr)}</td>
             <td style="text-align:right">${fmtPct(k.from_cart_cr)}</td>
