@@ -161,7 +161,7 @@ class SiteAuthMiddleware(BaseHTTPMiddleware):
         if not site_password():
             return await call_next(request)
         path = request.url.path
-        if path in PUBLIC:
+        if path in PUBLIC or path.startswith("/api/razdachi-webhook/"):
             return await call_next(request)
         if cookie_valid(request.cookies.get(COOKIE, "")):
             return await call_next(request)

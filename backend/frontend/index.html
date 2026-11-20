@@ -13638,13 +13638,44 @@ function removeShelfSuggestArticle(nmId) {
   refreshShelfSuggestPanel();
 }
 
+function askShelfRazdacha(title, competitorNm) {
+  return new Promise(resolve => {
+    const prev = document.getElementById('shelfRazdachaAsk');
+    if(prev) prev.remove();
+    const box = document.createElement('div');
+    box.id = 'shelfRazdachaAsk';
+    box.style.cssText = 'position:fixed;inset:0;z-index:4000;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;justify-content:center;padding:16px';
+    box.innerHTML = `
+      <form id="shelfRazdachaForm" style="background:var(--wb-surface,#fff);color:inherit;border-radius:12px;padding:16px;width:min(420px,100%);box-shadow:0 8px 30px rgba(0,0,0,.2)">
+        <div style="font-weight:700;margin-bottom:6px">Новая раздача</div>
+        <div style="font-size:13px;line-height:1.45;margin-bottom:10px">«${escapeHtml(title)}» через конкурента ${escapeHtml(String(competitorNm))}. Карточка уйдёт в бот всем, кто нажал /start. Сколько штук в плане?</div>
+        <input id="shelfRazdachaPlan" inputmode="numeric" value="3" style="width:100%;box-sizing:border-box;font-size:16px;padding:8px 10px;border:1px solid var(--wb-border,#ccc);border-radius:8px">
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button type="submit" class="filter-btn on" style="flex:1;padding:8px">Поставить</button>
+          <button type="button" id="shelfRazdachaCancel" class="filter-btn" style="padding:8px 12px">Отмена</button>
+        </div>
+      </form>`;
+    document.body.appendChild(box);
+    const input = box.querySelector('#shelfRazdachaPlan');
+    const close = (value) => { box.remove(); resolve(value); };
+    box.querySelector('#shelfRazdachaCancel').onclick = () => close(null);
+    box.addEventListener('click', (e) => { if(e.target === box) close(null); });
+    box.querySelector('#shelfRazdachaForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      close(input.value);
+    });
+    input.focus();
+    input.select();
+  });
+}
+
 async function sendShelfRazdacha(ownVendor, ownNm, competitorNm, btn) {
   if(!ownNm || !competitorNm) {
     alert('Нет артикулов для раздачи');
     return;
   }
   const title = ownVendor || String(ownNm);
-  const raw = prompt('Новая раздача «' + title + '» через конкурента ' + competitorNm + '.\nСколько штук в плане?', '3');
+  const raw = await askShelfRazdacha(title, competitorNm);
   if(raw == null) return;
   const plan = parseInt(String(raw).trim(), 10);
   if(!plan || plan < 1) {

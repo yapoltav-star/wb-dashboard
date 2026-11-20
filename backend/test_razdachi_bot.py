@@ -1,5 +1,7 @@
 """Схема бота «Раздачи» без Телеграма."""
 
+import json
+import os
 import tempfile
 import unittest
 from datetime import datetime
@@ -224,6 +226,31 @@ class RazdachiBotTest(unittest.TestCase):
             loaded = bot.Store(__import__("json").loads(raw))
             self.assertEqual(loaded.user(1)["name"], "Босс")
             self.assertEqual(bot.board_line(loaded.tasks[0]), "048 блэк 0/3 конк. 1421308560")
+
+    def test_new_button_keeps_the_draft(self):
+        self.join(1, "Босс")
+        self.store.sessions = self.sessions
+        asked = say(self.store, self.store.sessions, 1, "Новая раздача")
+        self.assertIn("Своё название", asked[0]["text"])
+        raw = json.loads(json.dumps(self.store.to_dict()))
+        loaded = bot.Store(raw)
+        say(loaded, loaded.sessions, 1, "048 блэк")
+        self.assertEqual(loaded.sessions[1]["step"], "nm")
+        self.assertEqual(loaded.sessions[1]["draft"]["title"], "048 блэк")
+
+    def test_webhook_secret_accepts_the_same_value(self):
+        previous = os.environ.get("RAZDACHI_BOT_TOKEN")
+        os.environ["RAZDACHI_BOT_TOKEN"] = "123456:test-token"
+        try:
+            secret = bot.webhook_secret()
+            self.assertTrue(bot.webhook_ok(secret))
+            self.assertFalse(bot.webhook_ok("нет"))
+            self.assertFalse(bot.webhook_ok(""))
+        finally:
+            if previous is None:
+                os.environ.pop("RAZDACHI_BOT_TOKEN", None)
+            else:
+                os.environ["RAZDACHI_BOT_TOKEN"] = previous
 
     def test_new_button_asks_name_then_title(self):
         asked = say(self.store, self.sessions, 7, "Новая раздача")

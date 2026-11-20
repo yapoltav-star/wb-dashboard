@@ -318,6 +318,23 @@ def _clear(sessions: dict, chat_id: int) -> None:
     sessions[chat_id] = {"step": "", "draft": {}}
 
 
+def sessions_from(raw) -> dict:
+    found = {}
+    if not isinstance(raw, dict):
+        return found
+    for key, value in raw.items():
+        try:
+            chat_id = int(key)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, dict):
+            found[chat_id] = {
+                "step": str(value.get("step") or ""),
+                "draft": dict(value.get("draft") or {}),
+            }
+    return found
+
+
 class Store:
     def __init__(self, data: dict | None = None, path: Path | None = None, persist: bool = False):
         self.path = path
@@ -327,9 +344,25 @@ class Store:
         self.users = {str(key): value for key, value in (raw.get("users") or {}).items()}
         self.tasks = list(raw.get("tasks") or [])
         self.seq = int(raw.get("seq") or 0)
+        self.sessions = sessions_from(raw.get("sessions"))
 
     def to_dict(self) -> dict:
-        return {"users": self.users, "tasks": self.tasks, "seq": self.seq}
+        return {
+            "users": self.users,
+            "tasks": self.tasks,
+            "seq": self.seq,
+            "sessions": {str(key): value for key, value in self.sessions.items()},
+        }
+
+    def pull(self) -> None:
+        """Подтянуть доску и черновик. Иначе второй процесс не понимает кнопку «Новая раздача»."""
+        fresh = _remote_load()
+        if not isinstance(fresh, dict):
+            return
+        self.users = {str(key): value for key, value in (fresh.get("users") or {}).items()}
+        self.tasks = list(fresh.get("tasks") or [])
+        self.seq = int(fresh.get("seq") or 0)
+        self.sessions = sessions_from(fresh.get("sessions"))
 
     def user(self, chat_id: int) -> dict | None:
         return self.users.get(str(chat_id))
@@ -644,11 +677,22 @@ def on_menu(store: Store, sessions: dict, chat_id: int, text: str) -> list:
         user = store.user(chat_id)
         if not user:
             sessions[chat_id] = {"step": "name", "draft": {"next": "new"}}
-            return [send(chat_id, "Напиши имя, как подписать в отметках. Например: Маша.")]
+            return [send(
+                chat_id,
+                "Новая раздача. Сначала напиши имя, как подписать в отметках. Например: Маша.",
+            )]
         if not is_setter(user["name"]):
-            return [send(chat_id, "Ставить задачи могут Елизавета, Диля и Босс.")]
+            return [send(
+                chat_id,
+                "Ставить задачи могут Елизавета, Диля и Босс.",
+                reply_kb(user["name"]),
+            )]
         sessions[chat_id] = {"step": "title", "draft": {}}
-        return [send(chat_id, "Своё название, например 046 Black.")]
+        return [send(
+            chat_id,
+            "Новая раздача. Своё название, например 046 Black.",
+            reply_kb(user["name"]),
+        )]
 
     user, missing = _require_user(store, sessions, chat_id)
     if missing:
@@ -1196,10 +1240,12 @@ def _apply(token: str, store: Store, event: dict, actions: list) -> None:
 
 def _handle_update(update: dict) -> None:
     event = _event_from_update(update)
-    if not event or event.get("chat_id") is None:
+    if not event or event.get("chat_id") is None or _STORE is None:
         return
     with _LOCK:
-        actions = reduce(_STORE, _SESSIONS, event)
+        _STORE.pull()
+        actions = reduce(_STORE, _STORE.sessions, event)
+        _STORE.save()
     _apply(_token(), _STORE, event, actions)
 
 
@@ -1271,7 +1317,11 @@ def webhook_ok(header: str | None) -> bool:
 
 
 def handle_webhook(update: dict) -> None:
-    if not isinstance(update, dict) or _STORE is None:
+    if not isinstance(update, dict):
+        return
+    if _STORE is None:
+        start()
+    if _STORE is None:
         return
     try:
         _handle_update(update)
@@ -1286,7 +1336,7 @@ def _arm_webhook(token: str) -> bool:
         return False
     me = _tg(token, "getMe", timeout=15).get("result") or {}
     _USERNAME = me.get("username") or ""
-    url = f"{base}/api/razdachi-webhook"
+    url = f"{base}/api/razdachi-webhook/{webhook_secret()}"
     _tg(token, "setWebhook", {
         "url": url,
         "secret_token": webhook_secret(),
@@ -1325,6 +1375,8 @@ def publish_competitor_task(
 ) -> dict:
     """Карточка «Через конкурента» с сайта: та же доска, что у кнопки «Поставить»."""
     if _STORE is None:
+        start()
+    if _STORE is None:
         return {"ok": False, "error": "Бот раздач не запущен. Нужен RAZDACHI_BOT_TOKEN."}
     title = " ".join(str(title or "").split())
     nm = parse_nm(str(nm or "")) or (str(nm or "").strip() if re.fullmatch(r"\d{6,12}", str(nm or "").strip()) else "")
@@ -1342,6 +1394,7 @@ def publish_competitor_task(
     if plan < 1 or plan > PLAN_MAX:
         return {"ok": False, "error": "Напиши число штук, например 3."}
     with _LOCK:
+        _STORE.pull()
         task = _STORE.create_task(
             chat_id=0,
             name=setter,
@@ -1366,11 +1419,31 @@ def publish_competitor_task(
     return {"ok": True, "id": task_id, "sent": len(actions), "line": line}
 
 
+def _webhook_watch() -> None:
+    last_error = ""
+    while True:
+        time.sleep(25)
+        token = _token()
+        base = _public_base()
+        secret = webhook_secret()
+        if not token or not base or not secret:
+            continue
+        url = f"{base}/api/razdachi-webhook/{secret}"
+        try:
+            info = (_tg(token, "getWebhookInfo", timeout=15).get("result") or {})
+            if (info.get("url") or "") != url:
+                _arm_webhook(token)
+                logger.warning("razdachi: снова слушаю сайт, кнопка «Новая раздача» доходит")
+            error = str(info.get("last_error_message") or "")
+            if error and error != last_error:
+                last_error = error
+                logger.warning("razdachi: телеграм не доставил обновление: %s", error[:180])
+        except Exception as exc:
+            logger.warning("razdachi watch: %s", _safe(exc, token))
+
+
 def start() -> bool:
     global _STARTED, _STORE, _MODE
-    if os.environ.get("RAZDACHI_START_DONE") == "1":
-        return False
-    os.environ["RAZDACHI_START_DONE"] = "1"
     token = _token()
     other = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
     if not token:
@@ -1379,10 +1452,15 @@ def start() -> bool:
     if other and token == other:
         logger.error("razdachi: RAZDACHI_BOT_TOKEN совпадает с TELEGRAM_BOT_TOKEN, не запускаю")
         return False
-    _STORE = load_store()
-    _STARTED = True
+    with _LOCK:
+        if _STORE is None:
+            _STORE = load_store()
+        if _STARTED:
+            return True
+        _STARTED = True
     try:
         if _arm_webhook(token):
+            threading.Thread(target=_webhook_watch, daemon=True, name="razdachi-hook").start()
             return True
     except Exception as exc:
         logger.warning("razdachi webhook не встал, читаю сам: %s", _safe(exc, token))

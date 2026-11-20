@@ -18071,11 +18071,10 @@ except Exception as e:
 try:
     import razdachi_bot
 
-    @app.post("/api/razdachi-webhook")
-    async def razdachi_webhook(request: Request):
-        """Телеграм зовёт сюда сам. Пароль сайта не нужен, секрет в заголовке."""
-        secret = request.headers.get("x-telegram-bot-api-secret-token")
-        if not razdachi_bot.webhook_ok(secret):
+    async def _take_razdachi(request: Request, hook_secret: str = ""):
+        """Телеграм зовёт сюда сам. Пароль сайта не нужен, секрет в пути или в заголовке."""
+        header = request.headers.get("x-telegram-bot-api-secret-token")
+        if not razdachi_bot.webhook_ok(header) and not razdachi_bot.webhook_ok(hook_secret):
             return JSONResponse({"ok": False}, status_code=403)
         try:
             update = await request.json()
@@ -18084,6 +18083,14 @@ try:
         if isinstance(update, dict):
             razdachi_bot.handle_webhook(update)
         return {"ok": True}
+
+    @app.post("/api/razdachi-webhook")
+    async def razdachi_webhook(request: Request):
+        return await _take_razdachi(request)
+
+    @app.post("/api/razdachi-webhook/{hook_secret}")
+    async def razdachi_webhook_path(request: Request, hook_secret: str):
+        return await _take_razdachi(request, hook_secret)
 
     @app.post("/api/razdachi-from-shelf")
     async def razdachi_from_shelf(request: dict):
