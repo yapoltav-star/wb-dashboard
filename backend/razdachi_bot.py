@@ -221,7 +221,8 @@ def board_line(task: dict) -> str:
     done = total_qty(task)
     plan = int(task.get("plan") or 0)
     prefix = "✓ " if plan and done >= plan else ""
-    return f"{prefix}{task.get('title') or ''} {done}/{plan} {channel_line(task, short=True)}".strip()
+    day = datetime.fromisoformat(task["planned_date"]).strftime("%d.%m") + " " if task.get("planned_date") else ""
+    return f"{prefix}{day}{task.get('title') or ''} {done}/{plan} {channel_line(task, short=True)}".strip()
 
 
 def wb_link(nm: str) -> str:
@@ -666,32 +667,32 @@ def accept_name(store: Store, sessions: dict, chat_id: int, text: str) -> list:
     return actions
 
 
-def list_tasks(store: Store, chat_id: int, status: str, page: int = 0) -> list:
+def list_tasks(store: Store, chat_id: int, status: str, page: int = 0, message_id=None) -> list:
     tasks = [task for task in store.tasks if task.get("status") == status]
-    tasks.sort(key=lambda task: task.get("created_at") or "", reverse=True)
-    if not tasks:
-        text = "Доска пустая." if status == "open" else "Закрытых нет."
-        return [send(chat_id, text)]
-    user = store.user(chat_id)
-    name = user["name"] if user else ""
-    actions = []
-    pages = (len(tasks) + 19) // 20
+    tasks.sort(key=lambda task: (task.get("planned_date") or "9999-12-31", task.get("created_at") or "", task["id"]))
+    page_size = 8
+    pages = max(1, (len(tasks) + page_size - 1) // page_size)
     page = min(max(page, 0), pages - 1)
-    for task in tasks[page * 20:(page + 1) * 20]:
-        actions.append(send(
-            chat_id,
-            posted_text(task),
-            card_markup(task, name),
-            remember=task["id"],
-        ))
+    empty = sum(total_qty(task) == 0 for task in tasks)
+    heading = "Доска" if status == "open" else "Закрытые"
+    counter = "Открыто" if status == "open" else "Закрыто"
+    text = f"{heading}\n{counter} {len(tasks)} · без отметок {empty}"
+    if not tasks:
+        text += "\nДоска пустая." if status == "open" else "\nЗакрытых нет."
+    rows = [[(clip(board_line(task), 64), f"card:{task['id']}")]
+            for task in tasks[page * page_size:(page + 1) * page_size]]
     if pages > 1:
-        buttons = []
+        text += f"\nСтраница {page + 1} из {pages}"
+        navigation = []
         if page:
-            buttons.append(("← Назад", f"page:{status}:{page - 1}"))
+            navigation.append(("← Назад", f"page:{status}:{page - 1}"))
         if page + 1 < pages:
-            buttons.append(("Дальше →", f"page:{status}:{page + 1}"))
-        actions.append(send(chat_id, f"Страница {page + 1} из {pages}", inline([buttons])))
-    return actions
+            navigation.append(("Дальше →", f"page:{status}:{page + 1}"))
+        rows.append(navigation)
+    markup = inline(rows)
+    if message_id:
+        return [edit(chat_id, message_id, text, markup)]
+    return [send(chat_id, text, markup)]
 
 
 def today_text(store: Store) -> str:
@@ -1056,7 +1057,7 @@ def on_callback(store: Store, sessions: dict, chat_id: int, data: str, message_i
         page = parse_count(parts[2])
         if page is None:
             return [alert("Кнопка устарела. Открой доску ещё раз.", True)]
-        return list_tasks(store, chat_id, parts[1], page) + [alert()]
+        return list_tasks(store, chat_id, parts[1], page, message_id) + [alert()]
 
     if op == "ch" and len(parts) == 2:
         channel = "keyword" if parts[1] == "k" else "competitor" if parts[1] == "c" else ""

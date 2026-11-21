@@ -111,9 +111,8 @@ class RazdachiBotTest(unittest.TestCase):
         self.assertIn("Пока никто не отметил", edited["text"])
         self.assertIn("План 3 · пока 0", edited["text"])
         board = say(self.store, self.sessions, 1, "Доска")
-        self.assertTrue(board[0]["text"].startswith("Новая раздача"))
-        self.assertIn("Пока никто не отметил", board[0]["text"])
-        self.assertIn("Я раздала", labels(board[0]["markup"]))
+        self.assertEqual(board[0]["text"], "Доска\nОткрыто 1 · без отметок 1")
+        self.assertEqual(labels(board[0]["markup"]), ["048 блэк 0/3 конк. 1421308560"])
 
     def test_keyword_line_and_broadcast_to_marker(self):
         self.join(2, "Маша")
@@ -215,10 +214,10 @@ class RazdachiBotTest(unittest.TestCase):
         tap(self.store, self.sessions, 1, f"close:{task_id}")
         self.assertEqual(self.store.tasks[0]["status"], "closed")
         closed = say(self.store, self.sessions, 1, "Закрытые")
-        self.assertTrue(closed[0]["text"].startswith("Закрыта"))
-        self.assertIn("048 блэк", closed[0]["text"])
-        self.assertIn("План 2 · раздали 1 · ещё 1", closed[0]["text"])
-        self.assertEqual(labels(closed[0]["markup"]), ["Вернуть в работу"])
+        self.assertEqual(closed[0]["text"], "Закрытые\nЗакрыто 1 · без отметок 0")
+        self.assertIn("048 блэк 1/2", labels(closed[0]["markup"])[0])
+        card = tap(self.store, self.sessions, 1, f"card:{task_id}")
+        self.assertEqual(labels(card[0]["markup"]), ["Вернуть в работу"])
         tap(self.store, self.sessions, 1, f"back:{task_id}")
         self.assertEqual(self.store.tasks[0]["status"], "open")
 

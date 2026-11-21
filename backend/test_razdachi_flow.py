@@ -119,6 +119,7 @@ class TelegramFlowTest(TelegramHarness):
                 self.text(2, "Доска")
                 self.assertIn("Доска пустая", self.delivered_text())
                 self.text(1, "Закрытые")
+                self.press(1, bot.clip(bot.board_line(self.store.tasks[0]), 64))
                 self.assertIn("Другие часы", self.delivered_text())
                 self.press(1, "Вернуть в работу")
                 self.assertEqual(self.store.tasks[0]["status"], "open")
@@ -129,6 +130,7 @@ class TelegramFlowTest(TelegramHarness):
         self.press(2, "1")
         self.text(2, "/start")
         self.text(2, "Доска")
+        self.press(2, bot.clip(bot.board_line(self.store.tasks[0]), 64))
         card = next(p for m, p in self.calls if m == "sendMessage")
         labels = [b["text"] for row in card["reply_markup"]["inline_keyboard"] for b in row]
         self.assertIn("Мои", labels)
@@ -224,9 +226,47 @@ class TelegramFlowTest(TelegramHarness):
         for i in range(20):
             self.store.create_task(chat_id=1, name="Ярослав", draft=draft)
         self.text(1, "Доска")
+        seen = set()
+        def collect():
+            for method, payload in self.calls:
+                if method not in ("sendMessage", "editMessageText"):
+                    continue
+                for row in payload.get("reply_markup", {}).get("inline_keyboard", []):
+                    for button in row:
+                        if button["callback_data"].startswith("card:"):
+                            seen.add(button["callback_data"][5:])
+        collect()
         self.press(1, "Дальше →")
-        cards = [p for m, p in self.calls if m == "sendMessage" and "План " in p.get("text", "")]
-        self.assertEqual(len(cards), 1)
-        self.assertIn("Часы &amp; тест", cards[0]["text"])
+        collect()
+        self.assertIn("Страница 2 из 3", self.delivered_text())
+
+        self.press(1, "Дальше →")
+        collect()
+        self.assertEqual(seen, {t["id"] for t in self.store.tasks})
         self.press(1, "← Назад")
-        self.assertTrue(any(m == "sendMessage" and "Новая раздача" in p.get("text", "") for m, p in self.calls))
+        self.assertIn("Страница 2 из 3", self.delivered_text())
+
+    def test_board_dates_totals_and_card_access_for_marker(self):
+        self.create()
+        first = self.store.tasks[0]
+        first["planned_date"] = "2026-11-22"
+        first["title"] = "048 блэк"
+        second = self.store.create_task(chat_id=1, name="Ярослав", draft={
+            "title": "052 голд", "nm": "12345678", "channel": "competitor",
+            "query": "1808747385", "plan": 2, "planned_date": "2026-11-21",
+        })
+        self.store.set_mark(second, 2, "Маша", 2)
+        for chat in (1, 2):
+            self.text(chat, "Доска")
+            sent = [p for m, p in self.calls if m == "sendMessage"]
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(sent[0]["text"], "Доска\nОткрыто 2 · без отметок 1")
+            buttons = sent[0]["reply_markup"]["inline_keyboard"]
+            self.assertEqual(buttons[0][0]["text"], "✓ 21.11 052 голд 2/2 конк. 1808747385")
+            self.assertTrue(buttons[1][0]["text"].startswith("22.11 048 блэк 0/12"))
+        self.press(2, "✓ 21.11 052 голд 2/2 конк. 1808747385")
+        self.assertIn("Дата раздачи: 21.11.2026", self.delivered_text())
+        card = next(p for m, p in self.calls if m == "sendMessage")
+        labels = [b["text"] for row in card["reply_markup"]["inline_keyboard"] for b in row]
+        self.assertIn("Мои", labels)
+        self.assertNotIn("Закрыть", labels)
