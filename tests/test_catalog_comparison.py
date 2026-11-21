@@ -21,5 +21,17 @@ class ComparisonTests(unittest.TestCase):
                     'previous': sum(range(days+1, 2*days+1)),
                 })
 
+    def test_amounts_use_same_windows_as_quantities(self):
+        path = Path(__file__).resolve().parents[1] / 'backend/main.py'
+        tree = ast.parse(path.read_text())
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_catalog_comparison_add')
+        scope = {}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), 'exec'), scope)
+        today = date(2026, 1, 2)
+        slot = {}
+        for age, qty, amount in [(0, 100, 99999), (1, 2, 4500), (2, 3, 6100), (3, 4, 8200), (4, 5, 11000)]:
+            scope['_catalog_comparison_add'](slot, today-timedelta(days=age), today, qty, amount)
+        self.assertEqual(slot['comparisons']['2'], {'current':5, 'previous':9, 'current_amount':10600, 'previous_amount':19200})
+
 if __name__ == '__main__':
     unittest.main()

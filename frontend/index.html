@@ -2395,7 +2395,7 @@ function setWbProdSalesPeriod(p) {
 function wbProdComparison(p) {
   if(WB_PROD_SALES_PERIOD === 'custom') {
     if(!WB_PROD_CUSTOM) return null;
-    return {current: WB_PROD_CUSTOM.current[String(p.nm_id)] || 0, previous: WB_PROD_CUSTOM.previous[String(p.nm_id)] || 0};
+    return {current: WB_PROD_CUSTOM.current[String(p.nm_id)] || 0, previous: WB_PROD_CUSTOM.previous[String(p.nm_id)] || 0, current_amount: WB_PROD_CUSTOM.current_amount?.[String(p.nm_id)], previous_amount: WB_PROD_CUSTOM.previous_amount?.[String(p.nm_id)]};
   }
   return (p.sales_comparisons || {})[WB_PROD_SALES_PERIOD] || null;
 }
@@ -2636,14 +2636,24 @@ function drawWbProducts() {
   const all = WB_PRODUCTS.products || [];
   const withStock = all.filter(p => (p.stock || 0) > 0).length;
   const withPrice = all.filter(p => p.client_price != null).length;
-  const salesSum = rows.reduce((s, p) => s + wbProdSalesOf(p), 0);
+  const comparisons = all.map(wbProdComparison).filter(Boolean);
+  const sum = key => comparisons.reduce((total, item) => total + Number(item[key] || 0), 0);
+  const ready = comparisons.length > 0;
+  const current = sum('current'), previous = sum('previous');
+  const rubReady = ready && comparisons.every(item => item.current_amount != null && item.previous_amount != null);
+  const currentRub = sum('current_amount'), previousRub = sum('previous_amount');
+  const change = (a,b) => `${a-b>0?'+':''}${fmt(a-b)}`;
   if(cards) {
     cards.innerHTML = [
       ['Товаров', fmt(all.length)],
       ['В наличии', fmt(withStock)],
-      ['С ценой покупателя', fmt(withPrice)],
-      [wbProdSalesLabel(), rows.some(p => wbProdComparison(p)) ? fmt(salesSum) : '—'],
-    ].map(([l,v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v">${v}</div></div>`).join('');
+      [wbProdSalesLabel()+' · все артикулы', ready ? fmt(current)+' шт.' : '—'],
+      ['Заказы · предыдущий период', ready ? fmt(previous)+' шт.' : '—'],
+      ['Изменение заказов', ready ? change(current,previous)+' шт. · '+wbProdChangeHtml(current,previous) : '—'],
+      ['Сумма заказов · выбранный период', rubReady ? fmt(Math.round(currentRub))+' ₽' : '—'],
+      ['Сумма заказов · предыдущий период', rubReady ? fmt(Math.round(previousRub))+' ₽' : '—'],
+      ['Изменение суммы', rubReady ? change(Math.round(currentRub),Math.round(previousRub))+' ₽ · '+wbProdChangeHtml(currentRub,previousRub) : '—'],
+    ].map(([l,v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="font-size:26px">${v}</div></div>`).join('');
   }
 
   if(!rows.length) {

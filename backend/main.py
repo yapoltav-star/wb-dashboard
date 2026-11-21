@@ -10032,6 +10032,7 @@ _CATALOG_CUSTOM_WORKER = threading.Lock()
 
 def _catalog_custom_orders(start, end):
     orders = {}
+    amounts = {}
     offset = 0
     while True:
         response = httpx.post(
@@ -10044,9 +10045,12 @@ def _catalog_custom_orders(start, end):
         response.raise_for_status()
         products = response.json()["data"]["products"]
         for item in products:
-            orders[str(item["product"]["nmId"])] = int(item["statistic"]["selected"].get("orderCount") or 0)
+            nm = str(item["product"]["nmId"])
+            selected = item["statistic"]["selected"]
+            orders[nm] = int(selected.get("orderCount") or 0)
+            amounts[nm] = float(selected["orderSum"]) if selected.get("orderSum") is not None else None
         if len(products) < 1000:
-            return orders
+            return orders, amounts
         offset += len(products)
         time.sleep(21)
 
@@ -10054,10 +10058,10 @@ def _catalog_custom_orders(start, end):
 def _catalog_custom_refresh(key):
     with _CATALOG_CUSTOM_WORKER:
         try:
-            current = _catalog_custom_orders(key[0], key[1])
+            current, current_amount = _catalog_custom_orders(key[0], key[1])
             time.sleep(21)
-            previous = _catalog_custom_orders(key[2], key[3])
-            result = {"syncing": False, "current": current, "previous": previous}
+            previous, previous_amount = _catalog_custom_orders(key[2], key[3])
+            result = {"syncing": False, "current": current, "previous": previous, "current_amount": current_amount, "previous_amount": previous_amount}
         except Exception:
             logger.exception("Catalog custom period comparison failed")
             result = {"syncing": False, "error": "Не удалось получить заказы WB. Попробуйте позже или выберите меньший период."}
@@ -10105,16 +10109,23 @@ WB_PRODUCTS_CACHE = {
 }
 
 
-def _catalog_comparison_add(slot, day, today, qty):
+def _catalog_comparison_add(slot, day, today, qty, amount=None):
     """Completed Moscow calendar days; today is excluded from both windows."""
     age = (today - day).days
     comparisons = slot.setdefault("comparisons", {})
     for days in (1, 2, 3, 7, 28):
         period = comparisons.setdefault(str(days), {"current": 0, "previous": 0})
+        if amount is not None:
+            period.setdefault("current_amount", 0)
+            period.setdefault("previous_amount", 0)
         if 1 <= age <= days:
             period["current"] += qty
+            if amount is not None:
+                period["current_amount"] += amount
         elif days < age <= days * 2:
             period["previous"] += qty
+            if amount is not None:
+                period["previous_amount"] += amount
 
 
 def _fetch_orders_sales_periods_fast() -> dict:
@@ -10132,7 +10143,7 @@ def _fetch_orders_sales_periods_fast() -> dict:
         while True:
             resp = httpx.get(
                 f"{SUPABASE_URL}/rest/v1/article_daily_stats"
-                f"?dt=gte.{dt_from}&select=nm_id,dt,orders&order=dt,nm_id&limit=1000&offset={offset}",
+                f"?dt=gte.{dt_from}&select=nm_id,dt,orders,orders_sum&order=dt,nm_id&limit=1000&offset={offset}",
                 headers=sb_headers(), timeout=30,
             )
             resp.raise_for_status()
@@ -10156,7 +10167,7 @@ def _fetch_orders_sales_periods_fast() -> dict:
             if qty <= 0:
                 continue
             slot = out.setdefault(nm, {"yesterday": 0, "d7": 0, "d28": 0})
-            _catalog_comparison_add(slot, d, today, qty)
+            _catalog_comparison_add(slot, d, today, qty, float(row["orders_sum"]) if row.get("orders_sum") is not None else None)
             if d == yest:
                 slot["yesterday"] += qty
             if start_7 <= d <= today:
@@ -10200,7 +10211,7 @@ def _fetch_orders_sales_periods() -> dict:
             if day < today - timedelta(days=56) or day > today:
                 continue
             slot = out.setdefault(nm, {"yesterday": 0, "d7": 0, "d28": 0})
-            _catalog_comparison_add(slot, day, today, 1)
+            _catalog_comparison_add(slot, day, today, 1, float(o["finishedPrice"]) if o.get("finishedPrice") is not None else None)
             if day == yest:
                 slot["yesterday"] += 1
             if start_7 <= day <= today:
@@ -10341,7 +10352,7 @@ def build_wb_products_catalog(sales_by_nm: dict | None = None) -> dict:
             "warehouses": wh_list,
             "channels": channels,
             "sales_comparisons": sales.get("comparisons") or (
-                {str(days): {"current": 0, "previous": 0} for days in (1, 2, 3, 7, 28)}
+                {str(days): {"current": 0, "previous": 0, "current_amount": 0, "previous_amount": 0} for days in (1, 2, 3, 7, 28)}
                 if any(v.get("comparisons") for v in sales_norm.values()) else {}
             ),
             "sales_yesterday": int(sales.get("yesterday") or 0),
