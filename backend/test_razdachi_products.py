@@ -15,11 +15,26 @@ class ProductMatchingTest(unittest.TestCase):
                 with self.subTest(query=query):
                     self.assertEqual([p["nm"] for p in bot.product_matches(query)], ["2219327613"])
             self.assertEqual(bot.product_matches("048 white"), [])
-            self.assertEqual(bot.product_matches("48"), [])
+            self.assertEqual(len(bot.product_matches("48")), 2)
 
     def test_catalog_failure_preserves_manual_path(self):
         with patch.object(bot, "_CATALOG_PROVIDER", side_effect=RuntimeError("unavailable")):
             self.assertEqual(bot.product_matches("048 black"), [])
+
+    def test_new_models_are_loaded_by_live_dashboard_search(self):
+        rows = {2225732247: "052_S12_middle_gold_3_O", 2225741781: "052_S12_middle_grey_3_O"}
+        with patch.object(bot, "_CATALOG_PROVIDER", return_value={}), patch.object(bot, "_CATALOG_SEARCH", return_value=rows) as search:
+            self.assertEqual(bot.product_matches("052 голд")[0]["nm"], "2225732247")
+            search.assert_called_with("052")
+            self.assertEqual(bot.product_matches("052 грей")[0]["nm"], "2225741781")
+            self.assertEqual(len(bot.product_matches("052")), 2)
+
+    def test_colorless_model_requires_explicit_choice(self):
+        with patch.object(bot, "_CATALOG_PROVIDER", return_value={}), patch.object(bot, "_CATALOG_SEARCH", return_value={2239800092: "054_Ultra12_4_O"}):
+            self.assertEqual(bot.product_matches("054 блэк"), [{
+                "nm": "2239800092", "title": "054_Ultra12_4_O", "match_kind": "model",
+            }])
+            self.assertEqual(bot.product_matches("054 pro"), [])
 
 
 class ProductFlowTest(flow.TelegramHarness):

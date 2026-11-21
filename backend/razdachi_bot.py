@@ -40,6 +40,7 @@ NM_RE = re.compile(r"catalog/(\d{6,12})")
 USERNAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,31}")
 
 _LOCK = threading.Lock()
+_UPDATE_LOCK = threading.Lock()
 _STORE: "Store | None" = None
 _SESSIONS: dict = {}
 _STARTED = False
@@ -48,6 +49,7 @@ _CONFLICT = False
 _USERNAME = ""
 _MODE = ""
 _CATALOG_PROVIDER = lambda: {}
+_CATALOG_SEARCH = lambda query: {}
 
 
 def product_key(value: str) -> str:
@@ -66,23 +68,44 @@ def product_matches(query: str) -> list:
     key = product_key(query)
     if not key:
         return []
+    query_words = key.split()
+    model = query_words[0] if query_words[0].isdigit() else ""
+    colors = {"black", "pink", "white", "grey", "gold", "silver"}
+
+    def exact_matches(catalog):
+        result = []
+        for nm, title in catalog.items():
+            words = product_key(str(title)).split()
+            if not parse_nm(str(nm)) or not words:
+                continue
+            if (words == query_words or (model and words[0] == model
+                    and set(query_words[1:]).issubset(words[1:]))):
+                result.append({"nm": str(nm), "title": str(title)})
+        return result
+
     try:
-        catalog = _CATALOG_PROVIDER()
-        def matches(title):
-            candidate = product_key(str(title))
-            if candidate == key:
-                return True
-            query_words, words = key.split(), candidate.split()
-            # Seller codes include brand/suffix tokens: 048_PVS_black_O.
-            # Require the same model plus all supplied qualifiers; never fuzzy-match models.
-            return (len(query_words) >= 2 and query_words[0].isdigit() and words
-                    and words[0] == query_words[0]
-                    and set(query_words[1:]).issubset(words[1:]))
-        return [{"nm": str(nm), "title": str(title)} for nm, title in catalog.items()
-                if parse_nm(str(nm)) and matches(title)]
+        catalog = dict(_CATALOG_PROVIDER())
     except Exception:
-        logger.warning("razdachi: каталог временно недоступен")
-        return []
+        logger.warning("razdachi: сохранённый каталог временно недоступен")
+        catalog = {}
+    found = exact_matches(catalog)
+    if (not found or len(query_words) == 1) and model:
+        try:
+            # Reuse the dashboard's own live search, not its lazily loaded page cache.
+            catalog.update(_CATALOG_SEARCH(model.zfill(3)))
+        except Exception:
+            logger.warning("razdachi: поиск новых карточек временно недоступен")
+        found = exact_matches(catalog)
+    if found:
+        return found
+    # Some seller codes have no color (054_Ultra12_4_O). Offer these for explicit
+    # checking; never silently equate an unknown color to the requested color.
+    if model and query_words[1:] and set(query_words[1:]).issubset(colors):
+        return [{"nm": str(nm), "title": str(title), "match_kind": "model"}
+                for nm, title in catalog.items() if parse_nm(str(nm))
+                and product_key(str(title)).split()[:1] == [model]
+                and not colors.intersection(product_key(str(title)).split())]
+    return []
 
 
 def offer_product(sessions: dict, chat_id: int, query: str) -> list:
@@ -96,6 +119,8 @@ def offer_product(sessions: dict, chat_id: int, query: str) -> list:
     rows = [[(f"{clip(p['title'], 35)} · {p['nm']}", f"product:{p['nm']}")] for p in matches]
     rows.append([("Ввести артикул вручную", "product:manual")])
     prompt = "Нашёл в дашборде. Выбери товар:" if len(matches) == 1 else "Подходят несколько карточек. Выбери нужную:"
+    if any(p.get("match_kind") == "model" for p in matches):
+        prompt = "Нашёл модель, но цвет в её артикуле не указан. Проверь карточку и выбери товар:"
     return [send(chat_id, prompt, inline(rows))]
 
 
@@ -413,6 +438,7 @@ class Store:
         self.tasks = list(raw.get("tasks") or [])
         self.seq = int(raw.get("seq") or 0)
         self.sessions = sessions_from(raw.get("sessions"))
+        self.boards = dict(raw.get("boards") or {})
 
     def to_dict(self) -> dict:
         return {
@@ -420,6 +446,7 @@ class Store:
             "tasks": self.tasks,
             "seq": self.seq,
             "sessions": {str(key): value for key, value in self.sessions.items()},
+            "boards": self.boards,
         }
 
     def pull(self) -> None:
@@ -431,6 +458,14 @@ class Store:
         self.tasks = list(fresh.get("tasks") or [])
         self.seq = int(fresh.get("seq") or 0)
         self.sessions = sessions_from(fresh.get("sessions"))
+        self.boards = dict(fresh.get("boards") or {})
+
+    def remember_board(self, chat_id, message_id, status, page):
+        self.boards[f"{chat_id}:{status}"] = {
+            "chat_id": int(chat_id), "message_id": int(message_id),
+            "status": status, "page": int(page),
+        }
+        self.save()
 
     def user(self, chat_id: int) -> dict | None:
         return self.users.get(str(chat_id))
@@ -690,9 +725,17 @@ def list_tasks(store: Store, chat_id: int, status: str, page: int = 0, message_i
             navigation.append(("Дальше →", f"page:{status}:{page + 1}"))
         rows.append(navigation)
     markup = inline(rows)
-    if message_id:
-        return [edit(chat_id, message_id, text, markup)]
-    return [send(chat_id, text, markup)]
+    action = edit(chat_id, message_id, text, markup) if message_id else send(chat_id, text, markup)
+    action["board"] = {"status": status, "page": page}
+    return [action]
+
+
+def refresh_boards(store):
+    actions = []
+    for board in list(store.boards.values()):
+        actions.extend(list_tasks(store, board["chat_id"], board["status"],
+                                  board["page"], board["message_id"]))
+    return actions
 
 
 def today_text(store: Store) -> str:
@@ -1250,7 +1293,7 @@ def batch_next(store, sessions, chat_id):
     if unresolved:
         title = unresolved["title"]
         matches = product_matches(title)
-        if len(matches) == 1:
+        if len(matches) == 1 and matches[0].get("match_kind") != "model":
             for item in entries:
                 if item["title"] == title:
                     item["nm"] = matches[0]["nm"]
@@ -1261,7 +1304,8 @@ def batch_next(store, sessions, chat_id):
         step["step"] = "batch_product"
         rows = [[(f"{clip(p['title'], 30)} · {p['nm']}", f"batch:{nonce}:pick:{p['nm']}")] for p in matches[:20]]
         rows.append([("Отмена", f"batch:{nonce}:cancel")])
-        return [send(chat_id, f"Уточни артикул для {esc(title)}. Выбери карточку или введи номер WB.", inline(rows))]
+        hint = " В найденном артикуле не указан цвет — проверь карточку." if any(p.get("match_kind") == "model" for p in matches) else ""
+        return [send(chat_id, f"Уточни артикул для {esc(title)}.{hint} Выбери карточку или введи номер WB.", inline(rows))]
     missing = next((item for item in entries if not item.get("date_checked") and not item["planned_date"]), None)
     if missing:
         draft["date_title"] = missing["title"]
@@ -1504,28 +1548,45 @@ def _apply(token: str, store: Store, event: dict, actions: list) -> None:
             result = _tg(token, method, payload)
         except Exception as exc:
             logger.warning("razdachi %s: %s", method, _safe(exc, token))
+            if action.get("board") and any(reason in str(exc).lower() for reason in (
+                "message to edit not found", "message can't be edited", "bot was blocked", "chat not found",
+            )):
+                with _LOCK:
+                    key = f"{action['chat_id']}:{action['board']['status']}"
+                    if store.boards.get(key, {}).get("message_id") == action.get("message_id"):
+                        store.boards.pop(key, None)
+                        store.save()
             if action.get("remember") and op == "edit":
                 with _LOCK:
                     store.forget_message(action["remember"], action["chat_id"])
             continue
-        if not action.get("remember"):
+        if not action.get("remember") and not action.get("board"):
             continue
         message = (result or {}).get("result") or {}
         message_id = message.get("message_id") or action.get("message_id")
         if message_id:
             with _LOCK:
-                store.remember(action["remember"], action["chat_id"], int(message_id))
+                if action.get("board"):
+                    store.remember_board(action["chat_id"], message_id,
+                                         action["board"]["status"], action["board"]["page"])
+                if action.get("remember"):
+                    store.remember(action["remember"], action["chat_id"], int(message_id))
 
 
 def _handle_update(update: dict) -> None:
     event = _event_from_update(update)
     if not event or event.get("chat_id") is None or _STORE is None:
         return
-    with _LOCK:
-        _STORE.pull()
-        actions = reduce(_STORE, _STORE.sessions, event)
-        _STORE.save()
-    _apply(_token(), _STORE, event, actions)
+    # Keep edits ordered: two simultaneous marks must not leave an older board visible.
+    with _UPDATE_LOCK:
+        with _LOCK:
+            _STORE.pull()
+            before = json.dumps(_STORE.tasks, sort_keys=True, ensure_ascii=False)
+            actions = reduce(_STORE, _STORE.sessions, event)
+            if before != json.dumps(_STORE.tasks, sort_keys=True, ensure_ascii=False):
+                actions = refresh_boards(_STORE) + actions
+            _STORE.save()
+        _apply(_token(), _STORE, event, actions)
 
 
 def _poll_loop() -> None:
@@ -1644,7 +1705,12 @@ def status() -> dict:
     }
 
 
-def publish_competitor_task(
+def publish_competitor_task(*, title: str, nm: str, competitor_nm: str, plan: int, setter: str = "Босс") -> dict:
+    with _UPDATE_LOCK:
+        return _publish_competitor_task(title=title, nm=nm, competitor_nm=competitor_nm, plan=plan, setter=setter)
+
+
+def _publish_competitor_task(
     *,
     title: str,
     nm: str,
@@ -1690,12 +1756,14 @@ def publish_competitor_task(
             send(int(user["chat_id"]), text, card_markup(task, user.get("name") or ""), remember=task["id"])
             for user in _STORE.users.values()
         ]
+        sent = len(actions)
+        actions = refresh_boards(_STORE) + actions
         task_id = task["id"]
         line = board_line(task)
     token = _token()
     if token and actions:
         _apply(token, _STORE, {}, actions)
-    return {"ok": True, "id": task_id, "sent": len(actions), "line": line}
+    return {"ok": True, "id": task_id, "sent": sent, "line": line}
 
 
 def _webhook_watch() -> None:

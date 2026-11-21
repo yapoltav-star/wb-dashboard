@@ -130,3 +130,12 @@ class BatchFlowTest(flow.TelegramHarness):
             self.press(1, "052_PVS_gold · 12345679")
             self.press(1, "Создать 1 раздачу")
             self.assertEqual(self.store.tasks[0]["nm"], "12345679")
+
+    def test_colorless_new_model_is_not_auto_selected(self):
+        with patch.object(bot, "_CATALOG_PROVIDER", return_value={}), patch.object(bot, "_CATALOG_SEARCH", return_value={2239800092: "054_Ultra12_4_O"}):
+            self.text(1, "054 блэк\n21.11\n3 шт по ключу часы")
+            self.assertEqual(self.store.sessions[1]["step"], "batch_product")
+            self.assertIn("не указан цвет", self.delivered_text())
+            self.assertEqual(self.store.tasks, [])
+            self.press(1, "054_Ultra12_4_O · 2239800092")
+            self.assertEqual(self.store.sessions[1]["draft"]["entries"][0]["nm"], "2239800092")

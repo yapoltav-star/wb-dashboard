@@ -18186,6 +18186,20 @@ try:
 
     razdachi_bot._CATALOG_PROVIDER = _razdachi_catalog
 
+    _RAZDACHI_PRODUCT_SEARCH_CACHE = {}
+
+    def _razdachi_search(query):
+        cached = _RAZDACHI_PRODUCT_SEARCH_CACHE.get(query)
+        if cached and time.monotonic() - cached[0] < (300 if cached[1] else 30):
+            return cached[1]
+        rows = search_own_articles(query)
+        mapping = {int(p["nm_id"]): _canon_seller_article(p["vendor_code"], p["nm_id"])
+                   for p in rows if p.get("nm_id") and p.get("vendor_code")}
+        _RAZDACHI_PRODUCT_SEARCH_CACHE[query] = (time.monotonic(), mapping)
+        return mapping
+
+    razdachi_bot._CATALOG_SEARCH = _razdachi_search
+
     async def _take_razdachi(request: Request, hook_secret: str = ""):
         """Телеграм зовёт сюда сам. Пароль сайта не нужен, секрет в пути или в заголовке."""
         header = request.headers.get("x-telegram-bot-api-secret-token")

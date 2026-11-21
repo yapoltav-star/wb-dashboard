@@ -270,3 +270,67 @@ class TelegramFlowTest(TelegramHarness):
         labels = [b["text"] for row in card["reply_markup"]["inline_keyboard"] for b in row]
         self.assertIn("Мои", labels)
         self.assertNotIn("Закрыть", labels)
+
+    def test_open_boards_update_for_everyone_after_mark_and_clear(self):
+        self.create(plan="1")
+        boards = {}
+        for chat in (1, 2):
+            self.text(chat, "Доска")
+            boards[chat] = next((cid, mid) for (cid, mid), p in reversed(list(self.messages.items()))
+                                if cid == chat and p["text"].startswith("Доска"))
+        self.press(2, bot.board_line(self.store.tasks[0]))
+        self.press(2, "Я раздала")
+        self.press(2, "1")
+        for key in boards.values():
+            board = self.messages[key]
+            self.assertIn("без отметок 0", board["text"])
+            self.assertTrue(board["reply_markup"]["inline_keyboard"][0][0]["text"].startswith("✓ "))
+        self.press(2, "Мои")
+        self.press(2, "0")
+        for key in boards.values():
+            board = self.messages[key]
+            self.assertIn("без отметок 1", board["text"])
+            self.assertFalse(board["reply_markup"]["inline_keyboard"][0][0]["text"].startswith("✓ "))
+        # The subscription survives a restart, just like marks and drafts.
+        restored = bot.Store(self.saved)
+        self.assertEqual(len(restored.boards), 2)
+
+    def test_board_refresh_keeps_page_and_updates_on_close(self):
+        self.create()
+        for i in range(8):
+            self.store.create_task(chat_id=1, name="Ярослав", draft={
+                "title": f"Товар {i}", "nm": "12345678", "channel": "keyword", "query": "часы", "plan": 1,
+            })
+        self.text(2, "Доска")
+        self.press(2, "Дальше →")
+        board = self.store.boards["2:open"]
+        self.assertEqual(board["page"], 1)
+        self.callback(1, f"add:{self.store.tasks[-1]['id']}:1")
+        self.assertEqual(self.store.boards["2:open"]["page"], 1)
+        self.callback(1, f"close:{self.store.tasks[-1]['id']}")
+        self.assertEqual(self.store.boards["2:open"]["page"], 0)
+        current = self.messages[(2, board["message_id"])]
+        self.assertIn("Открыто 8", current["text"])
+
+    def test_deleted_board_does_not_prevent_other_boards_refreshing(self):
+        self.create(plan="1")
+        for chat in (1, 2):
+            self.text(chat, "Доска")
+        deleted_mid = self.store.boards["1:open"]["message_id"]
+        real_transport = self.telegram
+        def transport(token, method, payload=None, **kwargs):
+            if method == "editMessageText" and payload.get("chat_id") == 1 and payload.get("message_id") == deleted_mid:
+                raise RuntimeError("Bad Request: message to edit not found")
+            return real_transport(token, method, payload, **kwargs)
+        with patch.object(bot, "_tg", transport):
+            self.callback(2, f"add:{self.store.tasks[0]['id']}:1")
+        self.assertNotIn("1:open", self.store.boards)
+        live = self.store.boards["2:open"]
+        self.assertIn("без отметок 0", self.messages[(2, live["message_id"])]["text"])
+
+    def test_site_created_task_refreshes_existing_boards(self):
+        self.text(2, "Доска")
+        board = self.store.boards["2:open"]
+        result = bot.publish_competitor_task(title="Тест", nm="12345678", competitor_nm="87654321", plan=2)
+        self.assertEqual(result["sent"], 2)
+        self.assertIn("Открыто 1", self.messages[(2, board["message_id"])]["text"])
