@@ -2372,13 +2372,13 @@ function setWbProdFilter(f) {
   drawWbProducts();
 }
 
-let WB_PROD_COMPARE_ENABLED = false;
+let WB_PROD_COMPARE_ENABLED = true;
 let WB_PROD_CUSTOM = null;
 let WB_PROD_CUSTOM_DATES = null;
 let wbProdCustomRequest = 0;
 let wbProdCustomPoll = null;
 function setWbProdSalesPeriod(p) {
-  WB_PROD_COMPARE_ENABLED = false;
+  WB_PROD_COMPARE_ENABLED = true;
   ++wbProdCustomRequest;
   clearTimeout(wbProdCustomPoll);
   WB_PROD_CUSTOM = null;
