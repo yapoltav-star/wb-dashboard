@@ -44,6 +44,7 @@ function rwChooseGroup() {
   const name=document.getElementById('rwGroup').value;
   RW_SELECTED=new Set((RW.groups[name] || []).map(String));
   document.getElementById('rwGroupName').value=name;
+  document.getElementById('rwOnlySelected').checked=Boolean(name);
   rwResetScenario();
 }
 function rwResetScenario() {

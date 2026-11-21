@@ -33,7 +33,7 @@ class RatingWorkspaceTests(unittest.TestCase):
           '_dash_rpc':lambda *args:Response([{'nm_id':123,'article':'Часы','r5':17,'r1':2}]),
           'build_nm_to_vendor_map':lambda:{123:'Часы'},
           '_msk_now':lambda:datetime(2026,11,21,12),
-          'fetch_own_stats_v3':lambda *args:{'123':{'feedback_rating':5,'api_feedback_rating':None}},
+          'fetch_own_stats_v3':lambda *args:{'123':{'feedback_rating':5,'api_feedback_rating':0}},
           'get_setting_json':lambda *args:{'Моя склейка':['123']},
           'get_setting_raw':lambda *args:'21.11.2026',
           'save_setting_value':lambda key,groups:saves.append((key,groups)) or True,

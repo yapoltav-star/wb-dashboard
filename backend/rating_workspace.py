@@ -51,7 +51,8 @@ def register_rating_workspace(app, deps):
                     (now-timedelta(days=1)).strftime('%Y-%m-%d'), now.strftime('%Y-%m-%d')))
             for nm, item in by_nm.items():
                 # fetch_own_stats_v3 can fall back to old imported ratings; do not use that field.
-                item['wb_rating'] = official.get(nm, {}).get('api_feedback_rating')
+                rating = official.get(nm, {}).get('api_feedback_rating')
+                item['wb_rating'] = rating if isinstance(rating, (int, float)) and 1 <= rating <= 5 else None
             saved = api['get_setting_json']('rating_workspace_groups', None)
             if not saved:
                 reverse = {item['article']: nm for nm, item in by_nm.items()}
