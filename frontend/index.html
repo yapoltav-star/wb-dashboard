@@ -1268,6 +1268,8 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
 <div class="page" id="page-rating-workspace">
   <div class="toolbar" style="flex-wrap:wrap">
     <h2 style="font-size:20px;margin:0">Рейтинг товаров</h2>
+    <button class="action-btn primary" id="rwUploadButton" onclick="document.getElementById('rwReportFile').click()">Загрузить отчёт WB</button>
+    <input type="file" id="rwReportFile" accept=".xlsx" hidden onchange="rwUploadReport(this)">
     <button class="action-btn" onclick="loadRatingWorkspace(true)">↻ Обновить данные</button>
     <span id="rwStatus" role="status" style="font-size:12px;color:var(--wb-muted)"></span>
   </div>
@@ -1282,7 +1284,8 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
     <label><input type="checkbox" id="rwOnlySelected" onchange="drawRatingWorkspace()"> Только выбранные</label>
   </div>
   <div class="cards" id="rwCards"></div>
-  <div class="section-sub" style="margin-bottom:16px;line-height:1.6">Источник: отзывы вашего кабинета WB, сохранённые через API; рейтинг WB — из API аналитики. Число загруженных отзывов может отличаться от числа оценок WB. Участие оценок в рейтинге и исключения не подтверждены. Прогноз — простое среднее без весов по давности; он не гарантирует рейтинг WB. Сценарий не изменяет отзывы или склейки на Wildberries.</div>
+  <div class="section-sub" style="margin-bottom:16px;line-height:1.6">Загрузите Excel из WB → «Оценка товара». Сценарий использует оценки 1★–5★ из отчёта: исключённые и не прошедшие модерацию уже не входят в эту разбивку. Отложенные показываются отдельно. Рейтинг WB и среднее за период — разные показатели; прогноз не учитывает веса оценок WB.</div>
+  <div id="rwReportInfo" class="section-sub" style="margin-bottom:16px;line-height:1.6"></div>
   <div style="background:var(--wb-surface);border:1px solid var(--wb-border);padding:20px;border-radius:12px;margin-bottom:20px">
     <h3 style="margin:0 0 16px">Сценарий по оценкам</h3>
     <div class="toolbar" style="flex-wrap:wrap">

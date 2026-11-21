@@ -2,7 +2,7 @@
 import threading
 import time
 from datetime import datetime, timedelta
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 
 def normalize_groups(groups, allowed):
@@ -21,10 +21,16 @@ def normalize_groups(groups, allowed):
 def register_rating_workspace(app, deps):
     cache = {'data': None, 'syncing': False, 'error': None, 'ts': 0}
     lock = threading.Lock()
+    report_lock = threading.Lock()
+    report_state = {'loaded':False, 'items':{}}
 
     def refresh():
         try:
             api = deps()
+            with report_lock:
+                if not report_state['loaded']:
+                    report_state['items'] = api['get_setting_json']('rating_workspace_reports', {}) or {}
+                    report_state['loaded'] = True
             response = api['_dash_rpc']('get_article_stats', {}, 30)
             response.raise_for_status()
             evidence = response.json()
@@ -81,7 +87,39 @@ def register_rating_workspace(app, deps):
                 cache['syncing'] = True
                 cache['error'] = None
                 threading.Thread(target=refresh, daemon=True).start()
-            return {**(cache['data'] or {}), 'syncing': cache['syncing'], 'error': cache['error']}
+            from rating_report import apply_rating_reports
+            return apply_rating_reports({**(cache['data'] or {'groups':{}}), 'syncing': cache['syncing'], 'error': cache['error']}, report_state['items'])
+
+    @app.post('/api/rating-workspace/report')
+    async def upload_workspace_report(request: Request):
+        from rating_report import parse_rating_report
+        from starlette.concurrency import run_in_threadpool
+        form = await request.form()
+        upload = form.get('file')
+        if upload is None or not hasattr(upload, 'read') or not str(upload.filename or '').lower().endswith('.xlsx'):
+            raise HTTPException(400, 'Выберите исходный отчёт WB в формате .xlsx')
+        content = await upload.read(12 * 1024 * 1024 + 1)
+        await upload.close()
+        if len(content) > 12 * 1024 * 1024:
+            raise HTTPException(400, 'Максимальный размер файла — 12 МБ')
+        try:
+            items = await run_in_threadpool(parse_rating_report, content)
+        except Exception as error:
+            deps()['logger'].warning('Rating report validation: %s', error)
+            raise HTTPException(400, str(error) if isinstance(error, ValueError) else 'Не удалось прочитать файл Excel')
+        api = deps()
+        uploaded_at = api['_msk_now']().strftime('%d.%m.%Y %H:%M')
+        filename = str(upload.filename or 'Отчёт WB.xlsx').replace('\\', '/').split('/')[-1][:200]
+        def persist_report():
+            with report_lock:
+                old = report_state['items'] if report_state['loaded'] else (api['get_setting_json']('rating_workspace_reports', {}) or {})
+                updated = {**old, **{item['nm_id']:{**item, 'uploaded_at':uploaded_at, 'filename':filename} for item in items}}
+                if not api['save_setting_value']('rating_workspace_reports', updated):
+                    raise HTTPException(502, 'Не удалось сохранить отчёт. Предыдущие данные не изменены')
+                report_state.update(loaded=True, items=updated)
+        await run_in_threadpool(persist_report)
+        return {'count':len(items), 'nm_ids':[item['nm_id'] for item in items], 'uploaded_at':uploaded_at,
+                'period_from':items[0]['period_from'], 'period_to':items[0]['period_to']}
 
     @app.post('/api/rating-workspace/groups')
     def save_workspace_groups(request: dict):
@@ -89,7 +127,7 @@ def register_rating_workspace(app, deps):
             data = cache['data']
             if data is None:
                 raise HTTPException(409, 'Сначала дождитесь загрузки товаров')
-            groups = normalize_groups(request.get('groups'), {p['nm_id'] for p in data['products']})
+            groups = normalize_groups(request.get('groups'), {p['nm_id'] for p in data['products']} | set(report_state['items']))
         if not deps()['save_setting_value']('rating_workspace_groups', groups):
             raise HTTPException(502, 'Не удалось сохранить склейки')
         with lock:

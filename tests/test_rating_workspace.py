@@ -1,5 +1,7 @@
 import unittest
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from datetime import datetime
 import time
 
@@ -8,9 +10,9 @@ class RatingWorkspaceTests(unittest.TestCase):
         class HTTPException(Exception):
             def __init__(self, code, message):
                 self.status_code=code
-        self.scope={'HTTPException':HTTPException}
+        self.scope={'HTTPException':HTTPException, 'Request':object}
         path=Path(__file__).resolve().parents[1]/'backend/rating_workspace.py'
-        exec(compile(path.read_text().replace('from fastapi import HTTPException',''), str(path), 'exec'), self.scope)
+        exec(compile(path.read_text().replace('from fastapi import HTTPException, Request',''), str(path), 'exec'), self.scope)
         self.error=HTTPException
 
     def test_own_group_membership_and_deduplication(self):
@@ -34,7 +36,7 @@ class RatingWorkspaceTests(unittest.TestCase):
           'build_nm_to_vendor_map':lambda:{123:'Часы'},
           '_msk_now':lambda:datetime(2026,11,21,12),
           'fetch_own_stats_v3':lambda *args:{'123':{'feedback_rating':5,'api_feedback_rating':0}},
-          'get_setting_json':lambda *args:{'Моя склейка':['123']},
+          'get_setting_json':lambda key,*args:{} if key=='rating_workspace_reports' else {'Моя склейка':['123']},
           'get_setting_raw':lambda *args:'21.11.2026',
           'save_setting_value':lambda key,groups:saves.append((key,groups)) or True,
         }
@@ -43,7 +45,8 @@ class RatingWorkspaceTests(unittest.TestCase):
         deadline=time.time()+2
         while data['syncing'] and time.time()<deadline:
             time.sleep(.01);data=getter()
-        self.assertFalse(data['syncing']);self.assertEqual(data['products'][0]['stars']['5'],17)
+        self.assertFalse(data['syncing']);self.assertEqual(data['products'][0]['stars']['5'],0)
+        self.assertIsNone(data['products'][0]['report'])
         self.assertIsNone(data['products'][0]['wb_rating'])
         self.assertFalse(data['wb_available'])
         routes['POST','/api/rating-workspace/groups']({'groups':{'Новая':['123']}})
