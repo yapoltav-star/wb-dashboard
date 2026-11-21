@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 from datetime import datetime
@@ -25,6 +26,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
+from razdachi_batch import looks_like_batch, parse_batch, parse_day
 
 logger = logging.getLogger("razdachi")
 
@@ -230,9 +232,14 @@ def wb_link(nm: str) -> str:
 def plan_line(task: dict) -> str:
     plan = int(task.get("plan") or 0)
     done = total_qty(task)
-    if done <= 0:
-        return f"План {plan} · пока 0"
-    return f"План {plan} · раздали {done} · ещё {max(plan - done, 0)}"
+    line = f"План {plan} · пока 0" if done <= 0 else f"План {plan} · раздали {done} · ещё {max(plan - done, 0)}"
+    if task.get("planned_date"):
+        line += f"\nДата раздачи: {display_day(task['planned_date'])}"
+    return line
+
+
+def display_day(value):
+    return datetime.fromisoformat(value).strftime("%d.%m.%Y") if value else "без даты"
 
 
 def channel_html(task: dict) -> str:
@@ -240,7 +247,10 @@ def channel_html(task: dict) -> str:
     if task.get("channel") == "keyword":
         return f"По ключу: {esc(query)}"
     if re.fullmatch(r"\d{6,12}", query):
-        return f"Через конкурента: {wb_link(query)}"
+        line = f"Через конкурента: {wb_link(query)}"
+        if task.get("keyword"):
+            line += f"\nКлюч: {esc(task['keyword'])}"
+        return line
     return f"Через конкурента: {esc(query)}"
 
 
@@ -445,6 +455,8 @@ class Store:
             "channel": draft["channel"],
             "query": draft["query"],
             "plan": int(draft["plan"]),
+            "planned_date": draft.get("planned_date") or "",
+            "keyword": draft.get("keyword") or "",
             "setter": name,
             "setter_chat": int(chat_id),
             "status": "open",
@@ -717,6 +729,7 @@ def help_text() -> str:
         "/start — меню",
         "/board — доска",
         "/new — новая раздача (для тех, кто ставит задачи)",
+        "Можно прислать список: товар, дата, конкурент — N шт или N шт по ключу …",
         "/today — кто раздал сегодня",
         "/cancel — отменить черновик",
         "/help — это",
@@ -1228,11 +1241,135 @@ def on_callback(store: Store, sessions: dict, chat_id: int, data: str, message_i
     return [alert("Кнопка устарела. Нажми /start.", True)]
 
 
+def batch_next(store, sessions, chat_id):
+    step = sessions[chat_id]
+    draft = step["draft"]
+    entries, nonce = draft["entries"], draft["nonce"]
+    unresolved = next((item for item in entries if not item["nm"]), None)
+    if unresolved:
+        title = unresolved["title"]
+        matches = product_matches(title)
+        if len(matches) == 1:
+            for item in entries:
+                if item["title"] == title:
+                    item["nm"] = matches[0]["nm"]
+                    item["catalog_title"] = matches[0]["title"]
+            return batch_next(store, sessions, chat_id)
+        draft["resolve_title"] = title
+        draft["choices"] = matches[:20]
+        step["step"] = "batch_product"
+        rows = [[(f"{clip(p['title'], 30)} · {p['nm']}", f"batch:{nonce}:pick:{p['nm']}")] for p in matches[:20]]
+        rows.append([("Отмена", f"batch:{nonce}:cancel")])
+        return [send(chat_id, f"Уточни артикул для {esc(title)}. Выбери карточку или введи номер WB.", inline(rows))]
+    missing = next((item for item in entries if not item.get("date_checked") and not item["planned_date"]), None)
+    if missing:
+        draft["date_title"] = missing["title"]
+        step["step"] = "batch_date"
+        return [send(chat_id, f"Для {esc(missing['title'])} не указана дата. Напиши ДД.ММ или выбери «Без даты».", inline([
+            [("Без даты", f"batch:{nonce}:undated")], [("Отмена", f"batch:{nonce}:cancel")],
+        ]))]
+    step["step"] = "batch_confirm"
+    lines = [f"Проверка списка: {len(entries)} раздач, {sum(e['plan'] for e in entries)} шт."]
+    for i, item in enumerate(entries, 1):
+        lines.append(f"\n{i}. {esc(item['title'])} · {display_day(item['planned_date'])} · {item['plan']} шт\n"
+                     f"Ваш артикул: {wb_link(item['nm'])}\n{channel_html(item)}")
+    totals = {}
+    for item in entries:
+        totals[item["title"]] = totals.get(item["title"], 0) + item["plan"]
+    lines.append("\nПо товарам: " + "; ".join(f"{esc(k)} — {v} шт" for k, v in totals.items()))
+    lines.append("\nПосле подтверждения все карточки появятся на доске и уйдут команде сразу. Даты указаны как план выполнения.")
+    # Keep every Telegram message below its 4096-character limit, including HTML.
+    actions, text = [], ""
+    for line in lines:
+        if len(text) + len(line) + 1 > 3500:
+            actions.append(send(chat_id, text))
+            text = ""
+        text += line + "\n"
+    count = len(entries)
+    noun = "раздач"
+    if count % 10 == 1 and count % 100 != 11:
+        noun = "раздачу"
+    elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        noun = "раздачи"
+    actions.append(send(chat_id, text, inline([
+        [(f"Создать {count} {noun}", f"batch:{nonce}:post")],
+        [("Отмена", f"batch:{nonce}:cancel")],
+    ])))
+    return actions
+
+
+def batch_text(store, sessions, chat_id, text):
+    step = sessions[chat_id]
+    draft = step["draft"]
+    if step["step"] == "batch_product":
+        nm = parse_nm(text)
+        if not nm:
+            return [send(chat_id, "Нужен номер артикула WB или выбор карточки кнопкой.")]
+        for item in draft["entries"]:
+            if item["title"] == draft["resolve_title"]:
+                item["nm"] = nm
+        return batch_next(store, sessions, chat_id)
+    if step["step"] == "batch_date":
+        try:
+            day = parse_day(text, store.now().year)
+        except ValueError as exc:
+            return [send(chat_id, str(exc))]
+        for item in draft["entries"]:
+            if item["title"] == draft["date_title"] and not item["planned_date"]:
+                item["planned_date"], item["date_checked"] = day, True
+        return batch_next(store, sessions, chat_id)
+    return [send(chat_id, "Проверь список и нажми «Создать» или «Отмена».")]
+
+
+def batch_callback(store, sessions, chat_id, data):
+    parts = data.split(":")
+    step = _session(sessions, chat_id)
+    draft = step["draft"]
+    user = store.user(chat_id)
+    if (not user or not is_setter(user["name"]) or len(parts) < 3
+            or not step["step"].startswith("batch_") or parts[1] != draft.get("nonce")):
+        return [alert("Этот список уже обработан или отменён.", True)]
+    op = parts[2]
+    if op == "cancel":
+        _clear(sessions, chat_id)
+        return [send(chat_id, "Отменил список. Раздачи не созданы."), alert()]
+    if op == "pick" and len(parts) == 4 and step["step"] == "batch_product":
+        chosen = next((p for p in draft.get("choices", []) if p["nm"] == parts[3]), None)
+        if not chosen:
+            return [alert("Выбери карточку из списка.", True)]
+        for item in draft["entries"]:
+            if item["title"] == draft["resolve_title"]:
+                item["nm"], item["catalog_title"] = chosen["nm"], chosen["title"]
+        return batch_next(store, sessions, chat_id) + [alert()]
+    if op == "undated" and step["step"] == "batch_date":
+        for item in draft["entries"]:
+            if item["title"] == draft["date_title"] and not item["planned_date"]:
+                item["date_checked"] = True
+        return batch_next(store, sessions, chat_id) + [alert()]
+    if op != "post" or step["step"] != "batch_confirm":
+        return [alert("Сначала уточни данные списка.", True)]
+    entries = draft["entries"]
+    # Commit the batch and clear the confirmation together, before sending cards.
+    persist = store.persist
+    store.persist = False
+    try:
+        tasks = [store.create_task(chat_id=chat_id, name=user["name"], draft=item) for item in entries]
+        _clear(sessions, chat_id)
+    finally:
+        store.persist = persist
+    store.save()
+    actions = [send(int(person["chat_id"]), posted_text(task), card_markup(task, person["name"]), remember=task["id"])
+               for task in tasks for person in store.users.values()]
+    return actions + [send(chat_id, f"Создано {len(tasks)} раздач, всего {sum(t['plan'] for t in tasks)} шт."), alert()]
+
+
 def reduce(store: Store, sessions: dict, event: dict) -> list:
     chat_id = int(event["chat_id"])
     text = event.get("text") or ""
     message_id = event.get("message_id")
     if event.get("kind") == "callback":
+        if text.startswith("batch:"):
+            return batch_callback(store, sessions, chat_id, text)
         return on_callback(store, sessions, chat_id, text, message_id)
     if not text.strip():
         return [send(chat_id, "Напиши текстом.")]
@@ -1242,6 +1379,28 @@ def reduce(store: Store, sessions: dict, event: dict) -> list:
         return on_menu(store, sessions, chat_id, known or label)
     if not store.user(chat_id):
         return accept_name(store, sessions, chat_id, label)
+    if looks_like_batch(label):
+        if not is_setter(store.user(chat_id)["name"]):
+            return [send(chat_id, "Списки раздач создаёт тот, кто ставит задачи.")]
+        entries, errors = parse_batch(label, store.now().year)
+        if errors:
+            _clear(sessions, chat_id)
+            return [send(chat_id, "Список не создан. Исправь и пришли целиком:\n" + "\n".join(esc(e) for e in errors)[:3000])]
+        sessions[chat_id] = {"step": "batch_resolve", "draft": {"entries": entries, "nonce": secrets.token_hex(4)}}
+        totals, days = {}, {}
+        for item in entries:
+            totals[item["title"]] = totals.get(item["title"], 0) + item["plan"]
+            day = item["planned_date"]
+            days[day] = days.get(day, 0) + item["plan"]
+        summary = (f"Разобрал: {len(entries)} раздач, всего {sum(totals.values())} шт.\n"
+                   + "\n".join(f"{esc(title)} — {qty} шт" for title, qty in totals.items())
+                   + "\n\nПо датам:\n" + "\n".join(f"{display_day(day)} — {qty} шт" for day, qty in sorted(days.items()))
+                   + "\n\nПока ничего не создано. Проверим артикулы и даты.")
+        return [send(chat_id, summary)] + batch_next(store, sessions, chat_id)
+    if _session(sessions, chat_id)["step"].startswith("batch_"):
+        if not is_setter(store.user(chat_id)["name"]):
+            return [send(chat_id, "Списки раздач создаёт тот, кто ставит задачи.")]
+        return batch_text(store, sessions, chat_id, label)
     return on_step(store, sessions, chat_id, label, message_id)
 
 
