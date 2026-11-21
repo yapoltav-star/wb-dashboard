@@ -7275,6 +7275,7 @@ def fetch_own_stats_v3(nm_ids: list[int], date_from: str, date_to: str) -> dict:
             "name": prod.get("title") or "",
             "is_own": True,
             # Карточка
+            "api_feedback_rating": fb,
             "feedback_rating": fb if fb else rev.get("wb_rating"),
             "card_rating": prod.get("productRating"),
             "reviews_count": rev.get("reviews_total"),
@@ -9880,6 +9881,7 @@ _HTML_NO_CACHE = {
 
 @app.get("/")
 @app.get("/rnp")
+@app.get("/ratings")
 @app.get("/RNP", include_in_schema=False)
 def root():
     index = FRONTEND_DIR / "index.html"
@@ -18205,6 +18207,9 @@ try:
 except Exception as e:
     logger.warning(f"razdachi bot не поднялся: {e}")
 
+
+from rating_workspace import register_rating_workspace
+register_rating_workspace(app, lambda: globals())
 
 if __name__ == "__main__":
     import uvicorn

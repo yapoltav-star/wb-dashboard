@@ -1047,6 +1047,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   <div class="tb-nav">
     <div class="tb-nav-item on" onclick="showSection('catalog',this)">Товары</div>
     <div class="tb-nav-item" onclick="showSection('growth',this)">Рост продаж</div>
+    <div class="tb-nav-item" onclick="showSection('rating-workspace',this)">Рейтинг</div>
     <div class="tb-nav-item" onclick="showSection('products',this)">Отзывы и оценки</div>
     <div class="tb-nav-item" onclick="showSection('promotions',this)">Акции и цены</div>
     <div class="tb-nav-item" onclick="showSection('supplies',this)">Остатки и поставки</div>
@@ -1264,6 +1265,39 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
 </div>
 
 <!-- ТОВАРЫ WB -->
+<div class="page" id="page-rating-workspace">
+  <div class="toolbar" style="flex-wrap:wrap">
+    <h2 style="font-size:20px;margin:0">Рейтинг товаров</h2>
+    <button class="action-btn" onclick="loadRatingWorkspace(true)">↻ Обновить данные</button>
+    <span id="rwStatus" role="status" style="font-size:12px;color:var(--wb-muted)"></span>
+  </div>
+  <div class="toolbar" style="flex-wrap:wrap">
+    <label>Склейка <select id="rwGroup" onchange="rwChooseGroup()"><option value="">Новый состав</option></select></label>
+    <input id="rwGroupName" placeholder="Название склейки" maxlength="120" aria-label="Название склейки">
+    <button class="action-btn" onclick="rwSaveGroup()">Сохранить состав</button>
+    <span id="rwSelection" style="font-size:12px"></span>
+  </div>
+  <div class="toolbar" style="flex-wrap:wrap">
+    <input id="rwSearch" placeholder="Артикул или nmID…" aria-label="Поиск товаров рейтинга" oninput="drawRatingWorkspace()">
+    <label><input type="checkbox" id="rwOnlySelected" onchange="drawRatingWorkspace()"> Только выбранные</label>
+  </div>
+  <div class="cards" id="rwCards"></div>
+  <div class="section-sub" style="margin-bottom:16px;line-height:1.6">Источник: отзывы вашего кабинета WB, сохранённые через API; рейтинг WB — из API аналитики. Число загруженных отзывов может отличаться от числа оценок WB. Участие оценок в рейтинге и исключения не подтверждены. Прогноз — простое среднее без весов по давности; он не гарантирует рейтинг WB. Сценарий не изменяет отзывы или склейки на Wildberries.</div>
+  <div style="background:var(--wb-surface);border:1px solid var(--wb-border);padding:20px;border-radius:12px;margin-bottom:20px">
+    <h3 style="margin:0 0 16px">Сценарий по оценкам</h3>
+    <div class="toolbar" style="flex-wrap:wrap">
+      <label>Добавить 5★ <input id="rwAdd5" type="number" min="0" step="1" value="0" oninput="drawRatingWorkspace()" style="width:80px"></label>
+      <label>Убрать 1★ <input id="rwRemove1" type="number" min="0" step="1" value="0" oninput="drawRatingWorkspace()" style="width:80px"></label>
+      <label>Убрать 2★ <input id="rwRemove2" type="number" min="0" step="1" value="0" oninput="drawRatingWorkspace()" style="width:80px"></label>
+      <label>Убрать 3★ <input id="rwRemove3" type="number" min="0" step="1" value="0" oninput="drawRatingWorkspace()" style="width:80px"></label>
+      <label>Убрать 4★ <input id="rwRemove4" type="number" min="0" step="1" value="0" oninput="drawRatingWorkspace()" style="width:80px"></label>
+      <button class="action-btn" onclick="rwResetScenario()">Сбросить сценарий</button>
+    </div>
+    <div id="rwForecast" style="font-size:14px;line-height:1.6"></div>
+  </div>
+  <div id="rwTable"></div>
+</div>
+
 <div class="page on" id="page-wb-products">
   <div class="toolbar">
     <div class="search">
@@ -2218,6 +2252,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   </div>
 </div>
 
+<script src="/static/rating-workspace.js"></script>
 <script>
 // Same-origin на Railway и на своём домене; локально — прямой URL Railway.
 const RAILWAY_URL = (typeof location !== 'undefined' && location.hostname
@@ -2288,7 +2323,7 @@ function rc(v) {
 function showSection(sec, btn, updateHistory = true) {
   // Keep the existing section intact; its URL can also be opened directly.
   if(updateHistory) {
-    const path = sec === 'growth' ? '/rnp' : '/';
+    const path = sec === 'growth' ? '/rnp' : sec === 'rating-workspace' ? '/ratings' : '/';
     history.pushState({section: sec}, '', path);
   }
   document.querySelectorAll('.tb-nav-item').forEach(t => t.classList.remove('on'));
@@ -2303,7 +2338,8 @@ function showSection(sec, btn, updateHistory = true) {
   if(spos) spos.style.display = sec === 'positions' ? 'flex' : 'none';
   const sa = document.getElementById('subnav-analytics');
   if(sa) sa.style.display = sec === 'analytics' ? 'flex' : 'none';
-  if(sec === 'catalog') showPage('wb-products', null);
+  if(sec === 'rating-workspace') showPage('rating-workspace', null);
+  else if(sec === 'catalog') showPage('wb-products', null);
   else if(sec === 'products') showPage('products', document.querySelector('#subnav-products .sn-item'));
   else if(sec === 'growth') showPage('sales-pace', document.querySelector('#subnav-growth .sn-item'));
   else if(sec === 'promotions') showPage('promo-cal', document.querySelector('#subnav-promotions .sn-item'));
@@ -2669,6 +2705,7 @@ function showPage(id, btn) {
   page.classList.add('on');
   if(btn) btn.classList.add('on');
   if(id === 'wb-products') renderWbProducts(false);
+  if(id === 'rating-workspace') loadRatingWorkspace();
   if(id === 'groups') renderGroupManager();
   if(id === 'products') renderProducts();
   if(id === 'new-stock') renderNewStock(true);
@@ -17659,7 +17696,8 @@ async function saveCfoSnapshot() {
 }
 
 function sectionFromPath() {
-  return location.pathname.replace(/\/$/, '').toLowerCase() === '/rnp' ? 'growth' : 'catalog';
+  const path = location.pathname.replace(/\/$/, '').toLowerCase();
+  return path === '/rnp' ? 'growth' : path === '/ratings' ? 'rating-workspace' : 'catalog';
 }
 function openSectionFromLocation() {
   const section = history.state?.section || sectionFromPath();

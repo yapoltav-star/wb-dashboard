@@ -1,0 +1,11 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const context={};vm.createContext(context);vm.runInContext(fs.readFileSync(`${__dirname}/../frontend/rating-workspace.js`,'utf8'),context);
+let result=context.rwScenario({5:17,1:2},0,{});
+assert.equal(result.total,19);assert.equal(result.mean,87/19);assert.equal(result.need,4);
+result=context.rwScenario({5:17,1:2},4,{});assert(result.mean>=4.65);
+assert(context.rwScenario({5:17,1:2},3,{}).mean<4.65);
+result=context.rwScenario({5:17,1:2},0,{1:500});assert.equal(result.mean,5);assert.equal(result.total,17);assert.equal(result.need,null);
+assert.equal(context.rwScenario({},0,{}).mean,null);
+assert.equal(context.rwScenario({5:17,1:2},0,{1:1}).total,18);
+assert.equal(context.rwScenario({5:17,1:2},0,{1:1}).shown,4.8);
+console.log('Rating scenarios, removal bounds and next-step thresholds: OK');
