@@ -1278,6 +1278,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
     <input id="rwGroupName" placeholder="Название склейки" maxlength="120" aria-label="Название склейки">
     <button class="action-btn" id="rwEditComposition" onclick="rwToggleCompositionEditor()">Изменить состав</button>
     <button class="action-btn" id="rwSaveComposition" onclick="rwSaveGroup()">Сохранить состав</button>
+    <button class="action-btn" id="rwDeleteGroup" onclick="rwDeleteGroup()" hidden>Удалить склейку</button>
     <span id="rwSelection" style="font-size:12px"></span>
   </div>
   <div class="toolbar" style="flex-wrap:wrap">
@@ -2256,7 +2257,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   </div>
 </div>
 
-<script src="/static/rating-workspace.js?v=detail-report-20261121"></script>
+<script src="/static/rating-workspace.js?v=delete-groups-20261121"></script>
 <script>
 // Same-origin на Railway и на своём домене; локально — прямой URL Railway.
 const RAILWAY_URL = (typeof location !== 'undefined' && location.hostname

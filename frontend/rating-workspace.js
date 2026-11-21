@@ -63,6 +63,8 @@ async function rwUploadReport(input) {
 }
 function rwChooseGroup() {
   const name=document.getElementById('rwGroup').value;
+  document.getElementById('rwDeleteGroup').dataset.confirm='';
+  document.getElementById('rwDeleteGroup').textContent='Удалить склейку';
   RW_SELECTED=new Set((RW.groups[name] || []).map(String));
   document.getElementById('rwGroupName').value=name;
   RW_EDITING=!name;
@@ -95,6 +97,26 @@ async function rwSaveGroup() {
     select.innerHTML='<option value="">Новый состав</option>'+Object.keys(RW.groups).map(g=>`<option value="${rwEsc(g)}">${rwEsc(g)}</option>`).join('');
     select.value=name;RW_EDITING=false;document.getElementById('rwSearch').value='';drawRatingWorkspace();status.textContent='Склейка сохранена';
   }catch(error){status.textContent=error.message;}
+}
+async function rwDeleteGroup() {
+  const select=document.getElementById('rwGroup'), name=select.value;
+  const button=document.getElementById('rwDeleteGroup'), status=document.getElementById('rwStatus');
+  if(!name || !Object.hasOwn(RW.groups,name)) return;
+  if(button.dataset.confirm!==name) {
+    button.dataset.confirm=name;button.textContent='Подтвердить удаление';
+    status.textContent=`Удалить склейку «${name}»? Товары и отчёты сохранятся.`;return;
+  }
+  button.disabled=true;
+  try {
+    const groups={...RW.groups};delete groups[name];
+    const response=await fetch(`${RAILWAY_URL}/api/rating-workspace/groups`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups})});
+    const data=await response.json();if(!response.ok) throw new Error(data.detail || 'Ошибка удаления');
+    RW.groups=data.groups;
+    select.innerHTML='<option value="">Новый состав</option>'+Object.keys(RW.groups).map(g=>`<option value="${rwEsc(g)}">${rwEsc(g)}</option>`).join('');
+    select.value=Object.keys(RW.groups)[0] || '';rwChooseGroup();
+    status.textContent=`Склейка «${name}» удалена`;
+  }catch(error){status.textContent=error.message;}
+  finally{button.disabled=false;}
 }
 function rwReportUsable(report) {
   return Boolean(report && report.scenario_usable !== false && report.total >= 0 &&
@@ -133,6 +155,7 @@ function drawRatingWorkspace() {
   const only=!RW_EDITING;
   document.getElementById('rwEditComposition').textContent=RW_EDITING?'Готово':'Изменить состав';
   document.getElementById('rwSaveComposition').hidden=!RW_EDITING;
+  document.getElementById('rwDeleteGroup').hidden=!document.getElementById('rwGroup').value;
   document.getElementById('rwGroupName').hidden=!RW_EDITING;
   document.getElementById('rwCompositionHint').textContent=RW_EDITING?'Выберите товары галочками и сохраните состав.':'Показаны только артикулы выбранного состава.';
   const products=RW.products.filter(p=>(!only || RW_SELECTED.has(p.nm_id)) && `${p.article} ${p.nm_id}`.toLowerCase().includes(q));
