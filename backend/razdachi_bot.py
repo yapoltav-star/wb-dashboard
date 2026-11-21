@@ -45,6 +45,62 @@ _POLLING = False
 _CONFLICT = False
 _USERNAME = ""
 _MODE = ""
+_CATALOG_PROVIDER = lambda: {}
+
+
+def product_key(value: str) -> str:
+    text = canon(value)
+    text = re.sub(r"(?<!\d)0[.,](\d{2})(?!\d)", r"0\1", text)
+    words = re.findall(r"[a-zа-я]+|\d+", text)
+    aliases = {"блэк": "black", "блек": "black", "черный": "black",
+               "черная": "black", "пинк": "pink", "розовый": "pink",
+               "вайт": "white", "белый": "white", "грей": "grey",
+               "gray": "grey", "серый": "grey", "голд": "gold",
+               "силвер": "silver"}
+    return " ".join(str(int(w)) if w.isdigit() else aliases.get(w, w) for w in words)
+
+
+def product_matches(query: str) -> list:
+    key = product_key(query)
+    if not key:
+        return []
+    try:
+        catalog = _CATALOG_PROVIDER()
+        def matches(title):
+            candidate = product_key(str(title))
+            if candidate == key:
+                return True
+            query_words, words = key.split(), candidate.split()
+            # Seller codes include brand/suffix tokens: 048_PVS_black_O.
+            # Require the same model plus all supplied qualifiers; never fuzzy-match models.
+            return (len(query_words) >= 2 and query_words[0].isdigit() and words
+                    and words[0] == query_words[0]
+                    and set(query_words[1:]).issubset(words[1:]))
+        return [{"nm": str(nm), "title": str(title)} for nm, title in catalog.items()
+                if parse_nm(str(nm)) and matches(title)]
+    except Exception:
+        logger.warning("razdachi: каталог временно недоступен")
+        return []
+
+
+def offer_product(sessions: dict, chat_id: int, query: str) -> list:
+    matches = product_matches(query)
+    if not matches or len(matches) > 20:
+        return []
+    step = _session(sessions, chat_id)
+    step["draft"]["title"] = step["draft"].get("title") or query
+    step["draft"]["products"] = matches
+    step["step"] = "product"
+    rows = [[(f"{clip(p['title'], 35)} · {p['nm']}", f"product:{p['nm']}")] for p in matches]
+    rows.append([("Ввести артикул вручную", "product:manual")])
+    prompt = "Нашёл в дашборде. Выбери товар:" if len(matches) == 1 else "Подходят несколько карточек. Выбери нужную:"
+    return [send(chat_id, prompt, inline(rows))]
+
+
+def ask_channel(chat_id: int) -> list:
+    return [send(chat_id, "Дальше «По ключу» или «Через конкурента».", inline([
+        [("По ключу", "ch:k"), ("Через конкурента", "ch:c")],
+    ]))]
 
 
 class Conflict(Exception):
@@ -787,17 +843,30 @@ def on_step(store: Store, sessions: dict, chat_id: int, text: str, message_id: i
         if not title or title.startswith("/") or len(title) > 80:
             return [send(chat_id, "Своё название, например 046 Black.")]
         draft["title"] = title
+        found = offer_product(sessions, chat_id, title)
+        if found:
+            return found
         step["step"] = "nm"
         return [send(chat_id, "Артикул Wildberries: цифры или ссылка на карточку.")]
     if current == "nm":
         nm = parse_nm(text)
         if not nm:
+            found = offer_product(sessions, chat_id, text)
+            if found:
+                return found
             return [send(chat_id, "Нужны цифры артикула или ссылка на карточку.")]
         draft["nm"] = nm
         step["step"] = "channel"
-        return [send(chat_id, "Дальше «По ключу» или «Через конкурента».", inline([
-            [("По ключу", "ch:k"), ("Через конкурента", "ch:c")],
-        ]))]
+        return ask_channel(chat_id)
+    if current == "product":
+        nm = parse_nm(text)
+        if nm:
+            draft["nm"] = nm
+            draft.pop("products", None)
+            step["step"] = "channel"
+            return ask_channel(chat_id)
+        found = offer_product(sessions, chat_id, text)
+        return found or [send(chat_id, "Выбери карточку кнопкой или введи артикул WB.")]
     if current == "channel":
         folded = text.casefold()
         if "ключ" in folded:
@@ -954,6 +1023,21 @@ def on_callback(store: Store, sessions: dict, chat_id: int, data: str, message_i
     parts = (data or "").split(":")
     op = parts[0]
     step = _session(sessions, chat_id)
+
+    if op == "product" and len(parts) == 2:
+        if step["step"] != "product" or not is_setter(user["name"]):
+            return [alert("Выбор устарел. Нажми «Новая раздача».", True)]
+        if parts[1] == "manual":
+            step["draft"].pop("products", None)
+            step["step"] = "nm"
+            return [send(chat_id, "Артикул Wildberries: цифры или ссылка на карточку."), alert()]
+        chosen = next((p for p in step["draft"].get("products", []) if p["nm"] == parts[1]), None)
+        if not chosen:
+            return [alert("Выбери товар из предложенных карточек.", True)]
+        step["draft"].update(nm=chosen["nm"], title=chosen["title"])
+        step["draft"].pop("products", None)
+        step["step"] = "channel"
+        return [send(chat_id, f"Выбран: {esc(chosen['title'])}\n{wb_link(chosen['nm'])}")] + ask_channel(chat_id) + [alert()]
 
     if op == "page" and len(parts) == 3 and parts[1] in ("open", "closed"):
         page = parse_count(parts[2])

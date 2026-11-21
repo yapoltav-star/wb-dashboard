@@ -7,7 +7,7 @@ from unittest.mock import patch
 import razdachi_bot as bot
 
 
-class TelegramFlowTest(unittest.TestCase):
+class TelegramHarness(unittest.TestCase):
     def setUp(self):
         self.saved = None
         self.calls = []
@@ -79,6 +79,8 @@ class TelegramFlowTest(unittest.TestCase):
         return "\n".join(p.get("text", "") for m, p in self.calls
                          if m in ("sendMessage", "editMessageText", "answerCallbackQuery"))
 
+
+class TelegramFlowTest(TelegramHarness):
     def test_complete_flow_and_all_edit_fields(self):
         for channel in ("Через конкурента", "По ключу"):
             with self.subTest(channel=channel):

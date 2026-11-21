@@ -18175,6 +18175,17 @@ except Exception as e:
 try:
     import razdachi_bot
 
+    def _razdachi_catalog():
+        # Use the same card mappings and canonical seller articles as the dashboard.
+        mapping = {int(p["nm_id"]): p["vendor_code"]
+                   for p in WB_PRODUCTS_CACHE.get("products") or []
+                   if p.get("nm_id") and p.get("vendor_code")}
+        mapping.update(_nm_vendor_cards_map())
+        mapping.update(DASHBOARD_VENDOR_BY_NM)
+        return mapping
+
+    razdachi_bot._CATALOG_PROVIDER = _razdachi_catalog
+
     async def _take_razdachi(request: Request, hook_secret: str = ""):
         """Телеграм зовёт сюда сам. Пароль сайта не нужен, секрет в пути или в заголовке."""
         header = request.headers.get("x-telegram-bot-api-secret-token")
