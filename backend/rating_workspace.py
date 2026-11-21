@@ -118,7 +118,7 @@ def register_rating_workspace(app, deps):
                     raise HTTPException(502, 'Не удалось сохранить отчёт. Предыдущие данные не изменены')
                 report_state.update(loaded=True, items=updated)
         await run_in_threadpool(persist_report)
-        return {'count':len(items), 'nm_ids':[item['nm_id'] for item in items], 'uploaded_at':uploaded_at,
+        return {'count':len(items), 'warning_count':sum(not item.get('scenario_usable', True) for item in items), 'nm_ids':[item['nm_id'] for item in items], 'uploaded_at':uploaded_at,
                 'period_from':items[0]['period_from'], 'period_to':items[0]['period_to']}
 
     @app.post('/api/rating-workspace/groups')

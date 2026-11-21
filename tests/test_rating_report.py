@@ -18,16 +18,29 @@ class Workbook(dict):
     def close(self):pass
 
 class ReportTests(unittest.TestCase):
-    def parse(self, total=19):
+    def parse(self, total=19, sheet_name='Товары', counts=None):
         headers=['Артикул продавца','Артикул WB','Рейтинг по отзывам','Все отзывы за период',
                  'Отзывы, исключенные из рейтинга','Отзывы, не прошедшие модерацию','Все отложенные отзывы',
                  'Оценки 1','Оценки 2','Оценки 3','Оценки 4','Оценки 5']
         book=Workbook({'Общая информация':Sheet([('Выбранный период','С 2025-11-21 по 2026-11-20')]),
-            'Товары':Sheet([('Детальный отчёт',),headers,['Часы',123,4.7,total,100,13,50,2,0,0,0,17]])})
+            sheet_name:Sheet([('Детальный отчёт',),headers,['Часы',123,4.7,total,100,13,50,*(counts or [2,0,0,0,17])]])})
         content=BytesIO()
         with ZipFile(content,'w'):pass
         with patch.dict(sys.modules,{'openpyxl':SimpleNamespace(load_workbook=lambda *a,**kw:book)}):
             return parse_rating_report(content.getvalue())
+
+    def test_alternate_wb_detail_sheet_supported(self):
+        self.assertEqual(self.parse(sheet_name='Детализация по артикулам')[0]['total'],19)
+
+    def test_negative_wb_adjustments_preserved_but_not_used_in_scenarios(self):
+        row=self.parse(total=4, sheet_name='Детализация по артикулам', counts=[-1,0,0,0,5])[0]
+        self.assertEqual(row['stars']['1'],-1)
+        self.assertEqual(row['total'],4)
+        self.assertFalse(row['scenario_usable'])
+        self.assertEqual(row['calculation_warning'],'negative_values')
+        row=self.parse(total=-19, counts=[-2,0,0,0,-17])[0]
+        self.assertEqual(row['total'],-19)
+        self.assertFalse(row['scenario_usable'])
 
     def test_stars_are_already_net_of_exclusions(self):
         row=self.parse()[0]

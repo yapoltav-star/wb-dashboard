@@ -57,7 +57,7 @@ async function rwUploadReport(input) {
     RW_EDITING=false;
     await loadRatingWorkspace();
     rwResetScenario();
-    status.textContent=`Отчёт сохранён: ${result.count} товаров · ${result.period_from} — ${result.period_to}. Остальные товары не изменены.`;
+    status.textContent=`Отчёт сохранён: ${result.count} товаров · ${result.period_from} — ${result.period_to}.${result.warning_count?` Корректировки WB у ${result.warning_count} товаров сохранены со знаком минус.`:''} Остальные товары не изменены.`;
   }catch(error){status.textContent=error.message;}
   finally {button.disabled=false;input.value='';}
 }
@@ -96,32 +96,37 @@ async function rwSaveGroup() {
     select.value=name;RW_EDITING=false;document.getElementById('rwSearch').value='';drawRatingWorkspace();status.textContent='Склейка сохранена';
   }catch(error){status.textContent=error.message;}
 }
+function rwReportUsable(report) {
+  return Boolean(report && report.scenario_usable !== false && report.total >= 0 &&
+    Object.values(report.stars).every(value => value >= 0));
+}
 function drawRatingWorkspace() {
   const selected=RW.products.filter(p=>RW_SELECTED.has(p.nm_id));
   const stars={1:0,2:0,3:0,4:0,5:0};
   selected.forEach(p=>{for(let star=1;star<=5;star++) stars[star]+=Number(p.stars[star] || 0);});
   const covered=selected.filter(p=>p.report);
   const periods=[...new Set(covered.map(p=>`${p.report.period_from} — ${p.report.period_to}`))];
-  const complete=selected.length>0 && covered.length===selected.length && periods.length===1;
+  const invalid=covered.filter(p=>!rwReportUsable(p.report));
+  const complete=selected.length>0 && covered.length===selected.length && periods.length===1 && Object.values(stars).every(value=>value>=0);
   const info=document.getElementById('rwReportInfo');
   const sumReport=key=>covered.reduce((sum,p)=>sum+Number(p.report[key] || 0),0);
   const sources=[...new Set(covered.map(p=>`${p.report.filename} · загружен ${p.report.uploaded_at}`))];
   info.textContent=!selected.length?'Выберите товары или загрузите отчёт.':!covered.length?'Для выбранных товаров ещё нет отчёта WB. Загрузите его для расчёта.':
-    `Отчёт есть для ${covered.length} из ${selected.length} товаров. Период: ${periods.join('; ')}. Исключено: ${sumReport('excluded')}; не прошли модерацию: ${sumReport('moderation')}; отложено: ${sumReport('deferred')}. ${sources.join('; ')}${complete?'':' Для общего расчёта загрузите отчёты за одинаковый период для всех выбранных товаров.'}`;
+    `Отчёт есть для ${covered.length} из ${selected.length} товаров. Период: ${periods.join('; ')}. Исключено: ${sumReport('excluded')}; не прошли модерацию: ${sumReport('moderation')}; отложено: ${sumReport('deferred')}. ${sources.join('; ')}${invalid.length?` Корректировки WB у ${invalid.length} товаров учтены со знаком минус.`:''}${complete?'':periods.length===1 && covered.length===selected.length?' В итоге по отдельным звёздам остались отрицательные значения — прогноз недоступен.':' Для общего расчёта загрузите отчёты за одинаковый период для всех выбранных товаров.'}`;
   const removals={};
   for(let star=1;star<=4;star++) {
-    const input=document.getElementById('rwRemove'+star); input.max=stars[star];
-    input.value=String(Math.min(stars[star],Math.max(0,Math.floor(Number(input.value)||0))));
+    const input=document.getElementById('rwRemove'+star); const available=complete?stars[star]:0; input.max=available; input.disabled=!complete;
+    input.value=String(Math.min(available,Math.max(0,Math.floor(Number(input.value)||0))));
     removals[star]=Number(input.value);
   }
-  const addInput=document.getElementById('rwAdd5');addInput.value=String(Math.max(0,Math.floor(Number(addInput.value)||0)));
+  const addInput=document.getElementById('rwAdd5');addInput.disabled=!complete;addInput.value=String(Math.max(0,Math.floor(Number(addInput.value)||0)));
   const base=rwScenario(complete?stars:{},0,{}), scenario=rwScenario(complete?stars:{},complete?Number(addInput.value):0,complete?removals:{});
   const format=n=>n==null?'—':n.toLocaleString('ru-RU',{maximumFractionDigits:5});
   const wb=selected.map(p=>p.wb_rating).filter(v=>v!=null);
   const unique=[...new Set(wb)];
   const actual=selected.length && wb.length===selected.length && unique.length===1 ? format(unique[0]) : unique.length>1 ? 'Различается' : 'Нет данных';
   document.getElementById('rwCards').innerHTML=[['Рейтинг WB по выбранным',actual],['Среднее по отчёту WB',format(base.mean)],['Прогноз сценария',format(scenario.mean)],['Оценок в расчёте',complete?format(base.total):'—']].map(([label,value])=>`<div class="card"><div class="card-l">${label}</div><div class="card-v">${value}</div></div>`).join('');
-  document.getElementById('rwForecast').textContent=scenario.mean==null?'Для сценария нужны отчёты WB за одинаковый период по всем выбранным товарам.':scenario.need==null?'Расчётное округление: 5,0.':`Расчётное округление ${format(scenario.shown)} → ${format(Math.round((scenario.shown+0.1)*10)/10)}: нужно ещё ${scenario.need} оценок 5★ (порог среднего ${format(scenario.target)}).`;
+  document.getElementById('rwForecast').textContent=!complete && invalid.length?'После учёта корректировок WB итоговые количества по отдельным звёздам отрицательные либо отчёты неполные. Для такого состава прогноз недоступен.':scenario.mean==null?'Для сценария нужны отчёты WB за одинаковый период по всем выбранным товарам.':scenario.need==null?'Расчётное округление: 5,0.':`Расчётное округление ${format(scenario.shown)} → ${format(Math.round((scenario.shown+0.1)*10)/10)}: нужно ещё ${scenario.need} оценок 5★ (порог среднего ${format(scenario.target)}).`;
   const exclusionPlan=Object.entries(scenario.exclusions).map(([star,count])=>`${count} × ${star}★`).join(' + ');
   if(exclusionPlan) document.getElementById('rwForecast').textContent+=` Альтернатива в сценарии: исключить ${exclusionPlan}.`;
   const q=document.getElementById('rwSearch').value.trim().toLowerCase();
@@ -133,5 +138,5 @@ function drawRatingWorkspace() {
   const products=RW.products.filter(p=>(!only || RW_SELECTED.has(p.nm_id)) && `${p.article} ${p.nm_id}`.toLowerCase().includes(q));
   document.getElementById('rwSelection').textContent=`В составе: ${selected.length} товаров`;
   const cells=p=>[5,4,3,2,1].map(star=>`<td class="num">${format(p.stars[star] || 0)}</td>`).join('');
-  document.getElementById('rwTable').innerHTML=`<div style="overflow:auto"><table class="wb-prod-tbl"><thead><tr><th>В составе</th><th>Артикул</th><th>5★</th><th>4★</th><th>3★</th><th>2★</th><th>1★</th><th>Всего</th><th>Среднее</th><th>Рейтинг WB</th><th>Исключено</th><th>Не прошли модерацию</th><th>Отложено</th><th>Период отчёта</th></tr></thead><tbody><tr class="total-row"><td></td><td>Итого выбранных</td>${complete?cells({stars}):'<td>—</td>'.repeat(5)}<td>${complete?format(base.total):'—'}</td><td>${format(base.mean)}</td><td>${rwEsc(actual)}</td><td>${complete?format(sumReport('excluded')):'—'}</td><td>${complete?format(sumReport('moderation')):'—'}</td><td>${complete?format(sumReport('deferred')):'—'}</td><td>${rwEsc(periods.join('; '))}</td></tr>${products.map(p=>{const calc=rwScenario(p.report?p.stars:{},0,{});return `<tr><td><input type="checkbox" aria-label="Учесть ${rwEsc(p.article)}" ${RW_SELECTED.has(p.nm_id)?'checked':''} onchange="rwToggle('${p.nm_id}',this.checked)"></td><td>${rwEsc(p.article)}<div class="nmid">${p.nm_id}</div></td>${p.report?cells(p):'<td>—</td>'.repeat(5)}<td>${p.report?format(calc.total):'—'}</td><td>${format(calc.mean)}</td><td>${format(p.wb_rating)}</td><td>${p.report?format(p.report.excluded):'—'}</td><td>${p.report?format(p.report.moderation):'—'}</td><td>${p.report?format(p.report.deferred):'—'}</td><td>${p.report?rwEsc(p.report.period_from+' — '+p.report.period_to):'Нет отчёта'}</td></tr>`;}).join('')}</tbody></table></div>`;
+  document.getElementById('rwTable').innerHTML=`<div style="overflow:auto"><table class="wb-prod-tbl"><thead><tr><th>В составе</th><th>Артикул</th><th>5★</th><th>4★</th><th>3★</th><th>2★</th><th>1★</th><th>Всего</th><th>Среднее</th><th>Рейтинг WB</th><th>Исключено</th><th>Не прошли модерацию</th><th>Отложено</th><th>Период отчёта</th></tr></thead><tbody><tr class="total-row"><td></td><td>Итого выбранных</td>${complete?cells({stars}):'<td>—</td>'.repeat(5)}<td>${complete?format(base.total):'—'}</td><td>${format(base.mean)}</td><td>${rwEsc(actual)}</td><td>${complete?format(sumReport('excluded')):'—'}</td><td>${complete?format(sumReport('moderation')):'—'}</td><td>${complete?format(sumReport('deferred')):'—'}</td><td>${rwEsc(periods.join('; '))}</td></tr>${products.map(p=>{const calc=rwScenario(rwReportUsable(p.report)?p.stars:{},0,{});return `<tr><td><input type="checkbox" aria-label="Учесть ${rwEsc(p.article)}" ${RW_SELECTED.has(p.nm_id)?'checked':''} onchange="rwToggle('${p.nm_id}',this.checked)"></td><td>${rwEsc(p.article)}<div class="nmid">${p.nm_id}</div>${p.report&&!rwReportUsable(p.report)?'<div style="font-size:11px;color:var(--red)">Корректировки WB со знаком минус</div>':''}</td>${p.report?cells(p):'<td>—</td>'.repeat(5)}<td>${p.report?format(p.report.total):'—'}</td><td>${format(calc.mean)}</td><td>${format(p.wb_rating)}</td><td>${p.report?format(p.report.excluded):'—'}</td><td>${p.report?format(p.report.moderation):'—'}</td><td>${p.report?format(p.report.deferred):'—'}</td><td>${p.report?rwEsc(p.report.period_from+' — '+p.report.period_to):'Нет отчёта'}</td></tr>`;}).join('')}</tbody></table></div>`;
 }

@@ -15,8 +15,9 @@ def parse_rating_report(content):
     except (BadZipFile, KeyError, OSError) as error:
         raise ValueError('Не удалось открыть Excel. Загрузите исходный отчёт WB в формате .xlsx') from error
     try:
-        if 'Товары' not in workbook.sheetnames or 'Общая информация' not in workbook.sheetnames:
-            raise ValueError('Нужен отчёт WB «Оценка товара» с листами «Товары» и «Общая информация»')
+        detail_sheet = next((name for name in ('Товары', 'Детализация по артикулам') if name in workbook.sheetnames), None)
+        if detail_sheet is None or 'Общая информация' not in workbook.sheetnames:
+            raise ValueError('Нужен отчёт WB «Оценка товара» с листом «Товары» или «Детализация по артикулам» и листом «Общая информация»')
         # WB exports can declare a smaller dimension than their actual cells.
         for name in workbook.sheetnames:
             sheet = workbook[name]
@@ -36,17 +37,17 @@ def parse_rating_report(content):
                  'moderation':'Отзывы, не прошедшие модерацию', 'deferred':'Все отложенные отзывы'}
         for star in range(1, 6):
             names['r'+str(star)] = 'Оценки '+str(star)
-        def number(value, label, integer=True):
+        def number(value, label, integer=True, signed=False):
             if value is None or value == '':
                 raise ValueError('Нет значения: '+label)
             try:
                 value = float(str(value).replace('\u00a0','').replace(' ','').replace(',','.'))
             except (TypeError, ValueError):
                 raise ValueError('Некорректное число: '+label)
-            if not math.isfinite(value) or value < 0 or (integer and value != int(value)):
+            if not math.isfinite(value) or (value < 0 and not signed) or (integer and value != int(value)):
                 raise ValueError('Некорректное число: '+label)
             return int(value) if integer else value
-        for index, row in enumerate(workbook['Товары'].iter_rows(values_only=True), 1):
+        for index, row in enumerate(workbook[detail_sheet].iter_rows(values_only=True), 1):
             if index > 20000:
                 raise ValueError('Слишком много строк в отчёте')
             if headers is None:
@@ -65,8 +66,8 @@ def parse_rating_report(content):
             if nm_id == '0':
                 raise ValueError('Артикул WB не может быть нулём')
             get = lambda key: row[headers[key]] if headers[key] < len(row) else None
-            stars = {str(star):number(get('r'+str(star)), 'Оценки '+str(star)) for star in range(1,6)}
-            total = number(get('total'), 'Все отзывы за период')
+            stars = {str(star):number(get('r'+str(star)), 'Оценки '+str(star), signed=True) for star in range(1,6)}
+            total = number(get('total'), 'Все отзывы за период', signed=True)
             if sum(stars.values()) != total:
                 raise ValueError(f'Артикул {nm_id}: сумма оценок 1–5 не совпадает со всеми отзывами за период')
             rating = number(get('wb_rating'), 'Рейтинг по отзывам', False) if get('wb_rating') not in (None, '', 'Без рейтинга', '—', '-') else None
@@ -76,10 +77,15 @@ def parse_rating_report(content):
                 raise ValueError('Рейтинг WB должен быть от 1 до 5')
             items.append({'nm_id':nm_id, 'article':str(get('article') or nm_id).strip(), 'stars':stars,
                           'wb_rating':rating, 'total':total,
-                          'excluded':number(get('excluded'),'Исключённые'),
-                          'moderation':number(get('moderation'),'Не прошли модерацию'),
-                          'deferred':number(get('deferred'),'Отложенные'),
-                          'period_from':dates[0], 'period_to':dates[1]})
+                          'excluded':number(get('excluded'),'Исключённые', signed=True),
+                          'moderation':number(get('moderation'),'Не прошли модерацию', signed=True),
+                          'deferred':number(get('deferred'),'Отложенные', signed=True),
+                          'period_from':dates[0], 'period_to':dates[1], 'source_sheet':detail_sheet,
+                          'scenario_usable':total >= 0 and all(value >= 0 for value in stars.values()),
+                          'calculation_warning':None})
+        for item in items:
+            if not item['scenario_usable']:
+                item['calculation_warning'] = 'negative_values'
         if not items:
             raise ValueError('В отчёте нет товаров с оценками')
         if len({item['nm_id'] for item in items}) != len(items):
