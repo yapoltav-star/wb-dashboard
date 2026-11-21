@@ -72,6 +72,20 @@ class RazdachiBotTest(unittest.TestCase):
         refused = say(self.store, self.sessions, 2, "Новая раздача")
         self.assertIn("Елизавета, Диля и Босс", refused[0]["text"])
 
+    def test_yaroslav_can_create_from_menu_and_command(self):
+        hello = self.join(7, "Ярослав")
+        self.assertIn("Новая раздача", reply_labels(hello[0]["markup"]))
+        for text in ("Новая раздача", "/new", "/new@razdachi_team_bot"):
+            asked = say(self.store, self.sessions, 7, text)
+            self.assertIn("Своё название", asked[0]["text"])
+            self.assertEqual(self.sessions[7]["step"], "title")
+
+    def test_new_command_keeps_marker_permissions(self):
+        self.join(2, "Маша")
+        refused = say(self.store, self.sessions, 2, "/new")
+        self.assertIn("Ставить задачи могут", refused[0]["text"])
+        self.assertNotEqual(self.sessions.get(2, {}).get("step"), "title")
+
     def test_competitor_task_matches_old_board_line(self):
         self.join(1, "Босс")
         say(self.store, self.sessions, 1, "Новая раздача")

@@ -31,7 +31,7 @@ logger = logging.getLogger("razdachi")
 MOSCOW = ZoneInfo("Europe/Moscow")
 STATE_KEY = "razdachi_bot_state"
 STATE_PATH = Path(__file__).resolve().parent / "data" / "razdachi_state.json"
-SETTER_NAMES = ("елизавета", "диля", "диле", "босс")
+SETTER_NAMES = ("елизавета", "диля", "диле", "босс", "ярослав")
 MENU = ("Новая раздача", "Доска", "Кто раздал", "Команда", "Закрытые", "Имя")
 PLAN_MAX = 500
 NM_RE = re.compile(r"catalog/(\d{6,12})")
@@ -635,7 +635,7 @@ def today_text(store: Store) -> str:
 
 
 def team_text(store: Store) -> str:
-    lines = ["Ставят задачи", "Елизавета, Диля, Босс", "", "В боте сейчас"]
+    lines = ["Ставят задачи", "Елизавета, Диля, Босс (Ярослав)", "", "В боте сейчас"]
     people = sorted(store.users.values(), key=lambda user: user.get("name", "").casefold())
     if not people:
         lines.append("Пока никого.")
@@ -650,6 +650,7 @@ def help_text() -> str:
     return "\n".join([
         "/start — меню",
         "/board — доска",
+        "/new — новая раздача (для тех, кто ставит задачи)",
         "/today — кто раздал сегодня",
         "/cancel — отменить черновик",
         "/help — это",
@@ -673,7 +674,7 @@ def on_menu(store: Store, sessions: dict, chat_id: int, text: str) -> list:
         markup = reply_kb(user["name"]) if user else None
         return [send(chat_id, "Отменил.", markup)]
 
-    if label == "Новая раздача":
+    if cmd == "/new" or label == "Новая раздача":
         user = store.user(chat_id)
         if not user:
             sessions[chat_id] = {"step": "name", "draft": {"next": "new"}}
@@ -684,7 +685,7 @@ def on_menu(store: Store, sessions: dict, chat_id: int, text: str) -> list:
         if not is_setter(user["name"]):
             return [send(
                 chat_id,
-                "Ставить задачи могут Елизавета, Диля и Босс.",
+                "Ставить задачи могут Елизавета, Диля и Босс (Ярослав).",
                 reply_kb(user["name"]),
             )]
         sessions[chat_id] = {"step": "title", "draft": {}}
