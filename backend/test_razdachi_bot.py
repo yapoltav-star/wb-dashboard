@@ -130,7 +130,7 @@ class RazdachiBotTest(unittest.TestCase):
         chats = [item["chat_id"] for item in posted if item["op"] == "send"]
         self.assertIn(2, chats)
         marker = next(item for item in posted if item["op"] == "send" and item["chat_id"] == 2)
-        self.assertEqual(labels(marker["markup"]), ["Я раздала"])
+        self.assertEqual(labels(marker["markup"]), ["Я раздала", "Мои"])
         self.assertIn("По ключу: смарт часы женские", marker["text"])
         self.assertIn("Пока никто не отметил", marker["text"])
         boss = next(item for item in posted if item["op"] == "edit")

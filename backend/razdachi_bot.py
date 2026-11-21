@@ -118,7 +118,8 @@ def parse_nm(value: str) -> str:
 
 
 def parse_count(value: str) -> int | None:
-    text = (value or "").strip()
+    text = (value or "").strip().lower()
+    text = re.sub(r"\s*(?:штук|штуки|шт\.?)\s*$", "", text).strip()
     if not re.fullmatch(r"\d{1,4}", text):
         return None
     return int(text)
@@ -520,7 +521,7 @@ def card_markup(task: dict, name: str) -> dict:
         if is_setter(name):
             return inline([[("Вернуть в работу", f"back:{task_id}")]])
         return inline([])
-    rows = [[("Я раздала", f"give:{task_id}")]]
+    rows = [[("Я раздала", f"give:{task_id}"), ("Мои", f"mine:{task_id}")]]
     if is_setter(name):
         rows.append([("Изменить", f"edit:{task_id}"), ("Закрыть", f"close:{task_id}")])
         if total_qty(task) == 0:
@@ -597,7 +598,7 @@ def accept_name(store: Store, sessions: dict, chat_id: int, text: str) -> list:
     return actions
 
 
-def list_tasks(store: Store, chat_id: int, status: str) -> list:
+def list_tasks(store: Store, chat_id: int, status: str, page: int = 0) -> list:
     tasks = [task for task in store.tasks if task.get("status") == status]
     tasks.sort(key=lambda task: task.get("created_at") or "", reverse=True)
     if not tasks:
@@ -606,13 +607,22 @@ def list_tasks(store: Store, chat_id: int, status: str) -> list:
     user = store.user(chat_id)
     name = user["name"] if user else ""
     actions = []
-    for task in tasks[:20]:
+    pages = (len(tasks) + 19) // 20
+    page = min(max(page, 0), pages - 1)
+    for task in tasks[page * 20:(page + 1) * 20]:
         actions.append(send(
             chat_id,
             posted_text(task),
             card_markup(task, name),
             remember=task["id"],
         ))
+    if pages > 1:
+        buttons = []
+        if page:
+            buttons.append(("← Назад", f"page:{status}:{page - 1}"))
+        if page + 1 < pages:
+            buttons.append(("Дальше →", f"page:{status}:{page + 1}"))
+        actions.append(send(chat_id, f"Страница {page + 1} из {pages}", inline([buttons])))
     return actions
 
 
@@ -760,6 +770,15 @@ def on_step(store: Store, sessions: dict, chat_id: int, text: str, message_id: i
     step = _session(sessions, chat_id)
     draft = step["draft"]
     current = step["step"]
+
+    if current.startswith("edit_"):
+        task = store.task(draft.get("task_id") or "")
+        if not task or task.get("status") != "open" or not is_setter(user["name"]):
+            _clear(sessions, chat_id)
+            reason = ("Этой карточки уже нет." if not task else
+                      "Она закрыта." if task.get("status") != "open" else
+                      "Меняет тот, кто ставит задачи.")
+            return [send(chat_id, reason)]
 
     if current == "name":
         return accept_name(store, sessions, chat_id, text)
@@ -936,6 +955,12 @@ def on_callback(store: Store, sessions: dict, chat_id: int, data: str, message_i
     op = parts[0]
     step = _session(sessions, chat_id)
 
+    if op == "page" and len(parts) == 3 and parts[1] in ("open", "closed"):
+        page = parse_count(parts[2])
+        if page is None:
+            return [alert("Кнопка устарела. Открой доску ещё раз.", True)]
+        return list_tasks(store, chat_id, parts[1], page) + [alert()]
+
     if op == "ch" and len(parts) == 2:
         channel = "keyword" if parts[1] == "k" else "competitor" if parts[1] == "c" else ""
         if not channel or step["step"] not in ("channel", "edit_channel"):
@@ -1012,8 +1037,8 @@ def on_callback(store: Store, sessions: dict, chat_id: int, data: str, message_i
         return _add_mark(store, sessions, chat_id, task, count, message_id, user["name"]) + [alert()]
 
     if op == "addmore":
-        if not task:
-            return [alert("Этой карточки уже нет.", True)]
+        if not task or task.get("status") != "open":
+            return [alert("Этой карточки уже нет." if not task else "Она закрыта.", True)]
         sessions[chat_id] = {"step": "add_qty", "draft": {"task_id": task_id}}
         left = int(task["plan"]) - total_qty(task)
         return [send(chat_id, f"Напиши число, сколько добавить. Осталось {left}."), alert()]
@@ -1024,8 +1049,8 @@ def on_callback(store: Store, sessions: dict, chat_id: int, data: str, message_i
         return [send(chat_id, "Сколько поставить за себя? 0 снимает отметку.", mine_markup(task, chat_id)), alert()]
 
     if op == "minemore":
-        if not task:
-            return [alert("Этой карточки уже нет.", True)]
+        if not task or task.get("status") != "open":
+            return [alert("Этой карточки уже нет." if not task else "Она закрыта.", True)]
         sessions[chat_id] = {"step": "mine_qty", "draft": {"task_id": task_id}}
         return [send(chat_id, "Напиши свою цифру. 0 снимает отметку."), alert()]
 
@@ -1050,6 +1075,8 @@ def on_callback(store: Store, sessions: dict, chat_id: int, data: str, message_i
         task = store.task(task_id)
         if not task or not is_setter(user["name"]):
             return [alert("Меняет тот, кто ставит задачи.", True)]
+        if task.get("status") != "open":
+            return [alert("Она закрыта.", True)]
         prompts = {
             "t": ("edit_title", "Новое название. Например: 046 Black."),
             "n": ("edit_nm", "Новый артикул: цифры или ссылка."),
@@ -1206,6 +1233,13 @@ def _apply(token: str, store: Store, event: dict, actions: list) -> None:
             })
         except Exception as exc:
             logger.warning("razdachi answer: %s", _safe(exc, token))
+    else:
+        # A text reply has no callback query on which to display an alert.
+        actions = [
+            send(event["chat_id"], action["text"])
+            if action.get("op") == "alert" and action.get("text") else action
+            for action in actions
+        ]
     for action in actions:
         op = action.get("op")
         if op not in ("send", "edit"):
