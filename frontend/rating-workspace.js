@@ -1,4 +1,5 @@
 /* Ratings are evidence from our seller account. Scenarios never change WB reviews. */
+let RW_EDITING = false;
 let RW = {products: [], groups: {}}, RW_SELECTED = new Set(), rwPoll, rwLoaded = false;
 const rwEsc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function rwScenario(stars, add, remove) {
@@ -53,7 +54,7 @@ async function rwUploadReport(input) {
     RW_SELECTED=new Set(result.nm_ids.map(String));
     document.getElementById('rwGroup').value='';
     document.getElementById('rwGroupName').value='';
-    document.getElementById('rwOnlySelected').checked=true;
+    RW_EDITING=false;
     await loadRatingWorkspace();
     rwResetScenario();
     status.textContent=`Отчёт сохранён: ${result.count} товаров · ${result.period_from} — ${result.period_to}. Остальные товары не изменены.`;
@@ -64,8 +65,14 @@ function rwChooseGroup() {
   const name=document.getElementById('rwGroup').value;
   RW_SELECTED=new Set((RW.groups[name] || []).map(String));
   document.getElementById('rwGroupName').value=name;
-  document.getElementById('rwOnlySelected').checked=Boolean(name);
+  RW_EDITING=!name;
+  document.getElementById('rwSearch').value='';
   rwResetScenario();
+}
+function rwToggleCompositionEditor() {
+  RW_EDITING=!RW_EDITING;
+  document.getElementById('rwSearch').value='';
+  drawRatingWorkspace();
 }
 function rwResetScenario() {
   ['rwAdd5','rwRemove1','rwRemove2','rwRemove3','rwRemove4'].forEach(id=>document.getElementById(id).value='0');
@@ -86,7 +93,7 @@ async function rwSaveGroup() {
     RW.groups=data.groups;
     const select=document.getElementById('rwGroup');
     select.innerHTML='<option value="">Новый состав</option>'+Object.keys(RW.groups).map(g=>`<option value="${rwEsc(g)}">${rwEsc(g)}</option>`).join('');
-    select.value=name;status.textContent='Склейка сохранена';
+    select.value=name;RW_EDITING=false;document.getElementById('rwSearch').value='';drawRatingWorkspace();status.textContent='Склейка сохранена';
   }catch(error){status.textContent=error.message;}
 }
 function drawRatingWorkspace() {
@@ -118,7 +125,11 @@ function drawRatingWorkspace() {
   const exclusionPlan=Object.entries(scenario.exclusions).map(([star,count])=>`${count} × ${star}★`).join(' + ');
   if(exclusionPlan) document.getElementById('rwForecast').textContent+=` Альтернатива в сценарии: исключить ${exclusionPlan}.`;
   const q=document.getElementById('rwSearch').value.trim().toLowerCase();
-  const only=document.getElementById('rwOnlySelected').checked;
+  const only=!RW_EDITING;
+  document.getElementById('rwEditComposition').textContent=RW_EDITING?'Готово':'Изменить состав';
+  document.getElementById('rwSaveComposition').hidden=!RW_EDITING;
+  document.getElementById('rwGroupName').hidden=!RW_EDITING;
+  document.getElementById('rwCompositionHint').textContent=RW_EDITING?'Выберите товары галочками и сохраните состав.':'Показаны только артикулы выбранного состава.';
   const products=RW.products.filter(p=>(!only || RW_SELECTED.has(p.nm_id)) && `${p.article} ${p.nm_id}`.toLowerCase().includes(q));
   document.getElementById('rwSelection').textContent=`В составе: ${selected.length} товаров`;
   const cells=p=>[5,4,3,2,1].map(star=>`<td class="num">${format(p.stars[star] || 0)}</td>`).join('');

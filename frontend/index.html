@@ -1276,12 +1276,13 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   <div class="toolbar" style="flex-wrap:wrap">
     <label>Склейка <select id="rwGroup" onchange="rwChooseGroup()"><option value="">Новый состав</option></select></label>
     <input id="rwGroupName" placeholder="Название склейки" maxlength="120" aria-label="Название склейки">
-    <button class="action-btn" onclick="rwSaveGroup()">Сохранить состав</button>
+    <button class="action-btn" id="rwEditComposition" onclick="rwToggleCompositionEditor()">Изменить состав</button>
+    <button class="action-btn" id="rwSaveComposition" onclick="rwSaveGroup()">Сохранить состав</button>
     <span id="rwSelection" style="font-size:12px"></span>
   </div>
   <div class="toolbar" style="flex-wrap:wrap">
     <input id="rwSearch" placeholder="Артикул или nmID…" aria-label="Поиск товаров рейтинга" oninput="drawRatingWorkspace()">
-    <label><input type="checkbox" id="rwOnlySelected" onchange="drawRatingWorkspace()"> Только выбранные</label>
+    <span id="rwCompositionHint" class="section-sub"></span>
   </div>
   <div class="cards" id="rwCards"></div>
   <div class="section-sub" style="margin-bottom:16px;line-height:1.6">Загрузите Excel из WB → «Оценка товара». Сценарий использует оценки 1★–5★ из отчёта: исключённые и не прошедшие модерацию уже не входят в эту разбивку. Отложенные показываются отдельно. Рейтинг WB и среднее за период — разные показатели; прогноз не учитывает веса оценок WB.</div>
@@ -2255,7 +2256,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   </div>
 </div>
 
-<script src="/static/rating-workspace.js?v=report-upload-20261121"></script>
+<script src="/static/rating-workspace.js?v=group-view-20261121"></script>
 <script>
 // Same-origin на Railway и на своём домене; локально — прямой URL Railway.
 const RAILWAY_URL = (typeof location !== 'undefined' && location.hostname
