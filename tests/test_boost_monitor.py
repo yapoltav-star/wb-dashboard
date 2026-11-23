@@ -117,8 +117,6 @@ class MonitoringTests(unittest.TestCase):
         for g in cfg['groups']:
             self.assertEqual(len(g['targets']),len({t['nm_id'] for t in g['targets']}))
 
-if __name__ == '__main__':
-    unittest.main()
 
 class StorageRangeTests(unittest.TestCase):
     def test_end_day_is_inclusive_without_collation_dependent_sentinel(self):
@@ -138,3 +136,15 @@ class StorageRangeTests(unittest.TestCase):
                 return [{'key':k,'value':json.dumps({'key':k})} for k in keys]
         values = CollatedStore().between('2026-11-23','2026-11-23')
         self.assertEqual(values,[{'key':snapshot_key('2026-11-23','sabc')}])
+
+class PrefixComparisonTests(unittest.TestCase):
+    def test_unchecked_rank_cannot_be_claimed_as_entry_or_exit(self):
+        absent = {'status':'not_found','position':None,'checked':200,'depth':500,'dest':-1,'source':'napi'}
+        found = {**absent,'status':'found','position':350,'checked':500}
+        for a,b in ((absent,found),(found,absent)):
+            self.assertIn('не подтверждено', compare(a,b)['label'])
+        found['position']=150
+        self.assertEqual(compare(absent,found)['label'],'Появился в проверенной части')
+
+if __name__ == '__main__':
+    unittest.main()

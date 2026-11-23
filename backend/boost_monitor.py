@@ -37,6 +37,10 @@ def compare(before, after):
         return {'label': f'Выше на {delta}' if delta > 0 else f'Ниже на {-delta}' if delta < 0 else 'Без изменений', 'delta': delta}
     if before['status'] == after['status'] == 'not_found':
         return {'label': 'В обоих замерах не найден в проверенной части', 'delta': None}
+    absent = before if before['status'] == 'not_found' else after
+    found = after if after['status'] == 'found' else before
+    if found['position'] > absent.get('checked', absent['depth']):
+        return {'label': 'Разная проверенная глубина — изменение не подтверждено', 'delta': None}
     return {'label': 'Появился в проверенной части' if after['status'] == 'found' else 'Вышел из проверенной части', 'delta': None}
 
 

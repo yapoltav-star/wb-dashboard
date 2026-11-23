@@ -10615,7 +10615,7 @@ def dashboard_data():
         return ("neg", days, r.json() if r.is_success else [])
 
     def load_settings():
-        r = _dash_get("settings?select=key,value", 10)
+        r = _dash_get("settings?select=key,value&key=not.like.boost_rank_v1:*", 10)
         out = {}
         if r.is_success:
             for row in r.json():
