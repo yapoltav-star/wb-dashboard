@@ -18240,6 +18240,9 @@ except Exception as e:
     logger.warning(f"razdachi bot не поднялся: {e}")
 
 
+from ads_monitor import register_ads_monitor
+ads_monitor = register_ads_monitor(app, lambda: globals())
+
 from rating_workspace import register_rating_workspace
 register_rating_workspace(app, lambda: globals())
 
