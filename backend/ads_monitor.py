@@ -178,6 +178,7 @@ class Monitor:
             if not config['enabled']:
                 self.health = {'ok': False, 'message': 'Выключен или не настроен доступ'}
                 return
+            self.health = {'ok': False, 'message': 'Получаю данные WB', 'started_at': time.time()}
             state = self.load()
             campaigns, stats, warnings = self.collect(state)
             state = evaluate(state, campaigns, stats, time.time(), config)

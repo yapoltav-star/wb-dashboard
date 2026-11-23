@@ -18241,7 +18241,8 @@ except Exception as e:
 
 
 from ads_monitor import register_ads_monitor
-ads_monitor = register_ads_monitor(app, lambda: globals())
+# python main.py затем импортирует main для uvicorn; регистрируем монитор только в серверном модуле.
+ads_monitor = register_ads_monitor(app, lambda: globals()) if __name__ != "__main__" else None
 
 from rating_workspace import register_rating_workspace
 register_rating_workspace(app, lambda: globals())
