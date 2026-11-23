@@ -7669,7 +7669,7 @@ def my_article_stats(begin: str, end: str, nm_ids: str = ""):
                 "vendor_code": nm_to_vc.get(nm_id) or str(nm_id),
                 "brand": c.get("brandName", ""),
                 "name": c.get("objectName", ""),
-                "views": stats.get("openCardCount", 0),
+                "views": None,
                 "card_opens": stats.get("openCardCount", 0),
                 "cart_adds": stats.get("addToCartCount", 0),
                 "orders": stats.get("ordersCount", 0),
@@ -7677,9 +7677,9 @@ def my_article_stats(begin: str, end: str, nm_ids: str = ""):
                 "buyouts": stats.get("buyoutsCount", 0),
                 "buyout_pct": stats.get("buyoutPercent", 0),
                 "cancels": stats.get("cancelCount", 0),
-                "ctr": round(stats.get("addToCartCount", 0) / stats.get("openCardCount", 1) * 100, 1) if stats.get("openCardCount") else 0,
-                "cart_conv": round(stats.get("ordersCount", 0) / stats.get("addToCartCount", 1) * 100, 1) if stats.get("addToCartCount") else 0,
-                "order_conv": round(stats.get("buyoutsCount", 0) / stats.get("ordersCount", 1) * 100, 1) if stats.get("ordersCount") else 0,
+                "ctr": None,
+                "cart_conv": round(stats.get("addToCartCount", 0) / stats["openCardCount"] * 100, 1) if stats.get("openCardCount") else None,
+                "order_conv": round(stats.get("ordersCount", 0) / stats["addToCartCount"] * 100, 1) if stats.get("addToCartCount") else None,
                 "is_own": True,
             })
         return result
@@ -7718,7 +7718,7 @@ def sync_article_daily_stats(days: int = 30):
             return
         data = resp.json()
         logger.info(f"sync_daily: response snippet: {str(data)[:400]}")
-        cards = data.get("data", []) or data if isinstance(data, list) else []
+        cards = data if isinstance(data, list) else (data.get("data") or [])
         if not cards:
             logger.info("sync_daily: no data returned")
             return
@@ -7762,9 +7762,9 @@ def sync_article_daily_stats(days: int = 30):
                 "buyouts": int(buy),
                 "buyouts_sum": float(buy_sum),
                 "cancels": int(can),
-                "ctr": round(atc / oc * 100, 2) if oc else 0,
-                "cart_conv": round(ord_ / atc * 100, 2) if atc else 0,
-                "order_conv": round(buy / ord_ * 100, 2) if ord_ else 0,
+                "ctr": None,
+                "cart_conv": round(atc / oc * 100, 2) if oc else None,
+                "order_conv": round(ord_ / atc * 100, 2) if atc else None,
                 "buyout_pct": round(buy / (buy + can) * 100, 2) if (buy + can) else 0,
                 "updated_at": now
             })
@@ -7792,7 +7792,13 @@ def article_daily_stats(days: int = 30):
             f"{SUPABASE_URL}/rest/v1/article_daily_stats?dt=gte.{dt_from}&select=*&order=dt.asc",
             headers=sb_headers(), timeout=20
         )
-        return resp.json() if resp.is_success else []
+        rows = resp.json() if resp.is_success else []
+        for row in rows:
+            row["ctr"] = None  # Historical values stored cart conversion under CTR.
+            opens, carts = row.get("open_card") or 0, row.get("add_to_cart") or 0
+            row["cart_conv"] = round(carts / opens * 100, 2) if opens else None
+            row["order_conv"] = round((row.get("orders") or 0) / carts * 100, 2) if carts else None
+        return rows
     except Exception as e:
         return {"error": str(e)}
 
@@ -8021,7 +8027,7 @@ def _pace_windows(period: str, now: datetime, date_cur=None, date_prev=None) -> 
 def _funnel_products_range(start_str: str, end_str: str, nm_ids: list = None) -> dict:
     """Воронка за период → {nm_id: {opens, cart, orders, vendor_code, name}}."""
     if not WB_TOKEN:
-        return {}
+        raise RuntimeError("Токен WB не настроен")
     out = {}
     offset = 0
     limit = 1000
@@ -8040,11 +8046,11 @@ def _funnel_products_range(start_str: str, end_str: str, nm_ids: list = None) ->
             )
             if not resp.is_success:
                 logger.error(f"sales-pace funnel error {resp.status_code} {resp.text[:200]}")
-                break
-            products = resp.json().get("data", {}).get("products", []) or []
+                raise RuntimeError(f"Не удалось получить воронку WB: HTTP {resp.status_code}")
+            products = resp.json()["data"]["products"]
         except Exception as e:
             logger.error(f"sales-pace funnel exception: {e}")
-            break
+            raise
         if not products:
             break
         for p in products:
@@ -8057,14 +8063,21 @@ def _funnel_products_range(start_str: str, end_str: str, nm_ids: list = None) ->
                 "nm_id": int(nm),
                 "vendor_code": prod.get("vendorCode") or str(nm),
                 "name": prod.get("title") or "",
-                "opens": int(sel.get("openCount") or 0),
-                "cart": int(sel.get("cartCount") or 0),
-                "orders": int(sel.get("orderCount") or 0),
+                "opens": int(sel["openCount"]),
+                "cart": int(sel["cartCount"]),
+                "orders": int(sel["orderCount"]),
+                "orders_sum": float(sel["orderSum"]),
+                "cart_conv": (sel.get("conversions") or {}).get("addToCartPercent"),
+                "order_conv": (sel.get("conversions") or {}).get("cartToOrderPercent"),
+                "impressions": None,
+                "ctr": None,
             }
         if len(products) < limit:
             break
         offset += limit
-        time.sleep(0.7)
+        time.sleep(21)
+    else:
+        raise RuntimeError("Воронка WB превышает лимит загрузки; результат не показан частично")
     return out
 
 def _funnel_products_day(day_str: str, nm_ids: list = None) -> dict:
@@ -8115,26 +8128,8 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
         prev_s = prev_start.strftime("%Y-%m-%d")
         prev_e = prev_end.strftime("%Y-%m-%d")
 
-        # ── Заказы ──
-        date_from = prev_start.strftime("%Y-%m-%dT00:00:00")
-        orders = fetch_supplier_feed("/api/v1/supplier/orders", date_from, max_pages=5)
+        # Order counts come exclusively from the sales funnel.
         cur_ord, prev_ord, vc_from_orders = {}, {}, {}
-        for o in orders:
-            nm = o.get("nmId")
-            if not nm:
-                continue
-            d = parse_wb_dt(o.get("date", ""))
-            if d is None:
-                continue
-            if o.get("supplierArticle"):
-                vc_from_orders[nm] = o["supplierArticle"]
-            qty = int(o.get("quantity") or 1)
-            if qty <= 0:
-                qty = 1
-            if cur_start <= d <= cur_end:
-                cur_ord[nm] = cur_ord.get(nm, 0) + qty
-            elif prev_start <= d <= prev_end:
-                prev_ord[nm] = prev_ord.get(nm, 0) + qty
 
         funnel_cur, funnel_prev = {}, {}
         compare_as_of = None
@@ -8170,6 +8165,7 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                     "opens": int(v.get("opens") or 0),
                     "cart": int(v.get("cart") or 0),
                     "orders": int(v.get("orders") or 0),
+                    "orders_sum": v.get("orders_sum"),
                     "views": 0,
                     "spend": 0.0,
                 }
@@ -8234,7 +8230,7 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
         else:
             # неделя / 2 недели / месяц — два запроса воронки по диапазонам дат
             funnel_cur = _funnel_products_range(cur_s, cur_e)
-            time.sleep(0.7)
+            time.sleep(21)
             funnel_prev = _funnel_products_range(prev_s, prev_e)
             compare_as_of = f"{prev_s}–{prev_e}"
             funnel_ready = True
@@ -8299,8 +8295,6 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
             # как в кабинете WB: «Заказали товаров, шт» = orderCount воронки
             o_t = _pace_funnel_orders(funnel_cur, nm, cur_ord.get(nm, 0))
             o_y = _pace_funnel_orders(funnel_prev, nm, prev_ord.get(nm, 0)) if funnel_ready else prev_ord.get(nm, 0)
-            if o_t <= 0 and o_y <= 0:
-                continue
             opens_t = int(ft.get("opens") or 0)
             opens_y = int(fy.get("opens") or 0)
             cart_t = int(ft.get("cart") or 0)
@@ -8363,6 +8357,10 @@ def sync_sales_pace(period: str = "day", date_cur: str = None, date_prev: str = 
                 "orders_today": o_t,
                 "orders_yesterday": o_y,
                 "orders_delta": o_t - o_y,
+                "orders_sum_today": ft.get("orders_sum"),
+                "orders_sum_yesterday": fy.get("orders_sum"),
+                "funnel_impressions_today": None,
+                "funnel_ctr_today": None,
                 "opens_today": opens_t,
                 "opens_yesterday": opens_y,
                 "opens_delta": opens_delta,
@@ -10031,37 +10029,35 @@ _CATALOG_CUSTOM_WORKER = threading.Lock()
 
 
 def _catalog_custom_orders(start, end):
-    orders = {}
-    amounts = {}
-    offset = 0
-    while True:
-        response = httpx.post(
-            f"{WB_ANALYTICS_URL}/api/analytics/v3/sales-funnel/products",
-            headers=wb_headers(), timeout=40,
-            json={"selectedPeriod": {"start": start, "end": end},
-                  "nmIds": [], "brandNames": [], "subjectIds": [], "tagIds": [],
-                  "orderBy": {"field": "orderCount", "mode": "desc"},
-                  "limit": 1000, "offset": offset})
-        response.raise_for_status()
-        products = response.json()["data"]["products"]
-        for item in products:
-            nm = str(item["product"]["nmId"])
-            selected = item["statistic"]["selected"]
-            orders[nm] = int(selected.get("orderCount") or 0)
-            amounts[nm] = float(selected["orderSum"]) if selected.get("orderSum") is not None else None
-        if len(products) < 1000:
-            return orders, amounts
-        offset += len(products)
-        time.sleep(21)
+    rows = _funnel_products_range(start, end)
+    return ({str(nm): row["orders"] for nm, row in rows.items()},
+            {str(nm): row["orders_sum"] for nm, row in rows.items()})
+
+
+def _catalog_funnel_period(start, end):
+    rows = _funnel_products_range(start, end)
+    return {str(nm): row for nm, row in rows.items()}
 
 
 def _catalog_custom_refresh(key):
     with _CATALOG_CUSTOM_WORKER:
         try:
-            current, current_amount = _catalog_custom_orders(key[0], key[1])
+            current_rows = _catalog_funnel_period(key[0], key[1])
             time.sleep(21)
-            previous, previous_amount = _catalog_custom_orders(key[2], key[3])
-            result = {"syncing": False, "current": current, "previous": previous, "current_amount": current_amount, "previous_amount": previous_amount}
+            previous_rows = _catalog_funnel_period(key[2], key[3])
+            result = {
+                "syncing": False,
+                "source": "wb_sales_funnel_v3",
+                "updated_at": _msk_now().isoformat(),
+                "dates": list(key),
+                "current": {nm: row["orders"] for nm, row in current_rows.items()},
+                "previous": {nm: row["orders"] for nm, row in previous_rows.items()},
+                "current_amount": {nm: row["orders_sum"] for nm, row in current_rows.items()},
+                "previous_amount": {nm: row["orders_sum"] for nm, row in previous_rows.items()},
+                "current_funnel": current_rows,
+                "previous_funnel": previous_rows,
+                "unavailable_metrics": ["impressions", "ctr"],
+            }
         except Exception:
             logger.exception("Catalog custom period comparison failed")
             result = {"syncing": False, "error": "Не удалось получить заказы WB. Попробуйте позже или выберите меньший период."}

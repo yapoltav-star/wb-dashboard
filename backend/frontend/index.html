@@ -2390,14 +2390,35 @@ function setWbProdSalesPeriod(p) {
     if(el) el.classList.toggle('on', k === WB_PROD_SALES_PERIOD);
   });
   drawWbProducts();
+  loadWbProdFunnel();
 }
 
 function wbProdComparison(p) {
-  if(WB_PROD_SALES_PERIOD === 'custom') {
-    if(!WB_PROD_CUSTOM) return null;
-    return {current: WB_PROD_CUSTOM.current[String(p.nm_id)] || 0, previous: WB_PROD_CUSTOM.previous[String(p.nm_id)] || 0, current_amount: WB_PROD_CUSTOM.current_amount?.[String(p.nm_id)], previous_amount: WB_PROD_CUSTOM.previous_amount?.[String(p.nm_id)]};
+  if(!WB_PROD_CUSTOM) return null;
+  const id = String(p.nm_id);
+  return {current: WB_PROD_CUSTOM.current[id] ?? 0, previous: WB_PROD_CUSTOM.previous[id] ?? 0,
+    current_amount: WB_PROD_CUSTOM.current_amount?.[id] ?? 0,
+    previous_amount: WB_PROD_CUSTOM.previous_amount?.[id] ?? 0};
+}
+function wbProdFunnelDates() {
+  if(WB_PROD_SALES_PERIOD === 'custom') return WB_PROD_CUSTOM_DATES;
+  const today = new Intl.DateTimeFormat('sv-SE', {timeZone:'Europe/Moscow'}).format(new Date());
+  const shift = offset => {
+    const date = new Date(today + 'T12:00:00Z');
+    date.setUTCDate(date.getUTCDate() - offset);
+    return date.toISOString().slice(0,10);
+  };
+  const days = Number(WB_PROD_SALES_PERIOD);
+  return [shift(days),shift(1),shift(days*2),shift(days+1)];
+}
+function wbProdAllRows() {
+  const rows = new Map((WB_PRODUCTS.products || []).map(p => [String(p.nm_id), {...p}]));
+  for(const period of ['current_funnel','previous_funnel']) {
+    for(const [id, item] of Object.entries(WB_PROD_CUSTOM?.[period] || {})) {
+      if(!rows.has(id)) rows.set(id, {nm_id:Number(id),vendor_code:item.vendor_code,name:item.name,stock:null,channels:[]});
+    }
   }
-  return (p.sales_comparisons || {})[WB_PROD_SALES_PERIOD] || null;
+  return [...rows.values()];
 }
 function wbProdSalesOf(p) {
   return wbProdComparison(p)?.current ?? 0;
@@ -2511,12 +2532,19 @@ async function applyWbProdCustomDates() {
   }
   closeWbProdCompareModal();
   WB_PROD_COMPARE_ENABLED = true;
-  const request = ++wbProdCustomRequest;
-  clearTimeout(wbProdCustomPoll);
   WB_PROD_CUSTOM_DATES = dates;
-  WB_PROD_CUSTOM = null;
   WB_PROD_SALES_PERIOD = 'custom';
   ['1','2','3','7','28'].forEach(key => document.getElementById('wbProdSales'+key).classList.remove('on'));
+  await loadWbProdFunnel();
+}
+
+async function loadWbProdFunnel() {
+  const request = ++wbProdCustomRequest;
+  clearTimeout(wbProdCustomPoll);
+  const dates = wbProdFunnelDates();
+  const status = document.getElementById('wbProdCustomStatus');
+  WB_PROD_CUSTOM = null;
+  status.textContent = 'Получаем воронку WB…';
   drawWbProducts();
   const params = new URLSearchParams(Object.fromEntries(['current_from','current_to','previous_from','previous_to'].map((key,i) => [key,dates[i]])));
   async function poll() {
@@ -2530,11 +2558,14 @@ async function applyWbProdCustomDates() {
         wbProdCustomPoll = setTimeout(poll, 3000);
         return;
       }
+      if(result.source !== 'wb_sales_funnel_v3' || !result.current_funnel || !result.previous_funnel) {
+        throw new Error('Сервер ещё не обновлён: полные данные воронки недоступны');
+      }
       WB_PROD_CUSTOM = result;
-      status.textContent = 'Сравнение загружено';
+      status.textContent = 'Воронка WB · обновлено ' + new Date(result.updated_at).toLocaleString('ru-RU', {timeZone:'Europe/Moscow'}) + ' МСК. Общие показы и CTR этот API не возвращает.';
       drawWbProducts();
     } catch(error) {
-      if(request === wbProdCustomRequest) status.textContent = error.message;
+      if(request === wbProdCustomRequest) status.textContent = 'Не удалось загрузить воронку: ' + error.message;
     }
   }
   await poll();
@@ -2545,6 +2576,7 @@ async function triggerWbProductsSync() {
   const info = document.getElementById('wbProdInfo');
   if(btn) btn.disabled = true;
   if(info) info.textContent = 'Обновляем остатки и цены…';
+  loadWbProdFunnel();
   try {
     await fetch(`${RAILWAY_URL}/api/sync-wb-products`, { method: 'POST' });
     clearTimeout(wbProdPoll);
@@ -2556,6 +2588,7 @@ async function triggerWbProductsSync() {
 }
 
 async function renderWbProducts(force) {
+  if(!force) loadWbProdFunnel();
   if(force || !WB_PRODUCTS_LOADED) {
     try {
       const r = await fetch(`${RAILWAY_URL}/api/wb-products`);
@@ -2611,7 +2644,7 @@ function drawWbProducts() {
     if(info) info.textContent = bits.join(' · ');
   }
 
-  let rows = [...(WB_PRODUCTS.products || [])];
+  let rows = wbProdAllRows();
   const q = ((document.getElementById('wbProdSearch') || {}).value || '').trim().toLowerCase();
   if(q) {
     rows = rows.filter(p =>
@@ -2633,15 +2666,18 @@ function drawWbProducts() {
 
   const dates = document.getElementById('wbProdCompareDates');
   if(dates) { dates.textContent = WB_PROD_COMPARE_ENABLED ? wbProdComparisonDates() : ''; dates.hidden = !WB_PROD_COMPARE_ENABLED; }
-  const all = WB_PRODUCTS.products || [];
+  const all = wbProdAllRows();
   const withStock = all.filter(p => (p.stock || 0) > 0).length;
   const withPrice = all.filter(p => p.client_price != null).length;
   const comparisons = all.map(wbProdComparison).filter(Boolean);
   const sum = key => comparisons.reduce((total, item) => total + Number(item[key] || 0), 0);
-  const ready = comparisons.length > 0;
+  const ready = WB_PROD_CUSTOM !== null;
   const current = sum('current'), previous = sum('previous');
   const rubReady = ready && comparisons.every(item => item.current_amount != null && item.previous_amount != null);
   const currentRub = sum('current_amount'), previousRub = sum('previous_amount');
+  const funnelRows = Object.values(WB_PROD_CUSTOM?.current_funnel || {});
+  const opens = funnelRows.reduce((sum,r) => sum + r.opens, 0);
+  const carts = funnelRows.reduce((sum,r) => sum + r.cart, 0);
   const change = (a,b) => `${a-b>0?'+':''}${fmt(a-b)}`;
   if(cards) {
     cards.innerHTML = [
@@ -2652,6 +2688,11 @@ function drawWbProducts() {
       ['Изменение заказов', ready ? change(current,previous)+' шт. · '+wbProdChangeHtml(current,previous) : '—'],
       ['Сумма заказов · выбранный период', rubReady ? fmt(Math.round(currentRub))+' ₽' : '—'],
       ['Сумма заказов · предыдущий период', rubReady ? fmt(Math.round(previousRub))+' ₽' : '—'],
+      ['Переходы в карточку', ready ? fmt(opens) : '—'],
+      ['Добавления в корзину', ready ? fmt(carts) : '—'],
+      ['Конверсия в корзину', ready && opens ? (100*carts/opens).toFixed(2)+'%' : '—'],
+      ['Показы · воронка WB', '—'],
+      ['CTR · воронка WB', '—'],
       ['Изменение суммы', rubReady ? change(Math.round(currentRub),Math.round(previousRub))+' ₽ · '+wbProdChangeHtml(currentRub,previousRub) : '—'],
     ].map(([l,v]) => `<div class="card"><div class="card-l">${l}</div><div class="card-v" style="font-size:26px">${v}</div></div>`).join('');
   }
@@ -2668,6 +2709,8 @@ function drawWbProducts() {
       ? `${fmt(Math.round(Number(p.client_price)))} ₽`
       : '<span style="color:var(--wb-faint)">—</span>';
     const comparison = wbProdComparison(p);
+    const funnel = WB_PROD_CUSTOM?.current_funnel?.[String(p.nm_id)];
+    const metric = value => value == null ? '—' : fmt(value);
     const sales = comparison ? fmt(comparison.current) : '—';
     const ch = (p.channels || []).map(c =>
       `<span class="wb-ch${c === 'FBS' ? ' fbs' : ''}">${c}</span>`
@@ -2687,8 +2730,14 @@ function drawWbProducts() {
       <td class="num" style="font-weight:700">${sales}</td>
       ${WB_PROD_COMPARE_ENABLED ? `<td class="num">${comparison ? fmt(comparison.previous) : '—'}</td>
       <td class="num">${wbProdChangeHtml(comparison?.current, comparison?.previous)}</td>` : ''}
+      <td class="num">${comparison ? fmt(Math.round(comparison.current_amount))+' ₽' : '—'}</td>
+      <td class="num">${metric(funnel?.opens ?? (WB_PROD_CUSTOM ? 0 : null))}</td>
+      <td class="num">${metric(funnel?.cart ?? (WB_PROD_CUSTOM ? 0 : null))}</td>
+      <td class="num">${funnel?.cart_conv == null ? '—' : fmt(funnel.cart_conv)+'%'}</td>
+      <td class="num" title="API воронки WB не возвращает общие показы">—</td>
+      <td class="num" title="API воронки WB не возвращает CTR">—</td>
       <td class="num">${price}</td>
-      <td class="num">${wbProdStockTipHtml(p)}</td>
+      <td class="num">${p.stock == null ? '—' : wbProdStockTipHtml(p)}</td>
       <td>${ch}</td>
     </tr>`;
   }).join('');
@@ -2700,6 +2749,12 @@ function drawWbProducts() {
         <th>Артикул</th>
         <th class="num">${wbProdSalesLabel()}</th>
         ${WB_PROD_COMPARE_ENABLED ? '<th class="num">Предыдущий период</th><th class="num">Изменение, %</th>' : ''}
+        <th class="num">Сумма заказов</th>
+        <th class="num">Переходы в карточку</th>
+        <th class="num">Добавления в корзину</th>
+        <th class="num">Конверсия в корзину</th>
+        <th class="num">Показы · воронка</th>
+        <th class="num">CTR · воронка</th>
         <th class="num">Цена покупателя</th>
         <th class="num">Остаток</th>
         <th>Канал</th>
@@ -8427,8 +8482,8 @@ function paceHypothesis(a) {
   if(vd != null && vd < 0 && (vd <= -30 || (viewsDrop != null && viewsDrop >= 0.15))) {
     return {
       code: 'ads_views', tag: 'Показы', tagCls: 'pi-tag-ads', chipCls: 'pi-chip-ads',
-      title: 'Упали показы',
-      text: 'Меньше охвата (ставка, бюджет, кластеры, выдача). Проверь рекламу и наличие в выдаче.',
+      title: 'Упали рекламные показы',
+      text: 'Снизился рекламный охват. Проверь статус кампаний, бюджет и ставки. Общие показы воронки здесь недоступны.',
       facts,
     };
   }
@@ -8453,8 +8508,8 @@ function paceHypothesis(a) {
       : ' Превью: фото, цена, рейтинг, «Оригинал», срок доставки.';
     return {
       code: 'funnel_click', tag: 'Клик', tagCls: 'pi-tag-click', chipCls: 'pi-chip-click',
-      title: 'Не кликают в карточку',
-      text: 'Показы есть, переходы падают.' + revHint,
+      title: 'Меньше переходов в карточку',
+      text: 'Переходы снизились. Изменение CTR без общих показов определить нельзя.' + revHint,
       facts,
     };
   }
@@ -10923,7 +10978,7 @@ function drawCompBrandChart(weeks, brand) {
           backgroundColor: '#fff', borderColor: '#E2DDD8', borderWidth: 1,
           titleColor: '#1A1816', bodyColor: '#6B6560', padding: 10,
           callbacks: {
-            label: item => ` ${item.dataset.label}: ${item.parsed.y.toLocaleString('ru')}`,
+            label: item => ` ${item.dataset.label}: ${item.parsed.y == null ? '—' : item.parsed.y.toLocaleString('ru')}`,
           },
         },
       },
@@ -11053,7 +11108,7 @@ function buildDynChart() {
     label: String(nm),
     data: dates.map(dt => {
       const r = DAILY_STATS.find(x => x.nm_id === nm && x.dt === dt);
-      return r ? (r[DYN_METRIC] || 0) : 0;
+      return r ? (r[DYN_METRIC] ?? null) : null;
     }),
     borderColor: DYN_COLORS[i % DYN_COLORS.length],
     backgroundColor: 'transparent',
@@ -11080,7 +11135,7 @@ function buildDynChart() {
           backgroundColor: '#fff', borderColor: '#E2DDD8', borderWidth: 1,
           titleColor: '#1A1816', bodyColor: '#6B6560', padding: 10,
           callbacks: {
-            label: item => ` ${item.dataset.label}: ${item.parsed.y.toLocaleString('ru')}`
+            label: item => ` ${item.dataset.label}: ${item.parsed.y == null ? '—' : item.parsed.y.toLocaleString('ru')}`
           }
         }
       },
