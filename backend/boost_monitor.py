@@ -69,8 +69,10 @@ class SettingsStore:
 
     def between(self, start, end):
         rows, offset = [], 0
+        # A next-day exclusive bound works with database collations that ignore '~'.
+        next_day = (date.fromisoformat(end) + timedelta(days=1)).isoformat()
         while True:
-            page = self._get({'and': f'(key.gte.{PREFIX}{start}:,key.lte.{PREFIX}{end}:~)',
+            page = self._get({'and': f'(key.gte.{PREFIX}{start}:,key.lt.{PREFIX}{next_day}:)',
                               'select': 'key,value', 'order': 'key.asc', 'limit': 500, 'offset': offset})
             rows.extend(self._decode(row['value']) for row in page)
             if len(page) < 500:

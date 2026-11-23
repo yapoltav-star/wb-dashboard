@@ -119,3 +119,22 @@ class MonitoringTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class StorageRangeTests(unittest.TestCase):
+    def test_end_day_is_inclusive_without_collation_dependent_sentinel(self):
+        import re
+        from boost_monitor import SettingsStore
+        class CollatedStore(SettingsStore):
+            def __init__(self):
+                self.keys = [snapshot_key(day,'sabc') for day in ('2026-11-22','2026-11-23','2026-11-24')]
+            def _get(self, params):
+                # PostgreSQL locales can ignore punctuation in string comparison.
+                lower, upper = params['and'][1:-1].split(',')
+                lower = lower.removeprefix('key.gte.')
+                exclusive = upper.startswith('key.lt.')
+                upper = upper.removeprefix('key.lt.').removeprefix('key.lte.')
+                key = lambda s: re.sub(r'[^a-z0-9]', '', s)
+                keys = [k for k in self.keys if key(k)>=key(lower) and (key(k)<key(upper) if exclusive else key(k)<=key(upper))]
+                return [{'key':k,'value':json.dumps({'key':k})} for k in keys]
+        values = CollatedStore().between('2026-11-23','2026-11-23')
+        self.assertEqual(values,[{'key':snapshot_key('2026-11-23','sabc')}])
