@@ -13902,7 +13902,7 @@ def fetch_wb_search_catalog(query: str, dest: int, max_pages: int = 1) -> dict:
             if total_pages is not None and page >= int(total_pages):
                 break
         if products:
-            return {"products": products, "total": last_total, "error": None, "source": source}
+            return {"products": products, "total": last_total, "error": last_err, "source": source}
 
         # fallback: старый search.wb.ru (часто 403 с серверных IP)
         napi_err = last_err
@@ -18239,6 +18239,9 @@ try:
 except Exception as e:
     logger.warning(f"razdachi bot не поднялся: {e}")
 
+
+from boost_monitor import register_boost_monitor
+boost_monitor = register_boost_monitor(app, lambda: globals())
 
 from ads_monitor import register_ads_monitor
 # python main.py затем импортирует main для uvicorn; регистрируем монитор только в серверном модуле.

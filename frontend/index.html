@@ -7,7 +7,8 @@
 <meta name="viewport" content="width=1400, initial-scale=1, minimum-scale=0.15, maximum-scale=4, user-scalable=yes">
 <title>WB Partners — Отзывы и рейтинги</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js">
+</script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -1098,6 +1099,7 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   <div class="sn-item" onclick="showPage('my-shelves',this)">Полки у моих карточек</div>
   <div class="sn-item" onclick="showPage('shelf-sheet',this)">Сводка полок</div>
   <div class="sn-item" onclick="showPage('rec-agg',this)">Рекомендации</div>
+  <div class="sn-item" onclick="showPage('boost-history',this)">История бустов</div>
 </div>
 
 <!-- Upload modal -->
@@ -1886,6 +1888,30 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   <div id="whoShelfRoot" style="overflow:auto">
     <div class="empty" style="padding:40px 20px">Выбери свой артикул, чтобы увидеть, у каких конкурентов мы в полках и на какой позиции</div>
   </div>
+</div>
+
+<!-- ЕЖЕДНЕВНЫЕ ПОЗИЦИИ ПО ЗАДАНИЯМ BOOST -->
+<div class="page" id="page-boost-history">
+  <div class="toolbar" style="gap:12px;flex-wrap:wrap">
+    <strong>История позиций по бустам</strong>
+    <button class="action-btn" id="boostCaptureBtn" onclick="captureBoostPositions()">Снять замер</button>
+    <button class="action-btn" onclick="renderBoostHistory()">Обновить</button>
+  </div>
+  <p style="font-size:12px;color:var(--wb-muted);line-height:1.7;margin:12px 0">Ежедневно в 10:00 МСК, Москва. Поиск — до 500 мест без персональных cookie; полки — до 100 мест. Первый успешный замер дня сохраняется, ошибки повторяются каждый час. История хранится на сервере и переживает перезапуск.</p>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin:16px 0">
+    <label>С даты<br><input type="date" id="boostHistoryFrom" onchange="renderBoostHistory()"></label>
+    <label>По дату<br><input type="date" id="boostHistoryTo" onchange="renderBoostHistory()"></label>
+    <label>Размещение<br><select id="boostHistoryMode" onchange="paintBoostHistory()"><option value="">Поиск и полки</option><option value="search">Поиск</option><option value="shelf">Все полки</option><option value="external">Полки конкурентов</option><option value="own">Свои полки</option></select></label>
+    <label style="flex:1;min-width:220px">Найти артикул или ключ<br><input id="boostHistoryFilter" type="search" placeholder="Артикул продавца, WB или запрос" oninput="paintBoostHistory()" style="width:100%"></label>
+  </div>
+  <div id="boostHistoryStatus" role="status" aria-live="polite" style="font-size:13px;line-height:1.7;margin:12px 0"></div>
+  <div id="boostHistoryCoverage" style="font-size:12px;margin:12px 0"></div>
+  <div id="boostHistoryTable" style="overflow-x:auto"></div>
+  <details style="margin:18px 0;font-size:12px"><summary>Как читать замеры и проверить задания</summary>
+    <p>Меньше номер позиции — выше товар. «Не найден» означает только отсутствие в проверенной части. Ошибка WB не считается отсутствием товара. «Смотрите также» и резервная полка «Похожие» сравниваются раздельно; смена источника поиска тоже исключает сравнение. В строке можно раскрыть все дни и время замеров.</p>
+    <p>Это единый серверный замер выдачи, порядок у конкретного покупателя может отличаться. Изменение позиций само по себе не доказывает влияние бустов: при разборе недели учитывай рекламу, цену, остатки и изменения карточки. История не восстанавливает прошлые дни. Время первого снимка и поздних повторов показывается в строке.</p>
+    <div id="boostExcluded"></div>
+  </details>
 </div>
 
 <!-- ПОЗИЦИИ В ПОИСКЕ -->
@@ -2799,6 +2825,7 @@ function showPage(id, btn) {
   if(id === 'giveaway') renderGiveawayCalc();
   if(id === 'sales-pace') renderSalesPace(true);
   if(id === 'positions') renderPositionsPage();
+  if(id === 'boost-history') renderBoostHistory();
   if(id === 'shelves') renderShelvesPage();
   if(id === 'my-shelves') renderMyShelvesPage();
   if(id === 'shelf-sheet') renderShelfSheetPage();
@@ -17779,6 +17806,84 @@ window.addEventListener('popstate', openSectionFromLocation);
 history.replaceState({section: sectionFromPath()}, '', location.href);
 openSectionFromLocation();
 loadData();
+</script>
+<script>
+let BOOST_HISTORY = null;
+let BOOST_HISTORY_TIMER = null;
+let BOOST_HISTORY_REQUEST = 0;
+const boostEsc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const boostTime = v => v ? new Date(v).toLocaleString('ru-RU', {timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+function boostRankLabel(r) {
+  if(!r) return 'Нет замера';
+  if(r.status === 'error') return 'Ошибка: '+(r.error || 'WB недоступен');
+  return r.status === 'found' ? '№ '+r.position : 'Не найден в первых '+r.checked;
+}
+async function renderBoostHistory() {
+  clearTimeout(BOOST_HISTORY_TIMER);
+  const req = ++BOOST_HISTORY_REQUEST;
+  const status = document.getElementById('boostHistoryStatus');
+  status.textContent = 'Загружаем сохранённую историю…';
+  const params = new URLSearchParams();
+  const from = document.getElementById('boostHistoryFrom').value;
+  const to = document.getElementById('boostHistoryTo').value;
+  if(from) params.set('date_from', from);
+  if(to) params.set('date_to', to);
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/boost-position-history?${params}`);
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail || 'Не удалось загрузить историю');
+    if(req !== BOOST_HISTORY_REQUEST) return;
+    BOOST_HISTORY = d;
+    document.getElementById('boostHistoryFrom').value = d.from;
+    document.getElementById('boostHistoryTo').value = d.to;
+    document.getElementById('boostCaptureBtn').disabled = d.running;
+    status.textContent = `${d.targets} товаров · ${d.search_pairs} поисковых связок · ${d.shelf_pairs} связок с ${d.shelf_sources} полками. ${d.running ? 'Идёт замер: '+(d.health.processed || 0)+' из '+d.groups+' запросов.' : d.health.message} Следующий ежедневный запуск: ${boostTime(d.next_run)} МСК.`;
+    if(d.health.error) status.textContent += ' Ошибка: '+d.health.error;
+    document.getElementById('boostHistoryCoverage').textContent = d.days.map(day => {
+      const c = d.coverage[day];
+      return `${day}: сохранено ${(c.found || 0)+(c.not_found || 0)}, ошибок ${c.error || 0}, нет замера ${c.missing || 0}`;
+    }).join(' · ');
+    document.getElementById('boostExcluded').innerHTML = `<b>Не включены ${d.config.excluded.length} некорректных строк из отчёта ${boostEsc(d.config.source)} за 16–22 ноября:</b><br>`+d.config.excluded.map(x => `${boostEsc(x.vendor_code)} (WB ${x.nm_id}), строка ${x.row}: ${boostEsc(x.query)}`).join('<br>');
+    paintBoostHistory();
+    if(d.running) BOOST_HISTORY_TIMER = setTimeout(() => {
+      if(document.getElementById('page-boost-history').classList.contains('on')) renderBoostHistory();
+    }, 10000);
+  } catch(e) {
+    if(req !== BOOST_HISTORY_REQUEST) return;
+    status.textContent = e.message;
+    document.getElementById('boostHistoryTable').textContent = 'Данные не загружены. Нажми «Обновить» для повтора.';
+  }
+}
+function paintBoostHistory() {
+  if(!BOOST_HISTORY) return;
+  const d = BOOST_HISTORY;
+  const mode = document.getElementById('boostHistoryMode').value;
+  const q = document.getElementById('boostHistoryFilter').value.trim().toLowerCase();
+  const rows = d.rows.filter(r => (!mode || r.mode === mode || mode === 'own' && r.mode === 'shelf' && r.source_own || mode === 'external' && r.mode === 'shelf' && !r.source_own) && (!q || [r.vendor_code,r.nm_id,r.query,r.source_vendor_code,r.source_nm_id,...r.queries].join(' ').toLowerCase().includes(q)))
+    .sort((a,b) => a.vendor_code.localeCompare(b.vendor_code,'ru') || a.mode.localeCompare(b.mode) || (a.query || String(a.source_nm_id)).localeCompare(b.query || String(b.source_nm_id),'ru'));
+  const shelfType = r => r && r.source === 'similar' ? 'Похожие' : r && r.source === 'recom' ? 'Смотрите также' : r && r.source || '';
+  const cell = r => `${boostEsc(boostRankLabel(r))}${r ? `<br><small style="color:var(--wb-muted)">${boostEsc(shelfType(r))} · ${boostTime(r.captured_at)} МСК</small>` : ''}`;
+  const th = t => `<th style="text-align:left;padding:12px;border-bottom:1px solid var(--wb-border)">${boostEsc(t)}</th>`;
+  document.getElementById('boostHistoryTable').innerHTML = rows.length ? `<table style="width:100%;font-size:12px;border-collapse:collapse;min-width:860px"><thead><tr>${['Артикул продавца','Ключ / полка-источник',d.from,d.to,'Изменение / история'].map(th).join('')}</tr></thead><tbody>`+rows.map(r => {
+    const context = r.mode === 'search' ? `<b>Поиск</b><br>${boostEsc(r.query)}` : `<b>${r.source_own ? 'Своя полка' : 'Полка конкурента'}</b><br>${boostEsc(r.source_vendor_code || 'Артикул продавца не определён')}<br><a href="https://www.wildberries.ru/catalog/${r.source_nm_id}/detail.aspx" target="_blank" rel="noopener">WB ${r.source_nm_id}</a><br><small>Ключи задания: ${r.queries.map(boostEsc).join(', ')}</small>`;
+    return '<tr>'+[`<b>${boostEsc(r.vendor_code || 'Артикул продавца не определён')}</b><br><a href="https://www.wildberries.ru/catalog/${r.nm_id}/detail.aspx" target="_blank" rel="noopener">WB ${r.nm_id}</a>`, context,cell(r.before),cell(r.after),`${boostEsc(r.change.label)}<details style="margin-top:8px"><summary>Все дни</summary>${d.days.map(day => `<div style="margin-top:8px">${day}<br>${cell(r.history[day])}</div>`).join('')}</details>`].map(x => `<td style="padding:12px;vertical-align:top;border-bottom:1px solid var(--wb-border)">${x}</td>`).join('')+'</tr>';
+  }).join('')+'</tbody></table>' : '<p>По этому фильтру связок нет.</p>';
+}
+async function captureBoostPositions() {
+  const btn = document.getElementById('boostCaptureBtn');
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${RAILWAY_URL}/api/boost-position-capture`, {method:'POST'});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail || 'Не удалось запустить замер');
+    document.getElementById('boostHistoryStatus').textContent = d.message;
+    BOOST_HISTORY_TIMER = setTimeout(renderBoostHistory, 1500);
+  } catch(e) {
+    btn.disabled = false;
+    document.getElementById('boostHistoryStatus').textContent = e.message;
+  }
+}
+
 </script>
 </body>
 </html>

@@ -1,0 +1,2071 @@
+{
+  "version": 1,
+  "source": "boost-report.xlsx",
+  "source_period": [
+    "2026-11-16",
+    "2026-11-22"
+  ],
+  "timezone": "Europe/Moscow",
+  "city": "Москва",
+  "dest": -1257786,
+  "hour": 10,
+  "search_depth": 500,
+  "shelf_depth": 100,
+  "groups": [
+    {
+      "id": "se6775881feee16fe",
+      "mode": "search",
+      "query": "смарт часы женские iphone",
+      "source_nm_id": null,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 668425107,
+          "vendor_code": "031_LK11_Pro_gold_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 768909090,
+          "vendor_code": "034_LK11_Pro_gold_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 817413248,
+          "vendor_code": "038_S11_ProMax_gold_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 817502081,
+          "vendor_code": "039_GS11_mini_grey_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 833748955,
+          "vendor_code": "035_hk11_gold_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 839540814,
+          "vendor_code": "039_GS11_mini_gold_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 839551704,
+          "vendor_code": "040_HK11_mini+_grey_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 849480241,
+          "vendor_code": "035_hk11_pink_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 898740263,
+          "vendor_code": "041_S11_middle_gold+leopard_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 898741975,
+          "vendor_code": "041_Х10_grey_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 941605493,
+          "vendor_code": "042_S11_middle_grey_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 1046610128,
+          "vendor_code": "043_LK49_gold_with_parfume_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 1282682592,
+          "vendor_code": "046_LK11_Promax_gold_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 1473681561,
+          "vendor_code": "048_PVS11_gold_withbras_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 1996310084,
+          "vendor_code": "051_GSmini12_gold_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        },
+        {
+          "nm_id": 1996314115,
+          "vendor_code": "051_GSmini12_grey_O",
+          "queries": [
+            "смарт часы женские iphone"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "se1891c1261a0f7a1",
+      "mode": "search",
+      "query": "смарт часы женские для андроид",
+      "source_nm_id": null,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 668425107,
+          "vendor_code": "031_LK11_Pro_gold_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        },
+        {
+          "nm_id": 817413248,
+          "vendor_code": "038_S11_ProMax_gold_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        },
+        {
+          "nm_id": 817502081,
+          "vendor_code": "039_GS11_mini_grey_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        },
+        {
+          "nm_id": 833748955,
+          "vendor_code": "035_hk11_gold_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        },
+        {
+          "nm_id": 839540814,
+          "vendor_code": "039_GS11_mini_gold_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        },
+        {
+          "nm_id": 839551704,
+          "vendor_code": "040_HK11_mini+_grey_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        },
+        {
+          "nm_id": 849480241,
+          "vendor_code": "035_hk11_pink_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        },
+        {
+          "nm_id": 898740263,
+          "vendor_code": "041_S11_middle_gold+leopard_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        },
+        {
+          "nm_id": 898741975,
+          "vendor_code": "041_Х10_grey_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        },
+        {
+          "nm_id": 941605493,
+          "vendor_code": "042_S11_middle_grey_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        },
+        {
+          "nm_id": 1282682592,
+          "vendor_code": "046_LK11_Promax_gold_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        },
+        {
+          "nm_id": 1996310084,
+          "vendor_code": "051_GSmini12_gold_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        },
+        {
+          "nm_id": 1996314115,
+          "vendor_code": "051_GSmini12_grey_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s3d57fb3b25cfa34d",
+      "mode": "search",
+      "query": "умные часы для женщин",
+      "source_nm_id": null,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 668425107,
+          "vendor_code": "031_LK11_Pro_gold_O",
+          "queries": [
+            "умные часы для женщин"
+          ]
+        },
+        {
+          "nm_id": 817413248,
+          "vendor_code": "038_S11_ProMax_gold_O",
+          "queries": [
+            "умные часы для женщин"
+          ]
+        },
+        {
+          "nm_id": 817502081,
+          "vendor_code": "039_GS11_mini_grey_O",
+          "queries": [
+            "умные часы для женщин"
+          ]
+        },
+        {
+          "nm_id": 833748955,
+          "vendor_code": "035_hk11_gold_O",
+          "queries": [
+            "умные часы для женщин"
+          ]
+        },
+        {
+          "nm_id": 839540814,
+          "vendor_code": "039_GS11_mini_gold_O",
+          "queries": [
+            "умные часы для женщин"
+          ]
+        },
+        {
+          "nm_id": 839551704,
+          "vendor_code": "040_HK11_mini+_grey_O",
+          "queries": [
+            "умные часы для женщин"
+          ]
+        },
+        {
+          "nm_id": 849480241,
+          "vendor_code": "035_hk11_pink_O",
+          "queries": [
+            "умные часы для женщин"
+          ]
+        },
+        {
+          "nm_id": 941605493,
+          "vendor_code": "042_S11_middle_grey_O",
+          "queries": [
+            "умные часы для женщин"
+          ]
+        },
+        {
+          "nm_id": 1282682592,
+          "vendor_code": "046_LK11_Promax_gold_O",
+          "queries": [
+            "умные часы для женщин"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "умные часы для женщин"
+          ]
+        },
+        {
+          "nm_id": 1996310084,
+          "vendor_code": "051_GSmini12_gold_O",
+          "queries": [
+            "умные часы для женщин"
+          ]
+        },
+        {
+          "nm_id": 1996314115,
+          "vendor_code": "051_GSmini12_grey_O",
+          "queries": [
+            "умные часы для женщин"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s77a306c073bd76da",
+      "mode": "search",
+      "query": "часы наручные женские смарт",
+      "source_nm_id": null,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 668425107,
+          "vendor_code": "031_LK11_Pro_gold_O",
+          "queries": [
+            "часы наручные женские смарт"
+          ]
+        },
+        {
+          "nm_id": 817413248,
+          "vendor_code": "038_S11_ProMax_gold_O",
+          "queries": [
+            "часы наручные женские смарт"
+          ]
+        },
+        {
+          "nm_id": 817502081,
+          "vendor_code": "039_GS11_mini_grey_O",
+          "queries": [
+            "часы наручные женские смарт"
+          ]
+        },
+        {
+          "nm_id": 833748955,
+          "vendor_code": "035_hk11_gold_O",
+          "queries": [
+            "часы наручные женские смарт"
+          ]
+        },
+        {
+          "nm_id": 839540814,
+          "vendor_code": "039_GS11_mini_gold_O",
+          "queries": [
+            "часы наручные женские смарт"
+          ]
+        },
+        {
+          "nm_id": 839551704,
+          "vendor_code": "040_HK11_mini+_grey_O",
+          "queries": [
+            "часы наручные женские смарт"
+          ]
+        },
+        {
+          "nm_id": 849480241,
+          "vendor_code": "035_hk11_pink_O",
+          "queries": [
+            "часы наручные женские смарт"
+          ]
+        },
+        {
+          "nm_id": 941605493,
+          "vendor_code": "042_S11_middle_grey_O",
+          "queries": [
+            "часы наручные женские смарт"
+          ]
+        },
+        {
+          "nm_id": 1282682592,
+          "vendor_code": "046_LK11_Promax_gold_O",
+          "queries": [
+            "часы наручные женские смарт"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "часы наручные женские смарт"
+          ]
+        },
+        {
+          "nm_id": 1996310084,
+          "vendor_code": "051_GSmini12_gold_O",
+          "queries": [
+            "часы наручные женские смарт"
+          ]
+        },
+        {
+          "nm_id": 1996314115,
+          "vendor_code": "051_GSmini12_grey_O",
+          "queries": [
+            "часы наручные женские смарт"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s4bf1ef5df00b4b63",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1808747592,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 668425107,
+          "vendor_code": "031_LK11_Pro_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 839540814,
+          "vendor_code": "039_GS11_mini_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898740263,
+          "vendor_code": "041_S11_middle_gold+leopard_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898741975,
+          "vendor_code": "041_Х10_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 1282682592,
+          "vendor_code": "046_LK11_Promax_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 1473681561,
+          "vendor_code": "048_PVS11_gold_withbras_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 1824157795,
+          "vendor_code": "047_LK11_mini_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 1996310084,
+          "vendor_code": "051_GSmini12_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s8f3b1ea823fe01b2",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1305432644,
+      "source_vendor_code": "046_LK11_Promax_black_O",
+      "source_own": true,
+      "targets": [
+        {
+          "nm_id": 684134053,
+          "vendor_code": "031_S11_Pro_max_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 817502081,
+          "vendor_code": "039_GS11_mini_grey_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1108932924,
+          "vendor_code": "033_hk_Ultra_дубль_grey_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1241861139,
+          "vendor_code": "045_LK_Watch_6Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1284436704,
+          "vendor_code": "045_LK_Watch_6Pro_grey_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1625524668,
+          "vendor_code": "039_GS11_mini_black_O",
+          "queries": [
+            "смарт часы"
+          ]
+        },
+        {
+          "nm_id": 2219327613,
+          "vendor_code": "048_PVS_black_O",
+          "queries": [
+            "смарт часы",
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 2239800092,
+          "vendor_code": "054_Ultra12_4_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s24fedcce44f49496",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1808747516,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 684134053,
+          "vendor_code": "031_S11_Pro_max_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 787455653,
+          "vendor_code": "035_HK11_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 814484144,
+          "vendor_code": "038_S11_Promax_black_O",
+          "queries": [
+            "смарт часы",
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1010414826,
+          "vendor_code": "042_S11_middle_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1108932924,
+          "vendor_code": "033_hk_Ultra_дубль_grey_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1625524668,
+          "vendor_code": "039_GS11_mini_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 2219327613,
+          "vendor_code": "048_PVS_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s4b7c65f0f2e8ae5f",
+      "mode": "search",
+      "query": "смарт часы",
+      "source_nm_id": null,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы"
+          ]
+        },
+        {
+          "nm_id": 1010414826,
+          "vendor_code": "042_S11_middle_black_O",
+          "queries": [
+            "смарт часы"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы"
+          ]
+        },
+        {
+          "nm_id": 1282682592,
+          "vendor_code": "046_LK11_Promax_gold_O",
+          "queries": [
+            "смарт часы"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "смарт часы"
+          ]
+        },
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы"
+          ]
+        },
+        {
+          "nm_id": 2219327613,
+          "vendor_code": "048_PVS_black_O",
+          "queries": [
+            "смарт часы"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sa17dacd45410ca2f",
+      "mode": "search",
+      "query": "смарт часы мужские",
+      "source_nm_id": null,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1010414826,
+          "vendor_code": "042_S11_middle_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 2219327613,
+          "vendor_code": "048_PVS_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 2239800092,
+          "vendor_code": "054_Ultra12_4_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s1319d053d276e23d",
+      "mode": "search",
+      "query": "смарт часы мужские для андроид",
+      "source_nm_id": null,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские для андроид"
+          ]
+        },
+        {
+          "nm_id": 1010414826,
+          "vendor_code": "042_S11_middle_black_O",
+          "queries": [
+            "смарт часы мужские для андроид"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские для андроид"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "смарт часы мужские для андроид"
+          ]
+        },
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы мужские для андроид"
+          ]
+        },
+        {
+          "nm_id": 2219327613,
+          "vendor_code": "048_PVS_black_O",
+          "queries": [
+            "смарт часы мужские для андроид"
+          ]
+        },
+        {
+          "nm_id": 2239800092,
+          "vendor_code": "054_Ultra12_4_O",
+          "queries": [
+            "смарт часы мужские для андроид"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sd92708c2968778cc",
+      "mode": "search",
+      "query": "умные часы мужские",
+      "source_nm_id": null,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "умные часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1010414826,
+          "vendor_code": "042_S11_middle_black_O",
+          "queries": [
+            "умные часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "умные часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "умные часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "умные часы мужские"
+          ]
+        },
+        {
+          "nm_id": 2239800092,
+          "vendor_code": "054_Ultra12_4_O",
+          "queries": [
+            "умные часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s8acd3ebaab838b5a",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 254910113,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1010414826,
+          "vendor_code": "042_S11_middle_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s1b3306ae1bea75d0",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1260345062,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "умные часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "умные часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 2219327613,
+          "vendor_code": "048_PVS_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s70b40164c55d9886",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1504359303,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские для андроид"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские для андроид"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s846dbf6831153e1d",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1504725505,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1010414826,
+          "vendor_code": "042_S11_middle_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sd0d4c840d1db401d",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1504725507,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1010414826,
+          "vendor_code": "042_S11_middle_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sa683a857d9e857d4",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1504725509,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1010414826,
+          "vendor_code": "042_S11_middle_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "se60a17737cfd1c42",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1563086120,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1010414826,
+          "vendor_code": "042_S11_middle_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s7ea507eef8eb931b",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1737324634,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s386cd9d94ab70197",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1934426251,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские для андроид"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские для андроид"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "saf7db418944a8aef",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 2191967438,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 787457462,
+          "vendor_code": "037_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1010414826,
+          "vendor_code": "042_S11_middle_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1141366502,
+          "vendor_code": "044_LK_GT5Pro_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s44cf42489267410b",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1824157795,
+      "source_vendor_code": "047_LK11_mini_gold_O",
+      "source_own": true,
+      "targets": [
+        {
+          "nm_id": 817413248,
+          "vendor_code": "038_S11_ProMax_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 817502081,
+          "vendor_code": "039_GS11_mini_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 817504366,
+          "vendor_code": "040_DT10_mini_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 839540814,
+          "vendor_code": "039_GS11_mini_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 941605493,
+          "vendor_code": "042_S11_middle_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s4aac710908125805",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1098099839,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 817502081,
+          "vendor_code": "039_GS11_mini_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898740263,
+          "vendor_code": "041_S11_middle_gold+leopard_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898741975,
+          "vendor_code": "041_Х10_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s531d4e1b21e65ced",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1421314983,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 817502081,
+          "vendor_code": "039_GS11_mini_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898740263,
+          "vendor_code": "041_S11_middle_gold+leopard_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898741975,
+          "vendor_code": "041_Х10_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sf4dce1de673ee989",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1516881263,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 817502081,
+          "vendor_code": "039_GS11_mini_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898740263,
+          "vendor_code": "041_S11_middle_gold+leopard_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898741975,
+          "vendor_code": "041_Х10_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s3ac6a72dd3c508ee",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1808747385,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 817502081,
+          "vendor_code": "039_GS11_mini_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898740263,
+          "vendor_code": "041_S11_middle_gold+leopard_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898741975,
+          "vendor_code": "041_Х10_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 1284332875,
+          "vendor_code": "046_LK11_Promax_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s880d8d808ba71cea",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1810372729,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 817502081,
+          "vendor_code": "039_GS11_mini_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898740263,
+          "vendor_code": "041_S11_middle_gold+leopard_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898741975,
+          "vendor_code": "041_Х10_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s2ed3c64bdf98d441",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1970859419,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 817502081,
+          "vendor_code": "039_GS11_mini_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898740263,
+          "vendor_code": "041_S11_middle_gold+leopard_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898741975,
+          "vendor_code": "041_Х10_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s5b8484c13ec41563",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1996314115,
+      "source_vendor_code": "051_GSmini12_grey_O",
+      "source_own": true,
+      "targets": [
+        {
+          "nm_id": 817502081,
+          "vendor_code": "039_GS11_mini_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898740263,
+          "vendor_code": "041_S11_middle_gold+leopard_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898741975,
+          "vendor_code": "041_Х10_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s89412c8279535072",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1808747781,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 817504366,
+          "vendor_code": "040_DT10_mini_gold_O",
+          "queries": [
+            "умные часы для женщин"
+          ]
+        },
+        {
+          "nm_id": 839540814,
+          "vendor_code": "039_GS11_mini_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 941630654,
+          "vendor_code": "042_S11_middle_gold_O",
+          "queries": [
+            "умные часы для женщин"
+          ]
+        },
+        {
+          "nm_id": 1824157795,
+          "vendor_code": "047_LK11_mini_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s1dac8b7943d86e96",
+      "mode": "search",
+      "query": "смарт часы для девочек",
+      "source_nm_id": null,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 839540814,
+          "vendor_code": "039_GS11_mini_gold_O",
+          "queries": [
+            "смарт часы для девочек"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s12ccc8a87e21f1e9",
+      "mode": "search",
+      "query": "смарт часы женские",
+      "source_nm_id": null,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 839540814,
+          "vendor_code": "039_GS11_mini_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898740263,
+          "vendor_code": "041_S11_middle_gold+leopard_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 898741975,
+          "vendor_code": "041_Х10_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 1282682592,
+          "vendor_code": "046_LK11_Promax_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s8ad9b203591c1070",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1473681561,
+      "source_vendor_code": "048_PVS11_gold_withbras_O",
+      "source_own": true,
+      "targets": [
+        {
+          "nm_id": 839540814,
+          "vendor_code": "039_GS11_mini_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 839551704,
+          "vendor_code": "040_HK11_mini+_grey_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 941630654,
+          "vendor_code": "042_S11_middle_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s7ae59bc39988ae13",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1810372670,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 941630654,
+          "vendor_code": "042_S11_middle_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sd468bd9f7d7d7ffd",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1960405850,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 941630654,
+          "vendor_code": "042_S11_middle_gold_O",
+          "queries": [
+            "смарт часы женские для андроид"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s23ead33b811ff5a2",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 760757279,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 1046610128,
+          "vendor_code": "043_LK49_gold_with_parfume_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        },
+        {
+          "nm_id": 1814370969,
+          "vendor_code": "050_LK6_mini_gold_O",
+          "queries": [
+            "смарт часы женские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s056b89abcfaeb310",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1241861139,
+      "source_vendor_code": "045_LK_Watch_6Pro_black_O",
+      "source_own": true,
+      "targets": [
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 2219327613,
+          "vendor_code": "048_PVS_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sd01dac095dbdd687",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1421308560,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 2219327613,
+          "vendor_code": "048_PVS_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "se9040a3bf43469de",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1808747313,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 2219327613,
+          "vendor_code": "048_PVS_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s09cf02e03de5bd55",
+      "mode": "shelf",
+      "query": "",
+      "source_nm_id": 1960405851,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 1305432644,
+          "vendor_code": "046_LK11_Promax_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        },
+        {
+          "nm_id": 2219327613,
+          "vendor_code": "048_PVS_black_O",
+          "queries": [
+            "смарт часы мужские"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sd1f737ee730341ac",
+      "mode": "search",
+      "query": "умные часы",
+      "source_nm_id": null,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 2219327613,
+          "vendor_code": "048_PVS_black_O",
+          "queries": [
+            "умные часы"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sea19dde365366459",
+      "mode": "search",
+      "query": "умные часы мужскике",
+      "source_nm_id": null,
+      "source_vendor_code": "",
+      "source_own": false,
+      "targets": [
+        {
+          "nm_id": 2219327613,
+          "vendor_code": "048_PVS_black_O",
+          "queries": [
+            "умные часы мужскике"
+          ]
+        }
+      ]
+    }
+  ],
+  "excluded": [
+    {
+      "row": 7,
+      "nm_id": 684134053,
+      "vendor_code": "031_S11_Pro_max_black_O",
+      "query": "1305432644 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 8,
+      "nm_id": 684134053,
+      "vendor_code": "031_S11_Pro_max_black_O",
+      "query": "1808747516 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 12,
+      "nm_id": 787455653,
+      "vendor_code": "035_HK11_black_O",
+      "query": "1808747516 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 29,
+      "nm_id": 814484144,
+      "vendor_code": "038_S11_Promax_black_O",
+      "query": "1808747516 смарт часы",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 30,
+      "nm_id": 814484144,
+      "vendor_code": "038_S11_Promax_black_O",
+      "query": "1808747516 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 33,
+      "nm_id": 817413248,
+      "vendor_code": "038_S11_ProMax_gold_O",
+      "query": "1824157795 смарт часы женские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 39,
+      "nm_id": 817502081,
+      "vendor_code": "039_GS11_mini_grey_O",
+      "query": "1305432644 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 40,
+      "nm_id": 817502081,
+      "vendor_code": "039_GS11_mini_grey_O",
+      "query": "1824157795 смарт часы женские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 54,
+      "nm_id": 817504366,
+      "vendor_code": "040_DT10_mini_gold_O",
+      "query": "1824157795 смарт часы женские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 61,
+      "nm_id": 839540814,
+      "vendor_code": "039_GS11_mini_gold_O",
+      "query": "1473681561 смарт часы женские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 62,
+      "nm_id": 839540814,
+      "vendor_code": "039_GS11_mini_gold_O",
+      "query": "1824157795 смарт часы женские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 73,
+      "nm_id": 839551704,
+      "vendor_code": "040_HK11_mini+_grey_O",
+      "query": "1473681561 смарт часы женские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 83,
+      "nm_id": 898740263,
+      "vendor_code": "041_S11_middle_gold+leopard_O",
+      "query": "1808747385 смарт часы женские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 95,
+      "nm_id": 898741975,
+      "vendor_code": "041_Х10_grey_O",
+      "query": "1808747385 смарт часы женские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 107,
+      "nm_id": 941605493,
+      "vendor_code": "042_S11_middle_grey_O",
+      "query": "1824157795 смарт часы женские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 113,
+      "nm_id": 941630654,
+      "vendor_code": "042_S11_middle_gold_O",
+      "query": "1473681561 смарт часы женские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 129,
+      "nm_id": 1046610128,
+      "vendor_code": "043_LK49_gold_with_parfume_O",
+      "query": "1046610128 смарт часы женские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 132,
+      "nm_id": 1108932924,
+      "vendor_code": "033_hk_Ultra_дубль_grey_O",
+      "query": "1305432644 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 133,
+      "nm_id": 1108932924,
+      "vendor_code": "033_hk_Ultra_дубль_grey_O",
+      "query": "1808747516 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 136,
+      "nm_id": 1141366502,
+      "vendor_code": "044_LK_GT5Pro_black_O",
+      "query": "1808747516 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 152,
+      "nm_id": 1241861139,
+      "vendor_code": "045_LK_Watch_6Pro_black_O",
+      "query": "1305432644 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 161,
+      "nm_id": 1284332875,
+      "vendor_code": "046_LK11_Promax_grey_O",
+      "query": "1808747385 смарт часы женские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 177,
+      "nm_id": 1284436704,
+      "vendor_code": "045_LK_Watch_6Pro_grey_O",
+      "query": "1305432644 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 179,
+      "nm_id": 1305432644,
+      "vendor_code": "046_LK11_Promax_black_O",
+      "query": "1808747516 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 198,
+      "nm_id": 1625524668,
+      "vendor_code": "039_GS11_mini_black_O",
+      "query": "1305432644 смарт часы",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 199,
+      "nm_id": 1625524668,
+      "vendor_code": "039_GS11_mini_black_O",
+      "query": "1808747516 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 202,
+      "nm_id": 1814370969,
+      "vendor_code": "050_LK6_mini_gold_O",
+      "query": "1046610128 смарт часы женские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 203,
+      "nm_id": 1814370969,
+      "vendor_code": "050_LK6_mini_gold_O",
+      "query": "760757279 смарт часы женские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 216,
+      "nm_id": 2219327613,
+      "vendor_code": "048_PVS_black_O",
+      "query": "1305432644 смарт часы",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 217,
+      "nm_id": 2219327613,
+      "vendor_code": "048_PVS_black_O",
+      "query": "1305432644 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 218,
+      "nm_id": 2219327613,
+      "vendor_code": "048_PVS_black_O",
+      "query": "1808747516 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    },
+    {
+      "row": 232,
+      "nm_id": 2239800092,
+      "vendor_code": "054_Ultra12_4_O",
+      "query": "1305432644 смарт часы мужские",
+      "reason": "В поисковом ключе указан артикул: нужно исправить тип или ключ задания."
+    }
+  ]
+}
