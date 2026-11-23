@@ -64,6 +64,22 @@ class Incidents(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             leader(people)
 
+    def test_storage_failure_blocks_delivery(self):
+        http = Mock()
+        http.get.side_effect = RuntimeError('storage unavailable')
+        env = {'httpx':http, 'CRM_API_URL':'https://crm.example', 'WB_TOKEN':'test',
+               'SUPABASE_URL':'https://db.example', 'sb_headers':lambda:{}, 'logger':Mock()}
+        m = Monitor(lambda:env)
+        m.run()
+        self.assertFalse(m.health['ok'])
+        http.post.assert_not_called()
+
+    def test_missing_stats_do_not_reset_sample_baseline(self):
+        s = self.run_step({})
+        before = copy.deepcopy(s['campaigns']['1']['samples'])
+        s = evaluate(s, {1:{'name':'Часы','status':9}}, {}, 100300, DEFAULTS)
+        self.assertEqual(s['campaigns']['1']['samples'], before)
+
     def test_delivery_reconciles_after_post_timeout(self):
         state = self.run_step({}, budget=0)
         incident = state['campaigns']['1']['incidents']['stopped']

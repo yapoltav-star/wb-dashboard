@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import statistics
 import threading
 import time
 from datetime import datetime, timezone, timedelta
@@ -57,8 +56,7 @@ def evaluate(state, campaigns, stats, now, config):
         history = [p for p in samples if p['at'] <= boundary['at']]
         if len(history) < 7 or history[-1]['at'] - history[0]['at'] < 1680:
             continue
-        rates = [(b['spend']-a['spend'])/(b['at']-a['at']) for a,b in zip(history,history[1:]) if b['at'] > a['at']]
-        baseline = statistics.median(rates)
+        baseline = (history[-1]['spend'] - history[0]['spend']) / (history[-1]['at'] - history[0]['at'])
         spend = point['spend'] - boundary['spend']
         minutes = (now-boundary['at'])/60
         rate = spend/(now-boundary['at'])
@@ -92,10 +90,10 @@ class Monitor:
         self.lock = threading.Lock()
         self.health = {'ok': False, 'message': 'Ожидает первой проверки'}
 
-    def load(self):
+    def load(self, key=KEY):
         e = self.env()
         # Do not turn a storage outage into an empty deduplication journal.
-        r = e['httpx'].get(f"{e['SUPABASE_URL']}/rest/v1/settings", params={'key': f'eq.{KEY}', 'select': 'value'}, headers=e['sb_headers'](), timeout=15)
+        r = e['httpx'].get(f"{e['SUPABASE_URL']}/rest/v1/settings", params={'key': f'eq.{key}', 'select': 'value'}, headers=e['sb_headers'](), timeout=15)
         r.raise_for_status()
         rows = r.json()
         value = rows[0]['value'] if rows else {}
@@ -173,8 +171,11 @@ class Monitor:
             return
         try:
             e = self.env()
-            config = {**DEFAULTS, **(e['get_setting_json'](CONFIG_KEY, {}) or {})}
-            if not config['enabled'] or not e['CRM_API_URL'] or not e['WB_TOKEN']:
+            if not e['CRM_API_URL'] or not e['WB_TOKEN']:
+                self.health = {'ok': False, 'message': 'Не настроен доступ'}
+                return
+            config = {**DEFAULTS, **self.load(CONFIG_KEY)}
+            if not config['enabled']:
                 self.health = {'ok': False, 'message': 'Выключен или не настроен доступ'}
                 return
             state = self.load()
@@ -182,7 +183,8 @@ class Monitor:
             state = evaluate(state, campaigns, stats, time.time(), config)
             self.save(state)  # Persist incident identity before any external side effect.
             self.deliver(state)
-            self.health = {'ok': True, 'checked_at': state['checked_at'], 'campaigns': len(campaigns), 'warnings': warnings,
+            self.health = {'ok': True, 'checked_at': state['checked_at'], 'campaigns': len(campaigns), 'budgets_checked': sum('budget' in c for c in campaigns.values()),
+                           'stats_checked': len(stats), 'warnings': warnings,
                            'tasks': [i for r in state['campaigns'].values() for i in r['incidents'].values() if i.get('task_id')]}
         except Exception as exc:
             self.health = {'ok': False, 'error': type(exc).__name__, 'message': str(exc).split(' for url:')[0][:250]}
