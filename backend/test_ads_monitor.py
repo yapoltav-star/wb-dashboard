@@ -1,7 +1,7 @@
 import copy
 import unittest
 from unittest.mock import Mock
-from ads_monitor import evaluate, DEFAULTS, Monitor, leader
+from ads_monitor import evaluate, DEFAULTS, Monitor, leader, notification_owner
 
 
 class Incidents(unittest.TestCase):
@@ -64,6 +64,14 @@ class Incidents(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             leader(people)
 
+    def test_notification_owner_requires_name_and_role(self):
+        people = [{'id':3,'name':'Другой','role':'owner'},
+                  {'id':4,'name':'Ярослав','role':'manager'},
+                  {'id':1,'name':'Ярослав','role':'owner'}]
+        self.assertEqual(notification_owner(people)['id'], 1)
+        with self.assertRaises(RuntimeError):
+            notification_owner(people[:2])
+
     def test_storage_failure_blocks_delivery(self):
         http = Mock()
         http.get.side_effect = RuntimeError('storage unavailable')
@@ -85,7 +93,7 @@ class Incidents(unittest.TestCase):
         incident = state['campaigns']['1']['incidents']['stopped']
         marker = f'[dash:ads-alert:1:stopped:{int(incident["at"])}]'
         http = Mock()
-        http.get.return_value.json.return_value = {'employees':[{'id':2,'name':'Диля','role':'рук'}], 'tasks':[{'id':7,'description':marker}]}
+        http.get.return_value.json.return_value = {'employees':[{'id':2,'name':'Диля','role':'рук'}, {'id':1,'name':'Ярослав','role':'owner'}], 'tasks':[{'id':7,'description':marker}]}
         env = {'httpx':http,'CRM_API_URL':'https://crm.example','_crm_headers':lambda:{},
                '_crm_iter_board_tasks':lambda b:b['tasks'], 'save_setting_value':Mock(return_value=True)}
         m = Monitor(lambda:env)
@@ -96,7 +104,7 @@ class Incidents(unittest.TestCase):
     def test_delivery_requests_telegram_once(self):
         state = self.run_step({}, budget=0)
         http = Mock()
-        http.get.return_value.json.return_value = {'employees':[{'id':2,'name':'Диля','role':'рук'}], 'tasks':[]}
+        http.get.return_value.json.return_value = {'employees':[{'id':2,'name':'Диля','role':'рук'}, {'id':1,'name':'Ярослав','role':'owner'}], 'tasks':[]}
         http.post.return_value.json.return_value = {'id':7,'notified':True}
         env = {'httpx':http,'CRM_API_URL':'https://crm.example','_crm_headers':lambda:{},
                '_crm_iter_board_tasks':lambda b:b['tasks'], 'save_setting_value':Mock(return_value=True)}
@@ -106,6 +114,7 @@ class Incidents(unittest.TestCase):
         self.assertEqual(http.post.call_count, 1)
         self.assertEqual(http.post.call_args.kwargs['json']['assignee_id'], 2)
         self.assertTrue(http.post.call_args.kwargs['json']['notify_now'])
+        self.assertEqual(http.post.call_args.kwargs['json']['assignee_ids'], [2, 1])
 
 if __name__ == '__main__':
     unittest.main()

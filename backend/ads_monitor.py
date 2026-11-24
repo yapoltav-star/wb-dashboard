@@ -84,6 +84,15 @@ def leader(employees):
     return matches[0]
 
 
+def notification_owner(employees):
+    matches = [e for e in employees if e.get('active', True)
+               and str(e.get('role', '')).lower() == 'owner'
+               and str(e.get('name', '')).strip().lower() in ('ярослав', 'yaroslav')]
+    if len(matches) != 1:
+        raise RuntimeError('Не удалось однозначно определить Ярослава-владельца в CRM')
+    return matches[0]
+
+
 class Monitor:
     def __init__(self, env):
         self.env = env
@@ -144,7 +153,7 @@ class Monitor:
         r.raise_for_status()
         board = r.json()
         assignee = leader(board.get('employees', []))
-        owner = next((v for v in board['employees'] if v.get('role') == 'owner'), assignee)
+        owner = notification_owner(board['employees'])
         tasks = list(e['_crm_iter_board_tasks'](board))
         for cid,rec,kind,incident in pending:
             marker = f'[dash:ads-alert:{cid}:{kind}:{int(incident["at"])}]'
@@ -158,7 +167,7 @@ class Monitor:
                            f'https://cmp.wildberries.ru/campaigns/edit/{cid}\n'
                            'Если изменение плановое — отметьте это в задаче. Бот не меняет ставки и не пополняет бюджет.')
             payload = {'title': title[:500], 'description': description[:2000], 'articles': f'{rec["name"]} #{cid}'[:500],
-                       'assignee_id': assignee['id'], 'assignee_ids': [assignee['id']], 'created_by_id': owner['id'],
+                       'assignee_id': assignee['id'], 'assignee_ids': list(dict.fromkeys([assignee['id'], owner['id']])), 'created_by_id': owner['id'],
                        'status': 'todo', 'kind': 'once', 'priority': 'normal', 'notify_now': True}
             r = e['httpx'].post(f"{e['CRM_API_URL']}/api/tasks", headers=e['_crm_headers'](), json=payload, timeout=30)
             r.raise_for_status()
