@@ -2,7 +2,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(`${__dirname}/../frontend/index.html`, 'utf8');
-const startup = source.slice(source.indexOf('function sectionFromPath()'), source.lastIndexOf('</script>'));
+const startupStart = source.indexOf('function sectionFromPath()');
+const startup = source.slice(startupStart, source.indexOf('</script>', startupStart));
 for (const pathname of ['/', '/rnp', '/RNP']) {
   let opened;
   const context = {

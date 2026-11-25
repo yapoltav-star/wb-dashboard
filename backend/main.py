@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 import pandas as pd
 from pathlib import Path
 from site_auth import register_site_auth
+from competitor_report import parse_competitor_report, pack_competitor_report, unpack_competitor_report
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -6700,12 +6701,42 @@ def _load_competitor_wb_rf_stocks(session_id: int) -> dict:
     return out
 
 
+def _competitor_store_from_filename(filename: str) -> str:
+    """Store label supplied by the uploader; strip export dates, not brand names."""
+    name = re.split(r"[/\\]", filename or "")[-1]
+    name = re.sub(r"\.(xlsx|xls|xlsm)$", "", name, flags=re.I).strip()
+    day = r"(?:\d{2}[-.]\d{2}[-.]\d{4}|\d{4}-\d{2}-\d{2})"
+    name = re.sub(rf"\s+с\s+{day}\s+по\s+{day}$", "", name, flags=re.I)
+    name = re.sub(rf"^{day}\s+", "", name)
+    return re.sub(r"\s+", " ", name).strip()
+
+
+def _competitor_upload_labels(session_ids: list) -> dict:
+    labels = {}
+    ids = [int(sid) for sid in session_ids if sid is not None]
+    for start in range(0, len(ids), 100):
+        keys = ",".join(f"competitor_upload_{sid}" for sid in ids[start:start + 100])
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/settings",
+            params={"key": f"in.({keys})", "select": "key,value"},
+            headers=sb_headers(), timeout=15,
+        )
+        resp.raise_for_status()
+        for row in resp.json() or []:
+            value = row.get("value")
+            meta = json.loads(value) if isinstance(value, str) else value
+            if isinstance(meta, dict):
+                labels[int(row["key"].removeprefix("competitor_upload_"))] = {"store_name": meta.get("store_name", "")}
+    return labels
+
+
 @app.post("/api/upload-competitor-report")
 async def upload_competitor_report(file: UploadFile = File(...)):
-    """Принимает xlsx «Сравнение карточек»: Показатели + остаток на Склад WB РФ."""
+    """Сохраняет все листы WB и основные метрики для таблицы сравнения."""
     try:
         import re as _re
         contents = await file.read()
+        report = parse_competitor_report(contents)
 
         # ── Период из Общая информация ──
         period_begin = period_end = None
@@ -6802,6 +6833,18 @@ async def upload_competitor_report(file: UploadFile = File(...)):
         except Exception as e:
             return {"error": f"Ошибка сессии: {e}. Ответ: {sess_resp.text[:150]}"}
 
+        store_name = _competitor_store_from_filename(file.filename or "")
+        if not save_setting_value(f"competitor_upload_{session_id}", {
+            "store_name": store_name, "source_filename": file.filename or "",
+        }) or not save_setting_value(f"competitor_report_{session_id}", {
+            "report_gzip": pack_competitor_report(report),
+        }):
+            httpx.delete(
+                f"{SUPABASE_URL}/rest/v1/competitor_sessions?id=eq.{session_id}",
+                headers=sb_headers(), timeout=15,
+            )
+            return {"error": "Не удалось сохранить полный отчёт. Повторите загрузку."}
+
         # ── Сохраняем метрики ──
         now = datetime.now(timezone.utc).isoformat()
         rows = []
@@ -6851,8 +6894,11 @@ async def upload_competitor_report(file: UploadFile = File(...)):
             "period_begin": period_begin,
             "period_end": period_end,
             "brands": brands,
+            "store_name": store_name,
             "articles": len(rows),
-            "search_queries": 0,
+            "search_queries": len(report["queries"]),
+            "warehouse_rows": len(report["warehouses"]),
+            "sheets": len(report["sheets"]),
             "stock_wb_rf_articles": with_stock,
         }
 
@@ -7383,8 +7429,15 @@ def get_competitor_sessions():
             logger.warning(f"competitor-sessions brands enrich: {e}")
             brands_by_sid = {}
 
+        try:
+            upload_labels = _competitor_upload_labels([s.get("id") for s in sessions])
+        except Exception as e:
+            logger.warning(f"competitor-sessions upload labels: {e}")
+            upload_labels = {}
+
         for s in sessions:
             s["brands"] = brands_by_sid.get(s.get("id"), [])
+            s["store_name"] = upload_labels.get(s.get("id"), {}).get("store_name", "")
         return sessions
     except Exception:
         return []
@@ -7576,9 +7629,15 @@ def get_competitor_data(session_id: int):
                     merged.append(item)
                 rows = merged
             rows = _enrich_competitor_metrics_prices(rows)
+        meta = get_setting_json(f"competitor_upload_{session_id}", {}) or {}
+        payload = get_setting_json(f"competitor_report_{session_id}", {}) or {}
+        report = unpack_competitor_report(payload.get("report_gzip") or meta.get("report_gzip"))
         return {
+            "report": report,
+            "store_name": meta.get("store_name", ""),
+            "source_filename": meta.get("source_filename", ""),
             "metrics": rows,
-            "search_queries": queries.json() if queries.is_success else []
+            "search_queries": report["queries"] if report else (queries.json() if queries.is_success else [])
         }
     except Exception as e:
         return {"error": str(e)}

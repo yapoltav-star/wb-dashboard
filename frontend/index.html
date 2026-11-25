@@ -5,7 +5,7 @@
 <!-- Фиксированная «десктопная» ширина: на телефоне Safari сразу умещает всю страницу,
      pinch-zoom отдаляет/приближает вместе с таблицами — видны все столбцы. -->
 <meta name="viewport" content="width=1400, initial-scale=1, minimum-scale=0.15, maximum-scale=4, user-scalable=yes">
-<title>WB Partners — Отзывы и рейтинги</title>
+<title>WB Partners — Дашборд</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js">
 </script>
@@ -1042,6 +1042,8 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
 #page-boost-history input,#page-boost-history select{margin-top:5px;padding:7px 9px;border:1px solid var(--wb-border);border-radius:var(--rs);font:inherit;background:var(--wb-surface,#fff);color:inherit;min-height:32px}
 #page-boost-history summary{cursor:pointer}
 </style>
+<link rel="stylesheet" href="/static/competitor-detail.css?v=20261125">
+<script src="/static/competitor-detail.js?v=20261125"></script>
 </head>
 <body>
 
@@ -1053,7 +1055,6 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
     <div class="tb-nav-item on" onclick="showSection('catalog',this)">Товары</div>
     <div class="tb-nav-item" onclick="showSection('growth',this)">Рост продаж</div>
     <div class="tb-nav-item" onclick="showSection('rating-workspace',this)">Рейтинг</div>
-    <div class="tb-nav-item" onclick="showSection('products',this)">Отзывы и оценки</div>
     <div class="tb-nav-item" onclick="showSection('promotions',this)">Акции и цены</div>
     <div class="tb-nav-item" onclick="showSection('supplies',this)">Остатки и поставки</div>
     <div class="tb-nav-item" onclick="showSection('analytics',this)">Конкуренты</div>
@@ -1070,12 +1071,6 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   </div>
 </div>
 
-<div class="subnav" id="subnav-products" style="display:none">
-  <div class="sn-item on" onclick="showPage('products',this)">Последние отзывы</div>
-  <div class="sn-item" onclick="showPage('ratings',this)">Оценки</div>
-  <div class="sn-item" onclick="showPage('groups',this)">Склейки</div>
-  <div class="sn-item" onclick="showPage('wb-chats',this)">Чаты WB</div>
-</div>
 <div class="subnav" id="subnav-growth" style="display:none">
   <div class="sn-item on" onclick="showPage('sales-pace',this)">Темп к вчера</div>
 </div>
@@ -1104,25 +1099,6 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   <div class="sn-item" onclick="showPage('shelf-sheet',this)">Сводка полок</div>
   <div class="sn-item" onclick="showPage('rec-agg',this)">Рекомендации</div>
   <div class="sn-item" onclick="showPage('boost-history',this)">История бустов</div>
-</div>
-
-<!-- Upload modal -->
-<div class="modal-overlay" id="uploadModal">
-  <div class="modal">
-    <h3>📊 Загрузить файл оценок WB</h3>
-    <p>Скачай файл в WB Partners: <b>Аналитика → Оценка товара → Скачать отчёт</b><br>
-    Выбери нужные артикулы и период, нажми «Скачать». Затем загрузи сюда.</p>
-    <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()"
-      ondragover="dzOver(event)" ondragleave="dzLeave(event)" ondrop="dzDrop(event)">
-      <input type="file" id="fileInput" accept=".xlsx" onchange="handleFile(this.files[0])">
-      <div class="drop-icon">📁</div>
-      <div class="drop-text">Перетащи файл сюда или <b>выбери файл</b><br><span style="font-size:11px">Только .xlsx файлы</span></div>
-    </div>
-    <div class="upload-progress" id="uploadProgress">⏳ Загружаем и обрабатываем файл...</div>
-    <div class="modal-btns">
-      <button class="action-btn" onclick="closeUploadModal()">Отмена</button>
-    </div>
-  </div>
 </div>
 
 <!-- РОСТ ПРОДАЖ -->
@@ -1160,64 +1136,6 @@ tr.spp-alert.spp-alert-down{background:#ECFDF3 !important;box-shadow:inset 4px 0
   <div id="paceInsights" class="pace-insights" style="display:none"></div>
   <div id="paceRoot"><div class="empty" style="padding:40px 20px">Нажми «Обновить» — сравним текущий период с прошлым (день / неделя / 2 недели / месяц).</div></div>
 </div>
-
-<div class="page" id="page-ratings">
-  <div class="upload-banner" id="uploadBanner">
-    <span>⚠️ <b>Рейтинги из файла WB не загружены.</b> Данные рассчитаны по всем отзывам из базы (включая старше года).</span>
-    <button class="upload-btn-inner" onclick="openUploadModal()">Загрузить файл оценок</button>
-    <span class="upload-last" id="uploadLast"></span>
-  </div>
-  <div class="cards" id="cards"></div>
-  <div class="toolbar" id="toolbar" style="display:none">
-    <div class="search">
-      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
-      <input id="si" placeholder="Поиск по артикулу..." oninput="render()">
-    </div>
-    <span style="font-size:12px;color:var(--wb-muted)">Сортировка:</span>
-    <button class="filter-btn on" id="s_avg_rating" onclick="SS('avg_rating')">★ Рейтинг</button>
-    <button class="filter-btn" id="s_r1" onclick="SS('r1')">★1</button>
-    <button class="filter-btn" id="s_excluded" onclick="SS('excluded')">Исключённые</button>
-    <button class="filter-btn" id="s_total" onclick="SS('total')">Отзывов</button>
-    <button class="filter-btn" id="s_article" onclick="SS('article')">А–Я</button>
-    <div class="ml-auto" style="display:flex;gap:8px">
-      <button class="action-btn" onclick="EA(1)">▾ Раскрыть</button>
-      <button class="action-btn" onclick="EA(0)">▸ Свернуть</button>
-      <button class="action-btn" onclick="EX()">⬇ CSV</button>
-    </div>
-  </div>
-  <div id="root"><div class="loading"><div class="spinner"></div><span>Загружаем данные...</span></div></div>
-</div>
-
-<div class="page" id="page-products">
-  <div class="cards" id="prodCards"></div>
-  <div class="toolbar" id="prodToolbar" style="display:none">
-    <div class="search">
-      <span style="color:var(--wb-faint);font-size:14px">🔍</span>
-      <input id="prodSearch" placeholder="Поиск по артикулу..." oninput="renderProducts()">
-    </div>
-    <span style="font-size:12px;color:var(--wb-muted)">Негатив за:</span>
-    <select id="negPeriodSelect" onchange="setNegPeriod(+this.value)" style="border:1px solid var(--wb-border);border-radius:var(--rs);padding:6px 10px;font-size:12px;font-family:inherit;color:var(--wb-text);background:var(--wb-surface);cursor:pointer">
-      <option value="1">1 день</option>
-      <option value="2">2 дня</option>
-      <option value="3">3 дня</option>
-      <option value="4">4 дня</option>
-      <option value="5" selected>5 дней</option>
-      <option value="7">7 дней</option>
-      <option value="14">14 дней</option>
-      <option value="30">30 дней</option>
-    </select>
-    <span style="font-size:12px;color:var(--wb-muted);margin-left:8px">Считать негативом:</span>
-    <button class="filter-btn on" id="ns_1" onclick="toggleNegStar(1)">★1</button>
-    <button class="filter-btn on" id="ns_2" onclick="toggleNegStar(2)">★2</button>
-    <button class="filter-btn" id="ns_3" onclick="toggleNegStar(3)">★3</button>
-    <div class="ml-auto" style="display:flex;gap:8px">
-      <button class="action-btn" id="manualSortBtn" onclick="toggleManualSort()">↕ Ручная сортировка</button>
-    </div>
-  </div>
-  <div class="section-sub" id="manualSortHint" style="display:none;margin-bottom:10px">Перетаскивай строки чтобы изменить порядок. Закреплённые (📌) артикулы можно перетаскивать отдельно внутри своего блока — он всегда сверху.</div>
-  <div id="prodRoot"></div>
-</div>
-
 
 <div class="page" id="page-wb-chats">
   <div class="section-wrap" style="max-width:720px">
@@ -2356,14 +2274,17 @@ function rc(v) {
 }
 
 function showSection(sec, btn, updateHistory = true) {
-  // Keep the existing section intact; its URL can also be opened directly.
+  // Old browser-history entries should open the catalog after section removal.
+  if(sec === 'products') {
+    sec = 'catalog';
+    btn = document.querySelector('.tb-nav-item[onclick*="catalog"]');
+  }
   if(updateHistory) {
     const path = sec === 'growth' ? '/rnp' : sec === 'rating-workspace' ? '/ratings' : '/';
     history.pushState({section: sec}, '', path);
   }
   document.querySelectorAll('.tb-nav-item').forEach(t => t.classList.remove('on'));
   btn.classList.add('on');
-  document.getElementById('subnav-products').style.display = sec === 'products' ? 'flex' : 'none';
   document.getElementById('subnav-supplies').style.display = sec === 'supplies' ? 'flex' : 'none';
   const sg = document.getElementById('subnav-growth');
   if(sg) sg.style.display = sec === 'growth' ? 'flex' : 'none';
@@ -2375,7 +2296,6 @@ function showSection(sec, btn, updateHistory = true) {
   if(sa) sa.style.display = sec === 'analytics' ? 'flex' : 'none';
   if(sec === 'rating-workspace') showPage('rating-workspace', null);
   else if(sec === 'catalog') showPage('wb-products', null);
-  else if(sec === 'products') showPage('products', document.querySelector('#subnav-products .sn-item'));
   else if(sec === 'growth') showPage('sales-pace', document.querySelector('#subnav-growth .sn-item'));
   else if(sec === 'promotions') showPage('promo-cal', document.querySelector('#subnav-promotions .sn-item'));
   else if(sec === 'supplies') showPage('new-stock', document.querySelector('#subnav-supplies .sn-item'));
@@ -2795,6 +2715,7 @@ function drawWbProducts() {
 }
 
 function showPage(id, btn) {
+  if(id === 'products' || id === 'ratings') { id = 'wb-products'; btn = null; }
   document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
   document.querySelectorAll('.sn-item').forEach(t => t.classList.remove('on'));
   const page = document.getElementById('page-' + id);
@@ -3014,7 +2935,6 @@ async function loadData() {
       });
     }
 
-    document.getElementById('uploadBanner').classList.toggle('hidden', HAS_OFFICIAL);
 
     // Negative review counts by period (★1–2, server max_stars=2)
     NEG_COUNTS = data.negative_counts || {};
@@ -3060,18 +2980,10 @@ async function loadData() {
       Object.keys(GROUPS).concat(['Без склейки']).forEach(g => { EXP[g] = false; });
     }
 
-    renderCards();
-    document.getElementById('toolbar').style.display = 'flex';
-    render();
-
-    document.getElementById('prodToolbar').style.display = 'flex';
-    renderProducts();
-
     const settings = data.settings || {};
-    let statusText = settings.last_sync ? 'Отзывы: ' + settings.last_sync : 'Данные загружены';
+    let statusText = settings.last_sync ? 'Обновлено: ' + settings.last_sync : 'Данные загружены';
     if(settings.last_ratings_upload) {
       statusText += ' · Оценки: ' + settings.last_ratings_upload;
-      document.getElementById('uploadLast').textContent = 'Оценки загружены: ' + settings.last_ratings_upload;
     }
     setStatus('ok', statusText);
 
@@ -8502,7 +8414,7 @@ function paceHypothesis(a) {
     return {
       code: 'reviews', tag: 'Отзывы', tagCls: 'pi-tag-reviews', chipCls: 'pi-chip-reviews',
       title: neg.strong ? 'Всплеск ★1–2' : 'Свежий негатив ★1–2',
-      text: `${neg.bestN} отз. ★1–2 за ${neg.bestDays} дн. ${hint} Открой «Отзывы» → ответить / разобрать брак.`,
+      text: `${neg.bestN} отз. ★1–2 за ${neg.bestDays} дн. ${hint} Проверь свежие отзывы в кабинете WB и причины негатива.`,
       facts,
     };
   }
@@ -8708,7 +8620,7 @@ function renderPaceInsights(all) {
           ${dHtml || '<div></div>'}
           <div class="pi-hyp">
             <span class="pi-tag pi-tag-reviews">${neg.strong ? '★1–2 много' : '★1–2'}</span>
-            <div class="pi-text"><b>${neg.bestN} отзыва ★1–2 за ${neg.bestDays} дн.</b> Смотри «Отзывы и оценки» — ответить / найти причину (брак, срок, описание).</div>
+            <div class="pi-text"><b>${neg.bestN} отзыва ★1–2 за ${neg.bestDays} дн.</b> Проверь свежие отзывы в кабинете WB и причины негатива: брак, сроки, описание.</div>
             <div class="pi-facts">2д: ${neg.d2} · 3д: ${neg.d3} · 5д: ${neg.d5} · 7д: ${neg.d7}</div>
           </div>
         </div>`;
@@ -10508,10 +10420,8 @@ function formatCompPeriod(begin, end) {
 
 function formatCompSessionLabel(s) {
   const period = formatCompPeriod(s.period_begin, s.period_end);
-  const brands = (s.brands || []).filter(Boolean);
-  if(!brands.length) return period;
-  const shown = brands.length > 4 ? brands.slice(0,4).join(', ') + '…' : brands.join(', ');
-  return `${period} · ${shown}`;
+  if(!(s.brands || []).filter(Boolean).length && !s.store_name) return period;
+  return `${period} · ${sessionBrandLabel(s)}`;
 }
 
 function compPeriodKey(s) {
@@ -10520,8 +10430,11 @@ function compPeriodKey(s) {
 
 function sessionBrandLabel(s) {
   const brands = (s.brands || []).filter(Boolean);
-  if(!brands.length) return s.id ? ('отчёт #' + s.id) : 'без бренда';
-  return brands.length > 3 ? brands.slice(0, 3).join(', ') + '…' : brands.join(', ');
+  const brand = brands.length
+    ? (brands.length > 3 ? brands.slice(0, 3).join(', ') + '…' : brands.join(', '))
+    : (s.id ? ('отчёт #' + s.id) : 'без бренда');
+  const store = String(s.store_name || '').trim();
+  return store ? `${brand} (${store})` : brand;
 }
 
 function groupSessionsByPeriod(list) {
@@ -10540,7 +10453,7 @@ function compPeriodIconBtn(onclick, title, char, hoverColor) {
 
 function renderCompSessionChip(s, archived) {
   const brand = sessionBrandLabel(s);
-  const tip = formatCompSessionLabel(s).replace(/"/g, '&quot;');
+  const tip = escapeHtml(formatCompSessionLabel(s));
   if(archived) {
     return `<div style="display:flex;align-items:center;gap:2px;opacity:.75">
       <button type="button" class="comp-period-btn" onclick="unarchiveSession(${s.id})" title="Вернуть из архива: ${tip}">${escapeHtml(brand)} ↩</button>
@@ -10809,6 +10722,7 @@ async function togglePeriod(sessionId) {
   }
   buildPeriodButtons();
   await loadAllSelectedSessions();
+  if(COMP_SELECTED_SESSIONS.has(sessionId)) CompetitorDetail.selectReport(sessionId);
 }
 
 async function deleteCompSession(sessionId) {
@@ -10831,21 +10745,24 @@ async function deleteCompSession(sessionId) {
 async function loadAllSelectedSessions() {
   document.getElementById('compRoot').innerHTML = '<div class="loading"><div class="spinner"></div><span>Загружаем данные...</span></div>';
   try {
-    const allMetrics = []; const seenNm = new Set();
+    const allMetrics = []; const seenNm = new Set(); const reportDetails = [];
     for(const sid of COMP_SELECTED_SESSIONS) {
       const r = await fetch(`${RAILWAY_URL}/api/competitor-data/${sid}`);
       const d = await r.json();
+      if(!r.ok || d.error) throw new Error(d.error || 'Не удалось загрузить отчёт');
+      reportDetails.push({...d, id:sid, label:formatCompSessionLabel(COMP_SESSIONS.find(s=>s.id===sid)||{})});
       for(const m of (d.metrics || [])) {
         if(!seenNm.has(m.nm_id)) { seenNm.add(m.nm_id); allMetrics.push(m); }
       }
     }
     COMP_ALL_METRICS = allMetrics;
+    CompetitorDetail.setReports(reportDetails);
     syncCompSelectedNms();
     await refreshOwnArticleStats();
     if(DAILY_STATS.length) buildDynChart();
     renderCompetitorView();
   } catch(e) {
-    document.getElementById('compRoot').innerHTML = `<div class="empty">Ошибка загрузки: ${e.message}</div>`;
+    document.getElementById('compRoot').innerHTML = `<div class="empty">Ошибка загрузки: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -11276,7 +11193,7 @@ function renderCompetitorView() {
     .filter(m => !COMP_BRAND_FILTER || String(m.brand || '') === COMP_BRAND_FILTER)
     .map(m => ({...m, is_own: false}));
 
-  if(!allMetrics.length && !COMP_BRAND_FILTER) {
+  if(!allMetrics.length && !COMP_BRAND_FILTER && !COMP_ALL_METRICS.length) {
     document.getElementById('compRoot').innerHTML = '<div class="empty">Добавь свои артикулы через поиск, отметь конкурентов или загрузи файл</div>';
     return;
   }
@@ -11289,6 +11206,7 @@ function renderCompetitorView() {
 
   document.getElementById('compRoot').innerHTML = `
     ${COMP_BRAND_FILTER ? '<div class="card" id="compBrandWeekWrap" style="margin:12px 16px 0"></div>' : ''}
+    <div id="compReportDetail"></div>
     <div class="comp-tabs">
       <div class="comp-tab${COMP_TAB==='metrics'?' on':''}" onclick="switchCompTab('metrics')">Показатели</div>
     </div>
@@ -11305,6 +11223,7 @@ function renderCompetitorView() {
       ${buildCompTopAnalysis(autoMetrics)}
       <div style="overflow-x:auto">${allMetrics.length ? buildCompMetricsTable(allMetrics, ownMetrics[0]?.nm_id) : '<div class="empty" style="padding:24px">Нет строк в выбранных отчётах — график бренда выше, если недели нашлись.</div>'}</div>
     </div>`;
+  CompetitorDetail.mount();
   if(COMP_BRAND_FILTER) loadCompBrandWeeks();
 }
 
@@ -11464,6 +11383,7 @@ function buildCompMetricsTable(metrics, ownNm) {
     </label>`;
     return `<th class="${m.nm_id===ownNm || m.is_own?'own-col':''}">
     ${pickBox}
+    ${!m.is_own ? `<button class="filter-btn" style="min-height:36px;margin-bottom:8px" onclick="CompetitorDetail.open(${Number(m.nm_id)},${Number(m.session_id)||'null'})">Разбор артикула</button>` : ''}
     ${wbThumbHtml(m.nm_id)}
     <a href="${wbCatalogUrl(m.nm_id)}" target="_blank" rel="noopener"
       style="color:${m.color};font-weight:600;font-size:12px;white-space:normal;max-width:120px;display:block;text-decoration:none;margin:0 auto"
@@ -11619,11 +11539,13 @@ async function uploadCompetitorReport(file) {
         period_begin: result.period_begin,
         period_end: result.period_end,
         brands: result.brands || [],
+        store_name: result.store_name || '',
       });
       const stockN = Number(result.stock_wb_rf_articles || 0);
       status.textContent = stockN
         ? `✅ Загружено: ${label}, ${result.articles} артикулов · остаток WB РФ у ${stockN}`
         : `✅ Загружено: ${label}, ${result.articles} артикулов`;
+      if(result.search_queries !== undefined) status.textContent += ` · ${result.search_queries} строк запросов · ${result.warehouse_rows || 0} строк складов · ${result.sheets || 0} листов`;
       COMP_DATA = null;
       COMP_SELECTED_NMS = new Set();
       saveCompSelectedNms();
