@@ -58,6 +58,43 @@ window.CompetitorDetail = (() => {
     const selected=sheets[sheet];const nav=pager(selected.rows.length);
     return `<label class="cd-source-select">Лист отчёта<select data-control="sheet">${sheets.map((s,i)=>`<option value="${i}" ${i===sheet?'selected':''}>${esc(s.name)} · ${s.rows.length} строк</option>`).join('')}</select></label><p class="cd-note">Все строки и колонки файла, включая другие артикулы, предыдущий период, разницы и описание метрик. Пропуски отображаются как «—».</p>${table(['Строка',...Array.from({length:Math.max(0,...selected.rows.map(r=>r.length))},(_,i)=>String(i+1))],selected.rows.slice(page*25,(page+1)*25).map((r,i)=>`<tr><th scope="row">${page*25+i+1}</th>${r.map(v=>`<td>${cell(v)}</td>`).join('')}</tr>`))}${nav}`;
   }
+  const photoUrls = new Map();
+  const photoLookups = new Map();
+  const thumb = (id, ext = 'webp') => typeof wbThumbUrl === 'function' ? wbThumbUrl(id, ext).replace('/images/tm/', '/images/c246x328/') : '';
+  function photoPicker(items) {
+    return `<div class="cd-picker" role="group" aria-label="Выбор артикула WB">${items.map(item => {
+      const id = Number(item.nm_id);
+      const src = photoUrls.get(id) || thumb(id);
+      return `<button type="button" class="cd-photo-choice" data-nm="${id}" aria-label="Артикул WB ${id}" aria-pressed="${id === nm}"><span class="cd-photo-frame"><span class="cd-photo-missing" hidden>Фото недоступно</span>${src ? `<img src="${esc(src)}" alt="" width="120" height="160" loading="lazy" decoding="async" data-photo-nm="${id}">` : '<span class="cd-photo-missing">Фото недоступно</span>'}</span><span class="cd-photo-id">${id}</span></button>`;
+    }).join('')}</div>`;
+  }
+  function bindPhotos(host) {
+    host.querySelectorAll('[data-photo-nm]').forEach(img => {
+      const id = Number(img.dataset.photoNm);
+      const fallbacks = [thumb(id, 'jpg'), thumb(id).replace('/images/c246x328/', '/images/tm/')];
+      let resolvedTried = false;
+      const unavailable = () => {
+        img.hidden = true;
+        img.parentElement.querySelector('.cd-photo-missing').hidden = false;
+      };
+      img.onload = () => photoUrls.set(id, img.src);
+      img.onerror = async () => {
+        while(fallbacks.length) {
+          const src = fallbacks.shift();
+          if(src && src !== img.src) { img.src = src; return; }
+        }
+        if(!resolvedTried && typeof fetchBasketCardBrief === 'function') {
+          resolvedTried = true;
+          if(!photoLookups.has(id)) photoLookups.set(id, fetchBasketCardBrief(id).catch(() => null));
+          const card = await photoLookups.get(id);
+          if(!img.isConnected) return;
+          if(card?.thumb && card.thumb !== img.src) { img.src = card.thumb; return; }
+        }
+        unavailable();
+      };
+      if(img.complete && !img.naturalWidth) img.onerror();
+    });
+  }
   function render() {
     const host=document.getElementById('compReportDetail');if(!host)return;
     if(!reports.length){host.innerHTML='';return;}
@@ -65,16 +102,22 @@ window.CompetitorDetail = (() => {
     const d=active(), report=d.report;
     if(!report?.articles.some(a=>a.nm_id===nm))nm=report?.articles[0]?.nm_id || null;
     const a=article();
-    host.innerHTML=`<section class="cd-panel"><header class="cd-header"><div><p class="cd-eyebrow">Разбор конкурента</p><h2>${esc(a ? `${a.brand || 'Без бренда'}${d.store_name?' ('+d.store_name+')':''}` : 'Отчёт конкурента')}</h2><p class="cd-muted">${esc(d.source_filename || 'Загруженный отчёт')}</p></div><div class="cd-selects"><label>Файл<select data-control="report">${reports.map((r,i)=>`<option value="${i}" ${i===index?'selected':''}>${esc(r.label || r.source_filename || 'Отчёт '+r.id)}</option>`).join('')}</select></label>${a?`<label>Артикул<select data-control="article">${report.articles.map(x=>`<option value="${x.nm_id}" ${x.nm_id===nm?'selected':''}>${x.nm_id} · ${esc(x.name || x.brand || '')}</option>`).join('')}</select></label>`:''}</div></header>${!report?empty('В этой загрузке сохранены только основные показатели. Загрузите исходный Excel повторно, чтобы увидеть запросы, склады и предыдущий период.'):!a?empty('В отчёте не найдены артикулы'):`<div class="cd-product"><strong>${esc(a.name || a.nm_id)}</strong><span>${esc(period(report.periods.current) || 'Период не указан')} · сравнение: ${esc(period(report.periods.previous) || 'не указан')}</span></div><nav class="cd-tabs" aria-label="Разделы отчёта">${[['overview','Воронка и показатели'],['search','Поисковые запросы'],['stocks','Остатки и доставка'],['source','Все данные файла']].map(([k,v])=>`<button data-tab="${k}" aria-pressed="${k===tab}" class="${k===tab?'selected':''}">${v}</button>`).join('')}</nav><div class="cd-body" id="cdBody">${tab==='overview'?overview(a):tab==='search'?search(a):tab==='stocks'?stocks(a):source()}</div>`}</section>`;
+    host.innerHTML=`<section class="cd-panel"><header class="cd-header"><div><p class="cd-eyebrow">Разбор конкурента</p><h2>${esc(a ? `${a.brand || 'Без бренда'}${d.store_name?' ('+d.store_name+')':''}` : 'Отчёт конкурента')}</h2><p class="cd-muted">${esc(d.source_filename || 'Загруженный отчёт')}</p></div><div class="cd-selects"><label>Файл<select data-control="report">${reports.map((r,i)=>`<option value="${i}" ${i===index?'selected':''}>${esc(r.label || r.source_filename || 'Отчёт '+r.id)}</option>`).join('')}</select></label></div></header>${!report?empty('В этой загрузке сохранены только основные показатели. Загрузите исходный Excel повторно, чтобы увидеть запросы, склады и предыдущий период.'):!a?empty('В отчёте не найдены артикулы'):`${photoPicker(report.articles)}<div class="cd-product"><span>${esc(period(report.periods.current) || 'Период не указан')} · сравнение: ${esc(period(report.periods.previous) || 'не указан')}</span></div><nav class="cd-tabs" aria-label="Разделы отчёта">${[['overview','Воронка и показатели'],['search','Поисковые запросы'],['stocks','Остатки и доставка'],['source','Все данные файла']].map(([k,v])=>`<button data-tab="${k}" aria-pressed="${k===tab}" class="${k===tab?'selected':''}">${v}</button>`).join('')}</nav><div class="cd-body" id="cdBody">${tab==='overview'?overview(a):tab==='search'?search(a):tab==='stocks'?stocks(a):source()}</div>`}</section>`;
+    bindPhotos(host);
     host.onclick=e=>{
       const el=e.target.closest('button');if(!el)return;
-      if(el.dataset.tab){tab=el.dataset.tab;page=0;query='';render();host.querySelector(`[data-tab="${tab}"]`)?.focus();}
+      if(el.dataset.nm) {
+        const next = Number(el.dataset.nm);
+        if(next === nm) return;
+        nm = next; page = 0; query = ''; render();
+        host.querySelector(`[data-nm="${nm}"]`)?.focus({preventScroll:true});
+      }
+      else if(el.dataset.tab){tab=el.dataset.tab;page=0;query='';render();host.querySelector(`[data-tab="${tab}"]`)?.focus();}
       else if(el.dataset.action){if(el.dataset.action==='prev')page--;else if(el.dataset.action==='next')page++;else direction*=-1;render();}
     };
     host.onchange=e=>{
       const control=e.target.dataset.control;
       if(control==='report'){index=Number(e.target.value);nm=null;sheet=0;query='';}
-      if(control==='article'){nm=Number(e.target.value);query='';}
       if(control==='sheet')sheet=Number(e.target.value);
       if(control==='sort')sort=e.target.value;
       if(control && control!=='query'){page=0;render();}
